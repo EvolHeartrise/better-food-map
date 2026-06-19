@@ -40,3 +40,16 @@ npm run build
 You can preview the production build with `npm run preview`.
 
 > To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
+
+## Database
+
+Data lives in a local SQLite file at `data/food.db` (gitignored). The schema and
+data-access layer are in `src/lib/server/db.ts`.
+
+Read and write data through the **MCP server** (`scripts/db-mcp-server.ts`) — a
+stdio Model Context Protocol server registered in `.mcp.json` as `food-db`. It
+exposes CRUD tools (`list_locations`, `create_location`, `update_food`,
+`delete_location`, `query_sql`, …) so an MCP client like Claude Code can read and
+mutate the database directly via tool calls. Run it standalone with
+`bun run db:mcp`. Inputs are validated with valibot, and the JSON Schema
+advertised to clients is generated from those same schemas.

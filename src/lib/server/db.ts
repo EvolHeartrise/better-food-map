@@ -196,6 +196,26 @@ const insertFoodTagStmt = db.query<unknown, [string, string]>(
 	`INSERT OR IGNORE INTO food_tags (food_id, tag_id) VALUES (?, ?)`
 );
 
+const selectFoodById = db.query<FoodRow, [string]>(
+	`SELECT id, location_id, item_name, description, ingredients, price
+	 FROM food
+	 WHERE id = ?`
+);
+
+const selectTagsByFood = db.query<{ id: TagId; label: string }, [string]>(
+	`SELECT t.id AS id, t.label AS label
+	 FROM food_tags ft
+	 JOIN tags t ON t.id = ft.tag_id
+	 WHERE ft.food_id = ?
+	 ORDER BY t.rowid`
+);
+
+const deleteFoodTagsStmt = db.query<unknown, [string]>(`DELETE FROM food_tags WHERE food_id = ?`);
+
+const deleteLocationStmt = db.query<unknown, [string]>(`DELETE FROM locations WHERE id = ?`);
+
+const deleteFoodStmt = db.query<unknown, [string]>(`DELETE FROM food WHERE id = ?`);
+
 // ---------------------------------------------------------------------------
 // Public API (STABLE CONTRACT)
 // ---------------------------------------------------------------------------
@@ -275,4 +295,97 @@ export function insertFood(
 		insertFoodTagStmt.run(id, tagId);
 	}
 	return id;
+}
+
+/** Mutable columns of `locations`, in their physical order. */
+const LOCATION_COLUMNS = [
+	'name',
+	'category',
+	'latitude',
+	'longitude',
+	'address',
+	'phone',
+	'website'
+] as const;
+
+/**
+ * Applies a partial update to a location. Only the fields present in `patch`
+ * are written. Returns the updated row, or `null` if no location has that id.
+ */
+export function updateLocation(id: string, patch: Partial<Omit<Location, 'id'>>): Location | null {
+	if (!getLocationById(id)) return null;
+
+	const assignments: string[] = [];
+	const values: (string | number | null)[] = [];
+	for (const col of LOCATION_COLUMNS) {
+		if (patch[col] !== undefined) {
+			assignments.push(`${col} = ?`);
+			values.push(patch[col] as string | number | null);
+		}
+	}
+
+	if (assignments.length > 0) {
+		values.push(id);
+		db.query(`UPDATE locations SET ${assignments.join(', ')} WHERE id = ?`).run(...values);
+	}
+	return getLocationById(id);
+}
+
+/**
+ * Deletes a location and (via `ON DELETE CASCADE`) all of its menu items and
+ * their tag links. Returns `true` if a row was removed.
+ */
+export function deleteLocation(id: string): boolean {
+	return deleteLocationStmt.run(id).changes > 0;
+}
+
+/** Returns a single menu item with its dietary tags, or `null` if not found. */
+export function getFoodById(id: string): Food | null {
+	const row = selectFoodById.get(id);
+	if (!row) return null;
+	return { ...row, tags: selectTagsByFood.all(id) };
+}
+
+/** Mutable scalar columns of `food`, in their physical order. */
+const FOOD_COLUMNS = ['location_id', 'item_name', 'description', 'ingredients', 'price'] as const;
+
+/**
+ * Applies a partial update to a menu item. Scalar fields present in `patch` are
+ * written; if `patch.tags` is provided, the item's tag set is replaced wholesale
+ * (pass `[]` to clear all tags). Returns the updated item, or `null` if no food
+ * item has that id.
+ */
+export function updateFood(
+	id: string,
+	patch: Partial<Omit<Food, 'id' | 'tags'>> & { tags?: TagId[] }
+): Food | null {
+	if (!getFoodById(id)) return null;
+
+	const assignments: string[] = [];
+	const values: (string | number | null)[] = [];
+	for (const col of FOOD_COLUMNS) {
+		if (patch[col] !== undefined) {
+			assignments.push(`${col} = ?`);
+			values.push(patch[col] as string | number | null);
+		}
+	}
+
+	if (assignments.length > 0) {
+		values.push(id);
+		db.query(`UPDATE food SET ${assignments.join(', ')} WHERE id = ?`).run(...values);
+	}
+
+	if (patch.tags !== undefined) {
+		deleteFoodTagsStmt.run(id);
+		for (const tagId of patch.tags) {
+			insertFoodTagStmt.run(id, tagId);
+		}
+	}
+
+	return getFoodById(id);
+}
+
+/** Deletes a menu item and its tag links. Returns `true` if a row was removed. */
+export function deleteFood(id: string): boolean {
+	return deleteFoodStmt.run(id).changes > 0;
 }
