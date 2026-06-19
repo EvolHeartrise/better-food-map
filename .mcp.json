@@ -5,6 +5,12 @@
 			"command": "npx",
 			"env": {},
 			"args": ["-y", "@sveltejs/mcp"]
+		},
+		"food-db": {
+			"type": "stdio",
+			"command": "bun",
+			"env": {},
+			"args": ["run", "scripts/db-mcp-server.ts"]
 		}
 	}
 }
