@@ -91,6 +91,16 @@
 										<span class="menu__name">{item.item_name}</span>
 										<span class="menu__price">{formatPrice(item.price)}</span>
 									</div>
+									{#if item.description}
+										<p class="menu__description">{item.description}</p>
+									{/if}
+									{#if item.tags.length > 0}
+										<ul class="tags">
+											{#each item.tags as tag (tag.id)}
+												<li class="tag">{tag.label}</li>
+											{/each}
+										</ul>
+									{/if}
 									{#if ingredientList(item.ingredients).length > 0}
 										<ul class="ingredients">
 											{#each ingredientList(item.ingredients) as ingredient (ingredient)}
@@ -101,6 +111,10 @@
 								</li>
 							{/each}
 						</ul>
+						<p class="menu__note">
+							Dietary tags are informational and based on listed ingredients. If you have allergies
+							or strict dietary needs, please confirm with the venue.
+						</p>
 					{/if}
 				</section>
 
@@ -251,6 +265,38 @@
 		border: 1px solid var(--color-border);
 		border-radius: 999px;
 		padding: 0.1rem 0.55rem;
+	}
+
+	.menu__description {
+		margin: 0.3rem 0 0;
+		font-size: 0.9rem;
+		color: var(--color-text-muted);
+	}
+
+	.tags {
+		list-style: none;
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.35rem;
+		margin: 0.5rem 0 0;
+		padding: 0;
+	}
+
+	.tag {
+		font-size: 0.75rem;
+		font-weight: 600;
+		color: var(--color-accent);
+		background-color: color-mix(in srgb, var(--color-accent) 12%, #fff);
+		border: 1px solid color-mix(in srgb, var(--color-accent) 35%, #fff);
+		border-radius: 999px;
+		padding: 0.1rem 0.55rem;
+	}
+
+	.menu__note {
+		margin: 1rem 0 0;
+		font-size: 0.8rem;
+		font-style: italic;
+		color: var(--color-text-muted);
 	}
 
 	.back-link {

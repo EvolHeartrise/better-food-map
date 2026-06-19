@@ -1,9 +1,26 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
-	import { getLocations } from '$lib/data.remote';
+	import { getLocations, getTags } from '$lib/data.remote';
 	import LocationMap from '$lib/components/LocationMap.svelte';
 
 	const locations = $derived(await getLocations());
+	const allTags = $derived(await getTags());
+
+	// Selected dietary tag ids. A place matches when its menu offers ALL of them.
+	let selected = $state<string[]>([]);
+
+	const filtered = $derived(
+		selected.length === 0
+			? locations
+			: locations.filter((loc) => {
+					const have = new Set<string>(loc.tags.map((tag) => tag.id));
+					return selected.every((id) => have.has(id));
+				})
+	);
+
+	function toggle(id: string): void {
+		selected = selected.includes(id) ? selected.filter((value) => value !== id) : [...selected, id];
+	}
 
 	function categoryLabel(category: (typeof locations)[number]['category']): string {
 		if (!category) return '';
@@ -26,16 +43,42 @@
 		<p>Explore cafes, fast food and restaurants in Vancouver.</p>
 	</header>
 
-	<LocationMap {locations} />
+	<section class="filters" aria-label="Filter by dietary tag">
+		<div class="filters__head">
+			<h2 class="filters__title">Dietary filters</h2>
+			{#if selected.length > 0}
+				<button type="button" class="filters__clear" onclick={() => (selected = [])}>
+					Clear all
+				</button>
+			{/if}
+		</div>
+		<div class="filters__chips">
+			{#each allTags as tag (tag.id)}
+				<button
+					type="button"
+					class="filter"
+					class:filter--active={selected.includes(tag.id)}
+					aria-pressed={selected.includes(tag.id)}
+					onclick={() => toggle(tag.id)}
+				>
+					{tag.label}
+				</button>
+			{/each}
+		</div>
+	</section>
+
+	<LocationMap locations={filtered} />
 
 	<section class="listing" aria-label="All locations">
-		<h2>All places</h2>
+		<h2>{selected.length > 0 ? 'Matching places' : 'All places'}</h2>
 
-		{#if locations.length === 0}
-			<p class="empty">No places yet.</p>
+		{#if filtered.length === 0}
+			<p class="empty">
+				{selected.length > 0 ? 'No places match the selected filters.' : 'No places yet.'}
+			</p>
 		{:else}
 			<ul class="listing__items">
-				{#each locations as loc (loc.id)}
+				{#each filtered as loc (loc.id)}
 					{@const label = categoryLabel(loc.category)}
 					<li class="listing__item">
 						<a class="listing__link" href={resolve('/locations/[id]', { id: loc.id })}>{loc.name}</a
@@ -45,6 +88,13 @@
 						{/if}
 						{#if loc.address}
 							<span class="listing__address">{loc.address}</span>
+						{/if}
+						{#if loc.tags.length > 0}
+							<ul class="listing__tags">
+								{#each loc.tags as tag (tag.id)}
+									<li class="listing__tag">{tag.label}</li>
+								{/each}
+							</ul>
 						{/if}
 					</li>
 				{/each}
@@ -66,6 +116,73 @@
 	.page__intro p {
 		margin: 0;
 		color: var(--color-text-muted, #5c5c66);
+	}
+
+	.filters {
+		display: flex;
+		flex-direction: column;
+		gap: 0.6rem;
+	}
+
+	.filters__head {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 1rem;
+	}
+
+	.filters__title {
+		margin: 0;
+		font-size: 1rem;
+	}
+
+	.filters__clear {
+		background: none;
+		border: none;
+		color: var(--color-accent);
+		font-size: 0.85rem;
+		font-weight: 600;
+		padding: 0;
+	}
+
+	.filters__clear:hover {
+		text-decoration: underline;
+	}
+
+	.filters__chips {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+	}
+
+	.filter {
+		font-size: 0.85rem;
+		font-weight: 600;
+		color: var(--color-text-muted);
+		background-color: var(--color-surface);
+		border: 1px solid var(--color-border);
+		border-radius: 999px;
+		padding: 0.3rem 0.8rem;
+		transition:
+			background-color 0.12s,
+			color 0.12s,
+			border-color 0.12s;
+	}
+
+	.filter:hover {
+		border-color: var(--color-accent);
+		color: var(--color-accent);
+	}
+
+	.filter--active {
+		color: #fff;
+		background-color: var(--color-accent);
+		border-color: var(--color-accent);
+	}
+
+	.filter--active:hover {
+		color: #fff;
+		background-color: var(--color-accent-hover);
 	}
 
 	.listing h2 {
@@ -108,5 +225,24 @@
 	.listing__address {
 		font-size: 0.85rem;
 		color: var(--color-text-muted, #5c5c66);
+	}
+
+	.listing__tags {
+		list-style: none;
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.3rem;
+		margin: 0.35rem 0 0;
+		padding: 0;
+	}
+
+	.listing__tag {
+		font-size: 0.72rem;
+		font-weight: 600;
+		color: var(--color-accent);
+		background-color: color-mix(in srgb, var(--color-accent) 12%, #fff);
+		border: 1px solid color-mix(in srgb, var(--color-accent) 35%, #fff);
+		border-radius: 999px;
+		padding: 0.05rem 0.5rem;
 	}
 </style>
