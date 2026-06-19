@@ -1,20 +1,35 @@
 import adapter from '@sveltejs/adapter-auto';
 import { sveltekit } from '@sveltejs/kit/vite';
+import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
 import { defineConfig } from 'vite';
 
+// SvelteKit config lives here (not in svelte.config.js). Since @sveltejs/kit 2.62
+// you can pass the kit/compiler config straight to the `sveltekit()` plugin, and
+// when you do, any svelte.config.js is ignored. The `kit` options (adapter,
+// experimental.remoteFunctions) sit at the top level of the plugin options.
 export default defineConfig({
 	plugins: [
 		sveltekit({
-			compilerOptions: {
-				// Force runes mode for the project, except for libraries. Can be removed in svelte 6.
-				runes: ({ filename }) =>
-					filename.split(/[/\\]/).includes('node_modules') ? undefined : true
+			preprocess: vitePreprocess(),
+			adapter: adapter(),
+			experimental: {
+				// Enable SvelteKit remote functions (.remote.ts files).
+				remoteFunctions: true
 			},
-
-			// adapter-auto only supports some environments, see https://svelte.dev/docs/kit/adapter-auto for a list.
-			// If your environment is not supported, or you settled on a specific environment, switch out the adapter.
-			// See https://svelte.dev/docs/kit/adapters for more information about adapters.
-			adapter: adapter()
+			compilerOptions: {
+				runes: true,
+				experimental: {
+					// Allow top-level `await` in components (needed to await remote queries in markup).
+					async: true
+				}
+			}
 		})
-	]
+	],
+	ssr: {
+		// `bun:sqlite` is a built-in Bun module; never let Vite try to bundle it.
+		external: ['bun:sqlite']
+	},
+	optimizeDeps: {
+		exclude: ['bun:sqlite']
+	}
 });
