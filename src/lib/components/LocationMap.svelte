@@ -89,7 +89,10 @@
 				shadowSize: [41, 41]
 			});
 
-			map = L.map(mapEl).setView(VANCOUVER, DEFAULT_ZOOM);
+			// Zoom control is moved to the top-right so it never sits beneath the
+			// frosted sidebar that floats over the top-left of the full-screen map.
+			map = L.map(mapEl, { zoomControl: false }).setView(VANCOUVER, DEFAULT_ZOOM);
+			L.control.zoom({ position: 'topright' }).addTo(map);
 
 			L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 				attribution:
@@ -130,11 +133,8 @@
 
 <style>
 	.map {
-		height: 70vh;
-		min-height: 420px;
+		height: 100%;
 		width: 100%;
-		border-radius: var(--radius, 0.5rem);
-		overflow: hidden;
 	}
 
 	.map :global(.map-popup a) {
