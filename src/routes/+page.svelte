@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
+	import { pushState, replaceState } from '$app/navigation';
+	import { page } from '$app/state';
 	import { getLocations, getTags } from '$lib/data.remote';
 	import LocationMap from '$lib/components/LocationMap.svelte';
 	import { pointInPolygon, type LatLng } from '$lib/geo';
@@ -74,6 +76,49 @@
 
 	const mapLocations = $derived(results.map((result) => result.loc));
 
+	// --- Selected location (integrated detail view) ---------------------------
+	// The open location is driven by shallow routing: selecting pushes a
+	// `/locations/<id>` history entry (without navigating) that carries the id in
+	// `page.state`, so Back closes the detail. On a fresh load or shared link
+	// `page.state` is empty, so we fall back to the id in the URL — the `reroute`
+	// hook serves this page for `/locations/*`. Either way the record is looked up
+	// from the already-loaded `locations`, so no extra fetch is needed.
+	const selectedId = $derived(page.state.selected ?? idFromPath(page.url.pathname));
+	const selectedLocation = $derived(
+		selectedId ? (locations.find((loc) => loc.id === selectedId) ?? null) : null
+	);
+
+	function idFromPath(pathname: string): string | null {
+		const match = pathname.match(/\/locations\/([^/]+)$/);
+		return match ? decodeURIComponent(match[1]) : null;
+	}
+
+	function selectLocation(id: string): void {
+		// `/locations/<id>` is a synthetic shallow-routing URL: there is no such
+		// route (the `reroute` hook serves this page for it), so the address bar can
+		// reflect the open location — and the link stays shareable — without a real
+		// navigation. Because it isn't a real route it can't go through the typed
+		// `resolve(routeId)`, hence the lint exception on the calls below.
+		const url = `/locations/${encodeURIComponent(id)}`;
+		const state = { selected: id };
+		// Reuse the current history entry when switching between locations, so Back
+		// always returns to the results list rather than the previously viewed place.
+		if (page.state.selected) {
+			// eslint-disable-next-line svelte/no-navigation-without-resolve -- synthetic shallow URL (see above)
+			replaceState(url, state);
+		} else {
+			// eslint-disable-next-line svelte/no-navigation-without-resolve -- synthetic shallow URL (see above)
+			pushState(url, state);
+		}
+	}
+
+	function closeDetail(): void {
+		// If we created a history entry, pop it so Back/forward stays consistent;
+		// otherwise (landed directly on a /locations/ URL) rewrite to the map.
+		if (page.state.selected) history.back();
+		else replaceState(resolve('/'), {});
+	}
+
 	const hasQuery = $derived(
 		place.trim() !== '' ||
 			item.trim() !== '' ||
@@ -106,6 +151,19 @@
 		if (category === 'fast_food') return 'Fast food';
 		return category.charAt(0).toUpperCase() + category.slice(1);
 	}
+
+	function formatPrice(price: number | null): string {
+		return price === null ? '—' : currency.format(price);
+	}
+
+	// Split the comma-separated ingredient string into trimmed, non-empty parts.
+	function ingredientList(ingredients: string | null): string[] {
+		if (!ingredients) return [];
+		return ingredients
+			.split(',')
+			.map((part) => part.trim())
+			.filter((part) => part.length > 0);
+	}
 </script>
 
 <svelte:head>
@@ -118,7 +176,13 @@
 
 <div class="app">
 	<div class="app__map">
-		<LocationMap locations={mapLocations} bind:polygon={area} bind:drawing />
+		<LocationMap
+			locations={mapLocations}
+			selected={selectedLocation}
+			onselect={selectLocation}
+			bind:polygon={area}
+			bind:drawing
+		/>
 	</div>
 
 	<aside class="panel panel--search" aria-label="Search and filters">
@@ -211,54 +275,148 @@
 		</div>
 	</aside>
 
-	<aside class="panel panel--results" aria-label="Matching places">
-		<section class="results">
-			<p class="results__count">
-				{results.length}
-				{results.length === 1 ? 'place' : 'places'}
-			</p>
+	<aside
+		class="panel panel--results"
+		aria-label={selectedLocation ? 'Location details' : 'Matching places'}
+	>
+		{#if selectedLocation}
+			{@const label = categoryLabel(selectedLocation.category)}
+			<section class="detail">
+				<button type="button" class="detail__back" onclick={closeDetail}>
+					← Back to results
+				</button>
 
-			{#if results.length === 0}
-				<p class="results__empty">
-					{#if locations.length === 0}
-						No places yet.
-					{:else if hasQuery}
-						No matching places.
-					{:else}
-						Search by place, item, ingredient, or dietary tag to see results.
-					{/if}
+				<div class="detail__body">
+					<header class="detail__header">
+						<h2 class="detail__name">{selectedLocation.name}</h2>
+						{#if label}
+							<span class="badge">{label}</span>
+						{/if}
+					</header>
+
+					<dl class="info">
+						{#if selectedLocation.address}
+							<div class="info__row">
+								<dt>Address</dt>
+								<dd>{selectedLocation.address}</dd>
+							</div>
+						{/if}
+						{#if selectedLocation.phone}
+							<div class="info__row">
+								<dt>Phone</dt>
+								<dd><a href="tel:{selectedLocation.phone}">{selectedLocation.phone}</a></dd>
+							</div>
+						{/if}
+						{#if selectedLocation.website}
+							<div class="info__row">
+								<dt>Website</dt>
+								<dd>
+									<a
+										href={selectedLocation.website}
+										target="_blank"
+										rel="external noopener noreferrer"
+									>
+										{selectedLocation.website}
+									</a>
+								</dd>
+							</div>
+						{/if}
+						<div class="info__row">
+							<dt>Coordinates</dt>
+							<dd>{selectedLocation.latitude}, {selectedLocation.longitude}</dd>
+						</div>
+					</dl>
+
+					<section class="menu">
+						<h3 class="menu__heading">Menu</h3>
+						{#if selectedLocation.menu.length === 0}
+							<p class="menu__empty">Menu information isn't available for this place yet.</p>
+						{:else}
+							<ul class="menu__list">
+								{#each selectedLocation.menu as menuItem (menuItem.id)}
+									{@const ingredients = ingredientList(menuItem.ingredients)}
+									<li class="menu__item">
+										<div class="menu__line">
+											<span class="menu__name">{menuItem.item_name}</span>
+											<span class="menu__price">{formatPrice(menuItem.price)}</span>
+										</div>
+										{#if menuItem.description}
+											<p class="menu__description">{menuItem.description}</p>
+										{/if}
+										{#if menuItem.tags.length > 0}
+											<ul class="tags">
+												{#each menuItem.tags as tag (tag.id)}
+													<li class="tag">{tag.label}</li>
+												{/each}
+											</ul>
+										{/if}
+										{#if ingredients.length > 0}
+											<ul class="ingredients">
+												{#each ingredients as ingredient (ingredient)}
+													<li class="ingredient">{ingredient}</li>
+												{/each}
+											</ul>
+										{/if}
+									</li>
+								{/each}
+							</ul>
+							<p class="menu__note">
+								Dietary tags are informational and based on listed ingredients. If you have
+								allergies or strict dietary needs, please confirm with the venue.
+							</p>
+						{/if}
+					</section>
+				</div>
+			</section>
+		{:else}
+			<section class="results">
+				<p class="results__count">
+					{results.length}
+					{results.length === 1 ? 'place' : 'places'}
 				</p>
-			{:else}
-				<ul class="results__list">
-					{#each results as { loc, items } (loc.id)}
-						{@const label = categoryLabel(loc.category)}
-						<li>
-							<a class="card" href={resolve('/locations/[id]', { id: loc.id })}>
-								<span class="card__name">{loc.name}</span>
-								{#if label}
-									<span class="card__category">{label}</span>
-								{/if}
-								{#if loc.address}
-									<span class="card__address">{loc.address}</span>
-								{/if}
-								{#if items.length > 0}
-									<ul class="card__items">
-										{#each items as menuItem (menuItem.id)}
-											<li class="card__item">
-												<span class="card__item-name">{menuItem.item_name}</span>
-												{#if menuItem.price !== null}
-													<span class="card__item-price">{currency.format(menuItem.price)}</span>
-												{/if}
-											</li>
-										{/each}
-									</ul>
-								{/if}
-							</a>
-						</li>
-					{/each}
-				</ul>
-			{/if}
-		</section>
+
+				{#if results.length === 0}
+					<p class="results__empty">
+						{#if locations.length === 0}
+							No places yet.
+						{:else if hasQuery}
+							No matching places.
+						{:else}
+							Search by place, item, ingredient, or dietary tag to see results.
+						{/if}
+					</p>
+				{:else}
+					<ul class="results__list">
+						{#each results as { loc, items } (loc.id)}
+							{@const label = categoryLabel(loc.category)}
+							<li>
+								<button type="button" class="card" onclick={() => selectLocation(loc.id)}>
+									<span class="card__name">{loc.name}</span>
+									{#if label}
+										<span class="card__category">{label}</span>
+									{/if}
+									{#if loc.address}
+										<span class="card__address">{loc.address}</span>
+									{/if}
+									{#if items.length > 0}
+										<ul class="card__items">
+											{#each items as menuItem (menuItem.id)}
+												<li class="card__item">
+													<span class="card__item-name">{menuItem.item_name}</span>
+													{#if menuItem.price !== null}
+														<span class="card__item-price">{currency.format(menuItem.price)}</span>
+													{/if}
+												</li>
+											{/each}
+										</ul>
+									{/if}
+								</button>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+			</section>
+		{/if}
 	</aside>
 </div>
 
@@ -495,6 +653,11 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.1rem;
+		width: 100%;
+		/* Reset the native <button> chrome so the card reads as a list item. */
+		appearance: none;
+		text-align: left;
+		color: inherit;
 		padding: 0.7rem 0.8rem;
 		border-radius: 0.7rem;
 		background: rgba(255, 255, 255, 0.65);
@@ -505,9 +668,13 @@
 	}
 
 	.card:hover {
-		text-decoration: none;
 		background: rgba(255, 255, 255, 0.96);
 		border-color: var(--color-accent);
+	}
+
+	.card:focus-visible {
+		outline: 2px solid var(--color-accent);
+		outline-offset: 1px;
 	}
 
 	.card__name {
@@ -551,6 +718,198 @@
 		color: var(--color-text-muted);
 		font-variant-numeric: tabular-nums;
 		white-space: nowrap;
+	}
+
+	/* --- Selected-location detail view (replaces the results list) ----------- */
+	.detail {
+		flex: 1;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.6rem;
+	}
+
+	.detail__back {
+		align-self: flex-start;
+		background: none;
+		border: none;
+		padding: 0;
+		color: var(--color-accent);
+		font-size: 0.85rem;
+		font-weight: 600;
+	}
+
+	.detail__back:hover {
+		text-decoration: underline;
+	}
+
+	/* Only the body scrolls; the back button stays pinned at the top. */
+	.detail__body {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+		display: flex;
+		flex-direction: column;
+		gap: 1rem;
+		/* Negative margin lets the scrollbar sit at the panel edge. */
+		margin: 0 -0.4rem;
+		padding: 0 0.4rem 0.2rem;
+	}
+
+	.detail__header {
+		display: flex;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+	}
+
+	.detail__name {
+		margin: 0;
+		font-size: 1.15rem;
+	}
+
+	.badge {
+		display: inline-block;
+		padding: 0.15rem 0.55rem;
+		border-radius: 999px;
+		background-color: var(--color-accent);
+		color: #fff;
+		font-size: 0.72rem;
+		font-weight: 600;
+		line-height: 1.4;
+		white-space: nowrap;
+	}
+
+	.info {
+		display: grid;
+		gap: 0.4rem;
+		margin: 0;
+		padding: 0.75rem 0.85rem;
+		background: rgba(255, 255, 255, 0.6);
+		border: 1px solid var(--color-border);
+		border-radius: 0.7rem;
+	}
+
+	.info__row {
+		display: grid;
+		grid-template-columns: 5rem 1fr;
+		gap: 0.25rem 0.75rem;
+		align-items: baseline;
+	}
+
+	.info dt {
+		color: var(--color-text-muted);
+		font-size: 0.7rem;
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+	}
+
+	.info dd {
+		margin: 0;
+		font-size: 0.85rem;
+		word-break: break-word;
+	}
+
+	.menu {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+
+	.menu__heading {
+		margin: 0 0 0.25rem;
+		font-size: 0.95rem;
+	}
+
+	.menu__empty {
+		margin: 0;
+		font-size: 0.85rem;
+		font-style: italic;
+		color: var(--color-text-muted);
+	}
+
+	.menu__list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+	}
+
+	.menu__item {
+		padding: 0.6rem 0;
+		border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+	}
+
+	.menu__item:last-child {
+		border-bottom: none;
+	}
+
+	.menu__line {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		gap: 0.75rem;
+	}
+
+	.menu__name {
+		font-weight: 600;
+		font-size: 0.9rem;
+	}
+
+	.menu__price {
+		font-size: 0.85rem;
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
+	}
+
+	.menu__description {
+		margin: 0.3rem 0 0;
+		font-size: 0.82rem;
+		color: var(--color-text-muted);
+	}
+
+	.tags {
+		list-style: none;
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.3rem;
+		margin: 0.4rem 0 0;
+		padding: 0;
+	}
+
+	.tag {
+		font-size: 0.72rem;
+		font-weight: 600;
+		color: var(--color-accent);
+		background-color: color-mix(in srgb, var(--color-accent) 12%, #fff);
+		border: 1px solid color-mix(in srgb, var(--color-accent) 35%, #fff);
+		border-radius: 999px;
+		padding: 0.1rem 0.5rem;
+	}
+
+	.ingredients {
+		list-style: none;
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.3rem;
+		margin: 0.35rem 0 0;
+		padding: 0;
+	}
+
+	.ingredient {
+		font-size: 0.72rem;
+		color: var(--color-text-muted);
+		background-color: rgba(255, 255, 255, 0.6);
+		border: 1px solid var(--color-border);
+		border-radius: 999px;
+		padding: 0.1rem 0.5rem;
+	}
+
+	.menu__note {
+		margin: 0.75rem 0 0;
+		font-size: 0.75rem;
+		font-style: italic;
+		color: var(--color-text-muted);
 	}
 
 	/* Below ~48rem the two side panels can't sit abreast, so stack them:
