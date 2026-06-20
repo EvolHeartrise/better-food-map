@@ -20,6 +20,13 @@
 
 	let {
 		locations,
+		// The currently selected location, shown zoomed-in with its detail panel
+		// open on the page. When set, the map flies to it (instead of fitting all
+		// results) and keeps its marker visible even if it's been filtered out.
+		selected = null,
+		// Called with a location id when the user clicks a marker, so the parent can
+		// open that location (the same action as clicking a result card).
+		onselect,
 		// The drawn area constraint, as a ring of `[lat, lng]` vertices (or `null`).
 		// Bindable: the map writes it when the user finishes drawing or drags a
 		// vertex, and the parent can clear it by setting it back to `null`.
@@ -29,6 +36,8 @@
 		drawing = $bindable(false)
 	}: {
 		locations: Location[];
+		selected?: Location | null;
+		onselect?: (id: string) => void;
 		polygon?: LatLng[] | null;
 		drawing?: boolean;
 	} = $props();
@@ -46,6 +55,8 @@
 	// Cap how far a fit can zoom in, so one or two close results don't slam to
 	// street level.
 	const FIT_MAX_ZOOM = 16;
+	// Zoom level used when flying to a single selected location.
+	const SELECTED_ZOOM = 16;
 
 	let mapEl: HTMLDivElement;
 
@@ -54,6 +65,10 @@
 	let L: typeof Leaflet | null = null;
 	let map: Leaflet.Map | null = null;
 	let markerLayer: Leaflet.LayerGroup | null = null;
+	// Markers keyed by location id, so we can open the selected one's tooltip. A
+	// plain (non-reactive) dictionary on purpose: it's an imperative cache written
+	// and read within the same $effect, so reactivity would self-invalidate it.
+	let markersById: Record<string, Leaflet.Marker> = {};
 	// A concrete marker icon built from bundled assets. We deliberately avoid
 	// `L.Icon.Default` because its `_getIconUrl` prepends a detected `imagePath`
 	// to the configured URL, which corrupts our already-resolved asset URLs into
@@ -94,35 +109,61 @@
 			.replace(/'/g, '&#39;');
 	}
 
-	function popupHtml(loc: Location): string {
+	// Hover label for a marker. Clicking the marker opens the location's detail
+	// panel (via `onselect`), so this is just a quick at-a-glance preview.
+	function tooltipHtml(loc: Location): string {
 		const parts: string[] = [`<strong>${escapeHtml(loc.name)}</strong>`];
 		const label = categoryLabel(loc.category);
 		if (label) parts.push(`<span>${escapeHtml(label)}</span>`);
 		if (loc.address) parts.push(`<span>${escapeHtml(loc.address)}</span>`);
-		parts.push(`<a href="/locations/${escapeHtml(loc.id)}">View menu &rarr;</a>`);
-		return `<div class="map-popup">${parts.join('<br />')}</div>`;
+		return `<div class="map-tip">${parts.join('<br />')}</div>`;
 	}
 
 	function renderMarkers() {
 		if (!L || !map || !markerLayer || !markerIconDef) return;
 
 		markerLayer.clearLayers();
+		markersById = {};
 
-		for (const loc of locations) {
+		// Show every result, plus the selected location even when it falls outside
+		// the current results (e.g. opened from a shared link with no active search).
+		const toRender = [...locations];
+		if (selected && !toRender.some((loc) => loc.id === selected.id)) {
+			toRender.push(selected);
+		}
+
+		for (const loc of toRender) {
 			const point: [number, number] = [loc.latitude, loc.longitude];
 			// While drawing, markers are non-interactive so clicks fall through to
-			// the map (adding vertices) instead of opening popups.
-			L.marker(point, { icon: markerIconDef, interactive: !drawing })
-				.bindPopup(popupHtml(loc))
+			// the map (adding vertices) instead of selecting a location.
+			const marker = L.marker(point, { icon: markerIconDef, interactive: !drawing })
+				.bindTooltip(tooltipHtml(loc), { direction: 'top' })
 				.addTo(markerLayer);
+			marker.on('click', () => onselect?.(loc.id));
+			markersById[loc.id] = marker;
 		}
 	}
 
-	// Smoothly fly the view to frame the current locations. Only suppressed while
-	// the user is actively drawing (so the map doesn't move under the cursor) — a
-	// committed area still refits as results filter in/out within it.
+	// Smoothly zoom in on the selected location. Cancels any pending results-fit so
+	// the two don't fight over the camera.
+	function flyToSelected() {
+		if (!L || !map || !selected) return;
+		if (fitTimer) {
+			clearTimeout(fitTimer);
+			fitTimer = null;
+		}
+		map.flyTo([selected.latitude, selected.longitude], SELECTED_ZOOM, {
+			duration: FLY_DURATION
+		});
+		markersById[selected.id]?.openTooltip();
+	}
+
+	// Smoothly fly the view to frame the current locations. Suppressed while the
+	// user is actively drawing (so the map doesn't move under the cursor) or while a
+	// location is selected (the camera is pinned to it) — a committed area still
+	// refits as results filter in/out within it.
 	function fitToLocations() {
-		if (!L || !map || drawing) return;
+		if (!L || !map || drawing || selected) return;
 
 		const points = locations.map((loc) => [loc.latitude, loc.longitude] as [number, number]);
 
@@ -155,7 +196,7 @@
 			clearTimeout(fitTimer);
 			fitTimer = null;
 		}
-		if (!map || drawing) return;
+		if (!map || drawing || selected) return;
 		fitTimer = setTimeout(() => {
 			fitTimer = null;
 			fitToLocations();
@@ -363,21 +404,25 @@
 				map.remove();
 				map = null;
 				markerLayer = null;
+				markersById = {};
 				drawLayer = null;
 				committedLayer = null;
 			}
 		};
 	});
 
-	// Re-render markers and (smoothly) refit the view when `locations` change after
-	// the map is ready. Markers update instantly; the fit is debounced/animated.
-	// Reads `drawing` too (via both functions), so toggling draw mode re-runs this:
-	// markers update interactivity and any pending fit is cancelled while drawing.
+	// Re-render markers and move the camera when inputs change after the map is
+	// ready. `renderMarkers()` reads `locations`, `drawing` and `selected`, so this
+	// effect re-runs on any of them. Markers update instantly; camera moves are
+	// animated. When a location is selected we fly to it; otherwise we (debounced)
+	// refit to frame the current results. While drawing, the camera is left alone.
 	// `polygon` changes flow through `locations` (the parent re-filters results).
 	$effect(() => {
 		if (!ready) return;
 		renderMarkers();
-		scheduleFit();
+		if (drawing) return;
+		if (selected) flyToSelected();
+		else scheduleFit();
 	});
 
 	// Enter / leave draw mode in response to the bindable `drawing` flag.
@@ -409,8 +454,9 @@
 		width: 100%;
 	}
 
-	.map :global(.map-popup a) {
-		font-weight: 600;
+	.map :global(.map-tip) {
+		text-align: center;
+		line-height: 1.35;
 	}
 
 	/* Crosshair cursor while drawing. `mapEl` is the Leaflet container, so this
