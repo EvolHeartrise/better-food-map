@@ -5,6 +5,7 @@
 	import markerShadow from 'leaflet/dist/images/marker-shadow.png';
 	import { onMount } from 'svelte';
 	import type * as Leaflet from 'leaflet';
+	import type { LatLng } from '$lib/geo';
 
 	// Only the fields the map actually needs. Kept structural (rather than derived
 	// from a remote's return type) so any location-shaped object can be passed in.
@@ -17,10 +18,27 @@
 		address: string | null;
 	};
 
-	let { locations }: { locations: Location[] } = $props();
+	let {
+		locations,
+		// The drawn area constraint, as a ring of `[lat, lng]` vertices (or `null`).
+		// Bindable: the map writes it when the user finishes drawing or drags a
+		// vertex, and the parent can clear it by setting it back to `null`.
+		polygon = $bindable(null),
+		// Whether the map is in draw mode. Bindable so a parent button can start
+		// drawing and the map can end it (on finish / cancel).
+		drawing = $bindable(false)
+	}: {
+		locations: Location[];
+		polygon?: LatLng[] | null;
+		drawing?: boolean;
+	} = $props();
 
 	const VANCOUVER: [number, number] = [49.2827, -123.1207];
 	const DEFAULT_ZOOM = 12;
+	// Matches --color-accent; Leaflet path strokes/fills need a concrete colour.
+	const ACCENT = '#2f6f4f';
+	// How close (in pixels) a click must be to the first vertex to close the ring.
+	const CLOSE_TOLERANCE_PX = 14;
 
 	let mapEl: HTMLDivElement;
 
@@ -34,6 +52,22 @@
 	// to the configured URL, which corrupts our already-resolved asset URLs into
 	// 404s. An explicit `L.icon` sidesteps that entirely.
 	let markerIconDef: Leaflet.Icon | null = null;
+	// Small square handle for dragging committed-polygon vertices.
+	let vertexIcon: Leaflet.DivIcon | null = null;
+
+	// Becomes true once the map is initialised; effects below gate on it so they
+	// don't fire against a half-built map (the Leaflet import is async).
+	let ready = $state(false);
+
+	// --- Drawing state (imperative; not reactive) -----------------------------
+	// Vertices clicked so far in the current draw session.
+	let drawPoints: LatLng[] = [];
+	let drawLayer: Leaflet.LayerGroup | null = null; // in-progress visuals
+	let drawLine: Leaflet.Polyline | null = null; // edges between clicked points
+	let drawDots: Leaflet.LayerGroup | null = null; // vertex markers
+	let rubberBand: Leaflet.Polyline | null = null; // last point → cursor
+	// The committed (finished) polygon plus its draggable vertex handles.
+	let committedLayer: Leaflet.LayerGroup | null = null;
 
 	function categoryLabel(category: Location['category']): string {
 		if (!category) return '';
@@ -68,14 +102,167 @@
 		for (const loc of locations) {
 			const point: [number, number] = [loc.latitude, loc.longitude];
 			points.push(point);
-			L.marker(point, { icon: markerIconDef }).bindPopup(popupHtml(loc)).addTo(markerLayer);
+			// While drawing, markers are non-interactive so clicks fall through to
+			// the map (adding vertices) instead of opening popups.
+			L.marker(point, { icon: markerIconDef, interactive: !drawing })
+				.bindPopup(popupHtml(loc))
+				.addTo(markerLayer);
 		}
 
-		if (points.length > 0) {
+		// With an area drawn or being drawn, keep the user's chosen view; otherwise
+		// frame the current results (or fall back to the default Vancouver view).
+		if (polygon || drawing) {
+			return;
+		} else if (points.length > 0) {
 			map.fitBounds(points, { padding: [40, 40] });
 		} else {
 			map.setView(VANCOUVER, DEFAULT_ZOOM);
 		}
+	}
+
+	// --- Draw mode ------------------------------------------------------------
+
+	function startDraw() {
+		if (!L || !map) return;
+
+		drawPoints = [];
+		drawLayer = L.layerGroup().addTo(map);
+		drawLine = L.polyline([], { color: ACCENT, weight: 2, dashArray: '4 5' }).addTo(drawLayer);
+		rubberBand = L.polyline([], {
+			color: ACCENT,
+			weight: 2,
+			dashArray: '4 5',
+			opacity: 0.55
+		}).addTo(drawLayer);
+		drawDots = L.layerGroup().addTo(drawLayer);
+
+		// Double-click would otherwise zoom; we want it free for future use and to
+		// avoid surprises mid-draw.
+		map.doubleClickZoom.disable();
+		map.on('click', onDrawClick);
+		map.on('mousemove', onDrawMouseMove);
+		mapEl.classList.add('drawing');
+	}
+
+	function stopDraw() {
+		if (map) {
+			map.off('click', onDrawClick);
+			map.off('mousemove', onDrawMouseMove);
+			map.doubleClickZoom.enable();
+		}
+		mapEl?.classList.remove('drawing');
+		drawLayer?.remove();
+		drawLayer = null;
+		drawLine = null;
+		rubberBand = null;
+		drawDots = null;
+		drawPoints = [];
+	}
+
+	function redrawInProgress() {
+		if (!L || !drawLine || !drawDots) return;
+
+		drawLine.setLatLngs(drawPoints);
+
+		drawDots.clearLayers();
+		drawPoints.forEach((pt, idx) => {
+			// The first vertex is drawn larger as the visible "click here to close"
+			// target once the ring has enough points.
+			const isFirst = idx === 0;
+			L!
+				.circleMarker(pt, {
+					radius: isFirst ? 6 : 4,
+					color: ACCENT,
+					weight: 2,
+					fillColor: '#fff',
+					fillOpacity: 1,
+					interactive: false
+				})
+				.addTo(drawDots!);
+		});
+	}
+
+	function onDrawClick(e: Leaflet.LeafletMouseEvent) {
+		if (!map) return;
+
+		// Clicking on (or very near) the first vertex closes the ring.
+		if (drawPoints.length >= 3) {
+			const first = map.latLngToContainerPoint(drawPoints[0]);
+			if (first.distanceTo(e.containerPoint) <= CLOSE_TOLERANCE_PX) {
+				finishDraw();
+				return;
+			}
+		}
+
+		drawPoints.push([e.latlng.lat, e.latlng.lng]);
+		redrawInProgress();
+	}
+
+	function onDrawMouseMove(e: Leaflet.LeafletMouseEvent) {
+		if (!rubberBand) return;
+		if (drawPoints.length === 0) {
+			rubberBand.setLatLngs([]);
+			return;
+		}
+		const last = drawPoints[drawPoints.length - 1];
+		rubberBand.setLatLngs([last, [e.latlng.lat, e.latlng.lng]]);
+	}
+
+	function finishDraw() {
+		if (drawPoints.length < 3) return; // need a real polygon
+		// Commit the ring and leave draw mode. The reactive effects below tear down
+		// the in-progress layers and build the committed polygon from `polygon`.
+		polygon = drawPoints.slice();
+		drawing = false;
+	}
+
+	function onKeydown(e: KeyboardEvent) {
+		if (!drawing) return;
+		if (e.key === 'Enter') {
+			e.preventDefault();
+			finishDraw();
+		} else if (e.key === 'Escape') {
+			e.preventDefault();
+			drawing = false; // cancel; `polygon` is left untouched
+		}
+	}
+
+	// --- Committed polygon (with draggable vertices) --------------------------
+
+	function buildCommitted(poly: LatLng[] | null) {
+		if (!L || !map) return;
+
+		committedLayer?.remove();
+		committedLayer = null;
+
+		if (!poly || poly.length < 3) return;
+
+		committedLayer = L.layerGroup().addTo(map);
+
+		// `interactive: false` so the fill never swallows clicks meant for the
+		// markers beneath it.
+		const ring = poly.map((pt) => L!.latLng(pt[0], pt[1]));
+		const shape = L.polygon(ring, {
+			color: ACCENT,
+			weight: 2,
+			fillColor: ACCENT,
+			fillOpacity: 0.12,
+			interactive: false
+		}).addTo(committedLayer);
+
+		poly.forEach((pt, idx) => {
+			const handle = L!.marker(pt, { draggable: true, icon: vertexIcon!, keyboard: false });
+			handle.on('drag', () => {
+				// Live-update the shape as the handle moves (no prop write yet).
+				ring[idx] = handle.getLatLng();
+				shape.setLatLngs(ring);
+			});
+			handle.on('dragend', () => {
+				// Commit the edited ring; rebuilds this layer from the new `polygon`.
+				polygon = ring.map((p) => [p.lat, p.lng] as LatLng);
+			});
+			handle.addTo(committedLayer!);
+		});
 	}
 
 	onMount(() => {
@@ -97,6 +284,12 @@
 				shadowSize: [41, 41]
 			});
 
+			vertexIcon = L.divIcon({
+				className: 'vertex-handle',
+				iconSize: [14, 14],
+				iconAnchor: [7, 7]
+			});
+
 			// Zoom control sits bottom-left, clear of the floating search (top-left)
 			// and results (top-right) panels that overlay the full-screen map.
 			map = L.map(mapEl, { zoomControl: false }).setView(VANCOUVER, DEFAULT_ZOOM);
@@ -114,27 +307,43 @@
 
 			markerLayer = L.layerGroup().addTo(map);
 			renderMarkers();
+			ready = true;
 		})();
 
 		return () => {
 			active = false;
+			ready = false;
 			if (map) {
 				map.remove();
 				map = null;
 				markerLayer = null;
+				drawLayer = null;
+				committedLayer = null;
 			}
 		};
 	});
 
-	// Re-render markers when the `locations` prop changes after the map is ready.
+	// Re-render markers when `locations` (or draw state, which controls marker
+	// interactivity and view-fitting) changes after the map is ready.
 	$effect(() => {
-		// Reading `locations` here registers it as a dependency, so this effect
-		// re-runs (and re-renders the markers) whenever the prop changes.
-		if (locations && map && markerLayer) {
-			renderMarkers();
-		}
+		if (ready) renderMarkers();
+	});
+
+	// Enter / leave draw mode in response to the bindable `drawing` flag.
+	$effect(() => {
+		if (!ready) return;
+		if (drawing) startDraw();
+		else stopDraw();
+	});
+
+	// (Re)build the committed polygon whenever it changes — including being
+	// cleared (`null`) by the parent.
+	$effect(() => {
+		if (ready) buildCommitted(polygon);
 	});
 </script>
+
+<svelte:window onkeydown={onKeydown} />
 
 <div
 	class="map"
@@ -151,5 +360,26 @@
 
 	.map :global(.map-popup a) {
 		font-weight: 600;
+	}
+
+	/* Crosshair cursor while drawing. `mapEl` is the Leaflet container, so this
+	   override beats Leaflet's own `.leaflet-grab` cursor. */
+	:global(.leaflet-container.drawing) {
+		cursor: crosshair;
+	}
+
+	/* Draggable vertex handle for the committed polygon. */
+	.map :global(.vertex-handle) {
+		width: 14px;
+		height: 14px;
+		border-radius: 50%;
+		background: #fff;
+		border: 2px solid var(--color-accent);
+		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+		cursor: grab;
+	}
+
+	.map :global(.vertex-handle:active) {
+		cursor: grabbing;
 	}
 </style>

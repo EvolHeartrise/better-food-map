@@ -2,6 +2,7 @@
 	import { resolve } from '$app/paths';
 	import { getLocations, getTags } from '$lib/data.remote';
 	import LocationMap from '$lib/components/LocationMap.svelte';
+	import { pointInPolygon, type LatLng } from '$lib/geo';
 
 	const locations = $derived(await getLocations());
 	const allTags = $derived(await getTags());
@@ -16,6 +17,13 @@
 	let ingredient = $state('');
 	let selected = $state<string[]>([]);
 
+	// Optional geographic constraint drawn on the map: a ring of `[lat, lng]`
+	// vertices. When set, only venues inside it are shown. `drawing` mirrors the
+	// map's draw mode so the panel can show the right controls. Both are bound to
+	// <LocationMap>, which owns the actual draw interaction.
+	let area = $state<LatLng[] | null>(null);
+	let drawing = $state(false);
+
 	const currency = new Intl.NumberFormat('en-CA', { style: 'currency', currency: 'CAD' });
 
 	// One entry per location to show, paired with the menu items that matched.
@@ -26,15 +34,20 @@
 		const itemTerm = item.trim().toLowerCase();
 		const ingredientTerm = ingredient.trim().toLowerCase();
 
+		const areaPoly = area;
 		const hasItemFilter = itemTerm !== '' || ingredientTerm !== '' || selected.length > 0;
-		const anyFilter = placeTerm !== '' || hasItemFilter;
+		const anyFilter = placeTerm !== '' || hasItemFilter || areaPoly !== null;
 
-		// With every field empty, show no results — the user must search first.
+		// With every field empty and no area drawn, show no results — the user must
+		// search (or draw an area) first.
 		if (!anyFilter) return [];
 
 		const itemMatches = (menuItem: MenuItem): boolean => {
 			if (itemTerm !== '' && !menuItem.item_name.toLowerCase().includes(itemTerm)) return false;
-			if (ingredientTerm !== '' && !(menuItem.ingredients ?? '').toLowerCase().includes(ingredientTerm))
+			if (
+				ingredientTerm !== '' &&
+				!(menuItem.ingredients ?? '').toLowerCase().includes(ingredientTerm)
+			)
 				return false;
 			if (selected.length > 0) {
 				const ids = new Set<string>(menuItem.tags.map((tag) => tag.id));
@@ -45,6 +58,7 @@
 
 		const out: Array<{ loc: LocationData; items: MenuItem[] }> = [];
 		for (const loc of locations) {
+			if (areaPoly && !pointInPolygon([loc.latitude, loc.longitude], areaPoly)) continue;
 			if (placeTerm !== '' && !loc.name.toLowerCase().includes(placeTerm)) continue;
 			if (!hasItemFilter) {
 				out.push({ loc, items: [] });
@@ -61,11 +75,30 @@
 	const mapLocations = $derived(results.map((result) => result.loc));
 
 	const hasQuery = $derived(
-		place.trim() !== '' || item.trim() !== '' || ingredient.trim() !== '' || selected.length > 0
+		place.trim() !== '' ||
+			item.trim() !== '' ||
+			ingredient.trim() !== '' ||
+			selected.length > 0 ||
+			area !== null
 	);
 
 	function toggle(id: string): void {
 		selected = selected.includes(id) ? selected.filter((value) => value !== id) : [...selected, id];
+	}
+
+	// Starting a draw clears any existing area so the map shows a clean slate;
+	// <LocationMap> commits the new ring back to `area` when the user finishes.
+	function startAreaDraw(): void {
+		area = null;
+		drawing = true;
+	}
+
+	function cancelAreaDraw(): void {
+		drawing = false;
+	}
+
+	function clearArea(): void {
+		area = null;
 	}
 
 	function categoryLabel(category: LocationData['category']): string {
@@ -85,7 +118,7 @@
 
 <div class="app">
 	<div class="app__map">
-		<LocationMap locations={mapLocations} />
+		<LocationMap locations={mapLocations} bind:polygon={area} bind:drawing />
 	</div>
 
 	<aside class="panel panel--search" aria-label="Search and filters">
@@ -149,6 +182,31 @@
 						</button>
 					{/each}
 				</div>
+			</div>
+
+			<div class="field">
+				<div class="field__head">
+					<span class="field__label" id="q-area">Area</span>
+					{#if area && !drawing}
+						<button type="button" class="field__clear" onclick={clearArea}>Clear</button>
+					{/if}
+				</div>
+
+				{#if drawing}
+					<p class="area__hint">
+						Click the map to drop points. Click the first point — or press Enter — to finish. Esc
+						cancels.
+					</p>
+					<button type="button" class="area__btn" onclick={cancelAreaDraw}>Cancel drawing</button>
+				{:else if area}
+					<p class="area__status">
+						Limited to your drawn area ({area.length}
+						{area.length === 1 ? 'point' : 'points'}).
+					</p>
+					<button type="button" class="area__btn" onclick={startAreaDraw}>Redraw area</button>
+				{:else}
+					<button type="button" class="area__btn" onclick={startAreaDraw}>Draw area on map</button>
+				{/if}
 			</div>
 		</div>
 	</aside>
@@ -362,6 +420,39 @@
 	.chip--active:hover {
 		color: #fff;
 		background-color: var(--color-accent-hover);
+	}
+
+	.area__btn {
+		width: 100%;
+		padding: 0.45rem 0.7rem;
+		font-size: 0.85rem;
+		font-weight: 600;
+		color: var(--color-accent);
+		background: rgba(255, 255, 255, 0.7);
+		border: 1px solid var(--color-border);
+		border-radius: 0.6rem;
+		transition:
+			background-color 0.12s,
+			border-color 0.12s,
+			color 0.12s;
+	}
+
+	.area__btn:hover {
+		border-color: var(--color-accent);
+		background: rgba(255, 255, 255, 0.95);
+	}
+
+	.area__hint {
+		margin: 0;
+		font-size: 0.8rem;
+		line-height: 1.4;
+		color: var(--color-text-muted);
+	}
+
+	.area__status {
+		margin: 0;
+		font-size: 0.8rem;
+		color: var(--color-text);
 	}
 
 	/* Fills remaining panel height; only the list inside it scrolls, so the
