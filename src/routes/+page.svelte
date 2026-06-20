@@ -29,6 +29,9 @@
 		const hasItemFilter = itemTerm !== '' || ingredientTerm !== '' || selected.length > 0;
 		const anyFilter = placeTerm !== '' || hasItemFilter;
 
+		// With every field empty, show no results — the user must search first.
+		if (!anyFilter) return [];
+
 		const itemMatches = (menuItem: MenuItem): boolean => {
 			if (itemTerm !== '' && !menuItem.item_name.toLowerCase().includes(itemTerm)) return false;
 			if (ingredientTerm !== '' && !(menuItem.ingredients ?? '').toLowerCase().includes(ingredientTerm))
@@ -42,10 +45,6 @@
 
 		const out: Array<{ loc: LocationData; items: MenuItem[] }> = [];
 		for (const loc of locations) {
-			if (!anyFilter) {
-				out.push({ loc, items: [] });
-				continue;
-			}
 			if (placeTerm !== '' && !loc.name.toLowerCase().includes(placeTerm)) continue;
 			if (!hasItemFilter) {
 				out.push({ loc, items: [] });
@@ -60,6 +59,10 @@
 	});
 
 	const mapLocations = $derived(results.map((result) => result.loc));
+
+	const hasQuery = $derived(
+		place.trim() !== '' || item.trim() !== '' || ingredient.trim() !== '' || selected.length > 0
+	);
 
 	function toggle(id: string): void {
 		selected = selected.includes(id) ? selected.filter((value) => value !== id) : [...selected, id];
@@ -159,7 +162,13 @@
 
 			{#if results.length === 0}
 				<p class="results__empty">
-					{locations.length === 0 ? 'No places yet.' : 'No matching places.'}
+					{#if locations.length === 0}
+						No places yet.
+					{:else if hasQuery}
+						No matching places.
+					{:else}
+						Search by place, item, ingredient, or dietary tag to see results.
+					{/if}
 				</p>
 			{:else}
 				<ul class="results__list">
