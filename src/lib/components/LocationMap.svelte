@@ -39,6 +39,13 @@
 	const ACCENT = '#2f6f4f';
 	// How close (in pixels) a click must be to the first vertex to close the ring.
 	const CLOSE_TOLERANCE_PX = 14;
+	// View-fitting animation. We debounce so rapid result changes while the user is
+	// typing settle into a single smooth flight instead of jittering per keystroke.
+	const FIT_DEBOUNCE_MS = 300;
+	const FLY_DURATION = 0.6; // seconds
+	// Cap how far a fit can zoom in, so one or two close results don't slam to
+	// street level.
+	const FIT_MAX_ZOOM = 16;
 
 	let mapEl: HTMLDivElement;
 
@@ -58,6 +65,9 @@
 	// Becomes true once the map is initialised; effects below gate on it so they
 	// don't fire against a half-built map (the Leaflet import is async).
 	let ready = $state(false);
+
+	// Pending debounced view-fit (see scheduleFit).
+	let fitTimer: ReturnType<typeof setTimeout> | null = null;
 
 	// --- Drawing state (imperative; not reactive) -----------------------------
 	// Vertices clicked so far in the current draw session.
@@ -98,26 +108,58 @@
 
 		markerLayer.clearLayers();
 
-		const points: Array<[number, number]> = [];
 		for (const loc of locations) {
 			const point: [number, number] = [loc.latitude, loc.longitude];
-			points.push(point);
 			// While drawing, markers are non-interactive so clicks fall through to
 			// the map (adding vertices) instead of opening popups.
 			L.marker(point, { icon: markerIconDef, interactive: !drawing })
 				.bindPopup(popupHtml(loc))
 				.addTo(markerLayer);
 		}
+	}
 
-		// With an area drawn or being drawn, keep the user's chosen view; otherwise
-		// frame the current results (or fall back to the default Vancouver view).
-		if (polygon || drawing) {
-			return;
-		} else if (points.length > 0) {
-			map.fitBounds(points, { padding: [40, 40] });
+	// Smoothly fly the view to frame the current locations. Only suppressed while
+	// the user is actively drawing (so the map doesn't move under the cursor) — a
+	// committed area still refits as results filter in/out within it.
+	function fitToLocations() {
+		if (!L || !map || drawing) return;
+
+		const points = locations.map((loc) => [loc.latitude, loc.longitude] as [number, number]);
+
+		if (points.length > 0) {
+			// Frame the visible locations.
+			map.flyToBounds(points, {
+				padding: [40, 40],
+				maxZoom: FIT_MAX_ZOOM,
+				duration: FLY_DURATION
+			});
+		} else if (polygon && polygon.length >= 3) {
+			// An area is set but nothing matches inside it — frame the area itself so
+			// the user stays oriented to their selection.
+			map.flyToBounds(polygon, {
+				padding: [40, 40],
+				maxZoom: FIT_MAX_ZOOM,
+				duration: FLY_DURATION
+			});
 		} else {
-			map.setView(VANCOUVER, DEFAULT_ZOOM);
+			// No results and no area: return to the default city view.
+			map.flyTo(VANCOUVER, DEFAULT_ZOOM, { duration: FLY_DURATION });
 		}
+	}
+
+	// Debounce the fit: each call resets the timer, so a burst of result changes
+	// (e.g. typing a query) produces one flight once things settle. Clearing the
+	// timer here also cancels a pending fit when drawing begins.
+	function scheduleFit() {
+		if (fitTimer) {
+			clearTimeout(fitTimer);
+			fitTimer = null;
+		}
+		if (!map || drawing) return;
+		fitTimer = setTimeout(() => {
+			fitTimer = null;
+			fitToLocations();
+		}, FIT_DEBOUNCE_MS);
 	}
 
 	// --- Draw mode ------------------------------------------------------------
@@ -313,6 +355,10 @@
 		return () => {
 			active = false;
 			ready = false;
+			if (fitTimer) {
+				clearTimeout(fitTimer);
+				fitTimer = null;
+			}
 			if (map) {
 				map.remove();
 				map = null;
@@ -323,10 +369,15 @@
 		};
 	});
 
-	// Re-render markers when `locations` (or draw state, which controls marker
-	// interactivity and view-fitting) changes after the map is ready.
+	// Re-render markers and (smoothly) refit the view when `locations` change after
+	// the map is ready. Markers update instantly; the fit is debounced/animated.
+	// Reads `drawing` too (via both functions), so toggling draw mode re-runs this:
+	// markers update interactivity and any pending fit is cancelled while drawing.
+	// `polygon` changes flow through `locations` (the parent re-filters results).
 	$effect(() => {
-		if (ready) renderMarkers();
+		if (!ready) return;
+		renderMarkers();
+		scheduleFit();
 	});
 
 	// Enter / leave draw mode in response to the bindable `drawing` flag.
