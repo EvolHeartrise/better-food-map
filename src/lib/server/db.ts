@@ -176,6 +176,21 @@ const selectLocationTags = db.query<{ location_id: string; id: TagId; label: str
 	 ORDER BY f.location_id, t.rowid`
 );
 
+// Every menu item across all locations, for building full menus in bulk.
+const selectAllFood = db.query<FoodRow, []>(
+	`SELECT id, location_id, item_name, description, ingredients, price
+	 FROM food
+	 ORDER BY location_id, item_name`
+);
+
+// Every (food, tag) pair across the whole database, for the bulk menu build.
+const selectAllFoodTags = db.query<{ food_id: string; id: TagId; label: string }, []>(
+	`SELECT ft.food_id AS food_id, t.id AS id, t.label AS label
+	 FROM food_tags ft
+	 JOIN tags t ON t.id = ft.tag_id
+	 ORDER BY t.rowid`
+);
+
 const insertLocationStmt = db.query<
 	unknown,
 	[string, string, string | null, number, number, string | null, string | null, string | null]
@@ -240,6 +255,33 @@ export function getLocationsWithTags(): LocationWithTags[] {
 	}
 
 	return locations.map((loc) => ({ ...loc, tags: tagsByLocation.get(loc.id) ?? [] }));
+}
+
+/**
+ * Returns every location merged with its full `menu` (each menu item carries its
+ * own dietary tags). Built in bulk to avoid an N+1 query per location. Used by
+ * the map page to render markers and per-location matching-item lists.
+ */
+export function getLocationsWithMenus(): LocationWithMenu[] {
+	const locations = selectAllLocations.all();
+	const foodRows = selectAllFood.all();
+	const tagRows = selectAllFoodTags.all();
+
+	const tagsByFood = new Map<string, Tag[]>();
+	for (const row of tagRows) {
+		const list = tagsByFood.get(row.food_id) ?? [];
+		list.push({ id: row.id, label: row.label });
+		tagsByFood.set(row.food_id, list);
+	}
+
+	const menuByLocation = new Map<string, Food[]>();
+	for (const row of foodRows) {
+		const list = menuByLocation.get(row.location_id) ?? [];
+		list.push({ ...row, tags: tagsByFood.get(row.id) ?? [] });
+		menuByLocation.set(row.location_id, list);
+	}
+
+	return locations.map((loc) => ({ ...loc, menu: menuByLocation.get(loc.id) ?? [] }));
 }
 
 export function getLocationById(id: string): Location | null {

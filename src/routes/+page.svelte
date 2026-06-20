@@ -6,31 +6,66 @@
 	const locations = $derived(await getLocations());
 	const allTags = $derived(await getTags());
 
-	// Selected dietary tag ids. A place matches when its menu offers ALL of them.
-	let selected = $state<string[]>([]);
-	// Free-text query matched against name + address (data is already client-side).
-	let search = $state('');
+	type LocationData = (typeof locations)[number];
+	type MenuItem = LocationData['menu'][number];
 
-	const filtered = $derived.by(() => {
-		const term = search.trim().toLowerCase();
-		return locations.filter((loc) => {
+	// Four independent inputs. `place` filters venues by name; `item`, `ingredient`
+	// and the dietary `selected` tags filter menu items. They combine with AND.
+	let place = $state('');
+	let item = $state('');
+	let ingredient = $state('');
+	let selected = $state<string[]>([]);
+
+	const currency = new Intl.NumberFormat('en-CA', { style: 'currency', currency: 'CAD' });
+
+	// One entry per location to show, paired with the menu items that matched.
+	// Item-level inputs drive the per-card list; with none active, `items` is
+	// empty and the card shows no list (the Place box just narrows venues).
+	const results = $derived.by(() => {
+		const placeTerm = place.trim().toLowerCase();
+		const itemTerm = item.trim().toLowerCase();
+		const ingredientTerm = ingredient.trim().toLowerCase();
+
+		const hasItemFilter = itemTerm !== '' || ingredientTerm !== '' || selected.length > 0;
+		const anyFilter = placeTerm !== '' || hasItemFilter;
+
+		const itemMatches = (menuItem: MenuItem): boolean => {
+			if (itemTerm !== '' && !menuItem.item_name.toLowerCase().includes(itemTerm)) return false;
+			if (ingredientTerm !== '' && !(menuItem.ingredients ?? '').toLowerCase().includes(ingredientTerm))
+				return false;
 			if (selected.length > 0) {
-				const have = new Set<string>(loc.tags.map((tag) => tag.id));
-				if (!selected.every((id) => have.has(id))) return false;
-			}
-			if (term) {
-				const haystack = `${loc.name} ${loc.address ?? ''}`.toLowerCase();
-				if (!haystack.includes(term)) return false;
+				const ids = new Set<string>(menuItem.tags.map((tag) => tag.id));
+				if (!selected.every((id) => ids.has(id))) return false;
 			}
 			return true;
-		});
+		};
+
+		const out: Array<{ loc: LocationData; items: MenuItem[] }> = [];
+		for (const loc of locations) {
+			if (!anyFilter) {
+				out.push({ loc, items: [] });
+				continue;
+			}
+			if (placeTerm !== '' && !loc.name.toLowerCase().includes(placeTerm)) continue;
+			if (!hasItemFilter) {
+				out.push({ loc, items: [] });
+				continue;
+			}
+			const items = loc.menu.filter(itemMatches);
+			if (items.length > 0) {
+				out.push({ loc, items });
+			}
+		}
+		return out;
 	});
+
+	const mapLocations = $derived(results.map((result) => result.loc));
 
 	function toggle(id: string): void {
 		selected = selected.includes(id) ? selected.filter((value) => value !== id) : [...selected, id];
 	}
 
-	function categoryLabel(category: (typeof locations)[number]['category']): string {
+	function categoryLabel(category: LocationData['category']): string {
 		if (!category) return '';
 		if (category === 'fast_food') return 'Fast food';
 		return category.charAt(0).toUpperCase() + category.slice(1);
@@ -47,65 +82,88 @@
 
 <div class="app">
 	<div class="app__map">
-		<LocationMap locations={filtered} />
+		<LocationMap locations={mapLocations} />
 	</div>
 
-	<aside class="panel" aria-label="Places and filters">
+	<aside class="panel panel--search" aria-label="Search and filters">
 		<header class="panel__brand">
 			<a class="panel__title" href={resolve('/')}>Better Food Map</a>
 		</header>
 
-		<div class="search">
-			<svg class="search__icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-				<circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2" />
-				<path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-			</svg>
-			<input
-				class="search__input"
-				type="search"
-				placeholder="Search places…"
-				bind:value={search}
-				aria-label="Search places by name or address"
-			/>
+		<div class="controls">
+			<div class="field">
+				<label class="field__label" for="q-place">Place</label>
+				<input
+					id="q-place"
+					class="field__input"
+					type="search"
+					placeholder="Place name…"
+					bind:value={place}
+				/>
+			</div>
+
+			<div class="field">
+				<label class="field__label" for="q-item">Item</label>
+				<input
+					id="q-item"
+					class="field__input"
+					type="search"
+					placeholder="Item name…"
+					bind:value={item}
+				/>
+			</div>
+
+			<div class="field">
+				<label class="field__label" for="q-ingredient">Ingredient</label>
+				<input
+					id="q-ingredient"
+					class="field__input"
+					type="search"
+					placeholder="Ingredient…"
+					bind:value={ingredient}
+				/>
+			</div>
+
+			<div class="field">
+				<div class="field__head">
+					<span class="field__label" id="q-dietary">Dietary</span>
+					{#if selected.length > 0}
+						<button type="button" class="field__clear" onclick={() => (selected = [])}>
+							Clear
+						</button>
+					{/if}
+				</div>
+				<div class="chips" role="group" aria-labelledby="q-dietary">
+					{#each allTags as tag (tag.id)}
+						<button
+							type="button"
+							class="chip"
+							class:chip--active={selected.includes(tag.id)}
+							aria-pressed={selected.includes(tag.id)}
+							onclick={() => toggle(tag.id)}
+						>
+							{tag.label}
+						</button>
+					{/each}
+				</div>
+			</div>
 		</div>
+	</aside>
 
-		<section class="filters" aria-label="Filter by dietary tag">
-			<div class="filters__head">
-				<span class="filters__title">Dietary</span>
-				{#if selected.length > 0}
-					<button type="button" class="filters__clear" onclick={() => (selected = [])}>
-						Clear
-					</button>
-				{/if}
-			</div>
-			<div class="filters__chips">
-				{#each allTags as tag (tag.id)}
-					<button
-						type="button"
-						class="chip"
-						class:chip--active={selected.includes(tag.id)}
-						aria-pressed={selected.includes(tag.id)}
-						onclick={() => toggle(tag.id)}
-					>
-						{tag.label}
-					</button>
-				{/each}
-			</div>
-		</section>
-
-		<section class="results" aria-label="Matching places">
+	<aside class="panel panel--results" aria-label="Matching places">
+		<section class="results">
 			<p class="results__count">
-				{filtered.length}
-				{filtered.length === 1 ? 'place' : 'places'}
+				{results.length}
+				{results.length === 1 ? 'place' : 'places'}
 			</p>
 
-			{#if filtered.length === 0}
+			{#if results.length === 0}
 				<p class="results__empty">
-					{locations.length === 0 ? 'No places yet.' : 'No places match your filters.'}
+					{locations.length === 0 ? 'No places yet.' : 'No matching places.'}
 				</p>
 			{:else}
 				<ul class="results__list">
-					{#each filtered as loc (loc.id)}
+					{#each results as { loc, items } (loc.id)}
 						{@const label = categoryLabel(loc.category)}
 						<li>
 							<a class="card" href={resolve('/locations/[id]', { id: loc.id })}>
@@ -116,10 +174,15 @@
 								{#if loc.address}
 									<span class="card__address">{loc.address}</span>
 								{/if}
-								{#if loc.tags.length > 0}
-									<ul class="card__tags">
-										{#each loc.tags as tag (tag.id)}
-											<li class="card__tag">{tag.label}</li>
+								{#if items.length > 0}
+									<ul class="card__items">
+										{#each items as menuItem (menuItem.id)}
+											<li class="card__item">
+												<span class="card__item-name">{menuItem.item_name}</span>
+												{#if menuItem.price !== null}
+													<span class="card__item-price">{currency.format(menuItem.price)}</span>
+												{/if}
+											</li>
 										{/each}
 									</ul>
 								{/if}
@@ -147,13 +210,12 @@
 		z-index: 0;
 	}
 
+	/* Both panels are top-aligned and float over the map: search on the left,
+	   results on the right. Each is capped to the viewport so it never overflows. */
 	.panel {
 		position: absolute;
 		z-index: 10;
 		top: 1rem;
-		left: 1rem;
-		bottom: 1rem;
-		width: min(22rem, calc(100vw - 2rem));
 		display: flex;
 		flex-direction: column;
 		gap: 0.85rem;
@@ -164,6 +226,19 @@
 		-webkit-backdrop-filter: blur(16px) saturate(180%);
 		border: 1px solid rgba(255, 255, 255, 0.6);
 		box-shadow: 0 8px 30px rgba(0, 0, 0, 0.16);
+		max-height: calc(100dvh - 2rem);
+	}
+
+	.panel--search {
+		left: 1rem;
+		width: min(20rem, calc(100vw - 2rem));
+		overflow-y: auto;
+	}
+
+	.panel--results {
+		right: 1rem;
+		width: min(22rem, calc(100vw - 2rem));
+		/* The list inside scrolls; the panel itself is clipped. */
 		overflow: hidden;
 	}
 
@@ -184,59 +259,54 @@
 		color: var(--color-accent);
 	}
 
-	.search {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		padding: 0.5rem 0.75rem;
-		background: rgba(255, 255, 255, 0.7);
-		border: 1px solid var(--color-border);
-		border-radius: 0.7rem;
-	}
-
-	.search:focus-within {
-		border-color: var(--color-accent);
-	}
-
-	.search__icon {
-		width: 1.05rem;
-		height: 1.05rem;
-		color: var(--color-text-muted);
-		flex-shrink: 0;
-	}
-
-	.search__input {
-		flex: 1;
-		min-width: 0;
-		border: none;
-		background: none;
-		font: inherit;
-		color: var(--color-text);
-		outline: none;
-	}
-
-	.filters {
+	.controls {
 		display: flex;
 		flex-direction: column;
-		gap: 0.5rem;
+		gap: 0.6rem;
 	}
 
-	.filters__head {
+	.field {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+
+	.field__head {
 		display: flex;
 		align-items: baseline;
 		justify-content: space-between;
 		gap: 1rem;
 	}
 
-	.filters__title {
-		font-size: 0.75rem;
+	.field__label {
+		font-size: 0.7rem;
 		font-weight: 700;
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
 		color: var(--color-text-muted);
 	}
 
-	.filters__clear {
+	.field__input {
+		width: 100%;
+		padding: 0.45rem 0.7rem;
+		font: inherit;
+		font-size: 0.9rem;
+		color: var(--color-text);
+		background: rgba(255, 255, 255, 0.7);
+		border: 1px solid var(--color-border);
+		border-radius: 0.6rem;
+		outline: none;
+	}
+
+	.field__input::placeholder {
+		color: var(--color-text-muted);
+	}
+
+	.field__input:focus {
+		border-color: var(--color-accent);
+	}
+
+	.field__clear {
 		background: none;
 		border: none;
 		color: var(--color-accent);
@@ -245,11 +315,11 @@
 		padding: 0;
 	}
 
-	.filters__clear:hover {
+	.field__clear:hover {
 		text-decoration: underline;
 	}
 
-	.filters__chips {
+	.chips {
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.4rem;
@@ -355,34 +425,49 @@
 		color: var(--color-text-muted);
 	}
 
-	.card__tags {
+	.card__items {
 		list-style: none;
+		margin: 0.45rem 0 0;
+		padding: 0.45rem 0 0;
+		border-top: 1px solid rgba(0, 0, 0, 0.08);
 		display: flex;
-		flex-wrap: wrap;
-		gap: 0.3rem;
-		margin: 0.35rem 0 0;
-		padding: 0;
+		flex-direction: column;
+		gap: 0.2rem;
 	}
 
-	.card__tag {
-		font-size: 0.7rem;
-		font-weight: 600;
-		color: var(--color-accent);
-		background-color: color-mix(in srgb, var(--color-accent) 12%, #fff);
-		border: 1px solid color-mix(in srgb, var(--color-accent) 35%, #fff);
-		border-radius: 999px;
-		padding: 0.05rem 0.5rem;
+	.card__item {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		gap: 0.75rem;
+		font-size: 0.8rem;
 	}
 
-	/* On narrow screens the sidebar becomes a bottom panel over the map. */
-	@media (max-width: 40rem) {
-		.panel {
-			top: auto;
-			left: 0.5rem;
-			right: 0.5rem;
-			bottom: 0.5rem;
+	.card__item-name {
+		color: var(--color-text);
+	}
+
+	.card__item-price {
+		color: var(--color-text-muted);
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
+	}
+
+	/* Below ~48rem the two side panels can't sit abreast, so stack them:
+	   search across the top, results as a bottom sheet. */
+	@media (max-width: 48rem) {
+		.panel--search {
+			right: 1rem;
 			width: auto;
-			max-height: 55dvh;
+		}
+
+		.panel--results {
+			top: auto;
+			bottom: 1rem;
+			left: 1rem;
+			right: 1rem;
+			width: auto;
+			max-height: 45dvh;
 		}
 	}
 </style>
