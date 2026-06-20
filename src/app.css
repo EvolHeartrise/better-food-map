@@ -7,7 +7,6 @@
 	--color-accent: #2f6f4f;
 	--color-accent-hover: #245a40;
 
-	--header-height: 3.5rem;
 	--container-width: 72rem;
 	--radius: 0.5rem;
 	--shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
@@ -66,40 +65,6 @@ button {
 img {
 	max-width: 100%;
 	display: block;
-}
-
-.app-header {
-	position: sticky;
-	top: 0;
-	z-index: 1000;
-	height: var(--header-height);
-	display: flex;
-	align-items: center;
-	background-color: var(--color-surface);
-	border-bottom: 1px solid var(--color-border);
-	box-shadow: var(--shadow-sm);
-}
-
-.app-header__inner {
-	width: 100%;
-	max-width: var(--container-width);
-	margin: 0 auto;
-	padding: 0 1.25rem;
-	display: flex;
-	align-items: center;
-	gap: 1rem;
-}
-
-.app-header__brand {
-	font-size: 1.125rem;
-	font-weight: 700;
-	color: var(--color-text);
-	letter-spacing: -0.01em;
-}
-
-.app-header__brand:hover {
-	text-decoration: none;
-	color: var(--color-accent);
 }
 
 main {
