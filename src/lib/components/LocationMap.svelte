@@ -5,9 +5,17 @@
 	import markerShadow from 'leaflet/dist/images/marker-shadow.png';
 	import { onMount } from 'svelte';
 	import type * as Leaflet from 'leaflet';
-	import { getLocations } from '$lib/data.remote';
 
-	type Location = Awaited<ReturnType<typeof getLocations>>[number];
+	// Only the fields the map actually needs. Kept structural (rather than derived
+	// from a remote's return type) so any location-shaped object can be passed in.
+	type Location = {
+		id: string;
+		name: string;
+		category: 'cafe' | 'fast_food' | 'restaurant' | null;
+		latitude: number;
+		longitude: number;
+		address: string | null;
+	};
 
 	let { locations }: { locations: Location[] } = $props();
 
@@ -89,10 +97,10 @@
 				shadowSize: [41, 41]
 			});
 
-			// Zoom control is moved to the top-right so it never sits beneath the
-			// frosted sidebar that floats over the top-left of the full-screen map.
+			// Zoom control sits bottom-left, clear of the floating search (top-left)
+			// and results (top-right) panels that overlay the full-screen map.
 			map = L.map(mapEl, { zoomControl: false }).setView(VANCOUVER, DEFAULT_ZOOM);
-			L.control.zoom({ position: 'topright' }).addTo(map);
+			L.control.zoom({ position: 'bottomleft' }).addTo(map);
 
 			// Drop the optional "Leaflet" prefix; the OpenStreetMap credit below is
 			// kept because the OSM tile policy / ODbL require attribution.
