@@ -94,6 +94,10 @@
 			map = L.map(mapEl, { zoomControl: false }).setView(VANCOUVER, DEFAULT_ZOOM);
 			L.control.zoom({ position: 'topright' }).addTo(map);
 
+			// Drop the optional "Leaflet" prefix; the OpenStreetMap credit below is
+			// kept because the OSM tile policy / ODbL require attribution.
+			map.attributionControl.setPrefix(false);
+
 			L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 				attribution:
 					'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',

@@ -53,7 +53,6 @@
 	<aside class="panel" aria-label="Places and filters">
 		<header class="panel__brand">
 			<a class="panel__title" href={resolve('/')}>Better Food Map</a>
-			<p class="panel__subtitle">Cafes, fast food &amp; restaurants in Vancouver</p>
 		</header>
 
 		<div class="search">
@@ -183,12 +182,6 @@
 	.panel__title:hover {
 		text-decoration: none;
 		color: var(--color-accent);
-	}
-
-	.panel__subtitle {
-		margin: 0.1rem 0 0;
-		font-size: 0.8rem;
-		color: var(--color-text-muted);
 	}
 
 	.search {
