@@ -30,7 +30,6 @@ import {
 	getFoodById,
 	getAllTags,
 	insertLocation,
-	insertFood,
 	insertFoods,
 	updateLocation,
 	deleteLocation,
@@ -147,9 +146,9 @@ const updateLocationArgs = v.object({
 	sources: updateSourcesSchema
 });
 
-// The fields of a single menu item, minus location_id. Shared by create_food
-// (which adds location_id) and create_foods (location_id is given once per batch).
-const foodItemFields = {
+// One menu item within a create_foods batch. location_id is given once for the
+// whole batch, so it isn't repeated per item.
+const foodItemSchema = v.object({
 	item_name: v.pipe(v.string(), v.minLength(1), v.description('Name of the menu item.')),
 	description: v.optional(v.nullable(v.string())),
 	ingredients: v.optional(v.nullable(v.string())),
@@ -159,17 +158,6 @@ const foodItemFields = {
 	),
 	sources: createSourcesSchema,
 	id: v.optional(v.pipe(v.string(), v.minLength(1)))
-};
-
-const foodItemSchema = v.object(foodItemFields);
-
-const createFoodArgs = v.object({
-	location_id: v.pipe(
-		v.string(),
-		v.minLength(1),
-		v.description('Id of the location this item belongs to.')
-	),
-	...foodItemFields
 });
 
 const createFoodsArgs = v.object({
@@ -392,33 +380,11 @@ const tools = [
 		handler: ({ id }) => getFoodById(id)
 	}),
 	defineTool({
-		name: 'create_food',
-		description:
-			'Create a menu item under a location, optionally with dietary tags and source URLs. Strongly encouraged: include `sources` documenting where the item data came from. Returns the created item (with tags and sources).',
-		schema: createFoodArgs,
-		handler: (input) => {
-			if (!getLocationById(input.location_id)) {
-				throw new Error(`No location with id "${input.location_id}".`);
-			}
-			const id = insertFood({
-				id: input.id,
-				location_id: input.location_id,
-				item_name: input.item_name,
-				description: input.description ?? null,
-				ingredients: input.ingredients ?? null,
-				price: input.price ?? null,
-				tags: input.tags,
-				sources: normalizeSources(input.sources)
-			});
-			return getFoodById(id);
-		}
-	}),
-	defineTool({
 		name: 'create_foods',
 		description:
-			'Batch-create many menu items under one location in a single transaction (all-or-nothing): ' +
-			'if any item is invalid, none are written. Prefer this over repeated create_food when adding a ' +
-			'whole menu. Returns the created items (each with tags and sources).',
+			'Create one or more menu items under a location in a single transaction (all-or-nothing): ' +
+			'if any item is invalid, none are written. This is the only way to add menu items — pass a ' +
+			'one-element `items` array to add a single item. Returns the created items (each with tags and sources).',
 		schema: createFoodsArgs,
 		handler: (input) => {
 			if (!getLocationById(input.location_id)) {
