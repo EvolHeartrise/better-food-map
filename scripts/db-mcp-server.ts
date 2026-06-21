@@ -1,6 +1,6 @@
 /// <reference types="bun-types" />
 /**
- * Model Context Protocol server for the Vancouver food-map database.
+ * Model Context Protocol server for the food-map database.
  *
  * Exposes CRUD tools over `data/food.db` so an MCP client (e.g. Claude Code)
  * can read and mutate locations and menu items directly via tool calls. This is

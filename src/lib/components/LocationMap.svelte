@@ -49,7 +49,9 @@
 		obstacles?: HTMLElement[];
 	} = $props();
 
-	const VANCOUVER: [number, number] = [49.2827, -123.1207];
+	// Fallback map center used before any results load — just a sensible starting
+	// view, not tied to any particular city.
+	const DEFAULT_CENTER: [number, number] = [49.2827, -123.1207];
 	const DEFAULT_ZOOM = 12;
 	// Matches --color-accent; Leaflet path strokes/fills need a concrete colour.
 	const ACCENT = '#2f6f4f';
@@ -242,8 +244,8 @@
 				duration: FLY_DURATION
 			});
 		} else {
-			// No results and no area: return to the default city view.
-			map.flyTo(VANCOUVER, DEFAULT_ZOOM, { duration: FLY_DURATION });
+			// No results and no area: return to the default view.
+			map.flyTo(DEFAULT_CENTER, DEFAULT_ZOOM, { duration: FLY_DURATION });
 		}
 	}
 
@@ -419,7 +421,7 @@
 
 			// Zoom control sits bottom-left, clear of the floating search (top-left)
 			// and results (top-right) panels that overlay the full-screen map.
-			map = L.map(mapEl, { zoomControl: false }).setView(VANCOUVER, DEFAULT_ZOOM);
+			map = L.map(mapEl, { zoomControl: false }).setView(DEFAULT_CENTER, DEFAULT_ZOOM);
 			L.control.zoom({ position: 'bottomleft' }).addTo(map);
 
 			// Drop the optional "Leaflet" prefix; the OpenStreetMap credit below is
