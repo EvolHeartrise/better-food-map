@@ -43,13 +43,57 @@ You can preview the production build with `npm run preview`.
 
 ## Database
 
-Data lives in a local SQLite file at `data/food.db` (gitignored). The schema and
-data-access layer are in `src/lib/server/db.ts`.
+Data lives in a **Cloudflare D1** database (serverless SQLite). The schema is in
+`migrations/0001_init.sql`; the data-access layer in `src/lib/server/db.ts` is
+runtime-agnostic — every function is async and takes a D1 handle, so the same
+code runs against either the Worker's `platform.env.DB` binding (the deployed
+app) or the HTTP-backed client in `src/lib/server/d1-http.ts` (local tooling).
+
+The deployed site reads D1 through its binding via the remote functions in
+`src/lib/data.remote.ts`.
 
 Read and write data through the **MCP server** (`scripts/db-mcp-server.ts`) — a
 stdio Model Context Protocol server registered in `.mcp.json` as `food-db`. It
 exposes CRUD tools (`list_locations`, `create_location`, `update_food`,
 `delete_location`, `query_sql`, …) so an MCP client like Claude Code can read and
-mutate the database directly via tool calls. Run it standalone with
-`bun run db:mcp`. Inputs are validated with valibot, and the JSON Schema
-advertised to clients is generated from those same schemas.
+mutate the database directly via tool calls. It now talks to the **same
+production D1** the live site reads, over the D1 REST API, so edits go live
+immediately. Run it standalone with `bun run db:mcp`. It needs D1 credentials in
+`.env` (see `.env.example`). Inputs are validated with valibot, and the JSON
+Schema advertised to clients is generated from those same schemas.
+
+The legacy `data/food.db` SQLite file (gitignored) is no longer used at runtime;
+it is only the source for the one-shot seed (`bun run db:seed`).
+
+## Deploying to Cloudflare
+
+The app deploys to **Cloudflare Workers** (Static Assets) via
+`@sveltejs/adapter-cloudflare`; config is in `wrangler.jsonc`.
+
+One-time setup:
+
+```sh
+# 1. Authenticate wrangler (interactive — run yourself):
+#    bunx wrangler login
+
+# 2. Create the D1 database, then paste the printed database_id into
+#    wrangler.jsonc (d1_databases[0].database_id):
+bunx wrangler d1 create better-food-map
+
+# 3. Create the schema (and seed the canonical tags) on the remote D1:
+bun run d1:migrate            # wrangler d1 migrations apply … --remote
+
+# 4. Copy .env.example to .env and fill in CLOUDFLARE_ACCOUNT_ID,
+#    CLOUDFLARE_DATABASE_ID, and a CLOUDFLARE_API_TOKEN (D1 Edit permission).
+
+# 5. One-shot import of existing rows from data/food.db into D1:
+bun run db:seed
+```
+
+Deploy:
+
+- **Git-connected CI (recommended):** connect the repo in the Cloudflare
+  dashboard (Workers → Builds). Build command `bun run build`, deploy via
+  `wrangler deploy` (reads `wrangler.jsonc`). Note: Workers Builds does not apply
+  D1 migrations — run `bun run d1:migrate` yourself when you add a migration.
+- **Manual:** `bun run deploy` (builds, then `wrangler deploy`).
