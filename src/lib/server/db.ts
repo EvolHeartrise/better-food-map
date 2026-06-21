@@ -6,15 +6,31 @@ import { mkdirSync } from 'node:fs';
 // Types (STABLE CONTRACT — other agents depend on these exact names)
 // ---------------------------------------------------------------------------
 
-export type Category = 'cafe' | 'fast_food' | 'restaurant';
+export type Category = 'cafe' | 'fast_food' | 'restaurant' | 'bakery';
 
-// Canonical dietary tag identifiers. App-defined and fixed — tags are NOT
-// user-authored, so this union is the single source of truth.
-export type TagId = 'vegan' | 'vegetarian' | 'gluten_free' | 'dairy_free' | 'nut_free' | 'halal';
+// Canonical tag identifiers. App-defined and fixed — tags are NOT user-authored,
+// so this union is the single source of truth.
+export type TagId =
+	| 'vegan'
+	| 'vegetarian'
+	| 'gluten_free'
+	| 'dairy_free'
+	| 'nut_free'
+	| 'halal'
+	| 'dessert'
+	| 'drink';
+
+/**
+ * What a tag describes. `dietary` tags (vegan, halal, …) are source-asserted —
+ * only applied when a source explicitly designates the item. `course` tags
+ * (dessert, drink) describe what kind of item it is and are applied factually.
+ */
+export type TagKind = 'dietary' | 'course';
 
 export interface Tag {
 	id: TagId;
 	label: string;
+	kind: TagKind;
 }
 
 /**
@@ -65,14 +81,17 @@ export interface LocationWithTags extends Location {
 }
 
 // The canonical tag list. Order here is the display/filter order on the
-// frontend. Tags are app-defined, never created from the UI.
+// frontend (dietary tags first, then course tags). Tags are app-defined, never
+// created from the UI.
 export const TAGS: readonly Tag[] = [
-	{ id: 'vegan', label: 'Vegan' },
-	{ id: 'vegetarian', label: 'Vegetarian' },
-	{ id: 'gluten_free', label: 'Gluten-free' },
-	{ id: 'dairy_free', label: 'Dairy-free' },
-	{ id: 'nut_free', label: 'Nut-free' },
-	{ id: 'halal', label: 'Halal' }
+	{ id: 'vegan', label: 'Vegan', kind: 'dietary' },
+	{ id: 'vegetarian', label: 'Vegetarian', kind: 'dietary' },
+	{ id: 'gluten_free', label: 'Gluten-free', kind: 'dietary' },
+	{ id: 'dairy_free', label: 'Dairy-free', kind: 'dietary' },
+	{ id: 'nut_free', label: 'Nut-free', kind: 'dietary' },
+	{ id: 'halal', label: 'Halal', kind: 'dietary' },
+	{ id: 'dessert', label: 'Dessert', kind: 'course' },
+	{ id: 'drink', label: 'Drink', kind: 'course' }
 ];
 
 /** Internal raw shape of a `food` row before its tags and sources are attached. */
@@ -137,7 +156,8 @@ db.exec(`
 
 	CREATE TABLE IF NOT EXISTS tags (
 		id TEXT PRIMARY KEY,
-		label TEXT NOT NULL
+		label TEXT NOT NULL,
+		kind TEXT NOT NULL DEFAULT 'dietary'
 	);
 
 	CREATE TABLE IF NOT EXISTS food_tags (
@@ -181,14 +201,25 @@ if (!hasDescription) {
 	db.exec(`ALTER TABLE food ADD COLUMN description TEXT`);
 }
 
+// Migration: `kind` was added to `tags` after the table first shipped, so
+// CREATE TABLE IF NOT EXISTS won't add it to pre-existing databases. Backfill it
+// with the 'dietary' default; the upsert below then sets the correct kind.
+const hasTagKind = db
+	.query<{ name: string }, []>(`PRAGMA table_info(tags)`)
+	.all()
+	.some((col) => col.name === 'kind');
+if (!hasTagKind) {
+	db.exec(`ALTER TABLE tags ADD COLUMN kind TEXT NOT NULL DEFAULT 'dietary'`);
+}
+
 // The canonical tags are part of the app contract (not user data), so make sure
-// they exist on every startup. Idempotent: re-running keeps labels in sync.
-const upsertTagStmt = db.query<unknown, [string, string]>(
-	`INSERT INTO tags (id, label) VALUES (?, ?)
-	 ON CONFLICT(id) DO UPDATE SET label = excluded.label`
+// they exist on every startup. Idempotent: re-running keeps labels and kinds in sync.
+const upsertTagStmt = db.query<unknown, [string, string, string]>(
+	`INSERT INTO tags (id, label, kind) VALUES (?, ?, ?)
+	 ON CONFLICT(id) DO UPDATE SET label = excluded.label, kind = excluded.kind`
 );
 for (const tag of TAGS) {
-	upsertTagStmt.run(tag.id, tag.label);
+	upsertTagStmt.run(tag.id, tag.label, tag.kind);
 }
 
 // ---------------------------------------------------------------------------
@@ -215,8 +246,11 @@ const selectFoodByLocation = db.query<FoodRow, [string]>(
 );
 
 // Tags for every menu item at a location, one row per (food, tag) pair.
-const selectTagsByLocation = db.query<{ food_id: string; id: TagId; label: string }, [string]>(
-	`SELECT ft.food_id AS food_id, t.id AS id, t.label AS label
+const selectTagsByLocation = db.query<
+	{ food_id: string; id: TagId; label: string; kind: TagKind },
+	[string]
+>(
+	`SELECT ft.food_id AS food_id, t.id AS id, t.label AS label, t.kind AS kind
 	 FROM food_tags ft
 	 JOIN tags t ON t.id = ft.tag_id
 	 JOIN food f ON f.id = ft.food_id
@@ -225,8 +259,11 @@ const selectTagsByLocation = db.query<{ food_id: string; id: TagId; label: strin
 );
 
 // Distinct tags offered across each location's whole menu (for list/map filters).
-const selectLocationTags = db.query<{ location_id: string; id: TagId; label: string }, []>(
-	`SELECT DISTINCT f.location_id AS location_id, t.id AS id, t.label AS label
+const selectLocationTags = db.query<
+	{ location_id: string; id: TagId; label: string; kind: TagKind },
+	[]
+>(
+	`SELECT DISTINCT f.location_id AS location_id, t.id AS id, t.label AS label, t.kind AS kind
 	 FROM food f
 	 JOIN food_tags ft ON ft.food_id = f.id
 	 JOIN tags t ON t.id = ft.tag_id
@@ -241,8 +278,11 @@ const selectAllFood = db.query<FoodRow, []>(
 );
 
 // Every (food, tag) pair across the whole database, for the bulk menu build.
-const selectAllFoodTags = db.query<{ food_id: string; id: TagId; label: string }, []>(
-	`SELECT ft.food_id AS food_id, t.id AS id, t.label AS label
+const selectAllFoodTags = db.query<
+	{ food_id: string; id: TagId; label: string; kind: TagKind },
+	[]
+>(
+	`SELECT ft.food_id AS food_id, t.id AS id, t.label AS label, t.kind AS kind
 	 FROM food_tags ft
 	 JOIN tags t ON t.id = ft.tag_id
 	 ORDER BY t.rowid`
@@ -274,8 +314,8 @@ const selectFoodById = db.query<FoodRow, [string]>(
 	 WHERE id = ?`
 );
 
-const selectTagsByFood = db.query<{ id: TagId; label: string }, [string]>(
-	`SELECT t.id AS id, t.label AS label
+const selectTagsByFood = db.query<{ id: TagId; label: string; kind: TagKind }, [string]>(
+	`SELECT t.id AS id, t.label AS label, t.kind AS kind
 	 FROM food_tags ft
 	 JOIN tags t ON t.id = ft.tag_id
 	 WHERE ft.food_id = ?
@@ -356,7 +396,7 @@ export function getLocationsWithTags(): LocationWithTags[] {
 	const tagsByLocation = new Map<string, Tag[]>();
 	for (const row of tagRows) {
 		const list = tagsByLocation.get(row.location_id) ?? [];
-		list.push({ id: row.id, label: row.label });
+		list.push({ id: row.id, label: row.label, kind: row.kind });
 		tagsByLocation.set(row.location_id, list);
 	}
 
@@ -382,7 +422,7 @@ export function getLocationsWithMenus(): LocationWithMenu[] {
 	const tagsByFood = new Map<string, Tag[]>();
 	for (const row of tagRows) {
 		const list = tagsByFood.get(row.food_id) ?? [];
-		list.push({ id: row.id, label: row.label });
+		list.push({ id: row.id, label: row.label, kind: row.kind });
 		tagsByFood.set(row.food_id, list);
 	}
 
@@ -418,7 +458,7 @@ export function getFoodByLocation(locationId: string): Food[] {
 	const tagsByFood = new Map<string, Tag[]>();
 	for (const row of tagRows) {
 		const list = tagsByFood.get(row.food_id) ?? [];
-		list.push({ id: row.id, label: row.label });
+		list.push({ id: row.id, label: row.label, kind: row.kind });
 		tagsByFood.set(row.food_id, list);
 	}
 
@@ -449,14 +489,15 @@ export function insertLocation(
 	return id;
 }
 
-export function insertFood(
-	item: Omit<Food, 'id' | 'tags' | 'description' | 'sources'> & {
-		id?: string;
-		description?: string | null;
-		tags?: TagId[];
-		sources?: Source[];
-	}
-): string {
+/** Arguments accepted by {@link insertFood} / {@link insertFoods}. */
+export type FoodInsert = Omit<Food, 'id' | 'tags' | 'description' | 'sources'> & {
+	id?: string;
+	description?: string | null;
+	tags?: TagId[];
+	sources?: Source[];
+};
+
+export function insertFood(item: FoodInsert): string {
 	const id = item.id ?? crypto.randomUUID();
 	insertFoodStmt.run(
 		id,
@@ -473,6 +514,18 @@ export function insertFood(
 		insertFoodSourceStmt.run(id, source.url, source.label ?? null);
 	}
 	return id;
+}
+
+// Wrapped in a single transaction so a batch insert is all-or-nothing: if any
+// item throws, every insert in the batch is rolled back.
+const insertFoodsTx = db.transaction((items: FoodInsert[]): string[] => items.map(insertFood));
+
+/**
+ * Inserts many menu items in one transaction and returns their ids in input
+ * order. Either every item is written or, on any error, none are.
+ */
+export function insertFoods(items: FoodInsert[]): string[] {
+	return insertFoodsTx(items);
 }
 
 /** Mutable columns of `locations`, in their physical order. */

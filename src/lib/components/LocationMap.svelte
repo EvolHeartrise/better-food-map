@@ -12,7 +12,7 @@
 	type Location = {
 		id: string;
 		name: string;
-		category: 'cafe' | 'fast_food' | 'restaurant' | null;
+		category: 'cafe' | 'fast_food' | 'restaurant' | 'bakery' | null;
 		latitude: number;
 		longitude: number;
 		address: string | null;
