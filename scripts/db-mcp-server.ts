@@ -30,7 +30,7 @@ import {
 	getFoodById,
 	getAllTags,
 	insertLocation,
-	insertFood,
+	insertFoods,
 	updateLocation,
 	deleteLocation,
 	updateFood,
@@ -43,8 +43,29 @@ import {
 // and the JSON Schema advertised to the client)
 // ---------------------------------------------------------------------------
 
-const categorySchema = v.picklist(['cafe', 'fast_food', 'restaurant']);
+const categorySchema = v.picklist(['cafe', 'fast_food', 'restaurant', 'bakery']);
 const tagIdSchema = v.picklist(TAGS.map((t) => t.id) as [string, ...string[]]);
+
+// Tag ids grouped by kind, derived from the canonical list so the descriptions
+// below stay in sync automatically as tags are added.
+const dietaryTagIds = TAGS.filter((t) => t.kind === 'dietary').map((t) => t.id);
+const courseTagIds = TAGS.filter((t) => t.kind === 'course').map((t) => t.id);
+
+// The single source of truth for how tags are applied. Advertised to MCP clients
+// via the server `instructions`, and reused verbatim in every tag-bearing tool
+// description so the rule lives in exactly one place.
+const TAG_POLICY =
+	`Dietary tags (${dietaryTagIds.join(', ')}) are SOURCE-ASSERTED: apply one only when the source ` +
+	`explicitly designates the item — via a dietary marker/label/section heading, or when the item's ` +
+	`name as shown in the source contains the designation (e.g. "Vegan Burger", "Halal Chicken", ` +
+	`"Vegetarian Thali"). Never infer a dietary tag from the ingredient list or general knowledge of ` +
+	`the dish; when unsure, omit it. Course tags (${courseTagIds.join(', ')}) describe what kind of ` +
+	`item it is and are applied factually (a dessert gets "dessert", a beverage gets "drink").`;
+
+const SERVER_INSTRUCTIONS =
+	'CRUD tools over the food-map database (locations and their menu items). Each location and item ' +
+	'may carry source URLs documenting where the data came from — include them whenever you add ' +
+	`scraped data so it stays verifiable.\n\nTag policy: ${TAG_POLICY}`;
 
 const latitudeSchema = v.pipe(v.number(), v.minValue(-90), v.maxValue(90));
 const longitudeSchema = v.pipe(v.number(), v.minValue(-180), v.maxValue(180));
@@ -94,7 +115,9 @@ const idArgs = v.object({
 const createLocationArgs = v.object({
 	name: v.pipe(v.string(), v.minLength(1), v.description('Display name of the place.')),
 	category: v.optional(
-		v.nullable(v.pipe(categorySchema, v.description('One of: cafe, fast_food, restaurant.')))
+		v.nullable(
+			v.pipe(categorySchema, v.description('One of: cafe, fast_food, restaurant, bakery.'))
+		)
 	),
 	latitude: v.pipe(latitudeSchema, v.description('Latitude in decimal degrees.')),
 	longitude: v.pipe(longitudeSchema, v.description('Longitude in decimal degrees.')),
@@ -123,29 +146,33 @@ const updateLocationArgs = v.object({
 	sources: updateSourcesSchema
 });
 
-const createFoodArgs = v.object({
-	location_id: v.pipe(
-		v.string(),
-		v.minLength(1),
-		v.description('Id of the location this item belongs to.')
-	),
+// One menu item within a create_foods batch. location_id is given once for the
+// whole batch, so it isn't repeated per item.
+const foodItemSchema = v.object({
 	item_name: v.pipe(v.string(), v.minLength(1), v.description('Name of the menu item.')),
 	description: v.optional(v.nullable(v.string())),
 	ingredients: v.optional(v.nullable(v.string())),
 	price: v.optional(v.nullable(v.pipe(priceSchema, v.description('Price in CAD.')))),
 	tags: v.optional(
-		v.pipe(
-			v.array(tagIdSchema),
-			v.description(
-				'Dietary tags: vegan, vegetarian, gluten_free, dairy_free, nut_free, halal. ' +
-					'Apply a tag ONLY when the source explicitly designates the item — via a dietary marker, ' +
-					'or when the item name as shown in the source contains the word (e.g. "Vegan Burger", "Halal Chicken"). ' +
-					'Never infer a dietary tag from the ingredient list.'
-			)
-		)
+		v.pipe(v.array(tagIdSchema), v.description('Tags to apply to this item. ' + TAG_POLICY))
 	),
 	sources: createSourcesSchema,
 	id: v.optional(v.pipe(v.string(), v.minLength(1)))
+});
+
+const createFoodsArgs = v.object({
+	location_id: v.pipe(
+		v.string(),
+		v.minLength(1),
+		v.description('Id of the location every item in this batch belongs to.')
+	),
+	items: v.pipe(
+		v.array(foodItemSchema),
+		v.minLength(1),
+		v.description(
+			'The menu items to create under the location, inserted atomically (all-or-nothing).'
+		)
+	)
 });
 
 const updateFoodArgs = v.object({
@@ -158,12 +185,7 @@ const updateFoodArgs = v.object({
 	tags: v.optional(
 		v.pipe(
 			v.array(tagIdSchema),
-			v.description(
-				'Replaces the full tag set. Pass [] to clear all tags. ' +
-					'Apply a tag ONLY when the source explicitly designates the item — via a dietary marker, ' +
-					'or when the item name as shown in the source contains the word (e.g. "Vegan Burger", "Halal Chicken"). ' +
-					'Never infer a dietary tag from the ingredient list.'
-			)
+			v.description('Replaces the full tag set for this item (pass [] to clear). ' + TAG_POLICY)
 		)
 	),
 	sources: updateSourcesSchema
@@ -171,6 +193,35 @@ const updateFoodArgs = v.object({
 
 const listFoodArgs = v.object({
 	location_id: v.pipe(v.string(), v.minLength(1), v.description('Location whose menu to list.'))
+});
+
+const nearSchema = v.object({
+	latitude: v.pipe(latitudeSchema, v.description('Centre latitude in decimal degrees.')),
+	longitude: v.pipe(longitudeSchema, v.description('Centre longitude in decimal degrees.')),
+	radius_km: v.pipe(v.number(), v.minValue(0), v.description('Radius in kilometres.'))
+});
+
+const listLocationsArgs = v.object({
+	near: v.optional(
+		v.pipe(
+			nearSchema,
+			v.description('Only return locations within radius_km of this point, ordered nearest first.')
+		)
+	),
+	category: v.optional(
+		v.pipe(categorySchema, v.description('Only return locations in this category.'))
+	),
+	limit: v.optional(
+		v.pipe(v.number(), v.integer(), v.minValue(1), v.description('Maximum number to return.'))
+	),
+	offset: v.optional(
+		v.pipe(
+			v.number(),
+			v.integer(),
+			v.minValue(0),
+			v.description('Skip this many results (paging).')
+		)
+	)
 });
 
 const querySqlArgs = v.object({
@@ -205,6 +256,18 @@ function normalizeSources(
 	return sources?.map((s) => ({ url: s.url, label: s.label ?? null }));
 }
 
+/** Great-circle distance between two lat/long points, in kilometres. */
+function haversineKm(aLat: number, aLon: number, bLat: number, bLon: number): number {
+	const R = 6371;
+	const toRad = (deg: number) => (deg * Math.PI) / 180;
+	const dLat = toRad(bLat - aLat);
+	const dLon = toRad(bLon - aLon);
+	const h =
+		Math.sin(dLat / 2) ** 2 +
+		Math.cos(toRad(aLat)) * Math.cos(toRad(bLat)) * Math.sin(dLon / 2) ** 2;
+	return 2 * R * Math.asin(Math.sqrt(h));
+}
+
 /** Read-only guard for the raw SQL escape hatch. */
 function runReadOnlySql(sql: string): unknown {
 	const trimmed = sql
@@ -224,9 +287,38 @@ const tools = [
 	defineTool({
 		name: 'list_locations',
 		description:
-			'List every location with the distinct dietary tags offered across its menu (no individual menu items). Use get_location for a full menu.',
-		schema: v.object({}),
-		handler: () => getLocationsWithTags()
+			'List locations as a lightweight overview — id, name, category, coordinates, address, phone, ' +
+			'website, and the distinct tag ids offered across the menu (no per-item detail, no source URLs). ' +
+			'Supports optional `near`/`category` filtering and `limit`/`offset` paging. Use get_location for ' +
+			'a single place with its full menu and sources.',
+		schema: listLocationsArgs,
+		handler: ({ near, category, limit, offset }) => {
+			let rows = getLocationsWithTags();
+			if (category) rows = rows.filter((r) => r.category === category);
+			if (near) {
+				rows = rows
+					.map((r) => ({
+						r,
+						d: haversineKm(near.latitude, near.longitude, r.latitude, r.longitude)
+					}))
+					.filter((x) => x.d <= near.radius_km)
+					.toSorted((a, b) => a.d - b.d)
+					.map((x) => x.r);
+			}
+			const start = offset ?? 0;
+			const page = rows.slice(start, limit === undefined ? undefined : start + limit);
+			return page.map((loc) => ({
+				id: loc.id,
+				name: loc.name,
+				category: loc.category,
+				latitude: loc.latitude,
+				longitude: loc.longitude,
+				address: loc.address,
+				phone: loc.phone,
+				website: loc.website,
+				tags: loc.tags.map((t) => t.id)
+			}));
+		}
 	}),
 	defineTool({
 		name: 'get_location',
@@ -288,25 +380,29 @@ const tools = [
 		handler: ({ id }) => getFoodById(id)
 	}),
 	defineTool({
-		name: 'create_food',
+		name: 'create_foods',
 		description:
-			'Create a menu item under a location, optionally with dietary tags and source URLs. Strongly encouraged: include `sources` documenting where the item data came from. Returns the created item (with tags and sources).',
-		schema: createFoodArgs,
+			'Create one or more menu items under a location in a single transaction (all-or-nothing): ' +
+			'if any item is invalid, none are written. This is the only way to add menu items — pass a ' +
+			'one-element `items` array to add a single item. Returns the created items (each with tags and sources).',
+		schema: createFoodsArgs,
 		handler: (input) => {
 			if (!getLocationById(input.location_id)) {
 				throw new Error(`No location with id "${input.location_id}".`);
 			}
-			const id = insertFood({
-				id: input.id,
-				location_id: input.location_id,
-				item_name: input.item_name,
-				description: input.description ?? null,
-				ingredients: input.ingredients ?? null,
-				price: input.price ?? null,
-				tags: input.tags,
-				sources: normalizeSources(input.sources)
-			});
-			return getFoodById(id);
+			const ids = insertFoods(
+				input.items.map((it) => ({
+					id: it.id,
+					location_id: input.location_id,
+					item_name: it.item_name,
+					description: it.description ?? null,
+					ingredients: it.ingredients ?? null,
+					price: it.price ?? null,
+					tags: it.tags,
+					sources: normalizeSources(it.sources)
+				}))
+			);
+			return ids.map((id) => getFoodById(id));
 		}
 	}),
 	defineTool({
@@ -326,7 +422,7 @@ const tools = [
 	defineTool({
 		name: 'list_tags',
 		description:
-			'List the canonical, app-defined dietary tags. These are fixed and cannot be created via this server.',
+			'List the canonical, app-defined tags, each with a kind (dietary or course). These are fixed and cannot be created via this server.',
 		schema: v.object({}),
 		handler: () => getAllTags()
 	}),
@@ -354,7 +450,7 @@ function inputSchemaFor(schema: AnySchema): Tool['inputSchema'] {
 
 const server = new Server(
 	{ name: 'better-food-map-db', version: '0.0.1' },
-	{ capabilities: { tools: {} } }
+	{ capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS }
 );
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({

@@ -14,7 +14,7 @@
 	type MenuItem = LocationData['menu'][number];
 
 	// Four independent inputs. `place` filters venues by name; `item`, `ingredient`
-	// and the dietary `selected` tags filter menu items. They combine with AND.
+	// and the `selected` tags filter menu items. They combine with AND.
 	let place = $state('');
 	let item = $state('');
 	let ingredient = $state('');
@@ -594,7 +594,7 @@
 						{:else if hasQuery}
 							No matching places.
 						{:else}
-							Search by place, item, ingredient, or dietary tag to see results.
+							Search by place, item, ingredient, or tag to see results.
 						{/if}
 					</p>
 				{:else}
