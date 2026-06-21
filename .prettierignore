@@ -1,3 +1,7 @@
+# oxfmt reads this file by default (the formatter was migrated from prettier to
+# oxfmt, but the ignore-file name is unchanged). Patterns below are skipped by
+# `oxfmt` / `oxfmt --check`.
+
 # Package Managers
 package-lock.json
 pnpm-lock.yaml

@@ -362,7 +362,7 @@ export function updateLocation(id: string, patch: Partial<Omit<Location, 'id'>>)
 	for (const col of LOCATION_COLUMNS) {
 		if (patch[col] !== undefined) {
 			assignments.push(`${col} = ?`);
-			values.push(patch[col] as string | number | null);
+			values.push(patch[col]);
 		}
 	}
 
@@ -408,7 +408,7 @@ export function updateFood(
 	for (const col of FOOD_COLUMNS) {
 		if (patch[col] !== undefined) {
 			assignments.push(`${col} = ?`);
-			values.push(patch[col] as string | number | null);
+			values.push(patch[col]);
 		}
 	}
 
