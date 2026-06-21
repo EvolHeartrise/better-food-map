@@ -205,12 +205,22 @@
 			.filter((part) => part.length > 0);
 	}
 
+	// A short, readable name for a source: its label, else the bare hostname.
+	function sourceText(source: { url: string; label: string | null }): string {
+		if (source.label) return source.label;
+		try {
+			return new URL(source.url).hostname.replace(/^www\./, '');
+		} catch {
+			return source.url;
+		}
+	}
+
 	// --- Menu item details popup ----------------------------------------------
 	// The menu list shows only name, price and description; hovering a row (or,
-	// on touch, tapping it) reveals the full details — dietary tags and
-	// ingredients included — in a popup that floats to the left of the row, over
-	// the map. It's rendered once at the page root and positioned `fixed` so it
-	// escapes the results panel's `overflow: hidden`.
+	// on touch, tapping it) reveals the full details — dietary tags, ingredients
+	// and data sources included — in a popup that floats to the left of the row,
+	// over the map. It's rendered once at the page root and positioned `fixed` so
+	// it escapes the results panel's `overflow: hidden`.
 	const POPUP_GAP = 12;
 
 	let activeMenuItemId = $state<string | null>(null);
@@ -480,7 +490,7 @@
 						{/if}
 					</header>
 
-					{#if selectedLocation.address || selectedLocation.phone || selectedLocation.website}
+					{#if selectedLocation.address || selectedLocation.phone || selectedLocation.website || selectedLocation.sources.length > 0}
 						<dl class="info">
 							{#if selectedLocation.address}
 								<div class="info__row">
@@ -505,6 +515,22 @@
 										>
 											{selectedLocation.website}
 										</a>
+									</dd>
+								</div>
+							{/if}
+							{#if selectedLocation.sources.length > 0}
+								<div class="info__row">
+									<dt>Sources</dt>
+									<dd>
+										<ul class="info__sources">
+											{#each selectedLocation.sources as source (source.url)}
+												<li>
+													<a href={source.url} target="_blank" rel="external noopener noreferrer">
+														{sourceText(source)}
+													</a>
+												</li>
+											{/each}
+										</ul>
 									</dd>
 								</div>
 							{/if}
@@ -550,10 +576,6 @@
 									</li>
 								{/each}
 							</ul>
-							<p class="menu__note">
-								Dietary tags are informational and based on listed ingredients. If you have
-								allergies or strict dietary needs, please confirm with the venue.
-							</p>
 						{/if}
 					</section>
 				</div>
@@ -638,6 +660,16 @@
 						<li class="ingredient">{ingredient}</li>
 					{/each}
 				</ul>
+			{/if}
+			{#if activeMenuItem.sources.length > 0}
+				<div class="sources">
+					<span class="sources__label">Sources</span>
+					<ul class="sources__list">
+						{#each activeMenuItem.sources as source (source.url)}
+							<li class="source">{sourceText(source)}</li>
+						{/each}
+					</ul>
+				</div>
 			{/if}
 		</div>
 	{/if}
@@ -1090,6 +1122,15 @@
 		word-break: break-word;
 	}
 
+	.info__sources {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.15rem;
+	}
+
 	.menu {
 		display: flex;
 		flex-direction: column;
@@ -1223,11 +1264,42 @@
 		padding: 0.1rem 0.5rem;
 	}
 
-	.menu__note {
-		margin: 0.75rem 0 0;
-		font-size: 0.75rem;
-		font-style: italic;
+	/* Provenance for the item. The popup is non-interactive (pointer-events: none),
+	   so these are shown as plain labels/hostnames rather than clickable links;
+	   the interactive location detail panel renders sources as real links. */
+	.sources {
+		margin: 0.5rem 0 0;
+	}
+
+	.sources__label {
+		display: block;
+		font-size: 0.65rem;
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
 		color: var(--color-text-muted);
+	}
+
+	.sources__list {
+		list-style: none;
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.3rem;
+		margin: 0.25rem 0 0;
+		padding: 0;
+	}
+
+	.source {
+		max-width: 100%;
+		overflow: hidden;
+		font-size: 0.72rem;
+		color: var(--color-accent);
+		background-color: color-mix(in srgb, var(--color-accent) 8%, #fff);
+		border: 1px solid color-mix(in srgb, var(--color-accent) 25%, #fff);
+		border-radius: 999px;
+		padding: 0.1rem 0.5rem;
+		white-space: nowrap;
+		text-overflow: ellipsis;
 	}
 
 	/* The details popup floats over the map, to the left of the hovered/tapped

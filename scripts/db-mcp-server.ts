@@ -50,6 +50,43 @@ const latitudeSchema = v.pipe(v.number(), v.minValue(-90), v.maxValue(90));
 const longitudeSchema = v.pipe(v.number(), v.minValue(-180), v.maxValue(180));
 const priceSchema = v.pipe(v.number(), v.minValue(0));
 
+// A single citation: a URL the data came from, plus an optional human label.
+const sourceSchema = v.object({
+	url: v.pipe(
+		v.string(),
+		v.url('Each source must be a valid URL, e.g. https://example.com/menu.'),
+		v.description('URL the data was obtained from.')
+	),
+	label: v.optional(
+		v.nullable(
+			v.pipe(v.string(), v.description("Optional human-readable label, e.g. 'Official menu'."))
+		)
+	)
+});
+
+// Reused on create_* (append) and update_* (replace wholesale). The wording
+// nudges the scraping agent to cite where any added data came from.
+const createSourcesSchema = v.optional(
+	v.pipe(
+		v.array(sourceSchema),
+		v.description(
+			'Source URLs documenting where this data came from (each: a url and optional label). ' +
+				'Strongly encouraged whenever you add scraped data, so it stays verifiable. ' +
+				'May be omitted or [] when you genuinely have no source.'
+		)
+	)
+);
+
+const updateSourcesSchema = v.optional(
+	v.pipe(
+		v.array(sourceSchema),
+		v.description(
+			'Replaces the full source set (each: a url and optional label). Pass [] to clear all sources. ' +
+				'Encouraged: keep at least one source documenting where the data came from.'
+		)
+	)
+);
+
 const idArgs = v.object({
 	id: v.pipe(v.string(), v.minLength(1), v.description('The record id (UUID).'))
 });
@@ -64,6 +101,7 @@ const createLocationArgs = v.object({
 	address: v.optional(v.nullable(v.string())),
 	phone: v.optional(v.nullable(v.string())),
 	website: v.optional(v.nullable(v.string())),
+	sources: createSourcesSchema,
 	id: v.optional(
 		v.pipe(
 			v.string(),
@@ -81,7 +119,8 @@ const updateLocationArgs = v.object({
 	longitude: v.optional(longitudeSchema),
 	address: v.optional(v.nullable(v.string())),
 	phone: v.optional(v.nullable(v.string())),
-	website: v.optional(v.nullable(v.string()))
+	website: v.optional(v.nullable(v.string())),
+	sources: updateSourcesSchema
 });
 
 const createFoodArgs = v.object({
@@ -97,9 +136,15 @@ const createFoodArgs = v.object({
 	tags: v.optional(
 		v.pipe(
 			v.array(tagIdSchema),
-			v.description('Dietary tags: vegan, vegetarian, gluten_free, dairy_free, nut_free, halal.')
+			v.description(
+				'Dietary tags: vegan, vegetarian, gluten_free, dairy_free, nut_free, halal. ' +
+					'Apply a tag ONLY when the source explicitly designates the item — via a dietary marker, ' +
+					'or when the item name as shown in the source contains the word (e.g. "Vegan Burger", "Halal Chicken"). ' +
+					'Never infer a dietary tag from the ingredient list.'
+			)
 		)
 	),
+	sources: createSourcesSchema,
 	id: v.optional(v.pipe(v.string(), v.minLength(1)))
 });
 
@@ -113,9 +158,15 @@ const updateFoodArgs = v.object({
 	tags: v.optional(
 		v.pipe(
 			v.array(tagIdSchema),
-			v.description('Replaces the full tag set. Pass [] to clear all tags.')
+			v.description(
+				'Replaces the full tag set. Pass [] to clear all tags. ' +
+					'Apply a tag ONLY when the source explicitly designates the item — via a dietary marker, ' +
+					'or when the item name as shown in the source contains the word (e.g. "Vegan Burger", "Halal Chicken"). ' +
+					'Never infer a dietary tag from the ingredient list.'
+			)
 		)
-	)
+	),
+	sources: updateSourcesSchema
 });
 
 const listFoodArgs = v.object({
@@ -147,6 +198,13 @@ function defineTool<S extends AnySchema>(def: ToolDef<S>): ToolDef<S> {
 	return def;
 }
 
+/** Normalizes optional source labels to null so they match the DB `Source` type. */
+function normalizeSources(
+	sources: { url: string; label?: string | null }[] | undefined
+): { url: string; label: string | null }[] | undefined {
+	return sources?.map((s) => ({ url: s.url, label: s.label ?? null }));
+}
+
 /** Read-only guard for the raw SQL escape hatch. */
 function runReadOnlySql(sql: string): unknown {
 	const trimmed = sql
@@ -173,7 +231,7 @@ const tools = [
 	defineTool({
 		name: 'get_location',
 		description:
-			'Get a single location merged with its full menu (each item carries its tags). Returns null if not found.',
+			'Get a single location (with its source URLs) merged with its full menu (each item carries its tags and sources). Returns null if not found.',
 		schema: idArgs,
 		handler: ({ id }) => {
 			const location = getLocationById(id);
@@ -184,7 +242,7 @@ const tools = [
 	defineTool({
 		name: 'create_location',
 		description:
-			'Create a new location. Returns the created location row (including its generated id).',
+			'Create a new location, optionally with source URLs documenting where its data came from (encouraged). Returns the created location row (including its generated id and sources).',
 		schema: createLocationArgs,
 		handler: (input) => {
 			const id = insertLocation({
@@ -195,7 +253,8 @@ const tools = [
 				longitude: input.longitude,
 				address: input.address ?? null,
 				phone: input.phone ?? null,
-				website: input.website ?? null
+				website: input.website ?? null,
+				sources: normalizeSources(input.sources)
 			});
 			return getLocationById(id);
 		}
@@ -203,9 +262,10 @@ const tools = [
 	defineTool({
 		name: 'update_location',
 		description:
-			'Update one or more fields of an existing location. Only provided fields change. Returns the updated row, or null if the id does not exist.',
+			'Update one or more fields of an existing location. Only provided fields change; if `sources` is given it replaces the whole source set (pass [] to clear). Returns the updated row, or null if the id does not exist.',
 		schema: updateLocationArgs,
-		handler: ({ id, ...patch }) => updateLocation(id, patch)
+		handler: ({ id, sources, ...patch }) =>
+			updateLocation(id, { ...patch, sources: normalizeSources(sources) })
 	}),
 	defineTool({
 		name: 'delete_location',
@@ -216,20 +276,21 @@ const tools = [
 	}),
 	defineTool({
 		name: 'list_food',
-		description: 'List all menu items (with tags) for a given location.',
+		description: 'List all menu items (with tags and sources) for a given location.',
 		schema: listFoodArgs,
 		handler: ({ location_id }) => getFoodByLocation(location_id)
 	}),
 	defineTool({
 		name: 'get_food',
-		description: 'Get a single menu item with its dietary tags. Returns null if not found.',
+		description:
+			'Get a single menu item with its dietary tags and source URLs. Returns null if not found.',
 		schema: idArgs,
 		handler: ({ id }) => getFoodById(id)
 	}),
 	defineTool({
 		name: 'create_food',
 		description:
-			'Create a menu item under a location, optionally with dietary tags. Returns the created item (with tags).',
+			'Create a menu item under a location, optionally with dietary tags and source URLs. Strongly encouraged: include `sources` documenting where the item data came from. Returns the created item (with tags and sources).',
 		schema: createFoodArgs,
 		handler: (input) => {
 			if (!getLocationById(input.location_id)) {
@@ -242,7 +303,8 @@ const tools = [
 				description: input.description ?? null,
 				ingredients: input.ingredients ?? null,
 				price: input.price ?? null,
-				tags: input.tags
+				tags: input.tags,
+				sources: normalizeSources(input.sources)
 			});
 			return getFoodById(id);
 		}
@@ -250,9 +312,10 @@ const tools = [
 	defineTool({
 		name: 'update_food',
 		description:
-			'Update a menu item. Only provided fields change; if `tags` is given it replaces the whole tag set (pass [] to clear). Returns the updated item, or null if the id does not exist.',
+			'Update a menu item. Only provided fields change; if `tags` or `sources` is given it replaces that whole set (pass [] to clear). Returns the updated item, or null if the id does not exist.',
 		schema: updateFoodArgs,
-		handler: ({ id, ...patch }) => updateFood(id, patch)
+		handler: ({ id, sources, ...patch }) =>
+			updateFood(id, { ...patch, sources: normalizeSources(sources) })
 	}),
 	defineTool({
 		name: 'delete_food',
