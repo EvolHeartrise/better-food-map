@@ -17,6 +17,17 @@ export interface Tag {
 	label: string;
 }
 
+/**
+ * A citation for where a record's data was obtained. A record may have any
+ * number of sources (including none); each is a URL with an optional label.
+ */
+export interface Source {
+	/** URL the data was obtained from. */
+	url: string;
+	/** Optional human-readable label, e.g. "Official menu". */
+	label: string | null;
+}
+
 export interface Location {
 	id: string;
 	name: string;
@@ -26,6 +37,8 @@ export interface Location {
 	address: string | null;
 	phone: string | null;
 	website: string | null;
+	/** Citations for where this location's data came from (may be empty). */
+	sources: Source[];
 }
 
 export interface Food {
@@ -38,6 +51,8 @@ export interface Food {
 	price: number | null;
 	/** Dietary tags applied to this menu item (may be empty). */
 	tags: Tag[];
+	/** Citations for where this item's data came from (may be empty). */
+	sources: Source[];
 }
 
 export interface LocationWithMenu extends Location {
@@ -60,8 +75,29 @@ export const TAGS: readonly Tag[] = [
 	{ id: 'halal', label: 'Halal' }
 ];
 
-/** Internal raw shape of a `food` row before its tags are attached. */
-type FoodRow = Omit<Food, 'tags'>;
+/** Internal raw shape of a `food` row before its tags and sources are attached. */
+type FoodRow = Omit<Food, 'tags' | 'sources'>;
+
+/** Internal raw shape of a `locations` row before its sources are attached. */
+type LocationRow = Omit<Location, 'sources'>;
+
+/** Raw `*_sources` row keyed by its owner id (food_id or location_id). */
+interface SourceRow {
+	owner_id: string;
+	url: string;
+	label: string | null;
+}
+
+/** Groups raw source rows by owner id, preserving insertion order within each. */
+function groupSources(rows: SourceRow[]): Map<string, Source[]> {
+	const byOwner = new Map<string, Source[]>();
+	for (const row of rows) {
+		const list = byOwner.get(row.owner_id) ?? [];
+		list.push({ url: row.url, label: row.label });
+		byOwner.set(row.owner_id, list);
+	}
+	return byOwner;
+}
 
 // ---------------------------------------------------------------------------
 // Database connection
@@ -111,6 +147,27 @@ db.exec(`
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_food_tags_tag_id ON food_tags (tag_id);
+
+	-- Provenance for each menu item: zero or more source URLs (with optional
+	-- labels). The (food_id, url) primary key de-duplicates the same URL per item.
+	CREATE TABLE IF NOT EXISTS food_sources (
+		food_id TEXT NOT NULL REFERENCES food(id) ON DELETE CASCADE,
+		url TEXT NOT NULL,
+		label TEXT,
+		PRIMARY KEY (food_id, url)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_food_sources_food_id ON food_sources (food_id);
+
+	-- Provenance for each location, same shape as food_sources.
+	CREATE TABLE IF NOT EXISTS location_sources (
+		location_id TEXT NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+		url TEXT NOT NULL,
+		label TEXT,
+		PRIMARY KEY (location_id, url)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_location_sources_location_id ON location_sources (location_id);
 `);
 
 // Migration: databases created before the `description` column existed won't get
@@ -138,13 +195,13 @@ for (const tag of TAGS) {
 // Prepared statements
 // ---------------------------------------------------------------------------
 
-const selectAllLocations = db.query<Location, []>(
+const selectAllLocations = db.query<LocationRow, []>(
 	`SELECT id, name, category, latitude, longitude, address, phone, website
 	 FROM locations
 	 ORDER BY name`
 );
 
-const selectLocationById = db.query<Location, [string]>(
+const selectLocationById = db.query<LocationRow, [string]>(
 	`SELECT id, name, category, latitude, longitude, address, phone, website
 	 FROM locations
 	 WHERE id = ?`
@@ -231,12 +288,60 @@ const deleteLocationStmt = db.query<unknown, [string]>(`DELETE FROM locations WH
 
 const deleteFoodStmt = db.query<unknown, [string]>(`DELETE FROM food WHERE id = ?`);
 
+// --- Sources ---------------------------------------------------------------
+
+const selectSourcesByFood = db.query<Source, [string]>(
+	`SELECT url, label FROM food_sources WHERE food_id = ? ORDER BY rowid`
+);
+
+const selectSourcesByLocation = db.query<Source, [string]>(
+	`SELECT url, label FROM location_sources WHERE location_id = ? ORDER BY rowid`
+);
+
+// Sources for every menu item at one location, one row per (food, source) pair.
+const selectFoodSourcesByLocation = db.query<SourceRow, [string]>(
+	`SELECT fs.food_id AS owner_id, fs.url AS url, fs.label AS label
+	 FROM food_sources fs
+	 JOIN food f ON f.id = fs.food_id
+	 WHERE f.location_id = ?
+	 ORDER BY fs.rowid`
+);
+
+// Every (food, source) pair across the whole database, for the bulk menu build.
+const selectAllFoodSources = db.query<SourceRow, []>(
+	`SELECT food_id AS owner_id, url, label FROM food_sources ORDER BY rowid`
+);
+
+// Every (location, source) pair across the whole database.
+const selectAllLocationSources = db.query<SourceRow, []>(
+	`SELECT location_id AS owner_id, url, label FROM location_sources ORDER BY rowid`
+);
+
+const insertFoodSourceStmt = db.query<unknown, [string, string, string | null]>(
+	`INSERT OR IGNORE INTO food_sources (food_id, url, label) VALUES (?, ?, ?)`
+);
+
+const insertLocationSourceStmt = db.query<unknown, [string, string, string | null]>(
+	`INSERT OR IGNORE INTO location_sources (location_id, url, label) VALUES (?, ?, ?)`
+);
+
+const deleteFoodSourcesStmt = db.query<unknown, [string]>(
+	`DELETE FROM food_sources WHERE food_id = ?`
+);
+
+const deleteLocationSourcesStmt = db.query<unknown, [string]>(
+	`DELETE FROM location_sources WHERE location_id = ?`
+);
+
 // ---------------------------------------------------------------------------
 // Public API (STABLE CONTRACT)
 // ---------------------------------------------------------------------------
 
 export function getAllLocations(): Location[] {
-	return selectAllLocations.all();
+	const sourcesByLocation = groupSources(selectAllLocationSources.all());
+	return selectAllLocations
+		.all()
+		.map((loc) => ({ ...loc, sources: sourcesByLocation.get(loc.id) ?? [] }));
 }
 
 export function getAllTags(): Tag[] {
@@ -246,6 +351,7 @@ export function getAllTags(): Tag[] {
 export function getLocationsWithTags(): LocationWithTags[] {
 	const locations = selectAllLocations.all();
 	const tagRows = selectLocationTags.all();
+	const sourcesByLocation = groupSources(selectAllLocationSources.all());
 
 	const tagsByLocation = new Map<string, Tag[]>();
 	for (const row of tagRows) {
@@ -254,7 +360,11 @@ export function getLocationsWithTags(): LocationWithTags[] {
 		tagsByLocation.set(row.location_id, list);
 	}
 
-	return locations.map((loc) => ({ ...loc, tags: tagsByLocation.get(loc.id) ?? [] }));
+	return locations.map((loc) => ({
+		...loc,
+		tags: tagsByLocation.get(loc.id) ?? [],
+		sources: sourcesByLocation.get(loc.id) ?? []
+	}));
 }
 
 /**
@@ -266,6 +376,8 @@ export function getLocationsWithMenus(): LocationWithMenu[] {
 	const locations = selectAllLocations.all();
 	const foodRows = selectAllFood.all();
 	const tagRows = selectAllFoodTags.all();
+	const sourcesByFood = groupSources(selectAllFoodSources.all());
+	const sourcesByLocation = groupSources(selectAllLocationSources.all());
 
 	const tagsByFood = new Map<string, Tag[]>();
 	for (const row of tagRows) {
@@ -277,20 +389,31 @@ export function getLocationsWithMenus(): LocationWithMenu[] {
 	const menuByLocation = new Map<string, Food[]>();
 	for (const row of foodRows) {
 		const list = menuByLocation.get(row.location_id) ?? [];
-		list.push({ ...row, tags: tagsByFood.get(row.id) ?? [] });
+		list.push({
+			...row,
+			tags: tagsByFood.get(row.id) ?? [],
+			sources: sourcesByFood.get(row.id) ?? []
+		});
 		menuByLocation.set(row.location_id, list);
 	}
 
-	return locations.map((loc) => ({ ...loc, menu: menuByLocation.get(loc.id) ?? [] }));
+	return locations.map((loc) => ({
+		...loc,
+		sources: sourcesByLocation.get(loc.id) ?? [],
+		menu: menuByLocation.get(loc.id) ?? []
+	}));
 }
 
 export function getLocationById(id: string): Location | null {
-	return selectLocationById.get(id) ?? null;
+	const row = selectLocationById.get(id);
+	if (!row) return null;
+	return { ...row, sources: selectSourcesByLocation.all(id) };
 }
 
 export function getFoodByLocation(locationId: string): Food[] {
 	const rows = selectFoodByLocation.all(locationId);
 	const tagRows = selectTagsByLocation.all(locationId);
+	const sourcesByFood = groupSources(selectFoodSourcesByLocation.all(locationId));
 
 	const tagsByFood = new Map<string, Tag[]>();
 	for (const row of tagRows) {
@@ -299,10 +422,16 @@ export function getFoodByLocation(locationId: string): Food[] {
 		tagsByFood.set(row.food_id, list);
 	}
 
-	return rows.map((row) => ({ ...row, tags: tagsByFood.get(row.id) ?? [] }));
+	return rows.map((row) => ({
+		...row,
+		tags: tagsByFood.get(row.id) ?? [],
+		sources: sourcesByFood.get(row.id) ?? []
+	}));
 }
 
-export function insertLocation(loc: Omit<Location, 'id'> & { id?: string }): string {
+export function insertLocation(
+	loc: Omit<Location, 'id' | 'sources'> & { id?: string; sources?: Source[] }
+): string {
 	const id = loc.id ?? crypto.randomUUID();
 	insertLocationStmt.run(
 		id,
@@ -314,14 +443,18 @@ export function insertLocation(loc: Omit<Location, 'id'> & { id?: string }): str
 		loc.phone,
 		loc.website
 	);
+	for (const source of loc.sources ?? []) {
+		insertLocationSourceStmt.run(id, source.url, source.label ?? null);
+	}
 	return id;
 }
 
 export function insertFood(
-	item: Omit<Food, 'id' | 'tags' | 'description'> & {
+	item: Omit<Food, 'id' | 'tags' | 'description' | 'sources'> & {
 		id?: string;
 		description?: string | null;
 		tags?: TagId[];
+		sources?: Source[];
 	}
 ): string {
 	const id = item.id ?? crypto.randomUUID();
@@ -335,6 +468,9 @@ export function insertFood(
 	);
 	for (const tagId of item.tags ?? []) {
 		insertFoodTagStmt.run(id, tagId);
+	}
+	for (const source of item.sources ?? []) {
+		insertFoodSourceStmt.run(id, source.url, source.label ?? null);
 	}
 	return id;
 }
@@ -370,6 +506,13 @@ export function updateLocation(id: string, patch: Partial<Omit<Location, 'id'>>)
 		values.push(id);
 		db.query(`UPDATE locations SET ${assignments.join(', ')} WHERE id = ?`).run(...values);
 	}
+
+	if (patch.sources !== undefined) {
+		deleteLocationSourcesStmt.run(id);
+		for (const source of patch.sources) {
+			insertLocationSourceStmt.run(id, source.url, source.label ?? null);
+		}
+	}
 	return getLocationById(id);
 }
 
@@ -385,7 +528,7 @@ export function deleteLocation(id: string): boolean {
 export function getFoodById(id: string): Food | null {
 	const row = selectFoodById.get(id);
 	if (!row) return null;
-	return { ...row, tags: selectTagsByFood.all(id) };
+	return { ...row, tags: selectTagsByFood.all(id), sources: selectSourcesByFood.all(id) };
 }
 
 /** Mutable scalar columns of `food`, in their physical order. */
@@ -421,6 +564,13 @@ export function updateFood(
 		deleteFoodTagsStmt.run(id);
 		for (const tagId of patch.tags) {
 			insertFoodTagStmt.run(id, tagId);
+		}
+	}
+
+	if (patch.sources !== undefined) {
+		deleteFoodSourcesStmt.run(id);
+		for (const source of patch.sources) {
+			insertFoodSourceStmt.run(id, source.url, source.label ?? null);
 		}
 	}
 
