@@ -26,37 +26,46 @@
 	let area = $state<LatLng[] | null>(null);
 	let drawing = $state(false);
 
+	// The two floating panels, handed to <LocationMap> so it can frame results into
+	// the open space between them rather than underneath them.
+	let searchPanelEl = $state<HTMLElement>();
+	let resultsPanelEl = $state<HTMLElement>();
+
 	const currency = new Intl.NumberFormat('en-CA', { style: 'currency', currency: 'CAD' });
+
+	// The item-level filters, normalised once. `hasItemFilter` is true when any of
+	// them is active; with none active they don't narrow a venue's menu at all.
+	// Shared by both the results list and the selected-location menu so the two
+	// always agree on what "matches".
+	const itemTerm = $derived(item.trim().toLowerCase());
+	const ingredientTerm = $derived(ingredient.trim().toLowerCase());
+	const hasItemFilter = $derived(itemTerm !== '' || ingredientTerm !== '' || selected.length > 0);
+
+	function itemMatches(menuItem: MenuItem): boolean {
+		if (itemTerm !== '' && !menuItem.item_name.toLowerCase().includes(itemTerm)) return false;
+		if (
+			ingredientTerm !== '' &&
+			!(menuItem.ingredients ?? '').toLowerCase().includes(ingredientTerm)
+		)
+			return false;
+		if (selected.length > 0) {
+			const ids = new Set<string>(menuItem.tags.map((tag) => tag.id));
+			if (!selected.every((id) => ids.has(id))) return false;
+		}
+		return true;
+	}
 
 	// One entry per location to show, paired with the menu items that matched.
 	// Item-level inputs drive the per-card list; with none active, `items` is
 	// empty and the card shows no list (the Place box just narrows venues).
 	const results = $derived.by(() => {
 		const placeTerm = place.trim().toLowerCase();
-		const itemTerm = item.trim().toLowerCase();
-		const ingredientTerm = ingredient.trim().toLowerCase();
-
 		const areaPoly = area;
-		const hasItemFilter = itemTerm !== '' || ingredientTerm !== '' || selected.length > 0;
 		const anyFilter = placeTerm !== '' || hasItemFilter || areaPoly !== null;
 
 		// With every field empty and no area drawn, show no results — the user must
 		// search (or draw an area) first.
 		if (!anyFilter) return [];
-
-		const itemMatches = (menuItem: MenuItem): boolean => {
-			if (itemTerm !== '' && !menuItem.item_name.toLowerCase().includes(itemTerm)) return false;
-			if (
-				ingredientTerm !== '' &&
-				!(menuItem.ingredients ?? '').toLowerCase().includes(ingredientTerm)
-			)
-				return false;
-			if (selected.length > 0) {
-				const ids = new Set<string>(menuItem.tags.map((tag) => tag.id));
-				if (!selected.every((id) => ids.has(id))) return false;
-			}
-			return true;
-		};
 
 		const out: Array<{ loc: LocationData; items: MenuItem[] }> = [];
 		for (const loc of locations) {
@@ -88,6 +97,15 @@
 		selectedId ? (locations.find((loc) => loc.id === selectedId) ?? null) : null
 	);
 
+	// The menu shown in the detail panel for the selected location. The same
+	// item/ingredient/dietary filters that narrow the results list apply here too;
+	// with none active (`hasItemFilter` false) the full menu is shown.
+	const detailMenu = $derived.by<MenuItem[]>(() => {
+		if (!selectedLocation) return [];
+		if (!hasItemFilter) return selectedLocation.menu;
+		return selectedLocation.menu.filter(itemMatches);
+	});
+
 	function idFromPath(pathname: string): string | null {
 		const match = pathname.match(/\/locations\/([^/]+)$/);
 		return match ? decodeURIComponent(match[1]) : null;
@@ -113,10 +131,18 @@
 	}
 
 	function closeDetail(): void {
-		// If we created a history entry, pop it so Back/forward stays consistent;
-		// otherwise (landed directly on a /locations/ URL) rewrite to the map.
-		if (page.state.selected) history.back();
-		else replaceState(resolve('/'), {});
+		// Rewrite the current history entry to the bare map URL with empty state.
+		// `replaceState` updates `page.state`/`page.url` synchronously, so
+		// `selectedLocation` resolves to `null` immediately and deterministically.
+		//
+		// We deliberately avoid `history.back()`: it depends on the previous entry
+		// being a selection-free results view and on an async `popstate` to reset
+		// `page.state`. Neither holds when the page was opened on a `/locations/<id>`
+		// link (that entry carries the id in its URL but empty state) — going back to
+		// it re-derives the id from the path, so the URL changes while the detail
+		// stays open. Pressing the browser Back button still closes the detail via
+		// the prior `/` entry, so back/forward stays intuitive.
+		replaceState(resolve('/'), {});
 	}
 
 	const hasQuery = $derived(
@@ -180,26 +206,79 @@
 			locations={mapLocations}
 			selected={selectedLocation}
 			onselect={selectLocation}
+			obstacles={[searchPanelEl, resultsPanelEl].filter((el) => el !== undefined)}
 			bind:polygon={area}
 			bind:drawing
 		/>
 	</div>
 
-	<aside class="panel panel--search" aria-label="Search and filters">
+	<aside class="panel panel--search" aria-label="Search and filters" bind:this={searchPanelEl}>
 		<header class="panel__brand">
 			<a class="panel__title" href={resolve('/')}>Better Food Map</a>
 		</header>
 
 		<div class="controls">
+			<!-- Area is a venue-level (geographic) filter, so it's hidden once a single
+			     location is pinned — only the menu-item filters below still apply then. -->
+			{#if !selectedLocation}
+				<div class="field">
+					<div class="field__head">
+						<span class="field__label" id="q-area">Area</span>
+						{#if area && !drawing}
+							<button type="button" class="field__clear" onclick={clearArea}>Clear</button>
+						{/if}
+					</div>
+
+					{#if drawing}
+						<p class="area__hint">
+							Click the map to drop points. Click the first point — or press Enter — to finish. Esc
+							cancels.
+						</p>
+						<button type="button" class="area__btn" onclick={cancelAreaDraw}>Cancel drawing</button>
+					{:else if area}
+						<p class="area__status">
+							Limited to your drawn area ({area.length}
+							{area.length === 1 ? 'point' : 'points'}).
+						</p>
+						<button type="button" class="area__btn" onclick={startAreaDraw}>Redraw area</button>
+					{:else}
+						<button type="button" class="area__btn" onclick={startAreaDraw}>Draw area on map</button
+						>
+					{/if}
+				</div>
+			{/if}
+
 			<div class="field">
-				<label class="field__label" for="q-place">Place</label>
-				<input
-					id="q-place"
-					class="field__input"
-					type="search"
-					placeholder="Place name…"
-					bind:value={place}
-				/>
+				<span class="field__label" id="q-place-label">Place</span>
+				{#if selectedLocation}
+					{@const placeLabel = categoryLabel(selectedLocation.category)}
+					{@const placeMeta = [placeLabel, selectedLocation.address].filter(Boolean).join(' · ')}
+					<div class="place-card" aria-labelledby="q-place-label">
+						<div class="place-card__body">
+							<span class="place-card__name">{selectedLocation.name}</span>
+							{#if placeMeta}
+								<span class="place-card__meta">{placeMeta}</span>
+							{/if}
+						</div>
+						<button
+							type="button"
+							class="place-card__clear"
+							aria-label="Clear selected place"
+							onclick={closeDetail}
+						>
+							✕
+						</button>
+					</div>
+				{:else}
+					<input
+						id="q-place"
+						class="field__input"
+						type="search"
+						placeholder="Place name…"
+						aria-labelledby="q-place-label"
+						bind:value={place}
+					/>
+				{/if}
 			</div>
 
 			<div class="field">
@@ -247,37 +326,13 @@
 					{/each}
 				</div>
 			</div>
-
-			<div class="field">
-				<div class="field__head">
-					<span class="field__label" id="q-area">Area</span>
-					{#if area && !drawing}
-						<button type="button" class="field__clear" onclick={clearArea}>Clear</button>
-					{/if}
-				</div>
-
-				{#if drawing}
-					<p class="area__hint">
-						Click the map to drop points. Click the first point — or press Enter — to finish. Esc
-						cancels.
-					</p>
-					<button type="button" class="area__btn" onclick={cancelAreaDraw}>Cancel drawing</button>
-				{:else if area}
-					<p class="area__status">
-						Limited to your drawn area ({area.length}
-						{area.length === 1 ? 'point' : 'points'}).
-					</p>
-					<button type="button" class="area__btn" onclick={startAreaDraw}>Redraw area</button>
-				{:else}
-					<button type="button" class="area__btn" onclick={startAreaDraw}>Draw area on map</button>
-				{/if}
-			</div>
 		</div>
 	</aside>
 
 	<aside
 		class="panel panel--results"
 		aria-label={selectedLocation ? 'Location details' : 'Matching places'}
+		bind:this={resultsPanelEl}
 	>
 		{#if selectedLocation}
 			{@const label = categoryLabel(selectedLocation.category)}
@@ -329,9 +384,17 @@
 						<h3 class="menu__heading">Menu</h3>
 						{#if selectedLocation.menu.length === 0}
 							<p class="menu__empty">Menu information isn't available for this place yet.</p>
+						{:else if detailMenu.length === 0}
+							<p class="menu__empty">No menu items match the current filters.</p>
 						{:else}
+							{#if hasItemFilter}
+								<p class="menu__filtered">
+									Showing {detailMenu.length} of {selectedLocation.menu.length}
+									{selectedLocation.menu.length === 1 ? 'item' : 'items'} matching your filters.
+								</p>
+							{/if}
 							<ul class="menu__list">
-								{#each selectedLocation.menu as menuItem (menuItem.id)}
+								{#each detailMenu as menuItem (menuItem.id)}
 									{@const ingredients = ingredientList(menuItem.ingredients)}
 									<li class="menu__item">
 										<div class="menu__line">
@@ -527,6 +590,62 @@
 
 	.field__input:focus {
 		border-color: var(--color-accent);
+	}
+
+	/* Read-only stand-in for the Place input shown while a location is pinned. The
+	   accent tint marks it as an active selection rather than an editable field. */
+	.place-card {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.5rem;
+		padding: 0.5rem 0.6rem;
+		border-radius: 0.6rem;
+		background: color-mix(in srgb, var(--color-accent) 10%, #fff);
+		border: 1px solid color-mix(in srgb, var(--color-accent) 35%, #fff);
+	}
+
+	.place-card__body {
+		display: flex;
+		flex-direction: column;
+		gap: 0.1rem;
+		min-width: 0;
+		flex: 1;
+	}
+
+	.place-card__name {
+		font-weight: 600;
+		font-size: 0.9rem;
+		color: var(--color-text);
+	}
+
+	.place-card__meta {
+		font-size: 0.78rem;
+		color: var(--color-text-muted);
+		word-break: break-word;
+	}
+
+	.place-card__clear {
+		flex-shrink: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 1.4rem;
+		height: 1.4rem;
+		padding: 0;
+		font-size: 0.85rem;
+		line-height: 1;
+		color: var(--color-accent);
+		background: rgba(255, 255, 255, 0.6);
+		border: 1px solid color-mix(in srgb, var(--color-accent) 35%, #fff);
+		border-radius: 999px;
+		transition:
+			background-color 0.12s,
+			color 0.12s;
+	}
+
+	.place-card__clear:hover {
+		color: #fff;
+		background: var(--color-accent);
 	}
 
 	.field__clear {
@@ -824,6 +943,13 @@
 		margin: 0;
 		font-size: 0.85rem;
 		font-style: italic;
+		color: var(--color-text-muted);
+	}
+
+	.menu__filtered {
+		margin: 0 0 0.25rem;
+		font-size: 0.75rem;
+		font-weight: 600;
 		color: var(--color-text-muted);
 	}
 

@@ -33,13 +33,20 @@
 		polygon = $bindable(null),
 		// Whether the map is in draw mode. Bindable so a parent button can start
 		// drawing and the map can end it (on finish / cancel).
-		drawing = $bindable(false)
+		drawing = $bindable(false),
+		// Floating UI elements that overlap the map (e.g. the search and results
+		// panels). When fitting results into view we reserve space for whichever of
+		// these currently overlap, so markers are never framed underneath them.
+		// Measured live at fit time, so it adapts to panel size, the stacked mobile
+		// layout, or a panel being hidden — no resize listener needed.
+		obstacles = []
 	}: {
 		locations: Location[];
 		selected?: Location | null;
 		onselect?: (id: string) => void;
 		polygon?: LatLng[] | null;
 		drawing?: boolean;
+		obstacles?: HTMLElement[];
 	} = $props();
 
 	const VANCOUVER: [number, number] = [49.2827, -123.1207];
@@ -48,10 +55,14 @@
 	const ACCENT = '#2f6f4f';
 	// How close (in pixels) a click must be to the first vertex to close the ring.
 	const CLOSE_TOLERANCE_PX = 14;
-	// View-fitting animation. We debounce so rapid result changes while the user is
-	// typing settle into a single smooth flight instead of jittering per keystroke.
-	const FIT_DEBOUNCE_MS = 300;
+	// View-fitting animation duration. Fits run immediately when results change (no
+	// debounce) so the camera tracks the search without lag; Leaflet redirects an
+	// in-flight flight smoothly if the results change again before it lands.
 	const FLY_DURATION = 0.6; // seconds
+	// Minimum gap (px) kept between a framed marker and the map edge.
+	const FIT_BASE_PADDING = 40;
+	// Extra breathing room (px) between a marker and a panel it's tucked beside.
+	const FIT_PANEL_MARGIN = 12;
 	// Cap how far a fit can zoom in, so one or two close results don't slam to
 	// street level.
 	const FIT_MAX_ZOOM = 16;
@@ -80,9 +91,6 @@
 	// Becomes true once the map is initialised; effects below gate on it so they
 	// don't fire against a half-built map (the Leaflet import is async).
 	let ready = $state(false);
-
-	// Pending debounced view-fit (see scheduleFit).
-	let fitTimer: ReturnType<typeof setTimeout> | null = null;
 
 	// --- Drawing state (imperative; not reactive) -----------------------------
 	// Vertices clicked so far in the current draw session.
@@ -144,18 +152,66 @@
 		}
 	}
 
-	// Smoothly zoom in on the selected location. Cancels any pending results-fit so
-	// the two don't fight over the camera.
+	// Smoothly zoom in on the selected location.
 	function flyToSelected() {
 		if (!L || !map || !selected) return;
-		if (fitTimer) {
-			clearTimeout(fitTimer);
-			fitTimer = null;
-		}
 		map.flyTo([selected.latitude, selected.longitude], SELECTED_ZOOM, {
 			duration: FLY_DURATION
 		});
 		markersById[selected.id]?.openTooltip();
+	}
+
+	// Scale a padding pair down proportionally if together they'd exceed `max`, so
+	// opposing panels can never reserve the entire axis and leave no room to fit.
+	function clampPair(a: number, b: number, max: number): [number, number] {
+		const total = a + b;
+		if (total <= max || total === 0) return [a, b];
+		const scale = max / total;
+		return [a * scale, b * scale];
+	}
+
+	// Reserve space for the floating panels so fitted results never land underneath
+	// them. For each overlapping obstacle we measure its rect against the map
+	// container and grow the padding on the edge it's docked to: narrow side panels
+	// push left/right, full-width panels (the stacked mobile layout) push top/bottom.
+	// Returns Leaflet paddingTopLeft / paddingBottomRight points.
+	function computeFitPadding(): {
+		paddingTopLeft: [number, number];
+		paddingBottomRight: [number, number];
+	} {
+		let left = FIT_BASE_PADDING;
+		let right = FIT_BASE_PADDING;
+		let top = FIT_BASE_PADDING;
+		let bottom = FIT_BASE_PADDING;
+
+		const c = mapEl.getBoundingClientRect();
+		for (const el of obstacles) {
+			const r = el?.getBoundingClientRect();
+			// Skip missing or hidden (display:none → zero-sized) panels.
+			if (!r || r.width === 0 || r.height === 0) continue;
+
+			if (r.width > c.width * 0.6) {
+				// Spans most of the width → docked to the top or bottom edge.
+				if (r.top - c.top < c.bottom - r.bottom) {
+					top = Math.max(top, r.bottom - c.top + FIT_PANEL_MARGIN);
+				} else {
+					bottom = Math.max(bottom, c.bottom - r.top + FIT_PANEL_MARGIN);
+				}
+			} else {
+				// A narrow panel docked to the left or right edge.
+				if (r.left - c.left < c.right - r.right) {
+					left = Math.max(left, r.right - c.left + FIT_PANEL_MARGIN);
+				} else {
+					right = Math.max(right, c.right - r.left + FIT_PANEL_MARGIN);
+				}
+			}
+		}
+
+		// Keep a fittable strip in the middle even if the panels are oversized.
+		[left, right] = clampPair(left, right, c.width * 0.8);
+		[top, bottom] = clampPair(top, bottom, c.height * 0.8);
+
+		return { paddingTopLeft: [left, top], paddingBottomRight: [right, bottom] };
 	}
 
 	// Smoothly fly the view to frame the current locations. Suppressed while the
@@ -166,11 +222,13 @@
 		if (!L || !map || drawing || selected) return;
 
 		const points = locations.map((loc) => [loc.latitude, loc.longitude] as [number, number]);
+		const { paddingTopLeft, paddingBottomRight } = computeFitPadding();
 
 		if (points.length > 0) {
 			// Frame the visible locations.
 			map.flyToBounds(points, {
-				padding: [40, 40],
+				paddingTopLeft,
+				paddingBottomRight,
 				maxZoom: FIT_MAX_ZOOM,
 				duration: FLY_DURATION
 			});
@@ -178,7 +236,8 @@
 			// An area is set but nothing matches inside it — frame the area itself so
 			// the user stays oriented to their selection.
 			map.flyToBounds(polygon, {
-				padding: [40, 40],
+				paddingTopLeft,
+				paddingBottomRight,
 				maxZoom: FIT_MAX_ZOOM,
 				duration: FLY_DURATION
 			});
@@ -186,21 +245,6 @@
 			// No results and no area: return to the default city view.
 			map.flyTo(VANCOUVER, DEFAULT_ZOOM, { duration: FLY_DURATION });
 		}
-	}
-
-	// Debounce the fit: each call resets the timer, so a burst of result changes
-	// (e.g. typing a query) produces one flight once things settle. Clearing the
-	// timer here also cancels a pending fit when drawing begins.
-	function scheduleFit() {
-		if (fitTimer) {
-			clearTimeout(fitTimer);
-			fitTimer = null;
-		}
-		if (!map || drawing || selected) return;
-		fitTimer = setTimeout(() => {
-			fitTimer = null;
-			fitToLocations();
-		}, FIT_DEBOUNCE_MS);
 	}
 
 	// --- Draw mode ------------------------------------------------------------
@@ -396,10 +440,6 @@
 		return () => {
 			active = false;
 			ready = false;
-			if (fitTimer) {
-				clearTimeout(fitTimer);
-				fitTimer = null;
-			}
 			if (map) {
 				map.remove();
 				map = null;
@@ -414,15 +454,15 @@
 	// Re-render markers and move the camera when inputs change after the map is
 	// ready. `renderMarkers()` reads `locations`, `drawing` and `selected`, so this
 	// effect re-runs on any of them. Markers update instantly; camera moves are
-	// animated. When a location is selected we fly to it; otherwise we (debounced)
-	// refit to frame the current results. While drawing, the camera is left alone.
+	// animated. When a location is selected we fly to it; otherwise we refit to
+	// frame the current results. While drawing, the camera is left alone.
 	// `polygon` changes flow through `locations` (the parent re-filters results).
 	$effect(() => {
 		if (!ready) return;
 		renderMarkers();
 		if (drawing) return;
 		if (selected) flyToSelected();
-		else scheduleFit();
+		else fitToLocations();
 	});
 
 	// Enter / leave draw mode in response to the bindable `drawing` flag.
