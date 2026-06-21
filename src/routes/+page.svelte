@@ -3,12 +3,19 @@
 	import { pushState, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import { MediaQuery } from 'svelte/reactivity';
-	import { getLocations, getTags } from '$lib/data.remote';
+	import { getLocations, getTags, getUserLocation } from '$lib/data.remote';
 	import LocationMap from '$lib/components/LocationMap.svelte';
 	import { pointInPolygon, type LatLng } from '$lib/geo';
 
 	const locations = $derived(await getLocations());
 	const allTags = $derived(await getTags());
+
+	// Prompt-free IP geolocation from the edge; `null` when unavailable (e.g. local
+	// dev), in which case the map opens at its built-in default view.
+	const userLocation = $derived(await getUserLocation());
+	const initialCenter = $derived<[number, number] | null>(
+		userLocation ? [userLocation.lat, userLocation.lng] : null
+	);
 
 	type LocationData = (typeof locations)[number];
 	type MenuItem = LocationData['menu'][number];
@@ -348,6 +355,7 @@
 			selected={selectedLocation}
 			onselect={selectLocation}
 			obstacles={[searchPanelEl, resultsPanelEl].filter((el) => el !== undefined)}
+			{initialCenter}
 			bind:polygon={area}
 			bind:drawing
 		/>
