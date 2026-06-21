@@ -89,11 +89,19 @@
 	// --- Selected location (integrated detail view) ---------------------------
 	// The open location is driven by shallow routing: selecting pushes a
 	// `/locations/<id>` history entry (without navigating) that carries the id in
-	// `page.state`, so Back closes the detail. On a fresh load or shared link
-	// `page.state` is empty, so we fall back to the id in the URL — the `reroute`
-	// hook serves this page for `/locations/*`. Either way the record is looked up
-	// from the already-loaded `locations`, so no extra fetch is needed.
-	const selectedId = $derived(page.state.selected ?? idFromPath(page.url.pathname));
+	// `page.state`, so Back closes the detail. The record is looked up from the
+	// already-loaded `locations`, so no extra fetch is needed.
+	//
+	// On a fresh load or shared link `page.state` is empty (shallow-routing state
+	// isn't restored after a hard navigation), so the id comes from the URL — the
+	// `reroute` hook serves this page for `/locations/*`. We snapshot that landing
+	// id ONCE instead of reading `page.url` reactively: `pushState`/`replaceState`
+	// update only the address bar and `page.state`, never `page.url`. A live
+	// `idFromPath(page.url.pathname)` would therefore stay pinned to the landing id
+	// for the whole session and re-open the detail every time the selection state
+	// is cleared — so closing must also null this snapshot (see `closeDetail`).
+	let landingId = $state(idFromPath(page.url.pathname));
+	const selectedId = $derived(page.state.selected ?? landingId);
 	const selectedLocation = $derived(
 		selectedId ? (locations.find((loc) => loc.id === selectedId) ?? null) : null
 	);
@@ -132,17 +140,22 @@
 	}
 
 	function closeDetail(): void {
+		// Drop the landing-id snapshot so a detail opened from a `/locations/<id>`
+		// URL actually closes. With `page.state` cleared below, `selectedId` falls
+		// back to `landingId`; since `page.url` is frozen at the landing path,
+		// `idFromPath` would keep yielding that id, so the snapshot must be cleared
+		// too (see the note above the snapshot).
+		landingId = null;
 		// Rewrite the current history entry to the bare map URL with empty state.
-		// `replaceState` updates `page.state`/`page.url` synchronously, so
-		// `selectedLocation` resolves to `null` immediately and deterministically.
+		// `replaceState` clears `page.state` and resets the address bar synchronously;
+		// together with the line above, `selectedLocation` resolves to `null` at once.
 		//
 		// We deliberately avoid `history.back()`: it depends on the previous entry
 		// being a selection-free results view and on an async `popstate` to reset
 		// `page.state`. Neither holds when the page was opened on a `/locations/<id>`
-		// link (that entry carries the id in its URL but empty state) — going back to
-		// it re-derives the id from the path, so the URL changes while the detail
-		// stays open. Pressing the browser Back button still closes the detail via
-		// the prior `/` entry, so back/forward stays intuitive.
+		// link, so Back there could leave the detail open. Pressing the browser Back
+		// button still closes the detail via the prior `/` entry, so back/forward
+		// stays intuitive.
 		replaceState(resolve('/'), {});
 	}
 
