@@ -481,12 +481,7 @@
 
 <svelte:window onkeydown={onKeydown} />
 
-<div
-	class="map"
-	bind:this={mapEl}
-	role="application"
-	aria-label="Map of food locations in Vancouver"
-></div>
+<div class="map" bind:this={mapEl} role="application" aria-label="Map of food locations"></div>
 
 <style>
 	.map {
