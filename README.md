@@ -62,9 +62,6 @@ immediately. Run it standalone with `bun run db:mcp`. It needs D1 credentials in
 `.env` (see `.env.example`). Inputs are validated with valibot, and the JSON
 Schema advertised to clients is generated from those same schemas.
 
-The legacy `data/food.db` SQLite file (gitignored) is no longer used at runtime;
-it is only the source for the one-shot seed (`bun run db:seed`).
-
 ## Deploying to Cloudflare
 
 The app deploys to **Cloudflare Workers** (Static Assets) via
@@ -85,10 +82,10 @@ bun run d1:migrate            # wrangler d1 migrations apply … --remote
 
 # 4. Copy .env.example to .env and fill in CLOUDFLARE_ACCOUNT_ID,
 #    CLOUDFLARE_DATABASE_ID, and a CLOUDFLARE_API_TOKEN (D1 Edit permission).
-
-# 5. One-shot import of existing rows from data/food.db into D1:
-bun run db:seed
 ```
+
+The production D1 is already provisioned and seeded; these steps document the
+one-time setup. Data is edited going forward through the MCP server.
 
 Deploy:
 

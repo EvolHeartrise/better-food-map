@@ -1,8 +1,7 @@
 /**
  * A `D1Like` client backed by the Cloudflare D1 REST API, for use OUTSIDE the
- * Worker runtime — the MCP server (`scripts/db-mcp-server.ts`) and the seed
- * script (`scripts/seed-d1.ts`) both run under Bun and talk to the *same*
- * production D1 the deployed Worker reads from.
+ * Worker runtime — the MCP server (`scripts/db-mcp-server.ts`) runs under Bun
+ * and talks to the *same* production D1 the deployed Worker reads from.
  *
  * Inside the Worker, use the native `platform.env.DB` binding instead; this
  * file must never be imported into the app/Worker bundle.
