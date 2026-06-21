@@ -294,38 +294,36 @@
 						{/if}
 					</header>
 
-					<dl class="info">
-						{#if selectedLocation.address}
-							<div class="info__row">
-								<dt>Address</dt>
-								<dd>{selectedLocation.address}</dd>
-							</div>
-						{/if}
-						{#if selectedLocation.phone}
-							<div class="info__row">
-								<dt>Phone</dt>
-								<dd><a href="tel:{selectedLocation.phone}">{selectedLocation.phone}</a></dd>
-							</div>
-						{/if}
-						{#if selectedLocation.website}
-							<div class="info__row">
-								<dt>Website</dt>
-								<dd>
-									<a
-										href={selectedLocation.website}
-										target="_blank"
-										rel="external noopener noreferrer"
-									>
-										{selectedLocation.website}
-									</a>
-								</dd>
-							</div>
-						{/if}
-						<div class="info__row">
-							<dt>Coordinates</dt>
-							<dd>{selectedLocation.latitude}, {selectedLocation.longitude}</dd>
-						</div>
-					</dl>
+					{#if selectedLocation.address || selectedLocation.phone || selectedLocation.website}
+						<dl class="info">
+							{#if selectedLocation.address}
+								<div class="info__row">
+									<dt>Address</dt>
+									<dd>{selectedLocation.address}</dd>
+								</div>
+							{/if}
+							{#if selectedLocation.phone}
+								<div class="info__row">
+									<dt>Phone</dt>
+									<dd><a href="tel:{selectedLocation.phone}">{selectedLocation.phone}</a></dd>
+								</div>
+							{/if}
+							{#if selectedLocation.website}
+								<div class="info__row">
+									<dt>Website</dt>
+									<dd>
+										<a
+											href={selectedLocation.website}
+											target="_blank"
+											rel="external noopener noreferrer"
+										>
+											{selectedLocation.website}
+										</a>
+									</dd>
+								</div>
+							{/if}
+						</dl>
+					{/if}
 
 					<section class="menu">
 						<h3 class="menu__heading">Menu</h3>
