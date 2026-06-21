@@ -1,0 +1,5 @@
+{
+	"*.{js,mjs,cjs,ts}": ["oxfmt", "oxlint --fix"],
+	"*.svelte": ["oxfmt", "eslint --fix"],
+	"*.{json,jsonc,html,css,md,yaml,yml}": ["oxfmt"]
+}

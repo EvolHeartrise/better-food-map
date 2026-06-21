@@ -1,18 +1,26 @@
 {
 	"name": "better-food-map",
-	"private": true,
 	"version": "0.0.1",
+	"private": true,
 	"type": "module",
 	"scripts": {
 		"dev": "bunx --bun vite dev",
 		"build": "bunx --bun vite build",
 		"preview": "bunx --bun vite preview",
-		"prepare": "svelte-kit sync || echo ''",
+		"prepare": "svelte-kit sync || echo '' && husky",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
-		"lint": "prettier --check . && eslint .",
-		"format": "prettier --write .",
+		"lint": "oxlint --type-aware && eslint \"**/*.svelte\"",
+		"lint:fix": "oxlint --fix && eslint --fix \"**/*.svelte\"",
+		"format": "oxfmt",
+		"format:check": "oxfmt --check",
 		"db:mcp": "bun run scripts/db-mcp-server.ts"
+	},
+	"dependencies": {
+		"@modelcontextprotocol/sdk": "^1.29.0",
+		"@valibot/to-json-schema": "^1.7.1",
+		"leaflet": "^1.9.4",
+		"valibot": "^1.4.1"
 	},
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",
@@ -26,18 +34,15 @@
 		"eslint-config-prettier": "^10.1.8",
 		"eslint-plugin-svelte": "^3.19.0",
 		"globals": "^17.6.0",
-		"prettier": "^3.8.3",
-		"prettier-plugin-svelte": "^4.1.0",
+		"husky": "^9.1.7",
+		"lint-staged": "^17.0.7",
+		"oxfmt": "^0.52.0",
+		"oxlint": "^1.67.0",
+		"oxlint-tsgolint": "^0.23.0",
 		"svelte": "^5.56.1",
 		"svelte-check": "^4.6.0",
 		"typescript": "^6.0.3",
 		"typescript-eslint": "^8.60.1",
 		"vite": "^8.0.16"
-	},
-	"dependencies": {
-		"@modelcontextprotocol/sdk": "^1.29.0",
-		"@valibot/to-json-schema": "^1.7.1",
-		"leaflet": "^1.9.4",
-		"valibot": "^1.4.1"
 	}
 }
