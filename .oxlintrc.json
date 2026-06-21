@@ -1,0 +1,25 @@
+{
+	"$schema": "./node_modules/oxlint/configuration_schema.json",
+	"globals": {
+		"$state": "readonly",
+		"$derived": "readonly",
+		"$effect": "readonly",
+		"$props": "readonly",
+		"$bindable": "readonly",
+		"$inspect": "readonly",
+		"$host": "readonly"
+	},
+	"rules": {
+		"eqeqeq": "error",
+		"no-shadow": "error",
+		"no-console": ["warn", { "allow": ["warn", "error"] }],
+		"typescript/no-explicit-any": "error",
+		"typescript/consistent-type-imports": "error",
+		"typescript/no-non-null-assertion": "warn",
+		"unicorn/no-array-sort": "warn",
+		"typescript/no-floating-promises": "error",
+		"typescript/no-misused-promises": "error",
+		"typescript/await-thenable": "error",
+		"typescript/no-unnecessary-type-assertion": "error"
+	}
+}

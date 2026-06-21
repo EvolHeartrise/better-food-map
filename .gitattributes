@@ -1,0 +1,7 @@
+# Normalize line endings to LF for all text files.
+# Keeps oxfmt (LF) and Linux CI consistent with the Windows working tree.
+* text=auto eol=lf
+
+# Lockfiles and binary assets
+bun.lock linguist-generated=true
+*.svg binary
