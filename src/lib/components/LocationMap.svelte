@@ -39,7 +39,12 @@
 		// these currently overlap, so markers are never framed underneath them.
 		// Measured live at fit time, so it adapts to panel size, the stacked mobile
 		// layout, or a panel being hidden — no resize listener needed.
-		obstacles = []
+		obstacles = [],
+		// Where the map opens, as `[lat, lng]` — typically the visitor's IP-detected
+		// location. When provided, the camera opens here and the one-time
+		// fit-to-all-results on load is skipped, so the map starts "where you are".
+		// Falls back to DEFAULT_CENTER when absent (e.g. geolocation unavailable).
+		initialCenter = null
 	}: {
 		locations: Location[];
 		selected?: Location | null;
@@ -47,12 +52,14 @@
 		polygon?: LatLng[] | null;
 		drawing?: boolean;
 		obstacles?: HTMLElement[];
+		initialCenter?: [number, number] | null;
 	} = $props();
 
-	// Fallback map center used before any results load — just a sensible starting
-	// view, not tied to any particular city.
+	// Fallback map center, used when no `initialCenter` is supplied (e.g. IP
+	// geolocation is unavailable) — just a sensible starting view, not tied to any
+	// particular city.
 	const DEFAULT_CENTER: [number, number] = [49.2827, -123.1207];
-	const DEFAULT_ZOOM = 12;
+	const DEFAULT_ZOOM = 13;
 	// Matches --color-accent; Leaflet path strokes/fills need a concrete colour.
 	const ACCENT = '#2f6f4f';
 	// How close (in pixels) a click must be to the first vertex to close the ring.
@@ -421,7 +428,10 @@
 
 			// Zoom control sits bottom-left, clear of the floating search (top-left)
 			// and results (top-right) panels that overlay the full-screen map.
-			map = L.map(mapEl, { zoomControl: false }).setView(DEFAULT_CENTER, DEFAULT_ZOOM);
+			map = L.map(mapEl, { zoomControl: false }).setView(
+				initialCenter ?? DEFAULT_CENTER,
+				DEFAULT_ZOOM
+			);
 			L.control.zoom({ position: 'bottomleft' }).addTo(map);
 
 			// Drop the optional "Leaflet" prefix; the OpenStreetMap credit below is
@@ -453,6 +463,13 @@
 		};
 	});
 
+	// Tracks the first post-ready effect run. On that run, when an `initialCenter`
+	// was supplied, we skip the fit-to-results so the camera stays "where you are"
+	// (the map already opened there) instead of jumping to frame every marker. All
+	// later input changes (search/filter/select) fit and fly as normal. A plain
+	// (non-reactive) flag on purpose — it's read and cleared within the effect.
+	let firstRun = true;
+
 	// Re-render markers and move the camera when inputs change after the map is
 	// ready. `renderMarkers()` reads `locations`, `drawing` and `selected`, so this
 	// effect re-runs on any of them. Markers update instantly; camera moves are
@@ -463,8 +480,15 @@
 		if (!ready) return;
 		renderMarkers();
 		if (drawing) return;
+
+		// Consume the one-time hold on the first run regardless of branch, so a map
+		// opened straight to a selected location (shared link) still fits normally
+		// once that selection is cleared.
+		const skipFit = firstRun && initialCenter !== null;
+		firstRun = false;
+
 		if (selected) flyToSelected();
-		else fitToLocations();
+		else if (!skipFit) fitToLocations();
 	});
 
 	// Enter / leave draw mode in response to the bindable `drawing` flag.
