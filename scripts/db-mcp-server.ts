@@ -2,9 +2,13 @@
 /**
  * Model Context Protocol server for the food-map database.
  *
- * Exposes CRUD tools over `data/food.db` so an MCP client (e.g. Claude Code)
- * can read and mutate locations and menu items directly via tool calls. This is
- * the sole mechanism for populating and editing the database.
+ * Exposes CRUD tools over the production Cloudflare D1 database (via the D1 REST
+ * API, see src/lib/server/d1-http.ts) so an MCP client (e.g. Claude Code) can
+ * read and mutate locations and menu items directly via tool calls. Edits go
+ * straight to the same database the deployed site reads from.
+ *
+ * Requires D1 credentials in .env (see .env.example): CLOUDFLARE_ACCOUNT_ID,
+ * CLOUDFLARE_DATABASE_ID, CLOUDFLARE_API_TOKEN. Bun auto-loads .env.
  *
  * Transport is stdio, so it MUST keep stdout clean for the protocol: all
  * diagnostics go to stderr (never `console.log`).
@@ -23,7 +27,6 @@ import * as v from 'valibot';
 import { toJsonSchema } from '@valibot/to-json-schema';
 
 import {
-	db,
 	getLocationsWithTags,
 	getLocationById,
 	getFoodByLocation,
@@ -35,8 +38,18 @@ import {
 	deleteLocation,
 	updateFood,
 	deleteFood,
-	TAGS
+	TAGS,
+	type D1Like
 } from '../src/lib/server/db';
+import { createHttpD1 } from '../src/lib/server/d1-http';
+
+// The D1 client is created lazily so the server can start and advertise its
+// tools even before credentials are configured; the first tool call that needs
+// the database surfaces any missing-env error.
+let _db: D1Like | undefined;
+function getDb(): D1Like {
+	return (_db ??= createHttpD1());
+}
 
 // ---------------------------------------------------------------------------
 // Shared field schemas (valibot — single source of truth for both validation
@@ -269,7 +282,7 @@ function haversineKm(aLat: number, aLon: number, bLat: number, bLon: number): nu
 }
 
 /** Read-only guard for the raw SQL escape hatch. */
-function runReadOnlySql(sql: string): unknown {
+async function runReadOnlySql(sql: string): Promise<unknown> {
 	const trimmed = sql
 		.trim()
 		.replace(/;+\s*$/, '')
@@ -280,7 +293,8 @@ function runReadOnlySql(sql: string): unknown {
 	if (!/^(select|with)\b/i.test(trimmed)) {
 		throw new Error('Only read-only queries are allowed (must start with SELECT or WITH).');
 	}
-	return db.query(trimmed).all();
+	const { results } = await getDb().prepare(trimmed).all();
+	return results;
 }
 
 const tools = [
@@ -292,8 +306,8 @@ const tools = [
 			'Supports optional `near`/`category` filtering and `limit`/`offset` paging. Use get_location for ' +
 			'a single place with its full menu and sources.',
 		schema: listLocationsArgs,
-		handler: ({ near, category, limit, offset }) => {
-			let rows = getLocationsWithTags();
+		handler: async ({ near, category, limit, offset }) => {
+			let rows = await getLocationsWithTags(getDb());
 			if (category) rows = rows.filter((r) => r.category === category);
 			if (near) {
 				rows = rows
@@ -325,10 +339,10 @@ const tools = [
 		description:
 			'Get a single location (with its source URLs) merged with its full menu (each item carries its tags and sources). Returns null if not found.',
 		schema: idArgs,
-		handler: ({ id }) => {
-			const location = getLocationById(id);
+		handler: async ({ id }) => {
+			const location = await getLocationById(getDb(), id);
 			if (!location) return null;
-			return { ...location, menu: getFoodByLocation(id) };
+			return { ...location, menu: await getFoodByLocation(getDb(), id) };
 		}
 	}),
 	defineTool({
@@ -336,8 +350,8 @@ const tools = [
 		description:
 			'Create a new location, optionally with source URLs documenting where its data came from (encouraged). Returns the created location row (including its generated id and sources).',
 		schema: createLocationArgs,
-		handler: (input) => {
-			const id = insertLocation({
+		handler: async (input) => {
+			const id = await insertLocation(getDb(), {
 				id: input.id,
 				name: input.name,
 				category: input.category ?? null,
@@ -348,7 +362,7 @@ const tools = [
 				website: input.website ?? null,
 				sources: normalizeSources(input.sources)
 			});
-			return getLocationById(id);
+			return getLocationById(getDb(), id);
 		}
 	}),
 	defineTool({
@@ -356,28 +370,28 @@ const tools = [
 		description:
 			'Update one or more fields of an existing location. Only provided fields change; if `sources` is given it replaces the whole source set (pass [] to clear). Returns the updated row, or null if the id does not exist.',
 		schema: updateLocationArgs,
-		handler: ({ id, sources, ...patch }) =>
-			updateLocation(id, { ...patch, sources: normalizeSources(sources) })
+		handler: async ({ id, sources, ...patch }) =>
+			updateLocation(getDb(), id, { ...patch, sources: normalizeSources(sources) })
 	}),
 	defineTool({
 		name: 'delete_location',
 		description:
 			'Delete a location and (by cascade) all of its menu items. Returns { deleted: true } if a row was removed.',
 		schema: idArgs,
-		handler: ({ id }) => ({ deleted: deleteLocation(id) })
+		handler: async ({ id }) => ({ deleted: await deleteLocation(getDb(), id) })
 	}),
 	defineTool({
 		name: 'list_food',
 		description: 'List all menu items (with tags and sources) for a given location.',
 		schema: listFoodArgs,
-		handler: ({ location_id }) => getFoodByLocation(location_id)
+		handler: async ({ location_id }) => getFoodByLocation(getDb(), location_id)
 	}),
 	defineTool({
 		name: 'get_food',
 		description:
 			'Get a single menu item with its dietary tags and source URLs. Returns null if not found.',
 		schema: idArgs,
-		handler: ({ id }) => getFoodById(id)
+		handler: async ({ id }) => getFoodById(getDb(), id)
 	}),
 	defineTool({
 		name: 'create_foods',
@@ -386,11 +400,12 @@ const tools = [
 			'if any item is invalid, none are written. This is the only way to add menu items — pass a ' +
 			'one-element `items` array to add a single item. Returns the created items (each with tags and sources).',
 		schema: createFoodsArgs,
-		handler: (input) => {
-			if (!getLocationById(input.location_id)) {
+		handler: async (input) => {
+			if (!(await getLocationById(getDb(), input.location_id))) {
 				throw new Error(`No location with id "${input.location_id}".`);
 			}
-			const ids = insertFoods(
+			const ids = await insertFoods(
+				getDb(),
 				input.items.map((it) => ({
 					id: it.id,
 					location_id: input.location_id,
@@ -402,7 +417,7 @@ const tools = [
 					sources: normalizeSources(it.sources)
 				}))
 			);
-			return ids.map((id) => getFoodById(id));
+			return Promise.all(ids.map((id) => getFoodById(getDb(), id)));
 		}
 	}),
 	defineTool({
@@ -410,14 +425,14 @@ const tools = [
 		description:
 			'Update a menu item. Only provided fields change; if `tags` or `sources` is given it replaces that whole set (pass [] to clear). Returns the updated item, or null if the id does not exist.',
 		schema: updateFoodArgs,
-		handler: ({ id, sources, ...patch }) =>
-			updateFood(id, { ...patch, sources: normalizeSources(sources) })
+		handler: async ({ id, sources, ...patch }) =>
+			updateFood(getDb(), id, { ...patch, sources: normalizeSources(sources) })
 	}),
 	defineTool({
 		name: 'delete_food',
 		description: 'Delete a single menu item. Returns { deleted: true } if a row was removed.',
 		schema: idArgs,
-		handler: ({ id }) => ({ deleted: deleteFood(id) })
+		handler: async ({ id }) => ({ deleted: await deleteFood(getDb(), id) })
 	}),
 	defineTool({
 		name: 'list_tags',
@@ -473,7 +488,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 	try {
 		const input = v.parse(tool.schema, rawArgs ?? {});
-		const result = tool.handler(input as never);
+		const result = await tool.handler(input as never);
 		return {
 			content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }]
 		};

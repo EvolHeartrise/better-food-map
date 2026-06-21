@@ -1,6 +1,30 @@
-/// <reference types="bun-types" />
-import { Database } from 'bun:sqlite';
-import { mkdirSync } from 'node:fs';
+// ---------------------------------------------------------------------------
+// Cloudflare D1 data-access layer.
+//
+// This module is RUNTIME-AGNOSTIC: it contains no connection of its own. Every
+// function takes a `D1Like` handle and is async, so the same code runs against
+// either the Worker's D1 binding (`platform.env.DB`) in the deployed app, or the
+// HTTP-backed client in `d1-http.ts` used by the MCP server and the seed script.
+// Keep it free of `bun:sqlite`, `node:*`, and other non-Worker imports.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Minimal D1 interface (the real `D1Database` binding and the HTTP shim in
+// `d1-http.ts` are both structurally assignable to these).
+// ---------------------------------------------------------------------------
+
+export interface D1PreparedLike {
+	bind(...values: unknown[]): D1PreparedLike;
+	first<T = unknown>(): Promise<T | null>;
+	all<T = unknown>(): Promise<{ results: T[] }>;
+	run(): Promise<{ meta: { changes: number } }>;
+}
+
+export interface D1Like {
+	prepare(query: string): D1PreparedLike;
+	/** Runs the given statements atomically (all-or-nothing). */
+	batch(statements: D1PreparedLike[]): Promise<unknown[]>;
+}
 
 // ---------------------------------------------------------------------------
 // Types (STABLE CONTRACT — other agents depend on these exact names)
@@ -82,7 +106,7 @@ export interface LocationWithTags extends Location {
 
 // The canonical tag list. Order here is the display/filter order on the
 // frontend (dietary tags first, then course tags). Tags are app-defined, never
-// created from the UI.
+// created from the UI. The same list is seeded into D1 by migrations/0001_init.sql.
 export const TAGS: readonly Tag[] = [
 	{ id: 'vegan', label: 'Vegan', kind: 'dietary' },
 	{ id: 'vegetarian', label: 'Vegetarian', kind: 'dietary' },
@@ -107,6 +131,14 @@ interface SourceRow {
 	label: string | null;
 }
 
+/** A (food/location, tag) join row, used when grouping tags by owner. */
+interface TagRow {
+	owner_id: string;
+	id: TagId;
+	label: string;
+	kind: TagKind;
+}
+
 /** Groups raw source rows by owner id, preserving insertion order within each. */
 function groupSources(rows: SourceRow[]): Map<string, Source[]> {
 	const byOwner = new Map<string, Source[]>();
@@ -118,287 +150,54 @@ function groupSources(rows: SourceRow[]): Map<string, Source[]> {
 	return byOwner;
 }
 
-// ---------------------------------------------------------------------------
-// Database connection
-// ---------------------------------------------------------------------------
-
-// `bun:sqlite` will not create parent directories, so ensure `data/` exists.
-mkdirSync('data', { recursive: true });
-
-export const db: Database = new Database('data/food.db', { create: true });
-
-db.exec('PRAGMA journal_mode = WAL;');
-db.exec('PRAGMA foreign_keys = ON;');
-
-// Idempotent schema setup. Runs once per import.
-db.exec(`
-	CREATE TABLE IF NOT EXISTS locations (
-		id TEXT PRIMARY KEY,
-		name TEXT NOT NULL,
-		category TEXT,
-		latitude REAL NOT NULL,
-		longitude REAL NOT NULL,
-		address TEXT,
-		phone TEXT,
-		website TEXT
-	);
-
-	CREATE TABLE IF NOT EXISTS food (
-		id TEXT PRIMARY KEY,
-		location_id TEXT NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
-		item_name TEXT NOT NULL,
-		description TEXT,
-		ingredients TEXT,
-		price REAL
-	);
-
-	CREATE INDEX IF NOT EXISTS idx_food_location_id ON food (location_id);
-
-	CREATE TABLE IF NOT EXISTS tags (
-		id TEXT PRIMARY KEY,
-		label TEXT NOT NULL,
-		kind TEXT NOT NULL DEFAULT 'dietary'
-	);
-
-	CREATE TABLE IF NOT EXISTS food_tags (
-		food_id TEXT NOT NULL REFERENCES food(id) ON DELETE CASCADE,
-		tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-		PRIMARY KEY (food_id, tag_id)
-	);
-
-	CREATE INDEX IF NOT EXISTS idx_food_tags_tag_id ON food_tags (tag_id);
-
-	-- Provenance for each menu item: zero or more source URLs (with optional
-	-- labels). The (food_id, url) primary key de-duplicates the same URL per item.
-	CREATE TABLE IF NOT EXISTS food_sources (
-		food_id TEXT NOT NULL REFERENCES food(id) ON DELETE CASCADE,
-		url TEXT NOT NULL,
-		label TEXT,
-		PRIMARY KEY (food_id, url)
-	);
-
-	CREATE INDEX IF NOT EXISTS idx_food_sources_food_id ON food_sources (food_id);
-
-	-- Provenance for each location, same shape as food_sources.
-	CREATE TABLE IF NOT EXISTS location_sources (
-		location_id TEXT NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
-		url TEXT NOT NULL,
-		label TEXT,
-		PRIMARY KEY (location_id, url)
-	);
-
-	CREATE INDEX IF NOT EXISTS idx_location_sources_location_id ON location_sources (location_id);
-`);
-
-// Migration: databases created before the `description` column existed won't get
-// it from CREATE TABLE IF NOT EXISTS, so add it when missing. Referenced by name
-// everywhere, so its physical column position doesn't matter.
-const hasDescription = db
-	.query<{ name: string }, []>(`PRAGMA table_info(food)`)
-	.all()
-	.some((col) => col.name === 'description');
-if (!hasDescription) {
-	db.exec(`ALTER TABLE food ADD COLUMN description TEXT`);
-}
-
-// Migration: `kind` was added to `tags` after the table first shipped, so
-// CREATE TABLE IF NOT EXISTS won't add it to pre-existing databases. Backfill it
-// with the 'dietary' default; the upsert below then sets the correct kind.
-const hasTagKind = db
-	.query<{ name: string }, []>(`PRAGMA table_info(tags)`)
-	.all()
-	.some((col) => col.name === 'kind');
-if (!hasTagKind) {
-	db.exec(`ALTER TABLE tags ADD COLUMN kind TEXT NOT NULL DEFAULT 'dietary'`);
-}
-
-// The canonical tags are part of the app contract (not user data), so make sure
-// they exist on every startup. Idempotent: re-running keeps labels and kinds in sync.
-const upsertTagStmt = db.query<unknown, [string, string, string]>(
-	`INSERT INTO tags (id, label, kind) VALUES (?, ?, ?)
-	 ON CONFLICT(id) DO UPDATE SET label = excluded.label, kind = excluded.kind`
-);
-for (const tag of TAGS) {
-	upsertTagStmt.run(tag.id, tag.label, tag.kind);
+/** Groups (owner, tag) join rows into a tag list per owner, preserving order. */
+function groupTags(rows: TagRow[]): Map<string, Tag[]> {
+	const byOwner = new Map<string, Tag[]>();
+	for (const row of rows) {
+		const list = byOwner.get(row.owner_id) ?? [];
+		list.push({ id: row.id, label: row.label, kind: row.kind });
+		byOwner.set(row.owner_id, list);
+	}
+	return byOwner;
 }
 
 // ---------------------------------------------------------------------------
-// Prepared statements
+// SQL (D1 enforces foreign keys; schema lives in migrations/0001_init.sql)
 // ---------------------------------------------------------------------------
 
-const selectAllLocations = db.query<LocationRow, []>(
-	`SELECT id, name, category, latitude, longitude, address, phone, website
-	 FROM locations
-	 ORDER BY name`
-);
-
-const selectLocationById = db.query<LocationRow, [string]>(
-	`SELECT id, name, category, latitude, longitude, address, phone, website
-	 FROM locations
-	 WHERE id = ?`
-);
-
-const selectFoodByLocation = db.query<FoodRow, [string]>(
-	`SELECT id, location_id, item_name, description, ingredients, price
-	 FROM food
-	 WHERE location_id = ?
-	 ORDER BY item_name`
-);
-
-// Tags for every menu item at a location, one row per (food, tag) pair.
-const selectTagsByLocation = db.query<
-	{ food_id: string; id: TagId; label: string; kind: TagKind },
-	[string]
->(
-	`SELECT ft.food_id AS food_id, t.id AS id, t.label AS label, t.kind AS kind
-	 FROM food_tags ft
-	 JOIN tags t ON t.id = ft.tag_id
-	 JOIN food f ON f.id = ft.food_id
-	 WHERE f.location_id = ?
-	 ORDER BY t.rowid`
-);
-
-// Distinct tags offered across each location's whole menu (for list/map filters).
-const selectLocationTags = db.query<
-	{ location_id: string; id: TagId; label: string; kind: TagKind },
-	[]
->(
-	`SELECT DISTINCT f.location_id AS location_id, t.id AS id, t.label AS label, t.kind AS kind
-	 FROM food f
-	 JOIN food_tags ft ON ft.food_id = f.id
-	 JOIN tags t ON t.id = ft.tag_id
-	 ORDER BY f.location_id, t.rowid`
-);
-
-// Every menu item across all locations, for building full menus in bulk.
-const selectAllFood = db.query<FoodRow, []>(
-	`SELECT id, location_id, item_name, description, ingredients, price
-	 FROM food
-	 ORDER BY location_id, item_name`
-);
-
-// Every (food, tag) pair across the whole database, for the bulk menu build.
-const selectAllFoodTags = db.query<
-	{ food_id: string; id: TagId; label: string; kind: TagKind },
-	[]
->(
-	`SELECT ft.food_id AS food_id, t.id AS id, t.label AS label, t.kind AS kind
-	 FROM food_tags ft
-	 JOIN tags t ON t.id = ft.tag_id
-	 ORDER BY t.rowid`
-);
-
-const insertLocationStmt = db.query<
-	unknown,
-	[string, string, string | null, number, number, string | null, string | null, string | null]
->(
-	`INSERT INTO locations (id, name, category, latitude, longitude, address, phone, website)
-	 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-);
-
-const insertFoodStmt = db.query<
-	unknown,
-	[string, string, string, string | null, string | null, number | null]
->(
-	`INSERT INTO food (id, location_id, item_name, description, ingredients, price)
-	 VALUES (?, ?, ?, ?, ?, ?)`
-);
-
-const insertFoodTagStmt = db.query<unknown, [string, string]>(
-	`INSERT OR IGNORE INTO food_tags (food_id, tag_id) VALUES (?, ?)`
-);
-
-const selectFoodById = db.query<FoodRow, [string]>(
-	`SELECT id, location_id, item_name, description, ingredients, price
-	 FROM food
-	 WHERE id = ?`
-);
-
-const selectTagsByFood = db.query<{ id: TagId; label: string; kind: TagKind }, [string]>(
-	`SELECT t.id AS id, t.label AS label, t.kind AS kind
-	 FROM food_tags ft
-	 JOIN tags t ON t.id = ft.tag_id
-	 WHERE ft.food_id = ?
-	 ORDER BY t.rowid`
-);
-
-const deleteFoodTagsStmt = db.query<unknown, [string]>(`DELETE FROM food_tags WHERE food_id = ?`);
-
-const deleteLocationStmt = db.query<unknown, [string]>(`DELETE FROM locations WHERE id = ?`);
-
-const deleteFoodStmt = db.query<unknown, [string]>(`DELETE FROM food WHERE id = ?`);
-
-// --- Sources ---------------------------------------------------------------
-
-const selectSourcesByFood = db.query<Source, [string]>(
-	`SELECT url, label FROM food_sources WHERE food_id = ? ORDER BY rowid`
-);
-
-const selectSourcesByLocation = db.query<Source, [string]>(
-	`SELECT url, label FROM location_sources WHERE location_id = ? ORDER BY rowid`
-);
-
-// Sources for every menu item at one location, one row per (food, source) pair.
-const selectFoodSourcesByLocation = db.query<SourceRow, [string]>(
-	`SELECT fs.food_id AS owner_id, fs.url AS url, fs.label AS label
-	 FROM food_sources fs
-	 JOIN food f ON f.id = fs.food_id
-	 WHERE f.location_id = ?
-	 ORDER BY fs.rowid`
-);
-
-// Every (food, source) pair across the whole database, for the bulk menu build.
-const selectAllFoodSources = db.query<SourceRow, []>(
-	`SELECT food_id AS owner_id, url, label FROM food_sources ORDER BY rowid`
-);
-
-// Every (location, source) pair across the whole database.
-const selectAllLocationSources = db.query<SourceRow, []>(
-	`SELECT location_id AS owner_id, url, label FROM location_sources ORDER BY rowid`
-);
-
-const insertFoodSourceStmt = db.query<unknown, [string, string, string | null]>(
-	`INSERT OR IGNORE INTO food_sources (food_id, url, label) VALUES (?, ?, ?)`
-);
-
-const insertLocationSourceStmt = db.query<unknown, [string, string, string | null]>(
-	`INSERT OR IGNORE INTO location_sources (location_id, url, label) VALUES (?, ?, ?)`
-);
-
-const deleteFoodSourcesStmt = db.query<unknown, [string]>(
-	`DELETE FROM food_sources WHERE food_id = ?`
-);
-
-const deleteLocationSourcesStmt = db.query<unknown, [string]>(
-	`DELETE FROM location_sources WHERE location_id = ?`
-);
+const LOCATION_FIELDS = `id, name, category, latitude, longitude, address, phone, website`;
+const FOOD_FIELDS = `id, location_id, item_name, description, ingredients, price`;
 
 // ---------------------------------------------------------------------------
-// Public API (STABLE CONTRACT)
+// Reads
 // ---------------------------------------------------------------------------
-
-export function getAllLocations(): Location[] {
-	const sourcesByLocation = groupSources(selectAllLocationSources.all());
-	return selectAllLocations
-		.all()
-		.map((loc) => ({ ...loc, sources: sourcesByLocation.get(loc.id) ?? [] }));
-}
 
 export function getAllTags(): Tag[] {
 	return TAGS.map((tag) => ({ ...tag }));
 }
 
-export function getLocationsWithTags(): LocationWithTags[] {
-	const locations = selectAllLocations.all();
-	const tagRows = selectLocationTags.all();
-	const sourcesByLocation = groupSources(selectAllLocationSources.all());
+export async function getLocationsWithTags(db: D1Like): Promise<LocationWithTags[]> {
+	const [{ results: locations }, { results: tagRows }, { results: sourceRows }] = await Promise.all(
+		[
+			db.prepare(`SELECT ${LOCATION_FIELDS} FROM locations ORDER BY name`).all<LocationRow>(),
+			// Distinct tags offered across each location's whole menu (for list/map filters).
+			db
+				.prepare(
+					`SELECT DISTINCT f.location_id AS owner_id, t.id AS id, t.label AS label, t.kind AS kind
+				 FROM food f
+				 JOIN food_tags ft ON ft.food_id = f.id
+				 JOIN tags t ON t.id = ft.tag_id
+				 ORDER BY f.location_id, t.rowid`
+				)
+				.all<TagRow>(),
+			db
+				.prepare(`SELECT location_id AS owner_id, url, label FROM location_sources ORDER BY rowid`)
+				.all<SourceRow>()
+		]
+	);
 
-	const tagsByLocation = new Map<string, Tag[]>();
-	for (const row of tagRows) {
-		const list = tagsByLocation.get(row.location_id) ?? [];
-		list.push({ id: row.id, label: row.label, kind: row.kind });
-		tagsByLocation.set(row.location_id, list);
-	}
+	const tagsByLocation = groupTags(tagRows);
+	const sourcesByLocation = groupSources(sourceRows);
 
 	return locations.map((loc) => ({
 		...loc,
@@ -412,19 +211,35 @@ export function getLocationsWithTags(): LocationWithTags[] {
  * own dietary tags). Built in bulk to avoid an N+1 query per location. Used by
  * the map page to render markers and per-location matching-item lists.
  */
-export function getLocationsWithMenus(): LocationWithMenu[] {
-	const locations = selectAllLocations.all();
-	const foodRows = selectAllFood.all();
-	const tagRows = selectAllFoodTags.all();
-	const sourcesByFood = groupSources(selectAllFoodSources.all());
-	const sourcesByLocation = groupSources(selectAllLocationSources.all());
+export async function getLocationsWithMenus(db: D1Like): Promise<LocationWithMenu[]> {
+	const [
+		{ results: locations },
+		{ results: foodRows },
+		{ results: tagRows },
+		{ results: foodSourceRows },
+		{ results: locationSourceRows }
+	] = await Promise.all([
+		db.prepare(`SELECT ${LOCATION_FIELDS} FROM locations ORDER BY name`).all<LocationRow>(),
+		db.prepare(`SELECT ${FOOD_FIELDS} FROM food ORDER BY location_id, item_name`).all<FoodRow>(),
+		db
+			.prepare(
+				`SELECT ft.food_id AS owner_id, t.id AS id, t.label AS label, t.kind AS kind
+				 FROM food_tags ft
+				 JOIN tags t ON t.id = ft.tag_id
+				 ORDER BY t.rowid`
+			)
+			.all<TagRow>(),
+		db
+			.prepare(`SELECT food_id AS owner_id, url, label FROM food_sources ORDER BY rowid`)
+			.all<SourceRow>(),
+		db
+			.prepare(`SELECT location_id AS owner_id, url, label FROM location_sources ORDER BY rowid`)
+			.all<SourceRow>()
+	]);
 
-	const tagsByFood = new Map<string, Tag[]>();
-	for (const row of tagRows) {
-		const list = tagsByFood.get(row.food_id) ?? [];
-		list.push({ id: row.id, label: row.label, kind: row.kind });
-		tagsByFood.set(row.food_id, list);
-	}
+	const tagsByFood = groupTags(tagRows);
+	const sourcesByFood = groupSources(foodSourceRows);
+	const sourcesByLocation = groupSources(locationSourceRows);
 
 	const menuByLocation = new Map<string, Food[]>();
 	for (const row of foodRows) {
@@ -444,23 +259,52 @@ export function getLocationsWithMenus(): LocationWithMenu[] {
 	}));
 }
 
-export function getLocationById(id: string): Location | null {
-	const row = selectLocationById.get(id);
+export async function getLocationById(db: D1Like, id: string): Promise<Location | null> {
+	const [row, { results: sources }] = await Promise.all([
+		db
+			.prepare(`SELECT ${LOCATION_FIELDS} FROM locations WHERE id = ?`)
+			.bind(id)
+			.first<LocationRow>(),
+		db
+			.prepare(`SELECT url, label FROM location_sources WHERE location_id = ? ORDER BY rowid`)
+			.bind(id)
+			.all<Source>()
+	]);
 	if (!row) return null;
-	return { ...row, sources: selectSourcesByLocation.all(id) };
+	return { ...row, sources };
 }
 
-export function getFoodByLocation(locationId: string): Food[] {
-	const rows = selectFoodByLocation.all(locationId);
-	const tagRows = selectTagsByLocation.all(locationId);
-	const sourcesByFood = groupSources(selectFoodSourcesByLocation.all(locationId));
+export async function getFoodByLocation(db: D1Like, locationId: string): Promise<Food[]> {
+	const [{ results: rows }, { results: tagRows }, { results: sourceRows }] = await Promise.all([
+		db
+			.prepare(`SELECT ${FOOD_FIELDS} FROM food WHERE location_id = ? ORDER BY item_name`)
+			.bind(locationId)
+			.all<FoodRow>(),
+		db
+			.prepare(
+				`SELECT ft.food_id AS owner_id, t.id AS id, t.label AS label, t.kind AS kind
+				 FROM food_tags ft
+				 JOIN tags t ON t.id = ft.tag_id
+				 JOIN food f ON f.id = ft.food_id
+				 WHERE f.location_id = ?
+				 ORDER BY t.rowid`
+			)
+			.bind(locationId)
+			.all<TagRow>(),
+		db
+			.prepare(
+				`SELECT fs.food_id AS owner_id, fs.url AS url, fs.label AS label
+				 FROM food_sources fs
+				 JOIN food f ON f.id = fs.food_id
+				 WHERE f.location_id = ?
+				 ORDER BY fs.rowid`
+			)
+			.bind(locationId)
+			.all<SourceRow>()
+	]);
 
-	const tagsByFood = new Map<string, Tag[]>();
-	for (const row of tagRows) {
-		const list = tagsByFood.get(row.food_id) ?? [];
-		list.push({ id: row.id, label: row.label, kind: row.kind });
-		tagsByFood.set(row.food_id, list);
-	}
+	const tagsByFood = groupTags(tagRows);
+	const sourcesByFood = groupSources(sourceRows);
 
 	return rows.map((row) => ({
 		...row,
@@ -469,27 +313,69 @@ export function getFoodByLocation(locationId: string): Food[] {
 	}));
 }
 
-export function insertLocation(
+/** Returns a single menu item with its dietary tags and sources, or `null`. */
+export async function getFoodById(db: D1Like, id: string): Promise<Food | null> {
+	const [row, { results: tags }, { results: sources }] = await Promise.all([
+		db.prepare(`SELECT ${FOOD_FIELDS} FROM food WHERE id = ?`).bind(id).first<FoodRow>(),
+		db
+			.prepare(
+				`SELECT t.id AS id, t.label AS label, t.kind AS kind
+				 FROM food_tags ft
+				 JOIN tags t ON t.id = ft.tag_id
+				 WHERE ft.food_id = ?
+				 ORDER BY t.rowid`
+			)
+			.bind(id)
+			.all<Tag>(),
+		db
+			.prepare(`SELECT url, label FROM food_sources WHERE food_id = ? ORDER BY rowid`)
+			.bind(id)
+			.all<Source>()
+	]);
+	if (!row) return null;
+	return { ...row, tags, sources };
+}
+
+// ---------------------------------------------------------------------------
+// Writes
+// ---------------------------------------------------------------------------
+
+export async function insertLocation(
+	db: D1Like,
 	loc: Omit<Location, 'id' | 'sources'> & { id?: string; sources?: Source[] }
-): string {
+): Promise<string> {
 	const id = loc.id ?? crypto.randomUUID();
-	insertLocationStmt.run(
-		id,
-		loc.name,
-		loc.category,
-		loc.latitude,
-		loc.longitude,
-		loc.address,
-		loc.phone,
-		loc.website
-	);
+	const stmts: D1PreparedLike[] = [
+		db
+			.prepare(
+				`INSERT INTO locations (id, name, category, latitude, longitude, address, phone, website)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+			)
+			.bind(
+				id,
+				loc.name,
+				loc.category,
+				loc.latitude,
+				loc.longitude,
+				loc.address,
+				loc.phone,
+				loc.website
+			)
+	];
 	for (const source of loc.sources ?? []) {
-		insertLocationSourceStmt.run(id, source.url, source.label ?? null);
+		stmts.push(
+			db
+				.prepare(
+					`INSERT OR IGNORE INTO location_sources (location_id, url, label) VALUES (?, ?, ?)`
+				)
+				.bind(id, source.url, source.label ?? null)
+		);
 	}
+	await db.batch(stmts);
 	return id;
 }
 
-/** Arguments accepted by {@link insertFood} / {@link insertFoods}. */
+/** Arguments accepted by {@link insertFoods}. */
 export type FoodInsert = Omit<Food, 'id' | 'tags' | 'description' | 'sources'> & {
 	id?: string;
 	description?: string | null;
@@ -497,38 +383,52 @@ export type FoodInsert = Omit<Food, 'id' | 'tags' | 'description' | 'sources'> &
 	sources?: Source[];
 };
 
-export function insertFood(item: FoodInsert): string {
-	const id = item.id ?? crypto.randomUUID();
-	insertFoodStmt.run(
-		id,
-		item.location_id,
-		item.item_name,
-		item.description ?? null,
-		item.ingredients,
-		item.price
-	);
-	for (const tagId of item.tags ?? []) {
-		insertFoodTagStmt.run(id, tagId);
-	}
-	for (const source of item.sources ?? []) {
-		insertFoodSourceStmt.run(id, source.url, source.label ?? null);
-	}
-	return id;
-}
-
-// Wrapped in a single transaction so a batch insert is all-or-nothing: if any
-// item throws, every insert in the batch is rolled back.
-const insertFoodsTx = db.transaction((items: FoodInsert[]): string[] => items.map(insertFood));
-
 /**
- * Inserts many menu items in one transaction and returns their ids in input
- * order. Either every item is written or, on any error, none are.
+ * Inserts many menu items in one atomic batch and returns their ids in input
+ * order. Either every item (with its tags and sources) is written or, on any
+ * error, none are. Ids are generated up front so the result needs no round-trip.
  */
-export function insertFoods(items: FoodInsert[]): string[] {
-	return insertFoodsTx(items);
+export async function insertFoods(db: D1Like, items: FoodInsert[]): Promise<string[]> {
+	const ids: string[] = [];
+	const stmts: D1PreparedLike[] = [];
+	for (const item of items) {
+		const id = item.id ?? crypto.randomUUID();
+		ids.push(id);
+		stmts.push(
+			db
+				.prepare(
+					`INSERT INTO food (id, location_id, item_name, description, ingredients, price)
+					 VALUES (?, ?, ?, ?, ?, ?)`
+				)
+				.bind(
+					id,
+					item.location_id,
+					item.item_name,
+					item.description ?? null,
+					item.ingredients,
+					item.price
+				)
+		);
+		for (const tagId of item.tags ?? []) {
+			stmts.push(
+				db
+					.prepare(`INSERT OR IGNORE INTO food_tags (food_id, tag_id) VALUES (?, ?)`)
+					.bind(id, tagId)
+			);
+		}
+		for (const source of item.sources ?? []) {
+			stmts.push(
+				db
+					.prepare(`INSERT OR IGNORE INTO food_sources (food_id, url, label) VALUES (?, ?, ?)`)
+					.bind(id, source.url, source.label ?? null)
+			);
+		}
+	}
+	await db.batch(stmts);
+	return ids;
 }
 
-/** Mutable columns of `locations`, in their physical order. */
+/** Mutable columns of `locations`. */
 const LOCATION_COLUMNS = [
 	'name',
 	'category',
@@ -541,10 +441,18 @@ const LOCATION_COLUMNS = [
 
 /**
  * Applies a partial update to a location. Only the fields present in `patch`
- * are written. Returns the updated row, or `null` if no location has that id.
+ * are written; if `patch.sources` is given it replaces the whole source set
+ * (pass `[]` to clear). Returns the updated row, or `null` if no location has
+ * that id. The scalar update and source replacement run as one atomic batch.
  */
-export function updateLocation(id: string, patch: Partial<Omit<Location, 'id'>>): Location | null {
-	if (!getLocationById(id)) return null;
+export async function updateLocation(
+	db: D1Like,
+	id: string,
+	patch: Partial<Omit<Location, 'id'>>
+): Promise<Location | null> {
+	if (!(await getLocationById(db, id))) return null;
+
+	const stmts: D1PreparedLike[] = [];
 
 	const assignments: string[] = [];
 	const values: (string | number | null)[] = [];
@@ -554,50 +462,46 @@ export function updateLocation(id: string, patch: Partial<Omit<Location, 'id'>>)
 			values.push(patch[col]);
 		}
 	}
-
 	if (assignments.length > 0) {
-		values.push(id);
-		db.query(`UPDATE locations SET ${assignments.join(', ')} WHERE id = ?`).run(...values);
+		stmts.push(
+			db.prepare(`UPDATE locations SET ${assignments.join(', ')} WHERE id = ?`).bind(...values, id)
+		);
 	}
 
 	if (patch.sources !== undefined) {
-		deleteLocationSourcesStmt.run(id);
+		stmts.push(db.prepare(`DELETE FROM location_sources WHERE location_id = ?`).bind(id));
 		for (const source of patch.sources) {
-			insertLocationSourceStmt.run(id, source.url, source.label ?? null);
+			stmts.push(
+				db
+					.prepare(
+						`INSERT OR IGNORE INTO location_sources (location_id, url, label) VALUES (?, ?, ?)`
+					)
+					.bind(id, source.url, source.label ?? null)
+			);
 		}
 	}
-	return getLocationById(id);
+
+	if (stmts.length > 0) await db.batch(stmts);
+	return getLocationById(db, id);
 }
 
-/**
- * Deletes a location and (via `ON DELETE CASCADE`) all of its menu items and
- * their tag links. Returns `true` if a row was removed.
- */
-export function deleteLocation(id: string): boolean {
-	return deleteLocationStmt.run(id).changes > 0;
-}
-
-/** Returns a single menu item with its dietary tags, or `null` if not found. */
-export function getFoodById(id: string): Food | null {
-	const row = selectFoodById.get(id);
-	if (!row) return null;
-	return { ...row, tags: selectTagsByFood.all(id), sources: selectSourcesByFood.all(id) };
-}
-
-/** Mutable scalar columns of `food`, in their physical order. */
+/** Mutable scalar columns of `food`. */
 const FOOD_COLUMNS = ['location_id', 'item_name', 'description', 'ingredients', 'price'] as const;
 
 /**
  * Applies a partial update to a menu item. Scalar fields present in `patch` are
- * written; if `patch.tags` is provided, the item's tag set is replaced wholesale
- * (pass `[]` to clear all tags). Returns the updated item, or `null` if no food
- * item has that id.
+ * written; if `patch.tags` / `patch.sources` is provided that whole set is
+ * replaced (pass `[]` to clear). Returns the updated item, or `null` if no food
+ * item has that id. All sub-statements run as one atomic batch.
  */
-export function updateFood(
+export async function updateFood(
+	db: D1Like,
 	id: string,
 	patch: Partial<Omit<Food, 'id' | 'tags'>> & { tags?: TagId[] }
-): Food | null {
-	if (!getFoodById(id)) return null;
+): Promise<Food | null> {
+	if (!(await getFoodById(db, id))) return null;
+
+	const stmts: D1PreparedLike[] = [];
 
 	const assignments: string[] = [];
 	const values: (string | number | null)[] = [];
@@ -607,30 +511,49 @@ export function updateFood(
 			values.push(patch[col]);
 		}
 	}
-
 	if (assignments.length > 0) {
-		values.push(id);
-		db.query(`UPDATE food SET ${assignments.join(', ')} WHERE id = ?`).run(...values);
+		stmts.push(
+			db.prepare(`UPDATE food SET ${assignments.join(', ')} WHERE id = ?`).bind(...values, id)
+		);
 	}
 
 	if (patch.tags !== undefined) {
-		deleteFoodTagsStmt.run(id);
+		stmts.push(db.prepare(`DELETE FROM food_tags WHERE food_id = ?`).bind(id));
 		for (const tagId of patch.tags) {
-			insertFoodTagStmt.run(id, tagId);
+			stmts.push(
+				db
+					.prepare(`INSERT OR IGNORE INTO food_tags (food_id, tag_id) VALUES (?, ?)`)
+					.bind(id, tagId)
+			);
 		}
 	}
 
 	if (patch.sources !== undefined) {
-		deleteFoodSourcesStmt.run(id);
+		stmts.push(db.prepare(`DELETE FROM food_sources WHERE food_id = ?`).bind(id));
 		for (const source of patch.sources) {
-			insertFoodSourceStmt.run(id, source.url, source.label ?? null);
+			stmts.push(
+				db
+					.prepare(`INSERT OR IGNORE INTO food_sources (food_id, url, label) VALUES (?, ?, ?)`)
+					.bind(id, source.url, source.label ?? null)
+			);
 		}
 	}
 
-	return getFoodById(id);
+	if (stmts.length > 0) await db.batch(stmts);
+	return getFoodById(db, id);
 }
 
-/** Deletes a menu item and its tag links. Returns `true` if a row was removed. */
-export function deleteFood(id: string): boolean {
-	return deleteFoodStmt.run(id).changes > 0;
+/**
+ * Deletes a location and (via `ON DELETE CASCADE`) all of its menu items and
+ * their tag/source links. Returns `true` if a row was removed.
+ */
+export async function deleteLocation(db: D1Like, id: string): Promise<boolean> {
+	const res = await db.prepare(`DELETE FROM locations WHERE id = ?`).bind(id).run();
+	return res.meta.changes > 0;
+}
+
+/** Deletes a menu item and its tag/source links. Returns `true` if removed. */
+export async function deleteFood(db: D1Like, id: string): Promise<boolean> {
+	const res = await db.prepare(`DELETE FROM food WHERE id = ?`).bind(id).run();
+	return res.meta.changes > 0;
 }

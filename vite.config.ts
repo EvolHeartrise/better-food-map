@@ -1,4 +1,4 @@
-import adapter from '@sveltejs/adapter-auto';
+import adapter from '@sveltejs/adapter-cloudflare';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
 import { defineConfig } from 'vite';
@@ -11,6 +11,9 @@ export default defineConfig({
 	plugins: [
 		sveltekit({
 			preprocess: vitePreprocess(),
+			// Builds for Cloudflare Workers (Static Assets). The adapter also
+			// emulates platform bindings (e.g. the D1 `DB` binding from
+			// wrangler.jsonc) during `vite dev`.
 			adapter: adapter(),
 			experimental: {
 				// Enable SvelteKit remote functions (.remote.ts files).
@@ -24,12 +27,5 @@ export default defineConfig({
 				}
 			}
 		})
-	],
-	ssr: {
-		// `bun:sqlite` is a built-in Bun module; never let Vite try to bundle it.
-		external: ['bun:sqlite']
-	},
-	optimizeDeps: {
-		exclude: ['bun:sqlite']
-	}
+	]
 });
