@@ -2,6 +2,7 @@
 	import { resolve } from '$app/paths';
 	import { pushState, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
+	import { MediaQuery } from 'svelte/reactivity';
 	import { getLocations, getTags } from '$lib/data.remote';
 	import LocationMap from '$lib/components/LocationMap.svelte';
 	import { pointInPolygon, type LatLng } from '$lib/geo';
@@ -190,6 +191,123 @@
 			.map((part) => part.trim())
 			.filter((part) => part.length > 0);
 	}
+
+	// --- Menu item details popup ----------------------------------------------
+	// The menu list shows only name, price and description; hovering a row (or,
+	// on touch, tapping it) reveals the full details — dietary tags and
+	// ingredients included — in a popup that floats to the left of the row, over
+	// the map. It's rendered once at the page root and positioned `fixed` so it
+	// escapes the results panel's `overflow: hidden`.
+	const POPUP_GAP = 12;
+
+	let activeMenuItemId = $state<string | null>(null);
+	// Coordinates for the wide-screen (left-anchored) layout; ignored when narrow.
+	let popupTop = $state(0);
+	let popupRight = $state(0);
+	let popupEl = $state<HTMLElement>();
+	// The row that opened the popup, kept so it can be re-measured on scroll/resize.
+	let activeAnchorEl: HTMLElement | null = null;
+	// Below 48rem the results panel is a full-width bottom sheet, so there's no
+	// room beside a row: the popup switches to a card pinned above the sheet.
+	const narrowViewport = new MediaQuery('(max-width: 48rem)');
+
+	const activeMenuItem = $derived(
+		activeMenuItemId === null
+			? null
+			: (detailMenu.find((menuItem) => menuItem.id === activeMenuItemId) ?? null)
+	);
+	const activeIngredients = $derived(
+		activeMenuItem ? ingredientList(activeMenuItem.ingredients) : []
+	);
+
+	function anchorMenuPopup(anchor: HTMLElement): void {
+		activeAnchorEl = anchor;
+		const rect = anchor.getBoundingClientRect();
+		popupTop = rect.top;
+		// The popup's right edge sits a small gap to the left of the row.
+		popupRight = window.innerWidth - rect.left + POPUP_GAP;
+	}
+
+	function openMenuPopup(id: string, anchor: HTMLElement): void {
+		activeMenuItemId = id;
+		anchorMenuPopup(anchor);
+	}
+
+	function closeMenuPopup(): void {
+		activeMenuItemId = null;
+		activeAnchorEl = null;
+	}
+
+	// Mice hover to open/close; touch is handled by the click toggle below.
+	function handleItemPointerEnter(event: PointerEvent, id: string): void {
+		if (event.pointerType !== 'mouse') return;
+		openMenuPopup(id, event.currentTarget as HTMLElement);
+	}
+
+	function handleItemPointerLeave(event: PointerEvent, id: string): void {
+		if (event.pointerType !== 'mouse') return;
+		if (activeMenuItemId === id) closeMenuPopup();
+	}
+
+	// A click — mouse, a tap on touch, or Enter/Space on the button via keyboard
+	// — toggles the popup, which is what gives touch users tap-to-open/close.
+	function toggleMenuPopup(id: string, anchor: HTMLElement): void {
+		if (activeMenuItemId === id) {
+			closeMenuPopup();
+		} else {
+			openMenuPopup(id, anchor);
+		}
+	}
+
+	// If the open item drops out of the filtered menu (or the detail closes),
+	// dismiss its popup.
+	$effect(() => {
+		if (activeMenuItemId !== null && activeMenuItem === null) closeMenuPopup();
+	});
+
+	// Position the wide-screen popup, clamped to stay within the viewport. On
+	// narrow screens CSS owns the layout, so clear any inline coordinates.
+	$effect(() => {
+		const el = popupEl;
+		if (!el || activeMenuItemId === null) return;
+		if (narrowViewport.current) {
+			el.style.top = '';
+			el.style.right = '';
+			return;
+		}
+		const maxTop = window.innerHeight - el.offsetHeight - POPUP_GAP;
+		el.style.top = `${Math.max(POPUP_GAP, Math.min(popupTop, maxTop))}px`;
+		el.style.right = `${popupRight}px`;
+	});
+
+	// Keep the popup glued to its row while the menu list scrolls or the window
+	// resizes. The list scrolls inside the panel, hence capture-phase listening.
+	$effect(() => {
+		if (activeMenuItemId === null) return;
+		function reposition() {
+			if (activeAnchorEl) anchorMenuPopup(activeAnchorEl);
+		}
+		window.addEventListener('scroll', reposition, true);
+		window.addEventListener('resize', reposition);
+		return () => {
+			window.removeEventListener('scroll', reposition, true);
+			window.removeEventListener('resize', reposition);
+		};
+	});
+
+	// A pointerdown outside the popup and its trigger closes it — this is what
+	// lets a tap elsewhere dismiss a tapped-open popup on touch.
+	$effect(() => {
+		if (activeMenuItemId === null) return;
+		function onPointerDown(event: PointerEvent) {
+			const target = event.target as Element | null;
+			if (popupEl?.contains(target)) return;
+			if (target?.closest('.menu__trigger')) return;
+			closeMenuPopup();
+		}
+		window.addEventListener('pointerdown', onPointerDown, true);
+		return () => window.removeEventListener('pointerdown', onPointerDown, true);
+	});
 </script>
 
 <svelte:head>
@@ -395,29 +513,27 @@
 							{/if}
 							<ul class="menu__list">
 								{#each detailMenu as menuItem (menuItem.id)}
-									{@const ingredients = ingredientList(menuItem.ingredients)}
 									<li class="menu__item">
-										<div class="menu__line">
-											<span class="menu__name">{menuItem.item_name}</span>
-											<span class="menu__price">{formatPrice(menuItem.price)}</span>
-										</div>
-										{#if menuItem.description}
-											<p class="menu__description">{menuItem.description}</p>
-										{/if}
-										{#if menuItem.tags.length > 0}
-											<ul class="tags">
-												{#each menuItem.tags as tag (tag.id)}
-													<li class="tag">{tag.label}</li>
-												{/each}
-											</ul>
-										{/if}
-										{#if ingredients.length > 0}
-											<ul class="ingredients">
-												{#each ingredients as ingredient (ingredient)}
-													<li class="ingredient">{ingredient}</li>
-												{/each}
-											</ul>
-										{/if}
+										<button
+											type="button"
+											class="menu__trigger"
+											aria-expanded={activeMenuItemId === menuItem.id}
+											onpointerenter={(event) => handleItemPointerEnter(event, menuItem.id)}
+											onpointerleave={(event) => handleItemPointerLeave(event, menuItem.id)}
+											onclick={(event) => toggleMenuPopup(menuItem.id, event.currentTarget)}
+										>
+											<span class="menu__line">
+												<span class="menu__name">{menuItem.item_name}</span>
+												<span class="menu__price">{formatPrice(menuItem.price)}</span>
+											</span>
+											{#if menuItem.description}
+												<span class="menu__description">{menuItem.description}</span>
+											{:else}
+												<span class="menu__description menu__description--empty"
+													>No description</span
+												>
+											{/if}
+										</button>
 									</li>
 								{/each}
 							</ul>
@@ -479,6 +595,39 @@
 			</section>
 		{/if}
 	</aside>
+
+	{#if activeMenuItem}
+		<div
+			class="menu-popup"
+			class:menu-popup--narrow={narrowViewport.current}
+			role="tooltip"
+			bind:this={popupEl}
+		>
+			<div class="menu__line">
+				<span class="menu__name">{activeMenuItem.item_name}</span>
+				<span class="menu__price">{formatPrice(activeMenuItem.price)}</span>
+			</div>
+			{#if activeMenuItem.description}
+				<span class="menu__description">{activeMenuItem.description}</span>
+			{:else}
+				<span class="menu__description menu__description--empty">No description</span>
+			{/if}
+			{#if activeMenuItem.tags.length > 0}
+				<ul class="tags">
+					{#each activeMenuItem.tags as tag (tag.id)}
+						<li class="tag">{tag.label}</li>
+					{/each}
+				</ul>
+			{/if}
+			{#if activeIngredients.length > 0}
+				<ul class="ingredients">
+					{#each activeIngredients as ingredient (ingredient)}
+						<li class="ingredient">{ingredient}</li>
+					{/each}
+				</ul>
+			{/if}
+		</div>
+	{/if}
 </div>
 
 <style>
@@ -968,6 +1117,33 @@
 		border-bottom: none;
 	}
 
+	/* The whole row is a button: hovering or focusing it reveals the details
+	   popup, and a click/tap toggles it (the touch path). Styled to read as the
+	   plain text row it replaced. */
+	.menu__trigger {
+		display: block;
+		width: 100%;
+		margin: 0;
+		padding: 0;
+		border: 0;
+		background: none;
+		font: inherit;
+		color: inherit;
+		text-align: left;
+		cursor: pointer;
+	}
+
+	.menu__trigger:hover .menu__name,
+	.menu__trigger:focus-visible .menu__name {
+		color: var(--color-accent);
+	}
+
+	.menu__trigger:focus-visible {
+		outline: 2px solid var(--color-accent);
+		outline-offset: 2px;
+		border-radius: 0.4rem;
+	}
+
 	.menu__line {
 		display: flex;
 		justify-content: space-between;
@@ -987,9 +1163,14 @@
 	}
 
 	.menu__description {
+		display: block;
 		margin: 0.3rem 0 0;
 		font-size: 0.82rem;
 		color: var(--color-text-muted);
+	}
+
+	.menu__description--empty {
+		font-style: italic;
 	}
 
 	.tags {
@@ -1034,6 +1215,36 @@
 		font-size: 0.75rem;
 		font-style: italic;
 		color: var(--color-text-muted);
+	}
+
+	/* The details popup floats over the map, to the left of the hovered/tapped
+	   row. The positioning effect sets its `top`/`right`; it's non-interactive so
+	   it never steals hover from the row or blocks the map beneath it. A touch
+	   higher opacity than the panels keeps text legible over the map. */
+	.menu-popup {
+		position: fixed;
+		z-index: 20;
+		width: min(18rem, calc(100vw - 2rem));
+		max-height: calc(100dvh - 2rem);
+		overflow-y: auto;
+		padding: 0.85rem 0.95rem;
+		border-radius: 0.85rem;
+		background: rgba(255, 255, 255, 0.92);
+		backdrop-filter: blur(16px) saturate(180%);
+		-webkit-backdrop-filter: blur(16px) saturate(180%);
+		border: 1px solid rgba(255, 255, 255, 0.6);
+		box-shadow: 0 10px 34px rgba(0, 0, 0, 0.22);
+		pointer-events: none;
+	}
+
+	/* No room beside the full-width bottom sheet, so sit above it instead. The
+	   positioning effect clears the inline top/right, letting these take over. */
+	.menu-popup--narrow {
+		top: 1rem;
+		right: 1rem;
+		left: 1rem;
+		width: auto;
+		max-height: 48dvh;
 	}
 
 	/* Below ~48rem the two side panels can't sit abreast, so stack them:
