@@ -37,6 +37,18 @@ jobs:
       - name: svelte-check
         run: bun run check
 
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: Unit tests
+        run: bun run test
+
   build:
     name: Build
     runs-on: ubuntu-latest

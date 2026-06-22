@@ -5,65 +5,8 @@
 // the production D1.
 
 import { test, expect } from 'bun:test';
-import { Database } from 'bun:sqlite';
-import { readFileSync } from 'node:fs';
-import {
-	insertLocations,
-	getLocationById,
-	type D1Like,
-	type D1PreparedLike
-} from '../src/lib/server/db';
-
-class TestStmt implements D1PreparedLike {
-	params: unknown[] = [];
-	constructor(
-		private readonly db: Database,
-		private readonly sql: string
-	) {}
-	bind(...values: unknown[]): D1PreparedLike {
-		const next = new TestStmt(this.db, this.sql);
-		next.params = values;
-		return next;
-	}
-	async first<T>(): Promise<T | null> {
-		return (this.db.query(this.sql).get(...(this.params as never[])) as T) ?? null;
-	}
-	async all<T>(): Promise<{ results: T[] }> {
-		return { results: this.db.query(this.sql).all(...(this.params as never[])) as T[] };
-	}
-	async run(): Promise<{ meta: { changes: number } }> {
-		const r = this.db.query(this.sql).run(...(this.params as never[]));
-		return { meta: { changes: Number(r.changes) } };
-	}
-	get _sql(): string {
-		return this.sql;
-	}
-	get _params(): unknown[] {
-		return this.params;
-	}
-}
-
-/** Minimal D1Like over bun:sqlite; batch runs statements in one transaction. */
-class TestD1 implements D1Like {
-	constructor(private readonly db: Database) {}
-	prepare(sql: string): D1PreparedLike {
-		return new TestStmt(this.db, sql);
-	}
-	async batch(statements: D1PreparedLike[]): Promise<unknown[]> {
-		const tx = this.db.transaction((stmts: TestStmt[]) => {
-			for (const s of stmts) this.db.query(s._sql).run(...(s._params as never[]));
-		});
-		tx(statements as TestStmt[]);
-		return [];
-	}
-}
-
-function freshDb(): TestD1 {
-	const db = new Database(':memory:');
-	db.exec(readFileSync('migrations/0001_init.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0002_chains.sql', 'utf8'));
-	return new TestD1(db);
-}
+import { insertLocations, getLocationById } from '../src/lib/server/db';
+import { freshDb } from './test-d1';
 
 test('insertLocations writes a batch with sources and chain links', async () => {
 	const db = freshDb();
