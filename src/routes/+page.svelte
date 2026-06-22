@@ -2,14 +2,19 @@
 	import { resolve } from '$app/paths';
 	import { pushState, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
-	import { MediaQuery } from 'svelte/reactivity';
-	import { getLocations, getTags, getUserLocation } from '$lib/data.remote';
+	import { MediaQuery, SvelteSet } from 'svelte/reactivity';
+	import { getLocations, getTags, getBrands, getUserLocation } from '$lib/data.remote';
 	import LocationMap from '$lib/components/LocationMap.svelte';
 	import { pointInPolygon, type LatLng } from '$lib/geo';
-	import { categoryLabel } from '$lib/category';
+	import { categoryLabel, type Category } from '$lib/category';
 
 	const locations = $derived(await getLocations());
 	const allTags = $derived(await getTags());
+
+	// Chain/brand records, used only to label deduped result groups with the brand
+	// name ("KFC") rather than a single branch's `name`. Keyed by id for lookup.
+	const brands = $derived(await getBrands());
+	const brandsById = $derived(new Map(brands.map((brand) => [brand.id, brand])));
 
 	// Prompt-free IP geolocation from the edge; `null` when unavailable (e.g. local
 	// dev), in which case the map opens at its built-in default view.
@@ -107,7 +112,83 @@
 		return out;
 	});
 
+	// The map always plots EVERY matching location — grouping is a results-list
+	// concern only. A 30-branch chain still drops 30 markers; the list just shows
+	// one "KFC — 30 locations" card in their place.
 	const mapLocations = $derived(results.map((result) => result.loc));
+
+	// --- Result grouping (chain dedup) ----------------------------------------
+	// Branches of the same chain share a `menu_id` (they serve one menu), so a
+	// search like "kfc" otherwise floods the list with hundreds of identical
+	// cards. We collapse locations that share a `menu_id` into a single group
+	// labelled with the brand name and branch count; everything else (independent
+	// venues, and one-off chains with a single matching branch) stays a plain card.
+	type ResultEntry = { loc: LocationData; items: MenuItem[] };
+	type SingleResult = { kind: 'single'; key: string; loc: LocationData; items: MenuItem[] };
+	type GroupResult = {
+		kind: 'group';
+		key: string; // the shared menu_id
+		name: string; // brand name, e.g. "KFC"
+		category: Category | null;
+		members: ResultEntry[];
+		// Matched menu items for the group. Every branch serves the same menu, so
+		// the item-filter matches are identical across members — show them once.
+		items: MenuItem[];
+	};
+	type DisplayResult = SingleResult | GroupResult;
+
+	const groupedResults = $derived.by<DisplayResult[]>(() => {
+		const out: DisplayResult[] = [];
+		// Plain scratch object (not a Map) so the no-mutable-Map lint rule stays
+		// happy — it's transient, never reactive state.
+		const groupByMenu: Record<string, GroupResult> = {};
+		for (const entry of results) {
+			const menuId = entry.loc.menu_id;
+			// No shared menu → an independent venue; never grouped.
+			if (menuId === null) {
+				out.push({ kind: 'single', key: entry.loc.id, loc: entry.loc, items: entry.items });
+				continue;
+			}
+			let group = groupByMenu[menuId];
+			if (!group) {
+				const brandName = entry.loc.brand_id ? brandsById.get(entry.loc.brand_id)?.name : undefined;
+				group = {
+					kind: 'group',
+					key: menuId,
+					name: brandName ?? entry.loc.name,
+					category: entry.loc.category,
+					members: [],
+					items: entry.items
+				};
+				groupByMenu[menuId] = group;
+				// Position the group where its first branch would have appeared, so the
+				// name-ordered list keeps its ordering.
+				out.push(group);
+			}
+			group.members.push({ loc: entry.loc, items: entry.items });
+		}
+		// A group with a single matching branch adds an extra click for no benefit —
+		// render it as a normal card instead.
+		return out.map((result) =>
+			result.kind === 'group' && result.members.length === 1
+				? {
+						kind: 'single',
+						key: result.members[0].loc.id,
+						loc: result.members[0].loc,
+						items: result.members[0].items
+					}
+				: result
+		);
+	});
+
+	// Which chain groups are expanded to reveal their individual branches, keyed by
+	// group key (menu_id). A reactive set so toggling re-renders.
+	const expandedGroups = new SvelteSet<string>();
+
+	function toggleGroup(key: string): void {
+		if (expandedGroups.has(key)) expandedGroups.delete(key);
+		else expandedGroups.add(key);
+	}
 
 	// --- Selected location (integrated detail view) ---------------------------
 	// The open location is driven by shallow routing: selecting pushes a
@@ -650,37 +731,94 @@
 					</p>
 				{:else}
 					<ul class="results__list">
-						{#each results as { loc, items } (loc.id)}
-							{@const label = categoryLabel(loc.category)}
-							<li>
-								<button type="button" class="card" onclick={() => selectLocation(loc.id)}>
-									<span class="card__name">{loc.name}</span>
-									{#if label}
-										<span class="card__category">{label}</span>
-									{/if}
-									{#if loc.address}
-										<span class="card__address">{loc.address}</span>
-									{/if}
-									{#if items.length > 0}
-										<ul class="card__items">
-											{#each items as menuItem (menuItem.id)}
-												<li class="card__item">
-													<span class="card__item-name">{menuItem.item_name}</span>
-													{#if menuItem.price !== null}
-														<span class="card__item-price">{currency.format(menuItem.price)}</span>
-													{/if}
+						{#each groupedResults as result (result.key)}
+							{#if result.kind === 'single'}
+								{@const label = categoryLabel(result.loc.category)}
+								<li>
+									<button type="button" class="card" onclick={() => selectLocation(result.loc.id)}>
+										<span class="card__name">{result.loc.name}</span>
+										{#if label}
+											<span class="card__category">{label}</span>
+										{/if}
+										{#if result.loc.address}
+											<span class="card__address">{result.loc.address}</span>
+										{/if}
+										{@render matchedItems(result.items)}
+									</button>
+								</li>
+							{:else}
+								{@const label = categoryLabel(result.category)}
+								{@const expanded = expandedGroups.has(result.key)}
+								<li>
+									<!-- Deduped chain: one card standing in for N branches. Clicking it
+									     expands the branch list below rather than opening a detail. -->
+									<button
+										type="button"
+										class="card card--group"
+										aria-expanded={expanded}
+										onclick={() => toggleGroup(result.key)}
+									>
+										<span class="card__name">
+											{result.name}
+											<span class="card__count">{result.members.length} locations</span>
+										</span>
+										{#if label}
+											<span class="card__category">{label}</span>
+										{/if}
+										{@render matchedItems(result.items)}
+										<span class="card__expand">
+											{expanded ? 'Hide locations' : 'Show locations'}
+											<span class="card__expand-icon" aria-hidden="true"
+												>{expanded ? '▴' : '▾'}</span
+											>
+										</span>
+									</button>
+									{#if expanded}
+										<ul class="group__members">
+											{#each result.members as member (member.loc.id)}
+												<li>
+													<button
+														type="button"
+														class="card card--member"
+														onclick={() => selectLocation(member.loc.id)}
+													>
+														{#if member.loc.address}
+															<span class="card__address">{member.loc.address}</span>
+														{:else}
+															<span class="card__address card__address--empty"
+																>Address not listed</span
+															>
+														{/if}
+													</button>
 												</li>
 											{/each}
 										</ul>
 									{/if}
-								</button>
-							</li>
+								</li>
+							{/if}
 						{/each}
 					</ul>
 				{/if}
 			</section>
 		{/if}
 	</aside>
+
+	<!-- The matched-menu-item list shown under a result card (when an item/
+	     ingredient/dietary filter is active). Shared by plain and chain-group cards. -->
+	{#snippet matchedItems(items: MenuItem[])}
+		{#if items.length > 0}
+			<ul class="card__items">
+				{#each items as menuItem (menuItem.id)}
+					<li class="card__item">
+						<span class="card__item-name">{menuItem.item_name}</span>
+						{#if menuItem.price !== null}
+							<span class="card__item-price">{currency.format(menuItem.price)}</span>
+						{/if}
+					</li>
+				{/each}
+			</ul>
+		{/if}
+	{/snippet}
 
 	<!-- Shared by the wide-screen floating popup and the narrow inline expansion:
 	     the item's tags, ingredients and data sources. -->
@@ -1144,6 +1282,62 @@
 		color: var(--color-text-muted);
 		font-variant-numeric: tabular-nums;
 		white-space: nowrap;
+	}
+
+	/* --- Deduped chain group card -------------------------------------------- */
+	.card__name {
+		display: flex;
+		align-items: baseline;
+		flex-wrap: wrap;
+		gap: 0.4rem;
+	}
+
+	/* Branch count pill on a chain group card ("KFC · 511 locations"). */
+	.card__count {
+		font-size: 0.72rem;
+		font-weight: 600;
+		color: var(--color-accent);
+		background-color: color-mix(in srgb, var(--color-accent) 12%, #fff);
+		border: 1px solid color-mix(in srgb, var(--color-accent) 35%, #fff);
+		border-radius: 999px;
+		padding: 0.05rem 0.45rem;
+		white-space: nowrap;
+	}
+
+	/* The show/hide-branches affordance at the foot of a group card. */
+	.card__expand {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.3rem;
+		margin-top: 0.35rem;
+		font-size: 0.78rem;
+		font-weight: 600;
+		color: var(--color-accent);
+	}
+
+	.card__expand-icon {
+		font-size: 0.7rem;
+		line-height: 1;
+	}
+
+	/* Branch list revealed when a group card is expanded. Indented and rail-marked
+	   so the branches read as children of the group above them. */
+	.group__members {
+		list-style: none;
+		margin: 0.35rem 0 0 0.6rem;
+		padding: 0 0 0 0.6rem;
+		border-left: 2px solid color-mix(in srgb, var(--color-accent) 25%, transparent);
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+	}
+
+	.card--member {
+		padding: 0.5rem 0.7rem;
+	}
+
+	.card__address--empty {
+		font-style: italic;
 	}
 
 	/* --- Selected-location detail view (replaces the results list) ----------- */

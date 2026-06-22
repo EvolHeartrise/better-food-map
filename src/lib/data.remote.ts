@@ -2,8 +2,10 @@ import { query, getRequestEvent } from '$app/server';
 import {
 	getLocationsWithMenus,
 	getAllTags,
+	getBrands as getBrandsFromDb,
 	type D1Like,
 	type Tag,
+	type Brand,
 	type LocationWithMenu
 } from '$lib/server/db';
 
@@ -32,6 +34,15 @@ function db(): D1Like {
  */
 export const getLocations = query(async (): Promise<LocationWithMenu[]> => {
 	return getLocationsWithMenus(db());
+});
+
+/**
+ * Returns every chain/brand (id, name, website, logo). Used by the map page to
+ * label deduped chain result groups (e.g. "KFC — 511 locations") with the brand
+ * name rather than relying on each branch's own `name`.
+ */
+export const getBrands = query(async (): Promise<Brand[]> => {
+	return getBrandsFromDb(db());
 });
 
 /**
