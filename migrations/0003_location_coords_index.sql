@@ -1,0 +1,13 @@
+-- Migration 0003: index locations by coordinates for viewport reads.
+-- Applied with: wrangler d1 migrations apply better-food-map --remote (or --local).
+--
+-- The map now fetches only what's inside the visible bounding box (see
+-- getMapData in src/lib/server/db.ts), which filters on
+--   latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ?
+-- Without an index that scans the whole locations table on every pan/zoom. A
+-- composite index on (latitude, longitude) lets SQLite range-seek the latitude
+-- band and carry longitude for the residual filter, which is enough to keep
+-- viewport reads cheap as the table grows toward whole-country coverage.
+-- (A full spatial index — SQLite's R*Tree — would tighten the longitude side
+-- too, but is heavier to maintain; revisit if profiling shows it's needed.)
+CREATE INDEX IF NOT EXISTS idx_locations_lat_lng ON locations (latitude, longitude);

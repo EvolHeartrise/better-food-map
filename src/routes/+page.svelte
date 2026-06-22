@@ -3,40 +3,81 @@
 	import { pushState, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import { MediaQuery, SvelteSet } from 'svelte/reactivity';
-	import { getLocations, getTags, getBrands, getUserLocation } from '$lib/data.remote';
+	import {
+		getLocations,
+		getLocationData,
+		getTags,
+		getBrands,
+		getUserLocation
+	} from '$lib/data.remote';
 	import LocationMap from '$lib/components/LocationMap.svelte';
-	import { pointInPolygon, type LatLng } from '$lib/geo';
 	import { categoryLabel, type Category } from '$lib/category';
+	import type { MapData, MapLocation, Food, Bounds } from '$lib/server/db';
+
+	// The visible map area, reported by <LocationMap> (debounced) as the user pans
+	// and zooms, plus once on load. This is the ONLY thing that decides which data
+	// we fetch — the area filter is now "whatever's on screen". Null until the map
+	// has mounted and reported its opening view.
+	let viewport = $state<{ bounds: Bounds; zoom: number } | null>(null);
+
+	// Below this zoom the visible box covers too much ground to fetch responsibly
+	// (the dataset reaches toward whole-country coverage), so we hold off and ask
+	// the user to zoom in rather than pulling an unbounded result set.
+	const MIN_FETCH_ZOOM = 12;
+	const shouldFetch = $derived(viewport !== null && viewport.zoom >= MIN_FETCH_ZOOM);
+
+	// Raw payload for the current viewport. Updated imperatively (rather than via an
+	// awaited $derived) so the markers already on screen stay put while the next box
+	// loads — panning/zooming never blanks the map. Reset to empty when zoomed out
+	// past MIN_FETCH_ZOOM.
+	const EMPTY_MAP_DATA: MapData = { locations: [], menus: {} };
+	let mapData = $state<MapData>(EMPTY_MAP_DATA);
+
+	$effect(() => {
+		if (!viewport) return;
+		if (viewport.zoom < MIN_FETCH_ZOOM) {
+			mapData = EMPTY_MAP_DATA;
+			return;
+		}
+		const bounds = viewport.bounds;
+		let cancelled = false;
+		getLocations(bounds).then((data) => {
+			if (!cancelled) mapData = data;
+		});
+		return () => {
+			cancelled = true;
+		};
+	});
 
 	// The map page works against each location's fully-resolved `menu`, but the wire
 	// payload sends each shared brand menu only once (keyed by menu_id) instead of
 	// copying it onto every branch. Rebuild the effective menu here: a location's own
 	// `food` items, plus — for a chain branch — its shared menu items with per-branch
 	// overrides applied (items marked unavailable dropped, overridden prices used).
-	const mapData = $derived(await getLocations());
-	const locations = $derived.by(() =>
-		mapData.locations.map((loc) => {
-			const menu = [...loc.food];
-			if (loc.menu_id) {
-				const overrideByItem = new Map(loc.overrides.map((o) => [o.menu_item_id, o]));
-				for (const item of mapData.menus[loc.menu_id] ?? []) {
-					const override = overrideByItem.get(item.id);
-					if (override?.available === false) continue; // not served at this branch
-					menu.push({
-						id: item.id,
-						location_id: loc.id,
-						item_name: item.item_name,
-						description: item.description,
-						ingredients: item.ingredients,
-						price: override?.price ?? item.price,
-						tags: item.tags,
-						sources: item.sources
-					});
-				}
+	// Shared by the in-view set below and the by-id detail fetch.
+	function resolveLocation(loc: MapLocation, menus: MapData['menus']): LocationData {
+		const menu: Food[] = [...loc.food];
+		if (loc.menu_id) {
+			const overrideByItem = new Map(loc.overrides.map((o) => [o.menu_item_id, o]));
+			for (const item of menus[loc.menu_id] ?? []) {
+				const override = overrideByItem.get(item.id);
+				if (override?.available === false) continue; // not served at this branch
+				menu.push({
+					id: item.id,
+					location_id: loc.id,
+					item_name: item.item_name,
+					description: item.description,
+					ingredients: item.ingredients,
+					price: override?.price ?? item.price,
+					tags: item.tags,
+					sources: item.sources
+				});
 			}
-			return { ...loc, menu };
-		})
-	);
+		}
+		return { ...loc, menu };
+	}
+
+	const locations = $derived(mapData.locations.map((loc) => resolveLocation(loc, mapData.menus)));
 	const allTags = $derived(await getTags());
 
 	// Chain/brand records, used only to label deduped result groups with the brand
@@ -51,35 +92,17 @@
 		userLocation ? [userLocation.lat, userLocation.lng] : null
 	);
 
-	type LocationData = (typeof locations)[number];
+	// A location with its effective menu resolved (see resolveLocation).
+	type LocationData = MapLocation & { menu: Food[] };
 	type MenuItem = LocationData['menu'][number];
 
-	// Four independent inputs. `place` filters venues by name; `item`, `ingredient`
-	// and the `selected` tags filter menu items. They combine with AND.
+	// Three independent inputs. `place` filters venues by name; `item`, `ingredient`
+	// and the `selected` tags filter menu items. They combine with AND, and narrow
+	// within the locations currently visible on the map.
 	let place = $state('');
 	let item = $state('');
 	let ingredient = $state('');
 	let selected = $state<string[]>([]);
-
-	// Optional geographic constraint drawn on the map: a ring of `[lat, lng]`
-	// vertices. When set, only venues inside it are shown. `drawing` mirrors the
-	// map's draw mode so the panel can show the right controls. Both are bound to
-	// <LocationMap>, which owns the actual draw interaction.
-	let area = $state<LatLng[] | null>(null);
-	let drawing = $state(false);
-
-	// The two floating panels, handed to <LocationMap> so it can frame results into
-	// the open space between them rather than underneath them.
-	let searchPanelEl = $state<HTMLElement>();
-	let resultsPanelEl = $state<HTMLElement>();
-
-	// Reference to the map, used to finish an in-progress area draw from the panel's
-	// "Finish area" button — the touch-friendly alternative to tapping the first
-	// vertex (or pressing Enter), which is impractical on a phone. `drawPointCount`
-	// mirrors how many vertices have been placed so the button enables only once a
-	// real polygon (3+ points) is possible.
-	let mapComponent = $state<LocationMap>();
-	let drawPointCount = $state(0);
 
 	// On narrow (mobile) screens the search panel collapses to a header bar so the
 	// map isn't squeezed between it and the results sheet. Open by default so the
@@ -112,21 +135,16 @@
 		return true;
 	}
 
-	// One entry per location to show, paired with the menu items that matched.
-	// Item-level inputs drive the per-card list; with none active, `items` is
+	// One entry per location to show, paired with the menu items that matched. The
+	// candidate set is whatever is currently visible on the map (`locations`), so
+	// with no filter active every visible place is listed; the inputs only narrow
+	// it. Item-level inputs drive the per-card list; with none active, `items` is
 	// empty and the card shows no list (the Place box just narrows venues).
 	const results = $derived.by(() => {
 		const placeTerm = place.trim().toLowerCase();
-		const areaPoly = area;
-		const anyFilter = placeTerm !== '' || hasItemFilter || areaPoly !== null;
-
-		// With every field empty and no area drawn, show no results — the user must
-		// search (or draw an area) first.
-		if (!anyFilter) return [];
 
 		const out: Array<{ loc: LocationData; items: MenuItem[] }> = [];
 		for (const loc of locations) {
-			if (areaPoly && !pointInPolygon([loc.latitude, loc.longitude], areaPoly)) continue;
 			if (placeTerm !== '' && !loc.name.toLowerCase().includes(placeTerm)) continue;
 			if (!hasItemFilter) {
 				out.push({ loc, items: [] });
@@ -221,8 +239,7 @@
 	// --- Selected location (integrated detail view) ---------------------------
 	// The open location is driven by shallow routing: selecting pushes a
 	// `/locations/<id>` history entry (without navigating) that carries the id in
-	// `page.state`, so Back closes the detail. The record is looked up from the
-	// already-loaded `locations`, so no extra fetch is needed.
+	// `page.state`, so Back closes the detail.
 	//
 	// On a fresh load or shared link `page.state` is empty (shallow-routing state
 	// isn't restored after a hard navigation), so the id comes from the URL — the
@@ -234,9 +251,39 @@
 	// is cleared — so closing must also null this snapshot (see `closeDetail`).
 	let landingId = $state(idFromPath(page.url.pathname));
 	const selectedId = $derived(page.state.selected ?? landingId);
-	const selectedLocation = $derived(
-		selectedId ? (locations.find((loc) => loc.id === selectedId) ?? null) : null
-	);
+
+	// The resolved record for the open location. Because we now load only the
+	// visible area, the selected place isn't always among `locations` — a shared
+	// `/locations/<id>` link, or one panned off screen, falls outside it. So we
+	// resolve it from the in-view set when present and otherwise fetch it by id.
+	// Held in state (not a derived) and updated imperatively so the open detail
+	// stays put while a by-id fetch is in flight — panning the place off screen
+	// doesn't flash the panel closed.
+	let selectedLocation = $state<LocationData | null>(null);
+	$effect(() => {
+		const id = selectedId;
+		if (!id) {
+			selectedLocation = null;
+			return;
+		}
+		const inView = locations.find((loc) => loc.id === id) ?? null;
+		if (inView) {
+			selectedLocation = inView;
+			return;
+		}
+		// Out of view: fetch it on its own. getLocationData dedupes by id, so a
+		// refetch triggered by a subsequent pan won't hit the network again. We
+		// leave any currently-shown detail in place until this resolves.
+		let cancelled = false;
+		getLocationData(id).then((data) => {
+			if (cancelled) return;
+			const loc = data.locations[0];
+			selectedLocation = loc ? resolveLocation(loc, data.menus) : null;
+		});
+		return () => {
+			cancelled = true;
+		};
+	});
 
 	// The menu shown in the detail panel for the selected location. The same
 	// item/ingredient/dietary filters that narrow the results list apply here too;
@@ -292,36 +339,11 @@
 	}
 
 	const hasQuery = $derived(
-		place.trim() !== '' ||
-			item.trim() !== '' ||
-			ingredient.trim() !== '' ||
-			selected.length > 0 ||
-			area !== null
+		place.trim() !== '' || item.trim() !== '' || ingredient.trim() !== '' || selected.length > 0
 	);
 
 	function toggle(id: string): void {
 		selected = selected.includes(id) ? selected.filter((value) => value !== id) : [...selected, id];
-	}
-
-	// Starting a draw clears any existing area so the map shows a clean slate;
-	// <LocationMap> commits the new ring back to `area` when the user finishes.
-	function startAreaDraw(): void {
-		area = null;
-		drawing = true;
-	}
-
-	function cancelAreaDraw(): void {
-		drawing = false;
-	}
-
-	// Commit the ring from the panel. The map only finishes when 3+ points exist,
-	// so this no-ops on a too-small ring (the button is disabled until then anyway).
-	function finishAreaDraw(): void {
-		mapComponent?.finish();
-	}
-
-	function clearArea(): void {
-		area = null;
 	}
 
 	function formatPrice(price: number | null): string {
@@ -471,19 +493,15 @@
 <div class="app">
 	<div class="app__map">
 		<LocationMap
-			bind:this={mapComponent}
 			locations={mapLocations}
 			selected={selectedLocation}
 			onselect={selectLocation}
-			obstacles={[searchPanelEl, resultsPanelEl].filter((el) => el !== undefined)}
 			{initialCenter}
-			bind:polygon={area}
-			bind:drawing
-			ondrawpoints={(count) => (drawPointCount = count)}
+			onviewchange={(view) => (viewport = view)}
 		/>
 	</div>
 
-	<aside class="panel panel--search" aria-label="Search and filters" bind:this={searchPanelEl}>
+	<aside class="panel panel--search" aria-label="Search and filters">
 		<header class="panel__brand">
 			<a class="panel__title" href={resolve('/')}>Better Food Map</a>
 			<!-- Shown only on narrow screens (CSS): collapses the filters to free the map. -->
@@ -503,46 +521,6 @@
 		</header>
 
 		<div class="controls" id="search-controls" class:controls--collapsed={!filtersOpen}>
-			<!-- Area is a venue-level (geographic) filter, so it's hidden once a single
-			     location is pinned — only the menu-item filters below still apply then. -->
-			{#if !selectedLocation}
-				<div class="field">
-					<div class="field__head">
-						<span class="field__label" id="q-area">Area</span>
-						{#if area && !drawing}
-							<button type="button" class="field__clear" onclick={clearArea}>Clear</button>
-						{/if}
-					</div>
-
-					{#if drawing}
-						<p class="area__hint">
-							Tap the map to drop points, then Finish. You can also tap the first point or press
-							Enter to close the ring; Esc cancels.
-						</p>
-						<div class="area__actions">
-							<button
-								type="button"
-								class="area__btn area__btn--primary"
-								disabled={drawPointCount < 3}
-								onclick={finishAreaDraw}
-							>
-								Finish area
-							</button>
-							<button type="button" class="area__btn" onclick={cancelAreaDraw}>Cancel</button>
-						</div>
-					{:else if area}
-						<p class="area__status">
-							Limited to your drawn area ({area.length}
-							{area.length === 1 ? 'point' : 'points'}).
-						</p>
-						<button type="button" class="area__btn" onclick={startAreaDraw}>Redraw area</button>
-					{:else}
-						<button type="button" class="area__btn" onclick={startAreaDraw}>Draw area on map</button
-						>
-					{/if}
-				</div>
-			{/if}
-
 			<div class="field">
 				<span class="field__label" id="q-place-label">Place</span>
 				{#if selectedLocation}
@@ -627,7 +605,6 @@
 	<aside
 		class="panel panel--results"
 		aria-label={selectedLocation ? 'Location details' : 'Matching places'}
-		bind:this={resultsPanelEl}
 	>
 		{#if selectedLocation}
 			{@const label = categoryLabel(selectedLocation.category)}
@@ -749,12 +726,14 @@
 
 				{#if results.length === 0}
 					<p class="results__empty">
-						{#if locations.length === 0}
-							No places yet.
-						{:else if hasQuery}
-							No matching places.
+						{#if viewport === null}
+							Loading the map…
+						{:else if !shouldFetch}
+							Zoom in to load places.
+						{:else if locations.length === 0}
+							No places in this area.
 						{:else}
-							Search by place, item, ingredient, or tag to see results.
+							No places match your search.
 						{/if}
 					</p>
 				{:else}
@@ -1143,66 +1122,6 @@
 	.chip--active:hover {
 		color: #fff;
 		background-color: var(--color-accent-hover);
-	}
-
-	.area__btn {
-		width: 100%;
-		padding: 0.45rem 0.7rem;
-		font-size: 0.85rem;
-		font-weight: 600;
-		color: var(--color-accent);
-		background: rgba(255, 255, 255, 0.7);
-		border: 1px solid var(--color-border);
-		border-radius: 0.6rem;
-		transition:
-			background-color 0.12s,
-			border-color 0.12s,
-			color 0.12s;
-	}
-
-	.area__btn:not(:disabled):hover {
-		border-color: var(--color-accent);
-		background: rgba(255, 255, 255, 0.95);
-	}
-
-	.area__btn:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-
-	/* Finish / Cancel sit side by side while drawing. */
-	.area__actions {
-		display: flex;
-		gap: 0.5rem;
-	}
-
-	.area__actions .area__btn {
-		flex: 1;
-	}
-
-	.area__btn--primary {
-		color: #fff;
-		background: var(--color-accent);
-		border-color: var(--color-accent);
-	}
-
-	.area__btn--primary:not(:disabled):hover {
-		color: #fff;
-		background: var(--color-accent-hover);
-		border-color: var(--color-accent-hover);
-	}
-
-	.area__hint {
-		margin: 0;
-		font-size: 0.8rem;
-		line-height: 1.4;
-		color: var(--color-text-muted);
-	}
-
-	.area__status {
-		margin: 0;
-		font-size: 0.8rem;
-		color: var(--color-text);
 	}
 
 	/* Fills remaining panel height; only the list inside it scrolls, so the
