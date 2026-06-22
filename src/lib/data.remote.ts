@@ -1,6 +1,8 @@
+import * as v from 'valibot';
 import { query, getRequestEvent } from '$app/server';
 import {
 	getMapData,
+	getLocationMapData,
 	getAllTags,
 	getBrands as getBrandsFromDb,
 	type D1Like,
@@ -8,6 +10,18 @@ import {
 	type Brand,
 	type MapData
 } from '$lib/server/db';
+
+/**
+ * A map viewport (bounding box) the client asks for data within. Validated
+ * because `getLocations` is exposed as an HTTP endpoint — the argument arrives
+ * untrusted. `v.number()` rejects `NaN`, so a malformed box can't slip through.
+ */
+const BoundsSchema = v.object({
+	minLat: v.number(),
+	maxLat: v.number(),
+	minLng: v.number(),
+	maxLng: v.number()
+});
 
 /**
  * The request-scoped D1 binding. On Cloudflare it lives on `platform.env.DB`
@@ -28,15 +42,27 @@ function db(): D1Like {
 }
 
 /**
- * Returns everything the map page needs (see {@link MapData}): every location
- * with its own `food` items and per-item overrides, plus each shared brand menu
+ * Returns everything the map page needs for the given viewport (see
+ * {@link MapData}): every location inside `bounds` with its own `food` items and
+ * per-item overrides, plus each shared brand menu those branches reference,
  * resolved once and keyed by menu_id. The client joins the two to rebuild each
  * location's effective menu, so a chain's shared menu is sent over the wire a
- * single time rather than copied onto every branch. Used to render markers and,
- * under each result, the menu items matching the active search/filter query.
+ * single time rather than copied onto every branch. Called again as the user
+ * pans/zooms, so only what's on screen is ever fetched. Used to render markers
+ * and, under each result, the menu items matching the active search/filter query.
  */
-export const getLocations = query(async (): Promise<MapData> => {
-	return getMapData(db());
+export const getLocations = query(BoundsSchema, async (bounds): Promise<MapData> => {
+	return getMapData(db(), bounds);
+});
+
+/**
+ * Returns a single location (by id) in the same {@link MapData} shape as
+ * {@link getLocations}. Backs the detail view when the open location isn't in the
+ * current viewport — a shared `/locations/<id>` link, or one panned off screen —
+ * so it always resolves. Yields an empty payload if no location has that id.
+ */
+export const getLocationData = query(v.string(), async (id): Promise<MapData> => {
+	return getLocationMapData(db(), id);
 });
 
 /**

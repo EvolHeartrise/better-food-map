@@ -5,8 +5,12 @@
 	import markerShadow from 'leaflet/dist/images/marker-shadow.png';
 	import { onMount } from 'svelte';
 	import type * as Leaflet from 'leaflet';
-	import type { LatLng } from '$lib/geo';
 	import { categoryLabel, type Category } from '$lib/category';
+
+	// A geographic bounding box reported to the parent as the visible area. Kept
+	// structural (rather than imported from the server module) so this component
+	// stays free of any server-only import.
+	type Bounds = { minLat: number; maxLat: number; minLng: number; maxLng: number };
 
 	// Only the fields the map actually needs. Kept structural (rather than derived
 	// from a remote's return type) so any location-shaped object can be passed in.
@@ -22,74 +26,45 @@
 	let {
 		locations,
 		// The currently selected location, shown zoomed-in with its detail panel
-		// open on the page. When set, the map flies to it (instead of fitting all
-		// results) and keeps its marker visible even if it's been filtered out.
+		// open on the page. When set, the map flies to it once and keeps its marker
+		// visible even if it isn't among the in-view `locations`.
 		selected = null,
 		// Called with a location id when the user clicks a marker, so the parent can
 		// open that location (the same action as clicking a result card).
 		onselect,
-		// The drawn area constraint, as a ring of `[lat, lng]` vertices (or `null`).
-		// Bindable: the map writes it when the user finishes drawing or drags a
-		// vertex, and the parent can clear it by setting it back to `null`.
-		polygon = $bindable(null),
-		// Whether the map is in draw mode. Bindable so a parent button can start
-		// drawing and the map can end it (on finish / cancel).
-		drawing = $bindable(false),
-		// Floating UI elements that overlap the map (e.g. the search and results
-		// panels). When fitting results into view we reserve space for whichever of
-		// these currently overlap, so markers are never framed underneath them.
-		// Measured live at fit time, so it adapts to panel size, the stacked mobile
-		// layout, or a panel being hidden — no resize listener needed.
-		obstacles = [],
 		// Where the map opens, as `[lat, lng]` — typically the visitor's IP-detected
-		// location. When provided, the camera opens here and the one-time
-		// fit-to-all-results on load is skipped, so the map starts "where you are".
-		// Falls back to DEFAULT_CENTER when absent (e.g. geolocation unavailable).
+		// location. Falls back to DEFAULT_CENTER when absent (e.g. geolocation
+		// unavailable). The camera otherwise only moves when the user pans/zooms or
+		// selects a place — search/filter changes never move it.
 		initialCenter = null,
-		// Called as vertices are placed (or the session resets) with the current
-		// point count, so the parent's panel can enable a "Finish area" button once a
-		// real ring is possible — the touch-friendly way to close it, since tapping
-		// the 14px first vertex (or pressing Enter) is impractical on a phone.
-		ondrawpoints
+		// Called (debounced) with the visible bounding box and zoom whenever the map
+		// settles after a pan/zoom, plus once on load. The parent fetches location
+		// data for this box, so only what's on screen is ever loaded.
+		onviewchange
 	}: {
 		locations: Location[];
 		selected?: Location | null;
 		onselect?: (id: string) => void;
-		polygon?: LatLng[] | null;
-		drawing?: boolean;
-		obstacles?: HTMLElement[];
 		initialCenter?: [number, number] | null;
-		ondrawpoints?: (count: number) => void;
+		onviewchange?: (view: { bounds: Bounds; zoom: number }) => void;
 	} = $props();
-
-	// Commit the in-progress ring from outside (the parent's "Finish area" button).
-	// No-ops until there are enough points, matching the in-map close gesture.
-	export function finish(): void {
-		finishDraw();
-	}
 
 	// Fallback map center, used when no `initialCenter` is supplied (e.g. IP
 	// geolocation is unavailable) — just a sensible starting view, not tied to any
 	// particular city.
 	const DEFAULT_CENTER: [number, number] = [49.2827, -123.1207];
 	const DEFAULT_ZOOM = 13;
-	// Matches --color-accent; Leaflet path strokes/fills need a concrete colour.
-	const ACCENT = '#2f6f4f';
-	// How close (in pixels) a click must be to the first vertex to close the ring.
-	const CLOSE_TOLERANCE_PX = 14;
-	// View-fitting animation duration. Fits run immediately when results change (no
-	// debounce) so the camera tracks the search without lag; Leaflet redirects an
-	// in-flight flight smoothly if the results change again before it lands.
+	// Fly animation duration when centering on a selected location.
 	const FLY_DURATION = 0.6; // seconds
-	// Minimum gap (px) kept between a framed marker and the map edge.
-	const FIT_BASE_PADDING = 40;
-	// Extra breathing room (px) between a marker and a panel it's tucked beside.
-	const FIT_PANEL_MARGIN = 12;
-	// Cap how far a fit can zoom in, so one or two close results don't slam to
-	// street level.
-	const FIT_MAX_ZOOM = 16;
 	// Zoom level used when flying to a single selected location.
 	const SELECTED_ZOOM = 16;
+	// Grow the reported box beyond the strictly-visible bounds by this fraction of
+	// each span, so markers just off screen are already loaded when the user nudges
+	// the map, and small pans don't trigger a refetch. 0.2 = 20% on every side.
+	const BOUNDS_PADDING = 0.2;
+	// Debounce (ms) before reporting a new viewport, so a drag or pinch settles into
+	// a single fetch rather than firing on every intermediate `moveend`.
+	const VIEW_DEBOUNCE_MS = 250;
 
 	let mapEl: HTMLDivElement;
 
@@ -107,22 +82,16 @@
 	// to the configured URL, which corrupts our already-resolved asset URLs into
 	// 404s. An explicit `L.icon` sidesteps that entirely.
 	let markerIconDef: Leaflet.Icon | null = null;
-	// Small square handle for dragging committed-polygon vertices.
-	let vertexIcon: Leaflet.DivIcon | null = null;
 
 	// Becomes true once the map is initialised; effects below gate on it so they
 	// don't fire against a half-built map (the Leaflet import is async).
 	let ready = $state(false);
 
-	// --- Drawing state (imperative; not reactive) -----------------------------
-	// Vertices clicked so far in the current draw session.
-	let drawPoints: LatLng[] = [];
-	let drawLayer: Leaflet.LayerGroup | null = null; // in-progress visuals
-	let drawLine: Leaflet.Polyline | null = null; // edges between clicked points
-	let drawDots: Leaflet.LayerGroup | null = null; // vertex markers
-	let rubberBand: Leaflet.Polyline | null = null; // last point → cursor
-	// The committed (finished) polygon plus its draggable vertex handles.
-	let committedLayer: Leaflet.LayerGroup | null = null;
+	// Pending debounced viewport report (see scheduleViewReport).
+	let viewTimer: ReturnType<typeof setTimeout> | null = null;
+	// The last selected id we flew to, so re-renders (e.g. a viewport refetch) don't
+	// re-fly to an already-open location — only a genuine change of selection does.
+	let lastSelectedId: string | null = null;
 
 	function escapeHtml(value: string): string {
 		return value
@@ -149,8 +118,8 @@
 		markerLayer.clearLayers();
 		markersById = {};
 
-		// Show every result, plus the selected location even when it falls outside
-		// the current results (e.g. opened from a shared link with no active search).
+		// Show every in-view location, plus the selected location even when it falls
+		// outside the current viewport (e.g. opened from a shared link).
 		const toRender = [...locations];
 		if (selected && !toRender.some((loc) => loc.id === selected.id)) {
 			toRender.push(selected);
@@ -158,9 +127,7 @@
 
 		for (const loc of toRender) {
 			const point: [number, number] = [loc.latitude, loc.longitude];
-			// While drawing, markers are non-interactive so clicks fall through to
-			// the map (adding vertices) instead of selecting a location.
-			const marker = L.marker(point, { icon: markerIconDef, interactive: !drawing })
+			const marker = L.marker(point, { icon: markerIconDef })
 				.bindTooltip(tooltipHtml(loc), { direction: 'top' })
 				.addTo(markerLayer);
 			marker.on('click', () => onselect?.(loc.id));
@@ -177,239 +144,37 @@
 		markersById[selected.id]?.openTooltip();
 	}
 
-	// Scale a padding pair down proportionally if together they'd exceed `max`, so
-	// opposing panels can never reserve the entire axis and leave no room to fit.
-	function clampPair(a: number, b: number, max: number): [number, number] {
-		const total = a + b;
-		if (total <= max || total === 0) return [a, b];
-		const scale = max / total;
-		return [a * scale, b * scale];
+	// The current visible box, grown by BOUNDS_PADDING, paired with the zoom level.
+	// Latitude is clamped to the valid range; longitude is left as-is (a box across
+	// the antimeridian isn't supported — the same planar assumption used elsewhere).
+	function currentView(): { bounds: Bounds; zoom: number } | null {
+		if (!map) return null;
+		const b = map.getBounds();
+		const south = b.getSouth();
+		const north = b.getNorth();
+		const west = b.getWest();
+		const east = b.getEast();
+		const padLat = (north - south) * BOUNDS_PADDING;
+		const padLng = (east - west) * BOUNDS_PADDING;
+		return {
+			bounds: {
+				minLat: Math.max(-90, south - padLat),
+				maxLat: Math.min(90, north + padLat),
+				minLng: west - padLng,
+				maxLng: east + padLng
+			},
+			zoom: map.getZoom()
+		};
 	}
 
-	// Reserve space for the floating panels so fitted results never land underneath
-	// them. For each overlapping obstacle we measure its rect against the map
-	// container and grow the padding on the edge it's docked to: narrow side panels
-	// push left/right, full-width panels (the stacked mobile layout) push top/bottom.
-	// Returns Leaflet paddingTopLeft / paddingBottomRight points.
-	function computeFitPadding(): {
-		paddingTopLeft: [number, number];
-		paddingBottomRight: [number, number];
-	} {
-		let left = FIT_BASE_PADDING;
-		let right = FIT_BASE_PADDING;
-		let top = FIT_BASE_PADDING;
-		let bottom = FIT_BASE_PADDING;
-
-		const c = mapEl.getBoundingClientRect();
-		for (const el of obstacles) {
-			const r = el?.getBoundingClientRect();
-			// Skip missing or hidden (display:none → zero-sized) panels.
-			if (!r || r.width === 0 || r.height === 0) continue;
-
-			if (r.width > c.width * 0.6) {
-				// Spans most of the width → docked to the top or bottom edge.
-				if (r.top - c.top < c.bottom - r.bottom) {
-					top = Math.max(top, r.bottom - c.top + FIT_PANEL_MARGIN);
-				} else {
-					bottom = Math.max(bottom, c.bottom - r.top + FIT_PANEL_MARGIN);
-				}
-			} else {
-				// A narrow panel docked to the left or right edge.
-				if (r.left - c.left < c.right - r.right) {
-					left = Math.max(left, r.right - c.left + FIT_PANEL_MARGIN);
-				} else {
-					right = Math.max(right, c.right - r.left + FIT_PANEL_MARGIN);
-				}
-			}
-		}
-
-		// Keep a fittable strip in the middle even if the panels are oversized.
-		[left, right] = clampPair(left, right, c.width * 0.8);
-		[top, bottom] = clampPair(top, bottom, c.height * 0.8);
-
-		return { paddingTopLeft: [left, top], paddingBottomRight: [right, bottom] };
+	function reportView() {
+		const view = currentView();
+		if (view) onviewchange?.(view);
 	}
 
-	// Smoothly fly the view to frame the current locations. Suppressed while the
-	// user is actively drawing (so the map doesn't move under the cursor) or while a
-	// location is selected (the camera is pinned to it) — a committed area still
-	// refits as results filter in/out within it.
-	function fitToLocations() {
-		if (!L || !map || drawing || selected) return;
-
-		const points = locations.map((loc) => [loc.latitude, loc.longitude] as [number, number]);
-
-		if (points.length > 0) {
-			// Frame the visible locations.
-			const { paddingTopLeft, paddingBottomRight } = computeFitPadding();
-			map.flyToBounds(points, {
-				paddingTopLeft,
-				paddingBottomRight,
-				maxZoom: FIT_MAX_ZOOM,
-				duration: FLY_DURATION
-			});
-		} else if (polygon && polygon.length >= 3) {
-			// An area is set but nothing matches inside it — frame the area itself so
-			// the user stays oriented to their selection.
-			const { paddingTopLeft, paddingBottomRight } = computeFitPadding();
-			map.flyToBounds(polygon, {
-				paddingTopLeft,
-				paddingBottomRight,
-				maxZoom: FIT_MAX_ZOOM,
-				duration: FLY_DURATION
-			});
-		}
-		// No results and no area (e.g. the user cleared their filters): leave the
-		// camera exactly where it is. Clearing filters must not move the map — the
-		// view stays where the user left it rather than snapping back to a default.
-	}
-
-	// --- Draw mode ------------------------------------------------------------
-
-	function startDraw() {
-		if (!L || !map) return;
-
-		drawPoints = [];
-		ondrawpoints?.(0);
-		drawLayer = L.layerGroup().addTo(map);
-		drawLine = L.polyline([], { color: ACCENT, weight: 2, dashArray: '4 5' }).addTo(drawLayer);
-		rubberBand = L.polyline([], {
-			color: ACCENT,
-			weight: 2,
-			dashArray: '4 5',
-			opacity: 0.55
-		}).addTo(drawLayer);
-		drawDots = L.layerGroup().addTo(drawLayer);
-
-		// Double-click would otherwise zoom; we want it free for future use and to
-		// avoid surprises mid-draw.
-		map.doubleClickZoom.disable();
-		map.on('click', onDrawClick);
-		map.on('mousemove', onDrawMouseMove);
-		mapEl.classList.add('drawing');
-	}
-
-	function stopDraw() {
-		if (map) {
-			map.off('click', onDrawClick);
-			map.off('mousemove', onDrawMouseMove);
-			map.doubleClickZoom.enable();
-		}
-		mapEl?.classList.remove('drawing');
-		drawLayer?.remove();
-		drawLayer = null;
-		drawLine = null;
-		rubberBand = null;
-		drawDots = null;
-		drawPoints = [];
-		ondrawpoints?.(0);
-	}
-
-	function redrawInProgress() {
-		if (!L || !drawLine || !drawDots) return;
-
-		drawLine.setLatLngs(drawPoints);
-
-		drawDots.clearLayers();
-		drawPoints.forEach((pt, idx) => {
-			// The first vertex is drawn larger as the visible "click here to close"
-			// target once the ring has enough points.
-			const isFirst = idx === 0;
-			L!
-				.circleMarker(pt, {
-					radius: isFirst ? 6 : 4,
-					color: ACCENT,
-					weight: 2,
-					fillColor: '#fff',
-					fillOpacity: 1,
-					interactive: false
-				})
-				.addTo(drawDots!);
-		});
-	}
-
-	function onDrawClick(e: Leaflet.LeafletMouseEvent) {
-		if (!map) return;
-
-		// Clicking on (or very near) the first vertex closes the ring.
-		if (drawPoints.length >= 3) {
-			const first = map.latLngToContainerPoint(drawPoints[0]);
-			if (first.distanceTo(e.containerPoint) <= CLOSE_TOLERANCE_PX) {
-				finishDraw();
-				return;
-			}
-		}
-
-		drawPoints.push([e.latlng.lat, e.latlng.lng]);
-		ondrawpoints?.(drawPoints.length);
-		redrawInProgress();
-	}
-
-	function onDrawMouseMove(e: Leaflet.LeafletMouseEvent) {
-		if (!rubberBand) return;
-		if (drawPoints.length === 0) {
-			rubberBand.setLatLngs([]);
-			return;
-		}
-		const last = drawPoints[drawPoints.length - 1];
-		rubberBand.setLatLngs([last, [e.latlng.lat, e.latlng.lng]]);
-	}
-
-	function finishDraw() {
-		if (drawPoints.length < 3) return; // need a real polygon
-		// Commit the ring and leave draw mode. The reactive effects below tear down
-		// the in-progress layers and build the committed polygon from `polygon`.
-		polygon = drawPoints.slice();
-		drawing = false;
-	}
-
-	function onKeydown(e: KeyboardEvent) {
-		if (!drawing) return;
-		if (e.key === 'Enter') {
-			e.preventDefault();
-			finishDraw();
-		} else if (e.key === 'Escape') {
-			e.preventDefault();
-			drawing = false; // cancel; `polygon` is left untouched
-		}
-	}
-
-	// --- Committed polygon (with draggable vertices) --------------------------
-
-	function buildCommitted(poly: LatLng[] | null) {
-		if (!L || !map) return;
-
-		committedLayer?.remove();
-		committedLayer = null;
-
-		if (!poly || poly.length < 3) return;
-
-		committedLayer = L.layerGroup().addTo(map);
-
-		// `interactive: false` so the fill never swallows clicks meant for the
-		// markers beneath it.
-		const ring = poly.map((pt) => L!.latLng(pt[0], pt[1]));
-		const shape = L.polygon(ring, {
-			color: ACCENT,
-			weight: 2,
-			fillColor: ACCENT,
-			fillOpacity: 0.12,
-			interactive: false
-		}).addTo(committedLayer);
-
-		poly.forEach((pt, idx) => {
-			const handle = L!.marker(pt, { draggable: true, icon: vertexIcon!, keyboard: false });
-			handle.on('drag', () => {
-				// Live-update the shape as the handle moves (no prop write yet).
-				ring[idx] = handle.getLatLng();
-				shape.setLatLngs(ring);
-			});
-			handle.on('dragend', () => {
-				// Commit the edited ring; rebuilds this layer from the new `polygon`.
-				polygon = ring.map((p) => [p.lat, p.lng] as LatLng);
-			});
-			handle.addTo(committedLayer!);
-		});
+	function scheduleViewReport() {
+		if (viewTimer) clearTimeout(viewTimer);
+		viewTimer = setTimeout(reportView, VIEW_DEBOUNCE_MS);
 	}
 
 	onMount(() => {
@@ -431,12 +196,6 @@
 				shadowSize: [41, 41]
 			});
 
-			vertexIcon = L.divIcon({
-				className: 'vertex-handle',
-				iconSize: [14, 14],
-				iconAnchor: [7, 7]
-			});
-
 			// Zoom control sits bottom-left, clear of the floating search (top-left)
 			// and results (top-right) panels that overlay the full-screen map.
 			map = L.map(mapEl, { zoomControl: false }).setView(
@@ -456,67 +215,47 @@
 			}).addTo(map);
 
 			markerLayer = L.layerGroup().addTo(map);
+			// Report the viewport as it changes so the parent can load data for it.
+			// `moveend` fires after both pans and zooms settle.
+			map.on('moveend', scheduleViewReport);
+
 			renderMarkers();
 			ready = true;
+			// Kick off the first load immediately (no debounce) for the opening view.
+			reportView();
 		})();
 
 		return () => {
 			active = false;
 			ready = false;
+			if (viewTimer) clearTimeout(viewTimer);
 			if (map) {
 				map.remove();
 				map = null;
 				markerLayer = null;
 				markersById = {};
-				drawLayer = null;
-				committedLayer = null;
 			}
 		};
 	});
 
-	// Tracks the first post-ready effect run. On that run, when an `initialCenter`
-	// was supplied, we skip the fit-to-results so the camera stays "where you are"
-	// (the map already opened there) instead of jumping to frame every marker. All
-	// later input changes (search/filter/select) fit and fly as normal. A plain
-	// (non-reactive) flag on purpose — it's read and cleared within the effect.
-	let firstRun = true;
-
-	// Re-render markers and move the camera when inputs change after the map is
-	// ready. `renderMarkers()` reads `locations`, `drawing` and `selected`, so this
-	// effect re-runs on any of them. Markers update instantly; camera moves are
-	// animated. When a location is selected we fly to it; otherwise we refit to
-	// frame the current results. While drawing, the camera is left alone.
-	// `polygon` changes flow through `locations` (the parent re-filters results).
+	// Re-render markers when the in-view locations (or the selection) change. This
+	// only repaints markers; it never moves the camera, so searching/filtering or a
+	// viewport refetch leaves the view exactly where the user put it.
 	$effect(() => {
 		if (!ready) return;
 		renderMarkers();
-		if (drawing) return;
-
-		// Consume the one-time hold on the first run regardless of branch, so a map
-		// opened straight to a selected location (shared link) still fits normally
-		// once that selection is cleared.
-		const skipFit = firstRun && initialCenter !== null;
-		firstRun = false;
-
-		if (selected) flyToSelected();
-		else if (!skipFit) fitToLocations();
 	});
 
-	// Enter / leave draw mode in response to the bindable `drawing` flag.
+	// Centre on a newly-selected location. Guarded by `lastSelectedId` so a marker
+	// re-render (e.g. data refetched after the fly's own move) doesn't re-trigger
+	// it — only an actual change of selection flies the camera.
 	$effect(() => {
 		if (!ready) return;
-		if (drawing) startDraw();
-		else stopDraw();
-	});
-
-	// (Re)build the committed polygon whenever it changes — including being
-	// cleared (`null`) by the parent.
-	$effect(() => {
-		if (ready) buildCommitted(polygon);
+		const id = selected?.id ?? null;
+		if (id && id !== lastSelectedId) flyToSelected();
+		lastSelectedId = id;
 	});
 </script>
-
-<svelte:window onkeydown={onKeydown} />
 
 <div class="map" bind:this={mapEl} role="application" aria-label="Map of food locations"></div>
 
@@ -541,26 +280,5 @@
 	.map :global(.leaflet-bottom.leaflet-right) {
 		margin-bottom: env(safe-area-inset-bottom);
 		margin-right: env(safe-area-inset-right);
-	}
-
-	/* Crosshair cursor while drawing. `mapEl` is the Leaflet container, so this
-	   override beats Leaflet's own `.leaflet-grab` cursor. */
-	:global(.leaflet-container.drawing) {
-		cursor: crosshair;
-	}
-
-	/* Draggable vertex handle for the committed polygon. */
-	.map :global(.vertex-handle) {
-		width: 14px;
-		height: 14px;
-		border-radius: 50%;
-		background: #fff;
-		border: 2px solid var(--color-accent);
-		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
-		cursor: grab;
-	}
-
-	.map :global(.vertex-handle:active) {
-		cursor: grabbing;
 	}
 </style>
