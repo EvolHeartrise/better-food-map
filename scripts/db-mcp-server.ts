@@ -335,14 +335,6 @@ const listLocationsArgs = v.object({
 	)
 });
 
-const querySqlArgs = v.object({
-	sql: v.pipe(
-		v.string(),
-		v.minLength(1),
-		v.description('A single read-only SQL statement (must start with SELECT or WITH).')
-	)
-});
-
 // --- OSM POI discovery (reads the local staging store, not D1) ---
 
 const bboxSchema = v.object({
@@ -604,22 +596,6 @@ async function assertBrandMenuRefs(
 	}
 }
 
-/** Read-only guard for the raw SQL escape hatch. */
-async function runReadOnlySql(sql: string): Promise<unknown> {
-	const trimmed = sql
-		.trim()
-		.replace(/;+\s*$/, '')
-		.trim();
-	if (/;/.test(trimmed)) {
-		throw new Error('Only a single statement is allowed (no semicolons).');
-	}
-	if (!/^(select|with)\b/i.test(trimmed)) {
-		throw new Error('Only read-only queries are allowed (must start with SELECT or WITH).');
-	}
-	const { results } = await getDb().prepare(trimmed).all();
-	return results;
-}
-
 const tools = [
 	defineTool({
 		name: 'list_locations',
@@ -802,13 +778,6 @@ const tools = [
 			'List the canonical, app-defined tags, each with a kind (dietary or course). These are fixed and cannot be created via this server.',
 		schema: v.object({}),
 		handler: () => getAllTags()
-	}),
-	defineTool({
-		name: 'query_sql',
-		description:
-			'Run a single read-only SQL query (SELECT/WITH only) against the database for ad-hoc inspection. Returns the result rows.',
-		schema: querySqlArgs,
-		handler: ({ sql }) => runReadOnlySql(sql)
 	})
 ] as const;
 
