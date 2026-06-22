@@ -134,6 +134,19 @@ export interface MapData {
 	menus: Record<string, MenuItem[]>;
 }
 
+/**
+ * A geographic bounding box (a map viewport), used to scope a {@link MapData}
+ * read to just the visible area. Longitudes are treated as a simple `min..max`
+ * range, so a box spanning the antimeridian is not supported (the same planar
+ * assumption the rest of the app makes).
+ */
+export interface Bounds {
+	minLat: number;
+	maxLat: number;
+	minLng: number;
+	maxLng: number;
+}
+
 // ---------------------------------------------------------------------------
 // Chain model: a brand owns regional menus; a menu owns items; a location
 // either serves a shared brand menu (locations.menu_id) or its own `food`.
@@ -369,16 +382,58 @@ export async function getLocationsWithTags(db: D1Like): Promise<LocationWithTags
 }
 
 /**
- * Returns everything the map page needs in one payload (see {@link MapData}):
- * every location with its own `food` items and per-item overrides, plus each
- * shared brand menu resolved ONCE (keyed by menu_id, each item carrying its tags
- * and merged sources). The client joins the two — applying each location's
- * overrides (unavailable items dropped, overridden prices used) — to reconstruct
- * the effective menu, so a shared chain menu travels the wire a single time
- * instead of being copied onto every branch that serves it. Built in bulk to
+ * Returns everything the map page needs for the given viewport in one payload
+ * (see {@link MapData}): every location inside `bounds` with its own `food` items
+ * and per-item overrides, plus each shared brand menu those branches reference
+ * resolved ONCE (keyed by menu_id, each item carrying its tags and merged
+ * sources). The client joins the two — applying each location's overrides
+ * (unavailable items dropped, overridden prices used) — to reconstruct the
+ * effective menu, so a shared chain menu travels the wire a single time instead
+ * of being copied onto every branch that serves it.
+ *
+ * Scoping the read to the visible box keeps the payload bounded as the dataset
+ * grows to whole countries — only what's on screen is fetched. Built in bulk to
  * avoid an N+1 query per location.
  */
-export async function getMapData(db: D1Like): Promise<MapData> {
+export function getMapData(db: D1Like, bounds: Bounds): Promise<MapData> {
+	return queryMapData(db, `latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ?`, [
+		bounds.minLat,
+		bounds.maxLat,
+		bounds.minLng,
+		bounds.maxLng
+	]);
+}
+
+/**
+ * Like {@link getMapData} but for a single location by id, returned in the same
+ * {@link MapData} shape (so the client can rebuild its menu with the same logic).
+ * Used by the map's detail view to resolve a location that isn't in the current
+ * viewport — e.g. a shared `/locations/<id>` link, or one panned off screen while
+ * its details are open. Yields an empty payload if no location has that id.
+ */
+export function getLocationMapData(db: D1Like, id: string): Promise<MapData> {
+	return queryMapData(db, `id = ?`, [id]);
+}
+
+/**
+ * Shared implementation of {@link getMapData} / {@link getLocationMapData}.
+ * `locFilter` is a predicate over the `locations` table (its `?` placeholders
+ * bound from `params`); every sub-row read is scoped to the locations it selects
+ * — and, for chain branches, the menus those locations reference — so neither a
+ * viewport box nor a single-id lookup ever pulls an unscoped table.
+ */
+async function queryMapData(
+	db: D1Like,
+	locFilter: string,
+	params: (string | number)[]
+): Promise<MapData> {
+	// Sub-selects that resolve, from `locFilter`, the in-scope location ids, the
+	// menus they reference, and (transitively) their food rows and menu items.
+	const inLocations = `SELECT id FROM locations WHERE ${locFilter}`;
+	const inMenus = `SELECT DISTINCT menu_id FROM locations WHERE menu_id IS NOT NULL AND ${locFilter}`;
+	const inFood = `SELECT f.id FROM food f WHERE f.location_id IN (${inLocations})`;
+	const inMenuItems = `SELECT mi.id FROM menu_items mi WHERE mi.menu_id IN (${inMenus})`;
+
 	const [
 		{ results: locations },
 		{ results: foodRows },
@@ -391,43 +446,77 @@ export async function getMapData(db: D1Like): Promise<MapData> {
 		{ results: menuSourceRows },
 		{ results: overrideRows }
 	] = await Promise.all([
-		db.prepare(`SELECT ${LOCATION_FIELDS} FROM locations ORDER BY name`).all<LocationRow>(),
-		db.prepare(`SELECT ${FOOD_FIELDS} FROM food ORDER BY location_id, item_name`).all<FoodRow>(),
+		db
+			.prepare(`SELECT ${LOCATION_FIELDS} FROM locations WHERE ${locFilter} ORDER BY name`)
+			.bind(...params)
+			.all<LocationRow>(),
+		db
+			.prepare(
+				`SELECT ${FOOD_FIELDS} FROM food WHERE location_id IN (${inLocations}) ORDER BY location_id, item_name`
+			)
+			.bind(...params)
+			.all<FoodRow>(),
 		db
 			.prepare(
 				`SELECT ft.food_id AS owner_id, t.id AS id, t.label AS label, t.kind AS kind
 				 FROM food_tags ft
 				 JOIN tags t ON t.id = ft.tag_id
+				 WHERE ft.food_id IN (${inFood})
 				 ORDER BY t.rowid`
 			)
+			.bind(...params)
 			.all<TagRow>(),
 		db
-			.prepare(`SELECT food_id AS owner_id, url, label FROM food_sources ORDER BY rowid`)
+			.prepare(
+				`SELECT food_id AS owner_id, url, label FROM food_sources
+				 WHERE food_id IN (${inFood}) ORDER BY rowid`
+			)
+			.bind(...params)
 			.all<SourceRow>(),
 		db
-			.prepare(`SELECT location_id AS owner_id, url, label FROM location_sources ORDER BY rowid`)
+			.prepare(
+				`SELECT location_id AS owner_id, url, label FROM location_sources
+				 WHERE location_id IN (${inLocations}) ORDER BY rowid`
+			)
+			.bind(...params)
 			.all<SourceRow>(),
 		db
-			.prepare(`SELECT ${MENU_ITEM_FIELDS} FROM menu_items ORDER BY menu_id, item_name`)
+			.prepare(
+				`SELECT ${MENU_ITEM_FIELDS} FROM menu_items
+				 WHERE menu_id IN (${inMenus}) ORDER BY menu_id, item_name`
+			)
+			.bind(...params)
 			.all<MenuItemRow>(),
 		db
 			.prepare(
 				`SELECT mit.menu_item_id AS owner_id, t.id AS id, t.label AS label, t.kind AS kind
 				 FROM menu_item_tags mit
 				 JOIN tags t ON t.id = mit.tag_id
+				 WHERE mit.menu_item_id IN (${inMenuItems})
 				 ORDER BY t.rowid`
 			)
+			.bind(...params)
 			.all<TagRow>(),
 		db
-			.prepare(`SELECT menu_item_id AS owner_id, url, label FROM menu_item_sources ORDER BY rowid`)
-			.all<SourceRow>(),
-		db
-			.prepare(`SELECT menu_id AS owner_id, url, label FROM menu_sources ORDER BY rowid`)
+			.prepare(
+				`SELECT menu_item_id AS owner_id, url, label FROM menu_item_sources
+				 WHERE menu_item_id IN (${inMenuItems}) ORDER BY rowid`
+			)
+			.bind(...params)
 			.all<SourceRow>(),
 		db
 			.prepare(
-				`SELECT location_id, menu_item_id, available, price FROM location_item_overrides ORDER BY rowid`
+				`SELECT menu_id AS owner_id, url, label FROM menu_sources
+				 WHERE menu_id IN (${inMenus}) ORDER BY rowid`
 			)
+			.bind(...params)
+			.all<SourceRow>(),
+		db
+			.prepare(
+				`SELECT location_id, menu_item_id, available, price FROM location_item_overrides
+				 WHERE location_id IN (${inLocations}) ORDER BY rowid`
+			)
+			.bind(...params)
 			.all<OverrideRow>()
 	]);
 
