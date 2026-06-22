@@ -104,44 +104,6 @@ export class OsmPoiStore {
 		return new OsmPoiStore(new Database(path, { readonly: true }));
 	}
 
-	/** Replaces a region's rows wholesale (delete-then-insert) in one transaction. */
-	replaceRegion(region: string, rows: Iterable<PoiRow>): number {
-		const insert = this.db.prepare(
-			`INSERT OR REPLACE INTO osm_poi
-				(osm_id, osm_type, numeric_id, name, osm_class, suggested_category, cuisine,
-				 latitude, longitude, address, phone, website, opening_hours, diet_markers, tags_json, region)
-			 VALUES ($osm_id, $osm_type, $numeric_id, $name, $osm_class, $suggested_category, $cuisine,
-				 $latitude, $longitude, $address, $phone, $website, $opening_hours, $diet_markers, $tags_json, $region)`
-		);
-		const run = this.db.transaction((items: Iterable<PoiRow>) => {
-			this.db.run('DELETE FROM osm_poi WHERE region = ?', [region]);
-			let n = 0;
-			for (const r of items) {
-				insert.run({
-					$osm_id: r.osm_id,
-					$osm_type: r.osm_type,
-					$numeric_id: r.numeric_id,
-					$name: r.name,
-					$osm_class: r.osm_class,
-					$suggested_category: r.suggested_category,
-					$cuisine: r.cuisine,
-					$latitude: r.latitude,
-					$longitude: r.longitude,
-					$address: r.address,
-					$phone: r.phone,
-					$website: r.website,
-					$opening_hours: r.opening_hours,
-					$diet_markers: JSON.stringify(r.diet_markers ?? []),
-					$tags_json: r.tags_json,
-					$region: region
-				});
-				n++;
-			}
-			return n;
-		});
-		return run(rows);
-	}
-
 	/** Inserts/updates a batch of rows for a region (no prior delete). */
 	insertMany(region: string, rows: Iterable<PoiRow>): number {
 		const insert = this.db.prepare(

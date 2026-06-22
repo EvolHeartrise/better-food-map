@@ -6,6 +6,7 @@
 	import { getLocations, getTags, getUserLocation } from '$lib/data.remote';
 	import LocationMap from '$lib/components/LocationMap.svelte';
 	import { pointInPolygon, type LatLng } from '$lib/geo';
+	import { categoryLabel } from '$lib/category';
 
 	const locations = $derived(await getLocations());
 	const allTags = $derived(await getTags());
@@ -212,12 +213,6 @@
 
 	function clearArea(): void {
 		area = null;
-	}
-
-	function categoryLabel(category: LocationData['category']): string {
-		if (!category) return '';
-		if (category === 'fast_food') return 'Fast food';
-		return category.charAt(0).toUpperCase() + category.slice(1);
 	}
 
 	function formatPrice(price: number | null): string {

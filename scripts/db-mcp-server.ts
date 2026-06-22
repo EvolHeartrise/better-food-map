@@ -62,6 +62,7 @@ import {
 import { createHttpD1 } from '../src/lib/server/d1-http';
 import { searchPoi } from './osm/search-poi';
 import { OsmPoiStore } from './osm/poi-store';
+import { haversineMeters } from './osm/geo';
 
 // The D1 client is created lazily so the server can start and advertise its
 // tools even before credentials are configured; the first tool call that needs
@@ -603,18 +604,6 @@ async function assertBrandMenuRefs(
 	}
 }
 
-/** Great-circle distance between two lat/long points, in kilometres. */
-function haversineKm(aLat: number, aLon: number, bLat: number, bLon: number): number {
-	const R = 6371;
-	const toRad = (deg: number) => (deg * Math.PI) / 180;
-	const dLat = toRad(bLat - aLat);
-	const dLon = toRad(bLon - aLon);
-	const h =
-		Math.sin(dLat / 2) ** 2 +
-		Math.cos(toRad(aLat)) * Math.cos(toRad(bLat)) * Math.sin(dLon / 2) ** 2;
-	return 2 * R * Math.asin(Math.sqrt(h));
-}
-
 /** Read-only guard for the raw SQL escape hatch. */
 async function runReadOnlySql(sql: string): Promise<unknown> {
 	const trimmed = sql
@@ -648,7 +637,7 @@ const tools = [
 				rows = rows
 					.map((r) => ({
 						r,
-						d: haversineKm(near.latitude, near.longitude, r.latitude, r.longitude)
+						d: haversineMeters(near.latitude, near.longitude, r.latitude, r.longitude) / 1000
 					}))
 					.filter((x) => x.d <= near.radius_km)
 					.toSorted((a, b) => a.d - b.d)

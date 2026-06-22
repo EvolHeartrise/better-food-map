@@ -6,13 +6,14 @@
 	import { onMount } from 'svelte';
 	import type * as Leaflet from 'leaflet';
 	import type { LatLng } from '$lib/geo';
+	import { categoryLabel, type Category } from '$lib/category';
 
 	// Only the fields the map actually needs. Kept structural (rather than derived
 	// from a remote's return type) so any location-shaped object can be passed in.
 	type Location = {
 		id: string;
 		name: string;
-		category: 'cafe' | 'fast_food' | 'restaurant' | 'bakery' | null;
+		category: Category | null;
 		latitude: number;
 		longitude: number;
 		address: string | null;
@@ -122,12 +123,6 @@
 	let rubberBand: Leaflet.Polyline | null = null; // last point → cursor
 	// The committed (finished) polygon plus its draggable vertex handles.
 	let committedLayer: Leaflet.LayerGroup | null = null;
-
-	function categoryLabel(category: Location['category']): string {
-		if (!category) return '';
-		if (category === 'fast_food') return 'Fast food';
-		return category.charAt(0).toUpperCase() + category.slice(1);
-	}
 
 	function escapeHtml(value: string): string {
 		return value
