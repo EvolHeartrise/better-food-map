@@ -43,15 +43,14 @@ export function resolveConfig(overrides: Partial<D1HttpConfig> = {}): D1HttpConf
 	const databaseId = overrides.databaseId ?? process.env.CLOUDFLARE_DATABASE_ID;
 	const apiToken = overrides.apiToken ?? process.env.CLOUDFLARE_API_TOKEN;
 
-	const missing = [
-		['CLOUDFLARE_ACCOUNT_ID', accountId],
-		['CLOUDFLARE_DATABASE_ID', databaseId],
-		['CLOUDFLARE_API_TOKEN', apiToken]
-	]
-		.filter(([, value]) => !value)
-		.map(([name]) => name);
-
 	if (!accountId || !databaseId || !apiToken) {
+		const missing = [
+			['CLOUDFLARE_ACCOUNT_ID', accountId],
+			['CLOUDFLARE_DATABASE_ID', databaseId],
+			['CLOUDFLARE_API_TOKEN', apiToken]
+		]
+			.filter(([, value]) => !value)
+			.map(([name]) => name);
 		throw new Error(
 			`Missing D1 credentials: ${missing.join(', ')}. Set them in .env (see .env.example). ` +
 				`Create a token at https://dash.cloudflare.com/profile/api-tokens with D1 Edit permission.`

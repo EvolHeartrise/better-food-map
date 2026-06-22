@@ -8,6 +8,11 @@
 // Keep it free of `bun:sqlite`, `node:*`, and other non-Worker imports.
 // ---------------------------------------------------------------------------
 
+// Type-only import (erased at build time, so it adds no runtime dependency and
+// keeps this module runtime-agnostic). `category.ts` is the canonical, client-safe
+// home of the category union; re-exported below as part of this module's contract.
+import type { Category } from '../category';
+
 // ---------------------------------------------------------------------------
 // Minimal D1 interface (the real `D1Database` binding and the HTTP shim in
 // `d1-http.ts` are both structurally assignable to these).
@@ -30,7 +35,7 @@ export interface D1Like {
 // Types (STABLE CONTRACT — other agents depend on these exact names)
 // ---------------------------------------------------------------------------
 
-export type Category = 'cafe' | 'fast_food' | 'restaurant' | 'bakery';
+export type { Category };
 
 // Canonical tag identifiers. App-defined and fixed — tags are NOT user-authored,
 // so this union is the single source of truth.
@@ -889,7 +894,7 @@ export async function getMenuById(db: D1Like, id: string): Promise<Menu | null> 
 }
 
 /** Returns all items of a menu, each with its tags and sources (menu-level + item-level). */
-export async function getMenuItemsByMenu(db: D1Like, menuId: string): Promise<MenuItem[]> {
+async function getMenuItemsByMenu(db: D1Like, menuId: string): Promise<MenuItem[]> {
 	const [
 		{ results: rows },
 		{ results: tagRows },
