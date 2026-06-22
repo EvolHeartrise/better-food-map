@@ -8,7 +8,35 @@
 	import { pointInPolygon, type LatLng } from '$lib/geo';
 	import { categoryLabel, type Category } from '$lib/category';
 
-	const locations = $derived(await getLocations());
+	// The map page works against each location's fully-resolved `menu`, but the wire
+	// payload sends each shared brand menu only once (keyed by menu_id) instead of
+	// copying it onto every branch. Rebuild the effective menu here: a location's own
+	// `food` items, plus — for a chain branch — its shared menu items with per-branch
+	// overrides applied (items marked unavailable dropped, overridden prices used).
+	const mapData = $derived(await getLocations());
+	const locations = $derived.by(() =>
+		mapData.locations.map((loc) => {
+			const menu = [...loc.food];
+			if (loc.menu_id) {
+				const overrideByItem = new Map(loc.overrides.map((o) => [o.menu_item_id, o]));
+				for (const item of mapData.menus[loc.menu_id] ?? []) {
+					const override = overrideByItem.get(item.id);
+					if (override?.available === false) continue; // not served at this branch
+					menu.push({
+						id: item.id,
+						location_id: loc.id,
+						item_name: item.item_name,
+						description: item.description,
+						ingredients: item.ingredients,
+						price: override?.price ?? item.price,
+						tags: item.tags,
+						sources: item.sources
+					});
+				}
+			}
+			return { ...loc, menu };
+		})
+	);
 	const allTags = $derived(await getTags());
 
 	// Chain/brand records, used only to label deduped result groups with the brand
@@ -1244,6 +1272,12 @@
 	.card__name {
 		font-weight: 600;
 		color: var(--color-text);
+		/* Lay the name out as a row so a chain group card's count pill can sit
+		   beside it (see .card__count); plain cards have no pill, so this is inert. */
+		display: flex;
+		align-items: baseline;
+		flex-wrap: wrap;
+		gap: 0.4rem;
 	}
 
 	.card__category {
@@ -1285,13 +1319,6 @@
 	}
 
 	/* --- Deduped chain group card -------------------------------------------- */
-	.card__name {
-		display: flex;
-		align-items: baseline;
-		flex-wrap: wrap;
-		gap: 0.4rem;
-	}
-
 	/* Branch count pill on a chain group card ("KFC · 511 locations"). */
 	.card__count {
 		font-size: 0.72rem;

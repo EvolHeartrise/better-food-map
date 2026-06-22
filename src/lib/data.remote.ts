@@ -1,12 +1,12 @@
 import { query, getRequestEvent } from '$app/server';
 import {
-	getLocationsWithMenus,
+	getMapData,
 	getAllTags,
 	getBrands as getBrandsFromDb,
 	type D1Like,
 	type Tag,
 	type Brand,
-	type LocationWithMenu
+	type MapData
 } from '$lib/server/db';
 
 /**
@@ -28,12 +28,15 @@ function db(): D1Like {
 }
 
 /**
- * Returns every location merged with its full `menu` (each menu item carries its
- * own dietary tags). Used by the map page to render markers and to show, under
- * each result, the menu items matching the active search/filter query.
+ * Returns everything the map page needs (see {@link MapData}): every location
+ * with its own `food` items and per-item overrides, plus each shared brand menu
+ * resolved once and keyed by menu_id. The client joins the two to rebuild each
+ * location's effective menu, so a chain's shared menu is sent over the wire a
+ * single time rather than copied onto every branch. Used to render markers and,
+ * under each result, the menu items matching the active search/filter query.
  */
-export const getLocations = query(async (): Promise<LocationWithMenu[]> => {
-	return getLocationsWithMenus(db());
+export const getLocations = query(async (): Promise<MapData> => {
+	return getMapData(db());
 });
 
 /**

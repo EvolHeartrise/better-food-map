@@ -104,13 +104,34 @@ export interface Food {
 	sources: Source[];
 }
 
-export interface LocationWithMenu extends Location {
-	menu: Food[];
-}
-
 export interface LocationWithTags extends Location {
 	/** Distinct dietary tags offered across this location's menu items. */
 	tags: Tag[];
+}
+
+/**
+ * A location plus the raw pieces the client needs to rebuild its menu without
+ * the server expanding a shared brand menu onto every branch: its own `food`
+ * items and any per-item overrides of the shared menu. See {@link MapData}.
+ */
+export interface MapLocation extends Location {
+	/** This location's own `food` items (empty for a pure chain branch). */
+	food: Food[];
+	/** Per-item deviations from its shared menu (empty unless it overrides one). */
+	overrides: LocationItemOverride[];
+}
+
+/**
+ * Everything the map page needs in one payload. Each shared brand menu is sent
+ * ONCE, keyed by `menu_id`, rather than copied onto every branch that serves it —
+ * a 500-branch chain would otherwise ship its whole menu 500 times. The client
+ * joins each {@link MapLocation} to its `menus` entry, applying the location's
+ * `overrides`, to reconstruct the effective menu (see `resolveMenu` in +page.svelte).
+ */
+export interface MapData {
+	locations: MapLocation[];
+	/** Shared brand menus, each item resolved once (tags + merged sources), keyed by menu_id. */
+	menus: Record<string, MenuItem[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -348,14 +369,16 @@ export async function getLocationsWithTags(db: D1Like): Promise<LocationWithTags
 }
 
 /**
- * Returns every location merged with its full `menu` (each menu item carries its
- * own dietary tags). A location's menu is its own `food` items PLUS, when it
- * serves a shared brand menu (`menu_id`), that menu's items resolved through any
- * per-location overrides (unavailable items dropped, prices/sources applied).
- * Built in bulk to avoid an N+1 query per location. Used by the map page to
- * render markers and per-location matching-item lists.
+ * Returns everything the map page needs in one payload (see {@link MapData}):
+ * every location with its own `food` items and per-item overrides, plus each
+ * shared brand menu resolved ONCE (keyed by menu_id, each item carrying its tags
+ * and merged sources). The client joins the two — applying each location's
+ * overrides (unavailable items dropped, overridden prices used) — to reconstruct
+ * the effective menu, so a shared chain menu travels the wire a single time
+ * instead of being copied onto every branch that serves it. Built in bulk to
+ * avoid an N+1 query per location.
  */
-export async function getLocationsWithMenus(db: D1Like): Promise<LocationWithMenu[]> {
+export async function getMapData(db: D1Like): Promise<MapData> {
 	const [
 		{ results: locations },
 		{ results: foodRows },
@@ -402,7 +425,9 @@ export async function getLocationsWithMenus(db: D1Like): Promise<LocationWithMen
 			.prepare(`SELECT menu_id AS owner_id, url, label FROM menu_sources ORDER BY rowid`)
 			.all<SourceRow>(),
 		db
-			.prepare(`SELECT location_id, menu_item_id, available, price FROM location_item_overrides`)
+			.prepare(
+				`SELECT location_id, menu_item_id, available, price FROM location_item_overrides ORDER BY rowid`
+			)
 			.all<OverrideRow>()
 	]);
 
@@ -423,22 +448,20 @@ export async function getLocationsWithMenus(db: D1Like): Promise<LocationWithMen
 	}
 
 	// Resolve each shared menu item once (tags + item sources, with the menu-level
-	// source appended), grouped by menu. Per-location bits (price/availability)
-	// are applied below, when expanding a menu onto each location that serves it.
+	// source appended) and group by menu. The client applies the per-location
+	// price/availability deltas as it expands a menu onto each branch.
 	const tagsByMenuItem = groupTags(menuItemTagRows);
 	const sourcesByMenuItem = groupSources(menuItemSourceRows);
 	const sourcesByMenu = groupSources(menuSourceRows);
-	const itemsByMenu = new Map<string, MenuItemRow[]>();
-	const resolvedMenuItem = new Map<string, Omit<Food, 'location_id' | 'price'>>();
+	const menus: Record<string, MenuItem[]> = {};
 	for (const row of menuItemRows) {
-		const list = itemsByMenu.get(row.menu_id) ?? [];
-		list.push(row);
-		itemsByMenu.set(row.menu_id, list);
-		resolvedMenuItem.set(row.id, {
+		(menus[row.menu_id] ??= []).push({
 			id: row.id,
+			menu_id: row.menu_id,
 			item_name: row.item_name,
 			description: row.description,
 			ingredients: row.ingredients,
+			price: row.price,
 			tags: tagsByMenuItem.get(row.id) ?? [],
 			sources: mergeSources(
 				sourcesByMenuItem.get(row.id) ?? [],
@@ -447,32 +470,27 @@ export async function getLocationsWithMenus(db: D1Like): Promise<LocationWithMen
 		});
 	}
 
-	// Overrides grouped by location, keyed by menu item.
-	const overridesByLocation = new Map<string, Map<string, OverrideRow>>();
+	// Overrides grouped by location, with `available` as the public boolean|null.
+	const overridesByLocation = new Map<string, LocationItemOverride[]>();
 	for (const row of overrideRows) {
-		const byItem = overridesByLocation.get(row.location_id) ?? new Map<string, OverrideRow>();
-		byItem.set(row.menu_item_id, row);
-		overridesByLocation.set(row.location_id, byItem);
+		const list = overridesByLocation.get(row.location_id) ?? [];
+		list.push({
+			location_id: row.location_id,
+			menu_item_id: row.menu_item_id,
+			available: row.available === null ? null : row.available !== 0,
+			price: row.price
+		});
+		overridesByLocation.set(row.location_id, list);
 	}
 
-	return locations.map((loc) => {
-		const menu: Food[] = [...(ownFoodByLocation.get(loc.id) ?? [])];
-		if (loc.menu_id) {
-			const overrides = overridesByLocation.get(loc.id);
-			for (const itemRow of itemsByMenu.get(loc.menu_id) ?? []) {
-				const override = overrides?.get(itemRow.id);
-				if (override?.available === 0) continue; // not served at this location
-				const base = resolvedMenuItem.get(itemRow.id);
-				if (!base) continue;
-				menu.push({
-					...base,
-					location_id: loc.id,
-					price: override?.price ?? itemRow.price
-				});
-			}
-		}
-		return { ...loc, sources: sourcesByLocation.get(loc.id) ?? [], menu };
-	});
+	const mapLocations: MapLocation[] = locations.map((loc) => ({
+		...loc,
+		sources: sourcesByLocation.get(loc.id) ?? [],
+		food: ownFoodByLocation.get(loc.id) ?? [],
+		overrides: overridesByLocation.get(loc.id) ?? []
+	}));
+
+	return { locations: mapLocations, menus };
 }
 
 export async function getLocationById(db: D1Like, id: string): Promise<Location | null> {
