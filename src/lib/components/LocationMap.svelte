@@ -231,10 +231,10 @@
 		if (!L || !map || drawing || selected) return;
 
 		const points = locations.map((loc) => [loc.latitude, loc.longitude] as [number, number]);
-		const { paddingTopLeft, paddingBottomRight } = computeFitPadding();
 
 		if (points.length > 0) {
 			// Frame the visible locations.
+			const { paddingTopLeft, paddingBottomRight } = computeFitPadding();
 			map.flyToBounds(points, {
 				paddingTopLeft,
 				paddingBottomRight,
@@ -244,16 +244,17 @@
 		} else if (polygon && polygon.length >= 3) {
 			// An area is set but nothing matches inside it — frame the area itself so
 			// the user stays oriented to their selection.
+			const { paddingTopLeft, paddingBottomRight } = computeFitPadding();
 			map.flyToBounds(polygon, {
 				paddingTopLeft,
 				paddingBottomRight,
 				maxZoom: FIT_MAX_ZOOM,
 				duration: FLY_DURATION
 			});
-		} else {
-			// No results and no area: return to the default view.
-			map.flyTo(DEFAULT_CENTER, DEFAULT_ZOOM, { duration: FLY_DURATION });
 		}
+		// No results and no area (e.g. the user cleared their filters): leave the
+		// camera exactly where it is. Clearing filters must not move the map — the
+		// view stays where the user left it rather than snapping back to a default.
 	}
 
 	// --- Draw mode ------------------------------------------------------------
