@@ -39,6 +39,21 @@
 	let searchPanelEl = $state<HTMLElement>();
 	let resultsPanelEl = $state<HTMLElement>();
 
+	// Reference to the map, used to finish an in-progress area draw from the panel's
+	// "Finish area" button — the touch-friendly alternative to tapping the first
+	// vertex (or pressing Enter), which is impractical on a phone. `drawPointCount`
+	// mirrors how many vertices have been placed so the button enables only once a
+	// real polygon (3+ points) is possible.
+	let mapComponent = $state<LocationMap>();
+	let drawPointCount = $state(0);
+
+	// On narrow (mobile) screens the search panel collapses to a header bar so the
+	// map isn't squeezed between it and the results sheet. Open by default so the
+	// filters stay discoverable; the toggle (shown only on narrow screens, via CSS)
+	// lets the user reclaim the map. The wide layout always shows the controls and
+	// hides the toggle, so this flag is inert there.
+	let filtersOpen = $state(true);
+
 	const currency = new Intl.NumberFormat('en-CA', { style: 'currency', currency: 'CAD' });
 
 	// The item-level filters, normalised once. `hasItemFilter` is true when any of
@@ -189,6 +204,12 @@
 		drawing = false;
 	}
 
+	// Commit the ring from the panel. The map only finishes when 3+ points exist,
+	// so this no-ops on a too-small ring (the button is disabled until then anyway).
+	function finishAreaDraw(): void {
+		mapComponent?.finish();
+	}
+
 	function clearArea(): void {
 		area = null;
 	}
@@ -246,9 +267,6 @@
 			? null
 			: (detailMenu.find((menuItem) => menuItem.id === activeMenuItemId) ?? null)
 	);
-	const activeIngredients = $derived(
-		activeMenuItem ? ingredientList(activeMenuItem.ingredients) : []
-	);
 
 	function anchorMenuPopup(anchor: HTMLElement): void {
 		activeAnchorEl = anchor;
@@ -295,16 +313,12 @@
 		if (activeMenuItemId !== null && activeMenuItem === null) closeMenuPopup();
 	});
 
-	// Position the wide-screen popup, clamped to stay within the viewport. On
-	// narrow screens CSS owns the layout, so clear any inline coordinates.
+	// Position the wide-screen popup, clamped to stay within the viewport. The
+	// floating popup only renders on wide screens — narrow uses an inline expansion
+	// under the row — so `popupEl` is absent on narrow and this effect no-ops there.
 	$effect(() => {
 		const el = popupEl;
 		if (!el || activeMenuItemId === null) return;
-		if (narrowViewport.current) {
-			el.style.top = '';
-			el.style.right = '';
-			return;
-		}
 		const maxTop = window.innerHeight - el.offsetHeight - POPUP_GAP;
 		el.style.top = `${Math.max(POPUP_GAP, Math.min(popupTop, maxTop))}px`;
 		el.style.right = `${popupRight}px`;
@@ -333,6 +347,8 @@
 			const target = event.target as Element | null;
 			if (popupEl?.contains(target)) return;
 			if (target?.closest('.menu__trigger')) return;
+			// Taps inside the narrow inline expansion shouldn't dismiss it.
+			if (target?.closest('.menu__details')) return;
 			closeMenuPopup();
 		}
 		window.addEventListener('pointerdown', onPointerDown, true);
@@ -351,6 +367,7 @@
 <div class="app">
 	<div class="app__map">
 		<LocationMap
+			bind:this={mapComponent}
 			locations={mapLocations}
 			selected={selectedLocation}
 			onselect={selectLocation}
@@ -358,15 +375,30 @@
 			{initialCenter}
 			bind:polygon={area}
 			bind:drawing
+			ondrawpoints={(count) => (drawPointCount = count)}
 		/>
 	</div>
 
 	<aside class="panel panel--search" aria-label="Search and filters" bind:this={searchPanelEl}>
 		<header class="panel__brand">
 			<a class="panel__title" href={resolve('/')}>Better Food Map</a>
+			<!-- Shown only on narrow screens (CSS): collapses the filters to free the map. -->
+			<button
+				type="button"
+				class="panel__toggle"
+				aria-expanded={filtersOpen}
+				aria-controls="search-controls"
+				onclick={() => (filtersOpen = !filtersOpen)}
+			>
+				<span>{filtersOpen ? 'Hide' : 'Filters'}</span>
+				{#if !filtersOpen && hasQuery}
+					<span class="panel__toggle-dot" aria-hidden="true"></span>
+				{/if}
+				<span class="panel__toggle-icon" aria-hidden="true">{filtersOpen ? '▴' : '▾'}</span>
+			</button>
 		</header>
 
-		<div class="controls">
+		<div class="controls" id="search-controls" class:controls--collapsed={!filtersOpen}>
 			<!-- Area is a venue-level (geographic) filter, so it's hidden once a single
 			     location is pinned — only the menu-item filters below still apply then. -->
 			{#if !selectedLocation}
@@ -380,10 +412,20 @@
 
 					{#if drawing}
 						<p class="area__hint">
-							Click the map to drop points. Click the first point — or press Enter — to finish. Esc
-							cancels.
+							Tap the map to drop points, then Finish. You can also tap the first point or press
+							Enter to close the ring; Esc cancels.
 						</p>
-						<button type="button" class="area__btn" onclick={cancelAreaDraw}>Cancel drawing</button>
+						<div class="area__actions">
+							<button
+								type="button"
+								class="area__btn area__btn--primary"
+								disabled={drawPointCount < 3}
+								onclick={finishAreaDraw}
+							>
+								Finish area
+							</button>
+							<button type="button" class="area__btn" onclick={cancelAreaDraw}>Cancel</button>
+						</div>
 					{:else if area}
 						<p class="area__status">
 							Limited to your drawn area ({area.length}
@@ -581,6 +623,12 @@
 												>
 											{/if}
 										</button>
+										<!-- No room for the floating popup beside the bottom sheet on narrow screens, so the tapped item's details expand inline instead. -->
+										{#if narrowViewport.current && activeMenuItemId === menuItem.id}
+											<div class="menu__details">
+												{@render itemExtras(menuItem)}
+											</div>
+										{/if}
 									</li>
 								{/each}
 							</ul>
@@ -639,13 +687,40 @@
 		{/if}
 	</aside>
 
-	{#if activeMenuItem}
-		<div
-			class="menu-popup"
-			class:menu-popup--narrow={narrowViewport.current}
-			role="tooltip"
-			bind:this={popupEl}
-		>
+	<!-- Shared by the wide-screen floating popup and the narrow inline expansion:
+	     the item's tags, ingredients and data sources. -->
+	{#snippet itemExtras(menuItem: MenuItem)}
+		{@const extraIngredients = ingredientList(menuItem.ingredients)}
+		{#if menuItem.tags.length > 0}
+			<ul class="tags">
+				{#each menuItem.tags as tag (tag.id)}
+					<li class="tag">{tag.label}</li>
+				{/each}
+			</ul>
+		{/if}
+		{#if extraIngredients.length > 0}
+			<ul class="ingredients">
+				{#each extraIngredients as ingredient (ingredient)}
+					<li class="ingredient">{ingredient}</li>
+				{/each}
+			</ul>
+		{/if}
+		{#if menuItem.sources.length > 0}
+			<div class="sources">
+				<span class="sources__label">Sources</span>
+				<ul class="sources__list">
+					{#each menuItem.sources as source (source.url)}
+						<li class="source">{sourceText(source)}</li>
+					{/each}
+				</ul>
+			</div>
+		{/if}
+	{/snippet}
+
+	<!-- Wide screens float the details beside the row; narrow screens render them
+	     inline under the row (see the menu list above), so this only mounts on wide. -->
+	{#if activeMenuItem && !narrowViewport.current}
+		<div class="menu-popup" role="tooltip" bind:this={popupEl}>
 			<div class="menu__line">
 				<span class="menu__name">{activeMenuItem.item_name}</span>
 				<span class="menu__price">{formatPrice(activeMenuItem.price)}</span>
@@ -655,30 +730,7 @@
 			{:else}
 				<span class="menu__description menu__description--empty">No description</span>
 			{/if}
-			{#if activeMenuItem.tags.length > 0}
-				<ul class="tags">
-					{#each activeMenuItem.tags as tag (tag.id)}
-						<li class="tag">{tag.label}</li>
-					{/each}
-				</ul>
-			{/if}
-			{#if activeIngredients.length > 0}
-				<ul class="ingredients">
-					{#each activeIngredients as ingredient (ingredient)}
-						<li class="ingredient">{ingredient}</li>
-					{/each}
-				</ul>
-			{/if}
-			{#if activeMenuItem.sources.length > 0}
-				<div class="sources">
-					<span class="sources__label">Sources</span>
-					<ul class="sources__list">
-						{#each activeMenuItem.sources as source (source.url)}
-							<li class="source">{sourceText(source)}</li>
-						{/each}
-					</ul>
-				</div>
-			{/if}
+			{@render itemExtras(activeMenuItem)}
 		</div>
 	{/if}
 </div>
@@ -703,7 +755,7 @@
 	.panel {
 		position: absolute;
 		z-index: 10;
-		top: 1rem;
+		top: calc(1rem + env(safe-area-inset-top));
 		display: flex;
 		flex-direction: column;
 		gap: 0.85rem;
@@ -718,13 +770,13 @@
 	}
 
 	.panel--search {
-		left: 1rem;
+		left: calc(1rem + env(safe-area-inset-left));
 		width: min(20rem, calc(100vw - 2rem));
 		overflow-y: auto;
 	}
 
 	.panel--results {
-		right: 1rem;
+		right: calc(1rem + env(safe-area-inset-right));
 		width: min(22rem, calc(100vw - 2rem));
 		/* The list inside scrolls; the panel itself is clipped. */
 		overflow: hidden;
@@ -732,7 +784,10 @@
 
 	.panel__brand {
 		display: flex;
-		flex-direction: column;
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.5rem;
 	}
 
 	.panel__title {
@@ -745,6 +800,36 @@
 	.panel__title:hover {
 		text-decoration: none;
 		color: var(--color-accent);
+	}
+
+	/* Collapse control for the filters. Hidden on wide screens (where the panel
+	   always shows its controls); the media query at the bottom reveals it on
+	   narrow screens, where folding the panel hands the map back its space. */
+	.panel__toggle {
+		display: none;
+		align-items: center;
+		gap: 0.35rem;
+		padding: 0.4rem 0.6rem;
+		border: 1px solid var(--color-border);
+		border-radius: 0.6rem;
+		background: rgba(255, 255, 255, 0.7);
+		color: var(--color-text);
+		font-size: 0.8rem;
+		font-weight: 600;
+	}
+
+	.panel__toggle-icon {
+		font-size: 0.7rem;
+		line-height: 1;
+	}
+
+	/* A small accent dot shown when the panel is collapsed but filters are active,
+	   so the user knows a search is still in effect behind the folded panel. */
+	.panel__toggle-dot {
+		width: 0.45rem;
+		height: 0.45rem;
+		border-radius: 999px;
+		background: var(--color-accent);
 	}
 
 	.controls {
@@ -914,9 +999,36 @@
 			color 0.12s;
 	}
 
-	.area__btn:hover {
+	.area__btn:not(:disabled):hover {
 		border-color: var(--color-accent);
 		background: rgba(255, 255, 255, 0.95);
+	}
+
+	.area__btn:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	/* Finish / Cancel sit side by side while drawing. */
+	.area__actions {
+		display: flex;
+		gap: 0.5rem;
+	}
+
+	.area__actions .area__btn {
+		flex: 1;
+	}
+
+	.area__btn--primary {
+		color: #fff;
+		background: var(--color-accent);
+		border-color: var(--color-accent);
+	}
+
+	.area__btn--primary:not(:disabled):hover {
+		color: #fff;
+		background: var(--color-accent-hover);
+		border-color: var(--color-accent-hover);
 	}
 
 	.area__hint {
@@ -1179,6 +1291,17 @@
 		border-bottom: none;
 	}
 
+	/* Narrow-screen inline expansion of a tapped item's details (tags, ingredients,
+	   sources), shown in place of the wide-screen floating popup. Collapses to
+	   nothing when the item has no extra details to show. */
+	.menu__details {
+		margin: 0.15rem 0 0.1rem;
+	}
+
+	.menu__details:empty {
+		display: none;
+	}
+
 	/* The whole row is a button: hovering or focusing it reveals the details
 	   popup, and a click/tap toggles it (the touch path). Styled to read as the
 	   plain text row it replaced. */
@@ -1330,31 +1453,55 @@
 		pointer-events: none;
 	}
 
-	/* No room beside the full-width bottom sheet, so sit above it instead. The
-	   positioning effect clears the inline top/right, letting these take over. */
-	.menu-popup--narrow {
-		top: 1rem;
-		right: 1rem;
-		left: 1rem;
-		width: auto;
-		max-height: 48dvh;
-	}
-
 	/* Below ~48rem the two side panels can't sit abreast, so stack them:
 	   search across the top, results as a bottom sheet. */
 	@media (max-width: 48rem) {
 		.panel--search {
-			right: 1rem;
+			left: calc(1rem + env(safe-area-inset-left));
+			right: calc(1rem + env(safe-area-inset-right));
 			width: auto;
 		}
 
 		.panel--results {
 			top: auto;
-			bottom: 1rem;
-			left: 1rem;
-			right: 1rem;
+			bottom: calc(1rem + env(safe-area-inset-bottom));
+			left: calc(1rem + env(safe-area-inset-left));
+			right: calc(1rem + env(safe-area-inset-right));
 			width: auto;
 			max-height: 45dvh;
+		}
+
+		/* Reveal the collapse toggle, and fold the controls away when collapsed so
+		   the panel shrinks to just its header bar — handing the map back its space. */
+		.panel__toggle {
+			display: inline-flex;
+		}
+
+		.controls--collapsed {
+			display: none;
+		}
+
+		/* 16px inputs stop iOS Safari from auto-zooming the page when one is focused;
+		   a touch more padding gives a comfier tap target. */
+		.field__input {
+			font-size: 1rem;
+			padding: 0.55rem 0.7rem;
+		}
+
+		/* Roomier tap targets on touch screens. */
+		.chip {
+			padding: 0.4rem 0.85rem;
+			font-size: 0.85rem;
+		}
+
+		.field__clear {
+			padding: 0.25rem 0.15rem;
+		}
+
+		.place-card__clear {
+			width: 1.9rem;
+			height: 1.9rem;
+			font-size: 1rem;
 		}
 	}
 </style>

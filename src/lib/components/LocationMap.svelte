@@ -44,7 +44,12 @@
 		// location. When provided, the camera opens here and the one-time
 		// fit-to-all-results on load is skipped, so the map starts "where you are".
 		// Falls back to DEFAULT_CENTER when absent (e.g. geolocation unavailable).
-		initialCenter = null
+		initialCenter = null,
+		// Called as vertices are placed (or the session resets) with the current
+		// point count, so the parent's panel can enable a "Finish area" button once a
+		// real ring is possible — the touch-friendly way to close it, since tapping
+		// the 14px first vertex (or pressing Enter) is impractical on a phone.
+		ondrawpoints
 	}: {
 		locations: Location[];
 		selected?: Location | null;
@@ -53,7 +58,14 @@
 		drawing?: boolean;
 		obstacles?: HTMLElement[];
 		initialCenter?: [number, number] | null;
+		ondrawpoints?: (count: number) => void;
 	} = $props();
+
+	// Commit the in-progress ring from outside (the parent's "Finish area" button).
+	// No-ops until there are enough points, matching the in-map close gesture.
+	export function finish(): void {
+		finishDraw();
+	}
 
 	// Fallback map center, used when no `initialCenter` is supplied (e.g. IP
 	// geolocation is unavailable) — just a sensible starting view, not tied to any
@@ -263,6 +275,7 @@
 		if (!L || !map) return;
 
 		drawPoints = [];
+		ondrawpoints?.(0);
 		drawLayer = L.layerGroup().addTo(map);
 		drawLine = L.polyline([], { color: ACCENT, weight: 2, dashArray: '4 5' }).addTo(drawLayer);
 		rubberBand = L.polyline([], {
@@ -294,6 +307,7 @@
 		rubberBand = null;
 		drawDots = null;
 		drawPoints = [];
+		ondrawpoints?.(0);
 	}
 
 	function redrawInProgress() {
@@ -332,6 +346,7 @@
 		}
 
 		drawPoints.push([e.latlng.lat, e.latlng.lng]);
+		ondrawpoints?.(drawPoints.length);
 		redrawInProgress();
 	}
 
@@ -519,6 +534,18 @@
 	.map :global(.map-tip) {
 		text-align: center;
 		line-height: 1.35;
+	}
+
+	/* Keep the zoom control and attribution clear of notches and the home indicator
+	   on devices that report safe-area insets (the viewport is `viewport-fit=cover`). */
+	.map :global(.leaflet-bottom.leaflet-left) {
+		margin-bottom: env(safe-area-inset-bottom);
+		margin-left: env(safe-area-inset-left);
+	}
+
+	.map :global(.leaflet-bottom.leaflet-right) {
+		margin-bottom: env(safe-area-inset-bottom);
+		margin-right: env(safe-area-inset-right);
 	}
 
 	/* Crosshair cursor while drawing. `mapEl` is the Leaflet container, so this
