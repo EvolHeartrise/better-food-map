@@ -38,6 +38,24 @@ import {
 	deleteLocation,
 	updateFood,
 	deleteFood,
+	getBrands,
+	getBrandById,
+	insertBrand,
+	updateBrand,
+	deleteBrand,
+	getMenus,
+	getMenuById,
+	getMenuWithItems,
+	insertMenu,
+	updateMenu,
+	deleteMenu,
+	getMenuItemById,
+	insertMenuItems,
+	updateMenuItem,
+	deleteMenuItem,
+	getLocationItemOverrides,
+	setLocationItemOverride,
+	deleteLocationItemOverride,
 	TAGS,
 	type D1Like
 } from '../src/lib/server/db';
@@ -75,10 +93,26 @@ const TAG_POLICY =
 	`the dish; when unsure, omit it. Course tags (${courseTagIds.join(', ')}) describe what kind of ` +
 	`item it is and are applied factually (a dessert gets "dessert", a beverage gets "drink").`;
 
+// How the two ways of storing a menu relate. Kept terse and advertised to
+// clients so an agent picks the right create_* tool for the situation.
+const MODEL_OVERVIEW =
+	'Data model — two kinds of menu:\n' +
+	'• INDEPENDENT venue: store its menu as `food` rows tied to that one location ' +
+	'(create_foods / list_food / update_food / delete_food).\n' +
+	"• CHAIN (McDonald's, Subway, …): create a `brand`, then one `menu` per region " +
+	'(e.g. "Subway UK"), then the menu\'s shared items once with create_menu_items. ' +
+	'Point each branch at that menu by setting its `menu_id` (and `brand_id`) via ' +
+	"create_location/update_location — every such location then serves the menu's " +
+	'items automatically, with no per-location copies. Where one branch differs ' +
+	'(item sold out, regional price), record just that delta with ' +
+	'set_location_item_override. Edit a chain item once with update_menu_item and it ' +
+	'changes for every branch.\n' +
+	'Rule of thumb: shared across branches → menu_items; unique to one place → food.';
+
 const SERVER_INSTRUCTIONS =
-	'CRUD tools over the food-map database (locations and their menu items). Each location and item ' +
-	'may carry source URLs documenting where the data came from — include them whenever you add ' +
-	`scraped data so it stays verifiable.\n\nTag policy: ${TAG_POLICY}`;
+	'CRUD tools over the food-map database (locations, chains/brands, and their menu items). Each ' +
+	'location, menu, and item may carry source URLs documenting where the data came from — include ' +
+	`them whenever you add scraped data so it stays verifiable.\n\n${MODEL_OVERVIEW}\n\nTag policy: ${TAG_POLICY}`;
 
 const latitudeSchema = v.pipe(v.number(), v.minValue(-90), v.maxValue(90));
 const longitudeSchema = v.pipe(v.number(), v.minValue(-180), v.maxValue(180));
@@ -137,6 +171,27 @@ const createLocationArgs = v.object({
 	address: v.optional(v.nullable(v.string())),
 	phone: v.optional(v.nullable(v.string())),
 	website: v.optional(v.nullable(v.string())),
+	brand_id: v.optional(
+		v.nullable(
+			v.pipe(
+				v.string(),
+				v.minLength(1),
+				v.description('Chain this branch belongs to (omit for an independent venue).')
+			)
+		)
+	),
+	menu_id: v.optional(
+		v.nullable(
+			v.pipe(
+				v.string(),
+				v.minLength(1),
+				v.description(
+					'Shared brand menu this branch serves; its items then appear here automatically. ' +
+						'Leave unset for an independent venue (use create_foods for its own menu).'
+				)
+			)
+		)
+	),
 	sources: createSourcesSchema,
 	id: v.optional(
 		v.pipe(
@@ -156,6 +211,20 @@ const updateLocationArgs = v.object({
 	address: v.optional(v.nullable(v.string())),
 	phone: v.optional(v.nullable(v.string())),
 	website: v.optional(v.nullable(v.string())),
+	brand_id: v.optional(
+		v.nullable(
+			v.pipe(v.string(), v.minLength(1), v.description('Reassign to a chain; null detaches it.'))
+		)
+	),
+	menu_id: v.optional(
+		v.nullable(
+			v.pipe(
+				v.string(),
+				v.minLength(1),
+				v.description('Assign/replace the shared menu this branch serves; null detaches it.')
+			)
+		)
+	),
 	sources: updateSourcesSchema
 });
 
@@ -245,6 +314,158 @@ const querySqlArgs = v.object({
 	)
 });
 
+// --- Chains: brands, menus, menu items, per-location overrides ---
+
+const createBrandArgs = v.object({
+	name: v.pipe(
+		v.string(),
+		v.minLength(1),
+		v.description('Chain / brand name, e.g. "McDonald\'s".')
+	),
+	website: v.optional(v.nullable(v.string())),
+	logo_url: v.optional(
+		v.nullable(v.pipe(v.string(), v.url(), v.description('URL of the brand logo/marker image.')))
+	),
+	id: v.optional(
+		v.pipe(
+			v.string(),
+			v.minLength(1),
+			v.description('Optional explicit id; a UUID is generated when omitted.')
+		)
+	)
+});
+
+const updateBrandArgs = v.object({
+	id: v.pipe(v.string(), v.minLength(1), v.description('Id of the brand to update.')),
+	name: v.optional(v.pipe(v.string(), v.minLength(1))),
+	website: v.optional(v.nullable(v.string())),
+	logo_url: v.optional(v.nullable(v.pipe(v.string(), v.url())))
+});
+
+const createMenuArgs = v.object({
+	brand_id: v.pipe(
+		v.string(),
+		v.minLength(1),
+		v.description('Id of the brand this menu belongs to.')
+	),
+	name: v.pipe(v.string(), v.minLength(1), v.description('Menu name, e.g. "Subway UK".')),
+	region: v.optional(
+		v.nullable(
+			v.pipe(v.string(), v.description('Free-form scope label, e.g. "GB", "US-CA", "Canada".'))
+		)
+	),
+	last_verified: v.optional(
+		v.nullable(
+			v.pipe(v.string(), v.description('ISO date this menu was last checked, e.g. "2026-06-22".'))
+		)
+	),
+	sources: createSourcesSchema,
+	id: v.optional(
+		v.pipe(
+			v.string(),
+			v.minLength(1),
+			v.description('Optional explicit id; a UUID is generated when omitted.')
+		)
+	)
+});
+
+const updateMenuArgs = v.object({
+	id: v.pipe(v.string(), v.minLength(1), v.description('Id of the menu to update.')),
+	brand_id: v.optional(v.nullable(v.pipe(v.string(), v.minLength(1)))),
+	name: v.optional(v.pipe(v.string(), v.minLength(1))),
+	region: v.optional(v.nullable(v.string())),
+	last_verified: v.optional(v.nullable(v.string())),
+	sources: updateSourcesSchema
+});
+
+const listMenusArgs = v.object({
+	brand_id: v.optional(
+		v.pipe(v.string(), v.minLength(1), v.description('Only list menus belonging to this brand.'))
+	)
+});
+
+// One shared menu item within a create_menu_items batch. menu_id is given once
+// for the whole batch, so it isn't repeated per item.
+const menuItemSchema = v.object({
+	item_name: v.pipe(v.string(), v.minLength(1), v.description('Name of the menu item.')),
+	description: v.optional(v.nullable(v.string())),
+	ingredients: v.optional(v.nullable(v.string())),
+	price: v.optional(
+		v.nullable(
+			v.pipe(priceSchema, v.description('Default price; a branch can override it per-location.'))
+		)
+	),
+	tags: v.optional(
+		v.pipe(v.array(tagIdSchema), v.description('Tags to apply to this item. ' + TAG_POLICY))
+	),
+	sources: createSourcesSchema,
+	id: v.optional(v.pipe(v.string(), v.minLength(1)))
+});
+
+const createMenuItemsArgs = v.object({
+	menu_id: v.pipe(
+		v.string(),
+		v.minLength(1),
+		v.description('Id of the menu every item in this batch belongs to.')
+	),
+	items: v.pipe(
+		v.array(menuItemSchema),
+		v.minLength(1),
+		v.description('The shared menu items to create, inserted atomically (all-or-nothing).')
+	)
+});
+
+const updateMenuItemArgs = v.object({
+	id: v.pipe(v.string(), v.minLength(1), v.description('Id of the menu item to update.')),
+	menu_id: v.optional(v.pipe(v.string(), v.minLength(1))),
+	item_name: v.optional(v.pipe(v.string(), v.minLength(1))),
+	description: v.optional(v.nullable(v.string())),
+	ingredients: v.optional(v.nullable(v.string())),
+	price: v.optional(v.nullable(priceSchema)),
+	tags: v.optional(
+		v.pipe(
+			v.array(tagIdSchema),
+			v.description('Replaces the full tag set for this item (pass [] to clear). ' + TAG_POLICY)
+		)
+	),
+	sources: updateSourcesSchema
+});
+
+const setOverrideArgs = v.object({
+	location_id: v.pipe(
+		v.string(),
+		v.minLength(1),
+		v.description('Branch that deviates from its shared menu.')
+	),
+	menu_item_id: v.pipe(
+		v.string(),
+		v.minLength(1),
+		v.description('Shared menu item being overridden at this branch.')
+	),
+	available: v.optional(
+		v.nullable(
+			v.pipe(
+				v.boolean(),
+				v.description('false = not served at this branch; null = inherit (served).')
+			)
+		)
+	),
+	price: v.optional(
+		v.nullable(
+			v.pipe(priceSchema, v.description('Price at this branch; null = inherit the menu price.'))
+		)
+	)
+});
+
+const deleteOverrideArgs = v.object({
+	location_id: v.pipe(v.string(), v.minLength(1), v.description('Branch the override is on.')),
+	menu_item_id: v.pipe(
+		v.string(),
+		v.minLength(1),
+		v.description('Shared menu item to un-override.')
+	)
+});
+
 // ---------------------------------------------------------------------------
 // Tool registry
 // ---------------------------------------------------------------------------
@@ -267,6 +488,30 @@ function normalizeSources(
 	sources: { url: string; label?: string | null }[] | undefined
 ): { url: string; label: string | null }[] | undefined {
 	return sources?.map((s) => ({ url: s.url, label: s.label ?? null }));
+}
+
+/**
+ * Validates that any referenced brand/menu exists (and, when both are given,
+ * that the menu belongs to that brand) before linking a location to them.
+ * `null`/`undefined` ids are skipped (detaching is always allowed).
+ */
+async function assertBrandMenuRefs(
+	brandId: string | null | undefined,
+	menuId: string | null | undefined
+): Promise<void> {
+	if (brandId) {
+		if (!(await getBrandById(getDb(), brandId))) throw new Error(`No brand with id "${brandId}".`);
+	}
+	if (menuId) {
+		const menu = await getMenuById(getDb(), menuId);
+		if (!menu) throw new Error(`No menu with id "${menuId}".`);
+		if (brandId && menu.brand_id && menu.brand_id !== brandId) {
+			throw new Error(
+				`Menu "${menuId}" belongs to brand "${menu.brand_id}", not "${brandId}". ` +
+					`Pass a matching brand_id or omit it.`
+			);
+		}
+	}
 }
 
 /** Great-circle distance between two lat/long points, in kilometres. */
@@ -302,9 +547,10 @@ const tools = [
 		name: 'list_locations',
 		description:
 			'List locations as a lightweight overview — id, name, category, coordinates, address, phone, ' +
-			'website, and the distinct tag ids offered across the menu (no per-item detail, no source URLs). ' +
+			'website, brand_id/menu_id (set for chain branches), and the distinct tag ids offered across the ' +
+			'effective menu (no per-item detail, no source URLs). ' +
 			'Supports optional `near`/`category` filtering and `limit`/`offset` paging. Use get_location for ' +
-			'a single place with its full menu and sources.',
+			'a single place with its menu and sources.',
 		schema: listLocationsArgs,
 		handler: async ({ near, category, limit, offset }) => {
 			let rows = await getLocationsWithTags(getDb());
@@ -330,6 +576,8 @@ const tools = [
 				address: loc.address,
 				phone: loc.phone,
 				website: loc.website,
+				brand_id: loc.brand_id,
+				menu_id: loc.menu_id,
 				tags: loc.tags.map((t) => t.id)
 			}));
 		}
@@ -337,20 +585,30 @@ const tools = [
 	defineTool({
 		name: 'get_location',
 		description:
-			'Get a single location (with its source URLs) merged with its full menu (each item carries its tags and sources). Returns null if not found.',
+			'Get a single location with its source URLs. `menu` lists only the items owned directly by this ' +
+			'location (its `food` rows). If `menu_id` is set the branch ALSO serves that shared brand menu — ' +
+			"call get_menu to see/edit those items; `overrides` lists this branch's per-item deviations from " +
+			'them. Returns null if not found.',
 		schema: idArgs,
 		handler: async ({ id }) => {
 			const location = await getLocationById(getDb(), id);
 			if (!location) return null;
-			return { ...location, menu: await getFoodByLocation(getDb(), id) };
+			const [menu, overrides] = await Promise.all([
+				getFoodByLocation(getDb(), id),
+				getLocationItemOverrides(getDb(), id)
+			]);
+			return { ...location, menu, overrides };
 		}
 	}),
 	defineTool({
 		name: 'create_location',
 		description:
-			'Create a new location, optionally with source URLs documenting where its data came from (encouraged). Returns the created location row (including its generated id and sources).',
+			'Create a new location, optionally with source URLs (encouraged). For a chain branch, pass ' +
+			'`menu_id` (and `brand_id`) so it serves that shared menu; for an independent venue omit them and ' +
+			'add its menu with create_foods. Returns the created location row (including its generated id).',
 		schema: createLocationArgs,
 		handler: async (input) => {
+			await assertBrandMenuRefs(input.brand_id, input.menu_id);
 			const id = await insertLocation(getDb(), {
 				id: input.id,
 				name: input.name,
@@ -360,6 +618,8 @@ const tools = [
 				address: input.address ?? null,
 				phone: input.phone ?? null,
 				website: input.website ?? null,
+				brand_id: input.brand_id ?? null,
+				menu_id: input.menu_id ?? null,
 				sources: normalizeSources(input.sources)
 			});
 			return getLocationById(getDb(), id);
@@ -368,10 +628,14 @@ const tools = [
 	defineTool({
 		name: 'update_location',
 		description:
-			'Update one or more fields of an existing location. Only provided fields change; if `sources` is given it replaces the whole source set (pass [] to clear). Returns the updated row, or null if the id does not exist.',
+			'Update one or more fields of an existing location. Only provided fields change; if `sources` is ' +
+			'given it replaces the whole source set (pass [] to clear). Set `menu_id`/`brand_id` to attach the ' +
+			'branch to a chain menu, or null to detach it. Returns the updated row, or null if the id does not exist.',
 		schema: updateLocationArgs,
-		handler: async ({ id, sources, ...patch }) =>
-			updateLocation(getDb(), id, { ...patch, sources: normalizeSources(sources) })
+		handler: async ({ id, sources, ...patch }) => {
+			await assertBrandMenuRefs(patch.brand_id, patch.menu_id);
+			return updateLocation(getDb(), id, { ...patch, sources: normalizeSources(sources) });
+		}
 	}),
 	defineTool({
 		name: 'delete_location',
@@ -382,22 +646,26 @@ const tools = [
 	}),
 	defineTool({
 		name: 'list_food',
-		description: 'List all menu items (with tags and sources) for a given location.',
+		description:
+			"List a location's own `food` items (with tags and sources). Shared chain-menu items are " +
+			'not included here — read those via get_menu.',
 		schema: listFoodArgs,
 		handler: async ({ location_id }) => getFoodByLocation(getDb(), location_id)
 	}),
 	defineTool({
 		name: 'get_food',
 		description:
-			'Get a single menu item with its dietary tags and source URLs. Returns null if not found.',
+			"Get one of a location's own `food` items with its dietary tags and source URLs (for a shared " +
+			'chain-menu item use get_menu_item). Returns null if not found.',
 		schema: idArgs,
 		handler: async ({ id }) => getFoodById(getDb(), id)
 	}),
 	defineTool({
 		name: 'create_foods',
 		description:
-			'Create one or more menu items under a location in a single transaction (all-or-nothing): ' +
-			'if any item is invalid, none are written. This is the only way to add menu items — pass a ' +
+			'Create one or more menu items owned by ONE independent location (its own `food` rows), in a ' +
+			'single transaction (all-or-nothing): ' +
+			"if any item is invalid, none are written. Use this for a venue's own menu; for a chain whose branches share a menu, use create_menu_items instead. Pass a" +
 			'one-element `items` array to add a single item. Returns the created items (each with tags and sources).',
 		schema: createFoodsArgs,
 		handler: async (input) => {
@@ -423,7 +691,8 @@ const tools = [
 	defineTool({
 		name: 'update_food',
 		description:
-			'Update a menu item. Only provided fields change; if `tags` or `sources` is given it replaces that whole set (pass [] to clear). Returns the updated item, or null if the id does not exist.',
+			"Update one of a location's own `food` items (for shared chain items, use update_menu_item). " +
+			'Only provided fields change; if `tags` or `sources` is given it replaces that whole set (pass [] to clear). Returns the updated item, or null if the id does not exist.',
 		schema: updateFoodArgs,
 		handler: async ({ id, sources, ...patch }) =>
 			updateFood(getDb(), id, { ...patch, sources: normalizeSources(sources) })
@@ -450,7 +719,198 @@ const tools = [
 	})
 ] as const;
 
-const toolsByName = new Map(tools.map((t) => [t.name, t] as const));
+// Chain tools: brands → menus → shared menu items, plus per-location overrides.
+// Kept in a separate array purely for grouping; merged into `allTools` below.
+const chainTools = [
+	defineTool({
+		name: 'create_brand',
+		description:
+			"Create a chain/brand (e.g. McDonald's). A brand owns one or more regional menus (create_menu); " +
+			'a location joins the chain by setting its brand_id/menu_id. Returns the created brand.',
+		schema: createBrandArgs,
+		handler: async (input) => {
+			const id = await insertBrand(getDb(), {
+				id: input.id,
+				name: input.name,
+				website: input.website ?? null,
+				logo_url: input.logo_url ?? null
+			});
+			return getBrandById(getDb(), id);
+		}
+	}),
+	defineTool({
+		name: 'list_brands',
+		description:
+			'List all chains/brands (id, name, website, logo_url). Use get_brand for one brand with its menus.',
+		schema: v.object({}),
+		handler: () => getBrands(getDb())
+	}),
+	defineTool({
+		name: 'get_brand',
+		description:
+			'Get a brand plus its menus as summaries (id, name, region, last_verified, item_count). Call ' +
+			"get_menu for a menu's items. Returns null if not found.",
+		schema: idArgs,
+		handler: async ({ id }) => {
+			const brand = await getBrandById(getDb(), id);
+			if (!brand) return null;
+			return { ...brand, menus: await getMenus(getDb(), id) };
+		}
+	}),
+	defineTool({
+		name: 'update_brand',
+		description:
+			'Update a brand. Only provided fields change. Returns the updated brand, or null if the id does not exist.',
+		schema: updateBrandArgs,
+		handler: ({ id, ...patch }) => updateBrand(getDb(), id, patch)
+	}),
+	defineTool({
+		name: 'delete_brand',
+		description:
+			'Delete a brand and (by cascade) its menus and their items. Branches that referenced it revert to ' +
+			'independent (brand_id/menu_id cleared). Returns { deleted: true } if a row was removed.',
+		schema: idArgs,
+		handler: async ({ id }) => ({ deleted: await deleteBrand(getDb(), id) })
+	}),
+	defineTool({
+		name: 'create_menu',
+		description:
+			'Create a regional menu under a brand (e.g. name "Subway UK", region "GB"). Add its shared items ' +
+			'with create_menu_items, then point each branch at it via location.menu_id. Optionally cite the ' +
+			'official menu once via `sources`. Returns the created menu.',
+		schema: createMenuArgs,
+		handler: async (input) => {
+			if (!(await getBrandById(getDb(), input.brand_id))) {
+				throw new Error(`No brand with id "${input.brand_id}".`);
+			}
+			const id = await insertMenu(getDb(), {
+				id: input.id,
+				brand_id: input.brand_id,
+				name: input.name,
+				region: input.region ?? null,
+				last_verified: input.last_verified ?? null,
+				sources: normalizeSources(input.sources)
+			});
+			return getMenuById(getDb(), id);
+		}
+	}),
+	defineTool({
+		name: 'list_menus',
+		description:
+			'List menus (id, brand_id, name, region, last_verified, item_count), optionally filtered to one ' +
+			"brand. Use get_menu for a menu's items.",
+		schema: listMenusArgs,
+		handler: ({ brand_id }) => getMenus(getDb(), brand_id)
+	}),
+	defineTool({
+		name: 'get_menu',
+		description:
+			"Get a menu with its full item list (each item carries its tags and sources) and the menu's own " +
+			'source URLs. Returns null if not found.',
+		schema: idArgs,
+		handler: ({ id }) => getMenuWithItems(getDb(), id)
+	}),
+	defineTool({
+		name: 'update_menu',
+		description:
+			'Update a menu. Only provided fields change; if `sources` is given it replaces the whole source set ' +
+			'(pass [] to clear). Returns the updated menu, or null if the id does not exist.',
+		schema: updateMenuArgs,
+		handler: async ({ id, sources, ...patch }) => {
+			if (patch.brand_id && !(await getBrandById(getDb(), patch.brand_id))) {
+				throw new Error(`No brand with id "${patch.brand_id}".`);
+			}
+			return updateMenu(getDb(), id, { ...patch, sources: normalizeSources(sources) });
+		}
+	}),
+	defineTool({
+		name: 'delete_menu',
+		description:
+			'Delete a menu and (by cascade) its items. Branches serving it revert to independent (menu_id ' +
+			'cleared). Returns { deleted: true } if a row was removed.',
+		schema: idArgs,
+		handler: async ({ id }) => ({ deleted: await deleteMenu(getDb(), id) })
+	}),
+	defineTool({
+		name: 'create_menu_items',
+		description:
+			'Create one or more SHARED items on a brand menu in one transaction (all-or-nothing). Defined once ' +
+			'here, they appear at every branch serving this menu — never copy them per location. For an ' +
+			"independent venue's own menu use create_foods instead. Returns the created items.",
+		schema: createMenuItemsArgs,
+		handler: async (input) => {
+			if (!(await getMenuById(getDb(), input.menu_id))) {
+				throw new Error(`No menu with id "${input.menu_id}".`);
+			}
+			const ids = await insertMenuItems(
+				getDb(),
+				input.items.map((it) => ({
+					id: it.id,
+					menu_id: input.menu_id,
+					item_name: it.item_name,
+					description: it.description ?? null,
+					ingredients: it.ingredients ?? null,
+					price: it.price ?? null,
+					tags: it.tags,
+					sources: normalizeSources(it.sources)
+				}))
+			);
+			return Promise.all(ids.map((id) => getMenuItemById(getDb(), id)));
+		}
+	}),
+	defineTool({
+		name: 'get_menu_item',
+		description:
+			'Get a single shared menu item with its dietary tags and source URLs. Returns null if not found.',
+		schema: idArgs,
+		handler: ({ id }) => getMenuItemById(getDb(), id)
+	}),
+	defineTool({
+		name: 'update_menu_item',
+		description:
+			'Update a shared menu item — the change applies to EVERY branch serving its menu. Only provided ' +
+			'fields change; if `tags`/`sources` is given it replaces that whole set (pass [] to clear). To ' +
+			'change just one branch, use set_location_item_override instead. Returns the updated item, or null ' +
+			'if the id does not exist.',
+		schema: updateMenuItemArgs,
+		handler: async ({ id, sources, ...patch }) =>
+			updateMenuItem(getDb(), id, { ...patch, sources: normalizeSources(sources) })
+	}),
+	defineTool({
+		name: 'delete_menu_item',
+		description:
+			'Delete a shared menu item (removed from every branch serving its menu, plus any per-location ' +
+			'overrides of it). Returns { deleted: true } if a row was removed.',
+		schema: idArgs,
+		handler: async ({ id }) => ({ deleted: await deleteMenuItem(getDb(), id) })
+	}),
+	defineTool({
+		name: 'set_location_item_override',
+		description:
+			'Record how ONE branch differs from its shared menu for ONE item: available=false hides the item ' +
+			'at that branch; price overrides it there. Pass null for either to inherit the menu default. ' +
+			'Creates or replaces the override. Prefer this over editing the shared item when only one branch differs.',
+		schema: setOverrideArgs,
+		handler: async ({ location_id, menu_item_id, available, price }) => {
+			await setLocationItemOverride(getDb(), location_id, menu_item_id, { available, price });
+			return { location_id, menu_item_id, available: available ?? null, price: price ?? null };
+		}
+	}),
+	defineTool({
+		name: 'delete_location_item_override',
+		description:
+			"Remove a branch's override of a shared menu item, so it inherits the menu default again. Returns " +
+			'{ deleted: true } if an override was removed.',
+		schema: deleteOverrideArgs,
+		handler: async ({ location_id, menu_item_id }) => ({
+			deleted: await deleteLocationItemOverride(getDb(), location_id, menu_item_id)
+		})
+	})
+] as const;
+
+const allTools = [...tools, ...chainTools];
+
+const toolsByName = new Map(allTools.map((t) => [t.name, t] as const));
 
 /** valibot → JSON Schema for the MCP `inputSchema` field. */
 function inputSchemaFor(schema: AnySchema): Tool['inputSchema'] {
@@ -469,7 +929,7 @@ const server = new Server(
 );
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
-	tools: tools.map((t) => ({
+	tools: allTools.map((t) => ({
 		name: t.name,
 		description: t.description,
 		inputSchema: inputSchemaFor(t.schema)
