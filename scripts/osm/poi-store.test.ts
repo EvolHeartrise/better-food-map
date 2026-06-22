@@ -92,12 +92,15 @@ test('cap limits rows returned', () => {
 	store.close();
 });
 
-test('replaceRegion swaps a region without touching others', () => {
+test('deleteRegion + insertMany swaps a region without touching others', () => {
 	const store = freshStore();
 	store.insertMany('canada', [row({ osm_id: 'n1', latitude: 49.28, longitude: -123.12 })]);
 	store.insertMany('us', [row({ osm_id: 'n2', latitude: 40.0, longitude: -74.0 })]);
 
-	store.replaceRegion('canada', [
+	// The extract pipeline (scripts/osm-extract.ts) replaces a region by clearing
+	// it, then batch-inserting the fresh rows.
+	store.deleteRegion('canada');
+	store.insertMany('canada', [
 		row({ osm_id: 'n3', latitude: 45.5, longitude: -73.5 }),
 		row({ osm_id: 'n4', latitude: 43.6, longitude: -79.4 })
 	]);
