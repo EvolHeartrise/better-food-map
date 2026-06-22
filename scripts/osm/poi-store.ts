@@ -4,7 +4,7 @@
 //
 // This is a DISPOSABLE, regenerable index — NOT the production database. Raw OSM
 // candidates live here (single local file, gitignored under data/); only curated
-// rows ever cross into D1, via the MCP server's create_location. Rebuild it any
+// rows ever cross into D1, via the MCP server's create_locations. Rebuild it any
 // time with `bun run osm:extract`.
 //
 // Backed by bun:sqlite, so this module is Bun-only and must never be imported

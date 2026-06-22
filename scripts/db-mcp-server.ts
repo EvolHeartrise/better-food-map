@@ -32,7 +32,7 @@ import {
 	getFoodByLocation,
 	getFoodById,
 	getAllTags,
-	insertLocation,
+	insertLocations,
 	insertFoods,
 	updateLocation,
 	deleteLocation,
@@ -112,7 +112,7 @@ const MODEL_OVERVIEW =
 	"• CHAIN (McDonald's, Subway, …): create a `brand`, then one `menu` per region " +
 	'(e.g. "Subway UK"), then the menu\'s shared items once with create_menu_items. ' +
 	'Point each branch at that menu by setting its `menu_id` (and `brand_id`) via ' +
-	"create_location/update_location — every such location then serves the menu's " +
+	"create_locations/update_location — every such location then serves the menu's " +
 	'items automatically, with no per-location copies. Where one branch differs ' +
 	'(item sold out, regional price), record just that delta with ' +
 	'set_location_item_override. Edit a chain item once with update_menu_item and it ' +
@@ -126,7 +126,7 @@ const SERVER_INSTRUCTIONS =
 	'To find venues still missing from the map, use search_poi: it reads a local OpenStreetMap ' +
 	'food-POI staging store (built offline, not the live D1), already de-duplicated against existing ' +
 	'locations, and returns candidates with an osm_url to cite as the source — then add each with ' +
-	`create_location.\n\n${MODEL_OVERVIEW}\n\nTag policy: ${TAG_POLICY}`;
+	`create_locations.\n\n${MODEL_OVERVIEW}\n\nTag policy: ${TAG_POLICY}`;
 
 const latitudeSchema = v.pipe(v.number(), v.minValue(-90), v.maxValue(90));
 const longitudeSchema = v.pipe(v.number(), v.minValue(-180), v.maxValue(180));
@@ -212,6 +212,20 @@ const createLocationArgs = v.object({
 			v.string(),
 			v.minLength(1),
 			v.description('Optional explicit id; a UUID is generated when omitted.')
+		)
+	)
+});
+
+const createLocationsArgs = v.object({
+	items: v.pipe(
+		v.array(createLocationArgs),
+		v.minLength(1),
+		v.maxLength(100),
+		v.description(
+			'Locations to create in one atomic batch (all-or-nothing). Pass a single item to add one place. ' +
+				'Ideal for bulk imports such as backfilling a chain across a region — set the same brand_id and ' +
+				'menu_id on every item so each branch serves the shared menu, and cite each source (e.g. the ' +
+				'osm_url from search_poi). Keep batches to ~50 items.'
 		)
 	)
 });
@@ -676,28 +690,43 @@ const tools = [
 		}
 	}),
 	defineTool({
-		name: 'create_location',
+		name: 'create_locations',
 		description:
-			'Create a new location, optionally with source URLs (encouraged). For a chain branch, pass ' +
-			'`menu_id` (and `brand_id`) so it serves that shared menu; for an independent venue omit them and ' +
-			'add its menu with create_foods. Returns the created location row (including its generated id).',
-		schema: createLocationArgs,
-		handler: async (input) => {
-			await assertBrandMenuRefs(input.brand_id, input.menu_id);
-			const id = await insertLocation(getDb(), {
-				id: input.id,
-				name: input.name,
-				category: input.category ?? null,
-				latitude: input.latitude,
-				longitude: input.longitude,
-				address: input.address ?? null,
-				phone: input.phone ?? null,
-				website: input.website ?? null,
-				brand_id: input.brand_id ?? null,
-				menu_id: input.menu_id ?? null,
-				sources: normalizeSources(input.sources)
-			});
-			return getLocationById(getDb(), id);
+			'Create one or more locations in a single atomic batch (all-or-nothing) — the only way to add ' +
+			'locations; pass a one-item `items` array to add a single place. For a chain branch, set ' +
+			'`menu_id` (and `brand_id`) on the item so it serves that shared menu; for an independent venue ' +
+			'omit them and add its menu with create_foods. Cite each source (encouraged), e.g. the osm_url ' +
+			'from search_poi. Ideal for bulk imports like backfilling a chain across a region. If any item ' +
+			'is invalid, nothing is written. Returns { created, location_ids } — fetch details with ' +
+			'get_location if needed.',
+		schema: createLocationsArgs,
+		handler: async ({ items }) => {
+			// Validate each DISTINCT brand/menu pair once — a chain backfill reuses a
+			// single pair across the whole batch, so this is usually one check.
+			const checkedPairs = new Set<string>();
+			for (const it of items) {
+				const key = `${it.brand_id ?? ''}|${it.menu_id ?? ''}`;
+				if (checkedPairs.has(key)) continue;
+				checkedPairs.add(key);
+				await assertBrandMenuRefs(it.brand_id, it.menu_id);
+			}
+			const ids = await insertLocations(
+				getDb(),
+				items.map((it) => ({
+					id: it.id,
+					name: it.name,
+					category: it.category ?? null,
+					latitude: it.latitude,
+					longitude: it.longitude,
+					address: it.address ?? null,
+					phone: it.phone ?? null,
+					website: it.website ?? null,
+					brand_id: it.brand_id ?? null,
+					menu_id: it.menu_id ?? null,
+					sources: normalizeSources(it.sources)
+				}))
+			);
+			return { created: ids.length, location_ids: ids };
 		}
 	}),
 	defineTool({
@@ -998,7 +1027,7 @@ const osmTools = [
 			'or null for bars/pubs/ice_cream/food_court — pick the best fit), and OSM ' +
 			'address/phone/website/cuisine/opening_hours where tagged. `diet_markers` are venue-level ' +
 			'OSM diet:* markers (informational only — still apply per-item dietary tags per the ' +
-			'source-asserted policy). Workflow: call this, then create_location for each, passing its ' +
+			'source-asserted policy). Workflow: call this, then create_locations, passing each ' +
 			'osm_url in `sources`.',
 		schema: searchPoiArgs,
 		handler: async (input) => {
