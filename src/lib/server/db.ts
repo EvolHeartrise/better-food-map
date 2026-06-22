@@ -551,46 +551,58 @@ export async function getFoodById(db: D1Like, id: string): Promise<Food | null> 
 // Writes
 // ---------------------------------------------------------------------------
 
-export async function insertLocation(
-	db: D1Like,
-	loc: Omit<Location, 'id' | 'sources' | 'brand_id' | 'menu_id'> & {
-		id?: string;
-		brand_id?: string | null;
-		menu_id?: string | null;
-		sources?: Source[];
-	}
-): Promise<string> {
-	const id = loc.id ?? crypto.randomUUID();
-	const stmts: D1PreparedLike[] = [
-		db
-			.prepare(
-				`INSERT INTO locations (id, name, category, latitude, longitude, address, phone, website, brand_id, menu_id)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-			)
-			.bind(
-				id,
-				loc.name,
-				loc.category,
-				loc.latitude,
-				loc.longitude,
-				loc.address,
-				loc.phone,
-				loc.website,
-				loc.brand_id ?? null,
-				loc.menu_id ?? null
-			)
-	];
-	for (const source of loc.sources ?? []) {
+/** Arguments accepted by {@link insertLocations} (one per location). */
+export type LocationInsert = Omit<Location, 'id' | 'sources' | 'brand_id' | 'menu_id'> & {
+	id?: string;
+	brand_id?: string | null;
+	menu_id?: string | null;
+	sources?: Source[];
+};
+
+/**
+ * Inserts many locations (with their sources) in one atomic batch and returns
+ * their ids in input order, mirroring {@link insertFoods}: either every location
+ * is written or, on any error, none are. Pass a single location to add just one.
+ * Ideal for backfilling a chain's branches — give each the same `brand_id`/
+ * `menu_id` so they all serve the shared menu.
+ */
+export async function insertLocations(db: D1Like, locs: LocationInsert[]): Promise<string[]> {
+	const ids: string[] = [];
+	const stmts: D1PreparedLike[] = [];
+	for (const loc of locs) {
+		const id = loc.id ?? crypto.randomUUID();
+		ids.push(id);
 		stmts.push(
 			db
 				.prepare(
-					`INSERT OR IGNORE INTO location_sources (location_id, url, label) VALUES (?, ?, ?)`
+					`INSERT INTO locations (id, name, category, latitude, longitude, address, phone, website, brand_id, menu_id)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 				)
-				.bind(id, source.url, source.label ?? null)
+				.bind(
+					id,
+					loc.name,
+					loc.category,
+					loc.latitude,
+					loc.longitude,
+					loc.address,
+					loc.phone,
+					loc.website,
+					loc.brand_id ?? null,
+					loc.menu_id ?? null
+				)
 		);
+		for (const source of loc.sources ?? []) {
+			stmts.push(
+				db
+					.prepare(
+						`INSERT OR IGNORE INTO location_sources (location_id, url, label) VALUES (?, ?, ?)`
+					)
+					.bind(id, source.url, source.label ?? null)
+			);
+		}
 	}
 	await db.batch(stmts);
-	return id;
+	return ids;
 }
 
 /** Arguments accepted by {@link insertFoods}. */

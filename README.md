@@ -54,7 +54,7 @@ The deployed site reads D1 through its binding via the remote functions in
 
 Read and write data through the **MCP server** (`scripts/db-mcp-server.ts`) — a
 stdio Model Context Protocol server registered in `.mcp.json` as `food-db`. It
-exposes CRUD tools (`list_locations`, `create_location`, `update_food`,
+exposes CRUD tools (`list_locations`, `create_locations`, `update_food`,
 `delete_location`, `query_sql`, …) so an MCP client like Claude Code can read and
 mutate the database directly via tool calls. It now talks to the **same
 production D1** the live site reads, over the D1 REST API, so edits go live
@@ -98,8 +98,8 @@ Then, in an MCP client, discover venues still missing from the map:
   `bbox`. By default it omits POIs already in D1 (de-duplicated by proximity +
   name), so you only see what's missing.
 - Each candidate carries an `osm_url` to cite as the location's source, a
-  `suggested_category`, and OSM contact/cuisine/opening-hours fields. Hand each
-  to `create_location` (passing `osm_url` in `sources`).
+  `suggested_category`, and OSM contact/cuisine/opening-hours fields. Add them in
+  batches with `create_locations` (passing each `osm_url` in `sources`).
 - `diet_markers` are venue-level OSM `diet:*` markers — informational only;
   per-item dietary tags stay source-asserted (see the data policy in CLAUDE.md).
 

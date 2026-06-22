@@ -28,7 +28,7 @@ export interface SearchPoiParams {
 	limit?: number;
 }
 
-/** One POI returned to the caller, ready to hand to create_location. */
+/** One POI returned to the caller, ready to hand to create_locations. */
 export interface PoiCandidate {
 	osm_id: string;
 	osm_type: StoredPoi['osm_type'];
