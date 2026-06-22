@@ -8,6 +8,11 @@
 // so keep them in sync.
 // ---------------------------------------------------------------------------
 
+// Type-only import (erased at build time): `SuggestedCategory` aliases the
+// canonical category union rather than restating it. The scripts layer already
+// depends on src/lib (see search-poi.ts), so this adds no new coupling.
+import type { Category } from '../../src/lib/category';
+
 /** A GeoJSON feature, as produced by osmium export (geometry may be any type). */
 export interface OsmFeature {
 	type?: string;
@@ -16,8 +21,8 @@ export interface OsmFeature {
 	geometry?: { type: string; coordinates: unknown } | null;
 }
 
-/** The app's location category enum (mirrors Category in src/lib/server/db.ts). */
-export type SuggestedCategory = 'cafe' | 'fast_food' | 'restaurant' | 'bakery';
+/** The app's location category enum (aliases the canonical `Category` in src/lib/category.ts). */
+export type SuggestedCategory = Category;
 
 /** Flat staging-store row for one OSM food POI. */
 export interface PoiRow {

@@ -55,7 +55,7 @@ The deployed site reads D1 through its binding via the remote functions in
 Read and write data through the **MCP server** (`scripts/db-mcp-server.ts`) — a
 stdio Model Context Protocol server registered in `.mcp.json` as `food-db`. It
 exposes CRUD tools (`list_locations`, `create_locations`, `update_food`,
-`delete_location`, `query_sql`, …) so an MCP client like Claude Code can read and
+`delete_location`, …) so an MCP client like Claude Code can read and
 mutate the database directly via tool calls. It now talks to the **same
 production D1** the live site reads, over the D1 REST API, so edits go live
 immediately. Run it standalone with `bun run db:mcp`. It needs D1 credentials in
