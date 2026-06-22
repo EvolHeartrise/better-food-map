@@ -62,6 +62,50 @@ immediately. Run it standalone with `bun run db:mcp`. It needs D1 credentials in
 `.env` (see `.env.example`). Inputs are validated with valibot, and the JSON
 Schema advertised to clients is generated from those same schemas.
 
+## Finding new locations (OpenStreetMap)
+
+To add venues at scale we pull candidates from **OpenStreetMap** instead of
+hitting rate-limited public Overpass mirrors. A one-time extract builds a small,
+local **food-POI staging store** (SQLite under `data/`, gitignored and
+disposable — only curated rows ever reach D1), and the MCP server's `search_poi`
+tool reads it offline.
+
+One-time tool install (the extract shells out to `osmium`):
+
+```sh
+# Debian/Ubuntu
+sudo apt-get install osmium-tool
+# macOS
+brew install osmium-tool
+```
+
+Build / refresh the store for a region (download extracts from
+[Geofabrik](https://download.geofabrik.de/)):
+
+```sh
+# e.g. Canada — re-running --region canada replaces just that region's rows
+bun run osm:extract --region canada --input canada-latest.osm.pbf
+```
+
+This filters the extract to food POIs only (`amenity=restaurant,cafe,fast_food,
+bar,pub,…` and `shop=bakery,…`), so the store stays small (single-digit MB for a
+province, low-GB even continent-wide) regardless of the source extract's size.
+Override the DB path with `--db` or the `OSM_POI_DB` env var.
+
+Then, in an MCP client, discover venues still missing from the map:
+
+- `search_poi` takes a centre (`latitude` + `longitude` + `radius_km`) or a
+  `bbox`. By default it omits POIs already in D1 (de-duplicated by proximity +
+  name), so you only see what's missing.
+- Each candidate carries an `osm_url` to cite as the location's source, a
+  `suggested_category`, and OSM contact/cuisine/opening-hours fields. Hand each
+  to `create_location` (passing `osm_url` in `sources`).
+- `diet_markers` are venue-level OSM `diet:*` markers — informational only;
+  per-item dietary tags stay source-asserted (see the data policy in CLAUDE.md).
+
+The store is regenerable, so refresh a region any time by re-running the
+extract; Geofabrik updates daily.
+
 ## Deploying to Cloudflare
 
 The app deploys to **Cloudflare Workers** (Static Assets) via

@@ -60,6 +60,8 @@ import {
 	type D1Like
 } from '../src/lib/server/db';
 import { createHttpD1 } from '../src/lib/server/d1-http';
+import { searchPoi } from './osm/search-poi';
+import { OsmPoiStore } from './osm/poi-store';
 
 // The D1 client is created lazily so the server can start and advertise its
 // tools even before credentials are configured; the first tool call that needs
@@ -67,6 +69,14 @@ import { createHttpD1 } from '../src/lib/server/d1-http';
 let _db: D1Like | undefined;
 function getDb(): D1Like {
 	return (_db ??= createHttpD1());
+}
+
+// The local OSM POI staging store (built by `bun run osm:extract`) is likewise
+// opened lazily and read-only; a missing store surfaces a clear error only when
+// search_poi is actually called.
+let _osmStore: OsmPoiStore | undefined;
+function getOsmStore(): OsmPoiStore {
+	return (_osmStore ??= OsmPoiStore.openReadonly(process.env.OSM_POI_DB ?? 'data/osm-poi.sqlite'));
 }
 
 // ---------------------------------------------------------------------------
@@ -112,7 +122,11 @@ const MODEL_OVERVIEW =
 const SERVER_INSTRUCTIONS =
 	'CRUD tools over the food-map database (locations, chains/brands, and their menu items). Each ' +
 	'location, menu, and item may carry source URLs documenting where the data came from — include ' +
-	`them whenever you add scraped data so it stays verifiable.\n\n${MODEL_OVERVIEW}\n\nTag policy: ${TAG_POLICY}`;
+	'them whenever you add scraped data so it stays verifiable.\n\n' +
+	'To find venues still missing from the map, use search_poi: it reads a local OpenStreetMap ' +
+	'food-POI staging store (built offline, not the live D1), already de-duplicated against existing ' +
+	'locations, and returns candidates with an osm_url to cite as the source — then add each with ' +
+	`create_location.\n\n${MODEL_OVERVIEW}\n\nTag policy: ${TAG_POLICY}`;
 
 const latitudeSchema = v.pipe(v.number(), v.minValue(-90), v.maxValue(90));
 const longitudeSchema = v.pipe(v.number(), v.minValue(-180), v.maxValue(180));
@@ -311,6 +325,67 @@ const querySqlArgs = v.object({
 		v.string(),
 		v.minLength(1),
 		v.description('A single read-only SQL statement (must start with SELECT or WITH).')
+	)
+});
+
+// --- OSM POI discovery (reads the local staging store, not D1) ---
+
+const bboxSchema = v.object({
+	min_lat: latitudeSchema,
+	min_lon: longitudeSchema,
+	max_lat: latitudeSchema,
+	max_lon: longitudeSchema
+});
+
+const searchPoiArgs = v.object({
+	latitude: v.optional(
+		v.pipe(latitudeSchema, v.description('Centre latitude (with longitude + radius_km).'))
+	),
+	longitude: v.optional(
+		v.pipe(longitudeSchema, v.description('Centre longitude (with latitude + radius_km).'))
+	),
+	radius_km: v.optional(
+		v.pipe(
+			v.number(),
+			v.minValue(0),
+			v.maxValue(50),
+			v.description('Search radius in km around the centre (max 50).')
+		)
+	),
+	bbox: v.optional(
+		v.pipe(
+			bboxSchema,
+			v.description('Bounding box to search. Provide this OR latitude+longitude+radius_km.')
+		)
+	),
+	category: v.optional(
+		v.pipe(categorySchema, v.description('Only POIs whose suggested category is this.'))
+	),
+	name: v.optional(
+		v.pipe(
+			v.string(),
+			v.minLength(1),
+			v.description('Case-insensitive substring match on the POI name.')
+		)
+	),
+	cuisine: v.optional(
+		v.pipe(
+			v.string(),
+			v.minLength(1),
+			v.description('Case-insensitive substring match on the OSM cuisine tag.')
+		)
+	),
+	exclude_existing: v.optional(
+		v.pipe(v.boolean(), v.description('Omit POIs already present in the database (default true).'))
+	),
+	limit: v.optional(
+		v.pipe(
+			v.number(),
+			v.integer(),
+			v.minValue(1),
+			v.maxValue(200),
+			v.description('Maximum candidates to return (default 50, max 200).')
+		)
 	)
 });
 
@@ -908,7 +983,49 @@ const chainTools = [
 	})
 ] as const;
 
-const allTools = [...tools, ...chainTools];
+// OSM discovery tool: reads the local food-POI staging store (built by
+// `bun run osm:extract`) so an agent can find venues still missing from the map.
+const osmTools = [
+	defineTool({
+		name: 'search_poi',
+		description:
+			'Find OpenStreetMap food venues to add to the map, from the LOCAL OSM staging store ' +
+			'(built offline via `bun run osm:extract`; not the live D1). Give either a centre ' +
+			'(latitude + longitude + radius_km) or a `bbox`. By default it omits venues already in ' +
+			'the database (set exclude_existing=false to see all), so you get only what is still ' +
+			'missing — ordered nearest-first for centre+radius queries. Each candidate includes an ' +
+			'`osm_url` to cite as the source, a `suggested_category` (cafe/fast_food/restaurant/bakery, ' +
+			'or null for bars/pubs/ice_cream/food_court — pick the best fit), and OSM ' +
+			'address/phone/website/cuisine/opening_hours where tagged. `diet_markers` are venue-level ' +
+			'OSM diet:* markers (informational only — still apply per-item dietary tags per the ' +
+			'source-asserted policy). Workflow: call this, then create_location for each, passing its ' +
+			'osm_url in `sources`.',
+		schema: searchPoiArgs,
+		handler: async (input) => {
+			const db = input.exclude_existing === false ? null : getDb();
+			return searchPoi(getOsmStore(), db, {
+				bbox: input.bbox
+					? {
+							minLat: input.bbox.min_lat,
+							minLon: input.bbox.min_lon,
+							maxLat: input.bbox.max_lat,
+							maxLon: input.bbox.max_lon
+						}
+					: undefined,
+				latitude: input.latitude,
+				longitude: input.longitude,
+				radius_km: input.radius_km,
+				category: input.category,
+				name: input.name,
+				cuisine: input.cuisine,
+				exclude_existing: input.exclude_existing,
+				limit: input.limit
+			});
+		}
+	})
+] as const;
+
+const allTools = [...tools, ...chainTools, ...osmTools];
 
 const toolsByName = new Map(allTools.map((t) => [t.name, t] as const));
 
