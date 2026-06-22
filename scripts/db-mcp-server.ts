@@ -32,7 +32,7 @@ import {
 	getFoodByLocation,
 	getFoodById,
 	getAllTags,
-	insertLocation,
+	insertLocations,
 	insertFoods,
 	updateLocation,
 	deleteLocation,
@@ -60,6 +60,8 @@ import {
 	type D1Like
 } from '../src/lib/server/db';
 import { createHttpD1 } from '../src/lib/server/d1-http';
+import { searchPoi } from './osm/search-poi';
+import { OsmPoiStore } from './osm/poi-store';
 
 // The D1 client is created lazily so the server can start and advertise its
 // tools even before credentials are configured; the first tool call that needs
@@ -67,6 +69,14 @@ import { createHttpD1 } from '../src/lib/server/d1-http';
 let _db: D1Like | undefined;
 function getDb(): D1Like {
 	return (_db ??= createHttpD1());
+}
+
+// The local OSM POI staging store (built by `bun run osm:extract`) is likewise
+// opened lazily and read-only; a missing store surfaces a clear error only when
+// search_poi is actually called.
+let _osmStore: OsmPoiStore | undefined;
+function getOsmStore(): OsmPoiStore {
+	return (_osmStore ??= OsmPoiStore.openReadonly(process.env.OSM_POI_DB ?? 'data/osm-poi.sqlite'));
 }
 
 // ---------------------------------------------------------------------------
@@ -102,7 +112,7 @@ const MODEL_OVERVIEW =
 	"• CHAIN (McDonald's, Subway, …): create a `brand`, then one `menu` per region " +
 	'(e.g. "Subway UK"), then the menu\'s shared items once with create_menu_items. ' +
 	'Point each branch at that menu by setting its `menu_id` (and `brand_id`) via ' +
-	"create_location/update_location — every such location then serves the menu's " +
+	"create_locations/update_location — every such location then serves the menu's " +
 	'items automatically, with no per-location copies. Where one branch differs ' +
 	'(item sold out, regional price), record just that delta with ' +
 	'set_location_item_override. Edit a chain item once with update_menu_item and it ' +
@@ -112,7 +122,11 @@ const MODEL_OVERVIEW =
 const SERVER_INSTRUCTIONS =
 	'CRUD tools over the food-map database (locations, chains/brands, and their menu items). Each ' +
 	'location, menu, and item may carry source URLs documenting where the data came from — include ' +
-	`them whenever you add scraped data so it stays verifiable.\n\n${MODEL_OVERVIEW}\n\nTag policy: ${TAG_POLICY}`;
+	'them whenever you add scraped data so it stays verifiable.\n\n' +
+	'To find venues still missing from the map, use search_poi: it reads a local OpenStreetMap ' +
+	'food-POI staging store (built offline, not the live D1), already de-duplicated against existing ' +
+	'locations, and returns candidates with an osm_url to cite as the source — then add each with ' +
+	`create_locations.\n\n${MODEL_OVERVIEW}\n\nTag policy: ${TAG_POLICY}`;
 
 const latitudeSchema = v.pipe(v.number(), v.minValue(-90), v.maxValue(90));
 const longitudeSchema = v.pipe(v.number(), v.minValue(-180), v.maxValue(180));
@@ -198,6 +212,20 @@ const createLocationArgs = v.object({
 			v.string(),
 			v.minLength(1),
 			v.description('Optional explicit id; a UUID is generated when omitted.')
+		)
+	)
+});
+
+const createLocationsArgs = v.object({
+	items: v.pipe(
+		v.array(createLocationArgs),
+		v.minLength(1),
+		v.maxLength(100),
+		v.description(
+			'Locations to create in one atomic batch (all-or-nothing). Pass a single item to add one place. ' +
+				'Ideal for bulk imports such as backfilling a chain across a region — set the same brand_id and ' +
+				'menu_id on every item so each branch serves the shared menu, and cite each source (e.g. the ' +
+				'osm_url from search_poi). Keep batches to ~50 items.'
 		)
 	)
 });
@@ -311,6 +339,67 @@ const querySqlArgs = v.object({
 		v.string(),
 		v.minLength(1),
 		v.description('A single read-only SQL statement (must start with SELECT or WITH).')
+	)
+});
+
+// --- OSM POI discovery (reads the local staging store, not D1) ---
+
+const bboxSchema = v.object({
+	min_lat: latitudeSchema,
+	min_lon: longitudeSchema,
+	max_lat: latitudeSchema,
+	max_lon: longitudeSchema
+});
+
+const searchPoiArgs = v.object({
+	latitude: v.optional(
+		v.pipe(latitudeSchema, v.description('Centre latitude (with longitude + radius_km).'))
+	),
+	longitude: v.optional(
+		v.pipe(longitudeSchema, v.description('Centre longitude (with latitude + radius_km).'))
+	),
+	radius_km: v.optional(
+		v.pipe(
+			v.number(),
+			v.minValue(0),
+			v.maxValue(50),
+			v.description('Search radius in km around the centre (max 50).')
+		)
+	),
+	bbox: v.optional(
+		v.pipe(
+			bboxSchema,
+			v.description('Bounding box to search. Provide this OR latitude+longitude+radius_km.')
+		)
+	),
+	category: v.optional(
+		v.pipe(categorySchema, v.description('Only POIs whose suggested category is this.'))
+	),
+	name: v.optional(
+		v.pipe(
+			v.string(),
+			v.minLength(1),
+			v.description('Case-insensitive substring match on the POI name.')
+		)
+	),
+	cuisine: v.optional(
+		v.pipe(
+			v.string(),
+			v.minLength(1),
+			v.description('Case-insensitive substring match on the OSM cuisine tag.')
+		)
+	),
+	exclude_existing: v.optional(
+		v.pipe(v.boolean(), v.description('Omit POIs already present in the database (default true).'))
+	),
+	limit: v.optional(
+		v.pipe(
+			v.number(),
+			v.integer(),
+			v.minValue(1),
+			v.maxValue(200),
+			v.description('Maximum candidates to return (default 50, max 200).')
+		)
 	)
 });
 
@@ -601,28 +690,43 @@ const tools = [
 		}
 	}),
 	defineTool({
-		name: 'create_location',
+		name: 'create_locations',
 		description:
-			'Create a new location, optionally with source URLs (encouraged). For a chain branch, pass ' +
-			'`menu_id` (and `brand_id`) so it serves that shared menu; for an independent venue omit them and ' +
-			'add its menu with create_foods. Returns the created location row (including its generated id).',
-		schema: createLocationArgs,
-		handler: async (input) => {
-			await assertBrandMenuRefs(input.brand_id, input.menu_id);
-			const id = await insertLocation(getDb(), {
-				id: input.id,
-				name: input.name,
-				category: input.category ?? null,
-				latitude: input.latitude,
-				longitude: input.longitude,
-				address: input.address ?? null,
-				phone: input.phone ?? null,
-				website: input.website ?? null,
-				brand_id: input.brand_id ?? null,
-				menu_id: input.menu_id ?? null,
-				sources: normalizeSources(input.sources)
-			});
-			return getLocationById(getDb(), id);
+			'Create one or more locations in a single atomic batch (all-or-nothing) — the only way to add ' +
+			'locations; pass a one-item `items` array to add a single place. For a chain branch, set ' +
+			'`menu_id` (and `brand_id`) on the item so it serves that shared menu; for an independent venue ' +
+			'omit them and add its menu with create_foods. Cite each source (encouraged), e.g. the osm_url ' +
+			'from search_poi. Ideal for bulk imports like backfilling a chain across a region. If any item ' +
+			'is invalid, nothing is written. Returns { created, location_ids } — fetch details with ' +
+			'get_location if needed.',
+		schema: createLocationsArgs,
+		handler: async ({ items }) => {
+			// Validate each DISTINCT brand/menu pair once — a chain backfill reuses a
+			// single pair across the whole batch, so this is usually one check.
+			const checkedPairs = new Set<string>();
+			for (const it of items) {
+				const key = `${it.brand_id ?? ''}|${it.menu_id ?? ''}`;
+				if (checkedPairs.has(key)) continue;
+				checkedPairs.add(key);
+				await assertBrandMenuRefs(it.brand_id, it.menu_id);
+			}
+			const ids = await insertLocations(
+				getDb(),
+				items.map((it) => ({
+					id: it.id,
+					name: it.name,
+					category: it.category ?? null,
+					latitude: it.latitude,
+					longitude: it.longitude,
+					address: it.address ?? null,
+					phone: it.phone ?? null,
+					website: it.website ?? null,
+					brand_id: it.brand_id ?? null,
+					menu_id: it.menu_id ?? null,
+					sources: normalizeSources(it.sources)
+				}))
+			);
+			return { created: ids.length, location_ids: ids };
 		}
 	}),
 	defineTool({
@@ -908,7 +1012,49 @@ const chainTools = [
 	})
 ] as const;
 
-const allTools = [...tools, ...chainTools];
+// OSM discovery tool: reads the local food-POI staging store (built by
+// `bun run osm:extract`) so an agent can find venues still missing from the map.
+const osmTools = [
+	defineTool({
+		name: 'search_poi',
+		description:
+			'Find OpenStreetMap food venues to add to the map, from the LOCAL OSM staging store ' +
+			'(built offline via `bun run osm:extract`; not the live D1). Give either a centre ' +
+			'(latitude + longitude + radius_km) or a `bbox`. By default it omits venues already in ' +
+			'the database (set exclude_existing=false to see all), so you get only what is still ' +
+			'missing — ordered nearest-first for centre+radius queries. Each candidate includes an ' +
+			'`osm_url` to cite as the source, a `suggested_category` (cafe/fast_food/restaurant/bakery, ' +
+			'or null for bars/pubs/ice_cream/food_court — pick the best fit), and OSM ' +
+			'address/phone/website/cuisine/opening_hours where tagged. `diet_markers` are venue-level ' +
+			'OSM diet:* markers (informational only — still apply per-item dietary tags per the ' +
+			'source-asserted policy). Workflow: call this, then create_locations, passing each ' +
+			'osm_url in `sources`.',
+		schema: searchPoiArgs,
+		handler: async (input) => {
+			const db = input.exclude_existing === false ? null : getDb();
+			return searchPoi(getOsmStore(), db, {
+				bbox: input.bbox
+					? {
+							minLat: input.bbox.min_lat,
+							minLon: input.bbox.min_lon,
+							maxLat: input.bbox.max_lat,
+							maxLon: input.bbox.max_lon
+						}
+					: undefined,
+				latitude: input.latitude,
+				longitude: input.longitude,
+				radius_km: input.radius_km,
+				category: input.category,
+				name: input.name,
+				cuisine: input.cuisine,
+				exclude_existing: input.exclude_existing,
+				limit: input.limit
+			});
+		}
+	})
+] as const;
+
+const allTools = [...tools, ...chainTools, ...osmTools];
 
 const toolsByName = new Map(allTools.map((t) => [t.name, t] as const));
 
