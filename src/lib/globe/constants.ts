@@ -10,17 +10,17 @@ export const CAMERA_FOV = 45;
 // (At this closest distance a marker sitting directly beneath the camera can rise
 // past it — markers float a touch off the surface — so the very tightest zoom onto
 // a pin may clip it; the map imagery is the focus there.)
-export const MIN_CAMERA_DISTANCE = GLOBE_RADIUS * 1.004;
+export const MIN_CAMERA_DISTANCE = GLOBE_RADIUS * 1.0015;
 export const MAX_CAMERA_DISTANCE = GLOBE_RADIUS * 4.5;
 // Opening distance when no place is selected — a regional, tilted-down view.
 export const DEFAULT_CAMERA_DISTANCE = GLOBE_RADIUS * 2.6;
 // Distance the camera flies to when a location is selected (a close-in look).
 export const SELECTED_CAMERA_DISTANCE = GLOBE_RADIUS * 1.18;
 // Near plane must sit below the closest-zoom distance to the nearest geometry, or
-// it clips: at MIN_CAMERA_DISTANCE (altitude 0.004) the detail tiles directly
-// below are only ~0.002 away, so 0.001 keeps them (and the surface) in view. The
-// detail layer's polygon offset covers the depth precision lost to the tight near.
-export const CAMERA_NEAR = 0.001;
+// it clips: at MIN_CAMERA_DISTANCE (altitude 0.0015) the detail tiles directly
+// below are only ~0.0009 away, so 0.0005 keeps them (and the surface) in view. The
+// tile layers' polygon offsets cover the depth precision lost to the tight near.
+export const CAMERA_NEAR = 0.0005;
 export const CAMERA_FAR = 100;
 
 // Fallback opening centre [lat, lng] when no IP-detected centre is supplied —
@@ -66,10 +66,12 @@ export function tileSegments(z: number): number {
 	if (z <= 7) return 8;
 	return 4;
 }
-// Altitude (fraction of radius) each layer sits above the base sphere, so layers
-// don't z-fight. Detail sits just above base imagery.
-export const BASE_TILE_ALTITUDE = 0.001;
-export const DETAIL_TILE_ALTITUDE = 0.002;
+// Altitude (fraction of radius) each tile layer sits above the base sphere. Kept
+// very small so both layers stay below the closest camera distance (otherwise the
+// camera would dip beneath the detail tiles and they'd vanish when zooming in);
+// the layer ordering is held by polygon offsets (see TileGlobe), not these gaps.
+export const BASE_TILE_ALTITUDE = 0.0003;
+export const DETAIL_TILE_ALTITUDE = 0.0006;
 
 // OpenStreetMap raster tiles, round-robined across subdomains. OSM's tile policy
 // and the ODbL require the attribution shown below (surfaced in the DOM overlay).
