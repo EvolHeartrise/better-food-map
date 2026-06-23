@@ -31,6 +31,8 @@
 		segments: C.tileSegments,
 		altitude: C.DETAIL_TILE_ALTITUDE,
 		tileUrl: C.osmTileUrl,
+		// Keep the detail imagery cleanly above the base layer it overlaps.
+		polygonOffset: true,
 		onUpdate: invalidate
 	});
 

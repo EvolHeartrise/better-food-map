@@ -29,6 +29,13 @@ type TileLayerOptions = {
 	altitude: number;
 	/** Resolve a tile to its image URL. */
 	tileUrl: (z: number, x: number, y: number) => string;
+	/**
+	 * Pull this layer slightly toward the camera in the depth buffer (a polygon
+	 * offset), so it reliably draws on top of a layer beneath it regardless of how
+	 * tight the near plane is. Used for the detail layer so it never z-fights the
+	 * base imagery it sits a hair above.
+	 */
+	polygonOffset?: boolean;
 	/** Optional hook fired after the group changes, for on-demand re-rendering. */
 	onUpdate?: () => void;
 };
@@ -110,8 +117,16 @@ export class TileLayer {
 		geometry.setIndex(new BufferAttribute(patch.indices, 1));
 
 		// Unlit imagery (MeshBasic) so the whole globe stays evenly readable, and
-		// DoubleSide so a patch is visible regardless of winding.
-		const material = new MeshBasicMaterial({ map: texture, side: DoubleSide });
+		// DoubleSide so a patch is visible regardless of winding. The optional polygon
+		// offset (negative = toward the camera) keeps the detail layer on top of the
+		// base imagery without relying on fine depth precision.
+		const material = new MeshBasicMaterial({
+			map: texture,
+			side: DoubleSide,
+			polygonOffset: this.options.polygonOffset ?? false,
+			polygonOffsetFactor: this.options.polygonOffset ? -1 : 0,
+			polygonOffsetUnits: this.options.polygonOffset ? -1 : 0
+		});
 		const mesh = new Mesh(geometry, material);
 		mesh.frustumCulled = true;
 
