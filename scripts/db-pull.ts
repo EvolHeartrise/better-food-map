@@ -61,7 +61,7 @@ try {
 	db.exec('PRAGMA foreign_keys=OFF;');
 	db.exec(await Bun.file(dumpPath).text());
 
-	for (const table of ['locations', 'food', 'menus', 'menu_items', 'brands', 'tags']) {
+	for (const table of ['locations', 'items', 'menus', 'brands', 'tags', 'item_tags']) {
 		const { n } = db.query(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number };
 		console.error(`  ${table.padEnd(11)} ${n}`);
 	}
