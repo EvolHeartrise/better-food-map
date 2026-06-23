@@ -30,14 +30,14 @@ import {
 	getLocationsWithTags,
 	getLocationById,
 	getFoodByLocation,
-	getFoodById,
+	getItemById,
+	updateItem,
+	deleteItem,
 	getAllTags,
 	insertLocations,
 	insertFoods,
 	updateLocation,
 	deleteLocation,
-	updateFood,
-	deleteFood,
 	getBrands,
 	getBrandById,
 	insertBrand,
@@ -49,10 +49,7 @@ import {
 	insertMenu,
 	updateMenu,
 	deleteMenu,
-	getMenuItemById,
 	insertMenuItems,
-	updateMenuItem,
-	deleteMenuItem,
 	getLocationItemOverrides,
 	setLocationItemOverride,
 	deleteLocationItemOverride,
@@ -88,10 +85,10 @@ function getOsmStore(): OsmPoiStore {
 const categorySchema = v.picklist(['cafe', 'fast_food', 'restaurant', 'bakery']);
 const tagIdSchema = v.picklist(TAGS.map((t) => t.id) as [string, ...string[]]);
 
-// Tag ids grouped by kind, derived from the canonical list so the descriptions
+// Tag ids grouped by type, derived from the canonical list so the descriptions
 // below stay in sync automatically as tags are added.
-const dietaryTagIds = TAGS.filter((t) => t.kind === 'dietary').map((t) => t.id);
-const courseTagIds = TAGS.filter((t) => t.kind === 'course').map((t) => t.id);
+const dietaryTagIds = TAGS.filter((t) => t.tag_type === 'dietary').map((t) => t.id);
+const courseTagIds = TAGS.filter((t) => t.tag_type === 'course').map((t) => t.id);
 
 // The single source of truth for how tags are applied. Advertised to MCP clients
 // via the server `instructions`, and reused verbatim in every tag-bearing tool
@@ -107,18 +104,21 @@ const TAG_POLICY =
 // How the two ways of storing a menu relate. Kept terse and advertised to
 // clients so an agent picks the right create_* tool for the situation.
 const MODEL_OVERVIEW =
-	'Data model — two kinds of menu:\n' +
-	'• INDEPENDENT venue: store its menu as `food` rows tied to that one location ' +
-	'(create_foods / list_food / update_food / delete_food).\n' +
+	'Data model — every location serves a menu of items:\n' +
+	'• INDEPENDENT venue: add its items with create_foods. They live on a private menu created ' +
+	'automatically for that one location (browse them via get_location).\n' +
 	"• CHAIN (McDonald's, Subway, …): create a `brand`, then one `menu` per region " +
-	'(e.g. "Subway UK"), then the menu\'s shared items once with create_menu_items. ' +
-	'Point each branch at that menu by setting its `menu_id` (and `brand_id`) via ' +
+	'(e.g. "Subway UK"), then the menu\'s shared items once with create_menu_items (browse them via ' +
+	'get_menu). Point each branch at that menu by setting its `menu_id` (and `brand_id`) via ' +
 	"create_locations/update_location — every such location then serves the menu's " +
 	'items automatically, with no per-location copies. Where one branch differs ' +
-	'(item sold out, regional price), record just that delta with ' +
-	'set_location_item_override. Edit a chain item once with update_menu_item and it ' +
-	'changes for every branch.\n' +
-	'Rule of thumb: shared across branches → menu_items; unique to one place → food.';
+	'(item sold out, regional price), record just that delta with set_location_item_override.\n' +
+	'Once created, read/edit/remove any item by id with get_item / update_item / delete_item ' +
+	'(editing a shared chain item changes it for every branch).\n' +
+	'Rule of thumb: shared across branches → create_menu_items; unique to one place → create_foods.\n' +
+	'Items carry tags and ingredients: pass `ingredients` as a comma-separated string and ' +
+	'each part is stored as an ingredient tag. Use `optional_tags` / `optional_ingredients` for ' +
+	'things that can be added or left out (e.g. an item that can be made vegan, or cheese on request).';
 
 const SERVER_INSTRUCTIONS =
 	'CRUD tools over the food-map database (locations, chains/brands, and their menu items). Each ' +
@@ -166,6 +166,41 @@ const updateSourcesSchema = v.optional(
 		v.description(
 			'Replaces the full source set (each: a url and optional label). Pass [] to clear all sources. ' +
 				'Encouraged: keep at least one source documenting where the data came from.'
+		)
+	)
+);
+
+// Ingredients are recorded as ingredient tags. `ingredients` is the common case
+// (always present); `optional_*` express the per-edge `optional` flag for things
+// that can be added or left out. Shared across the create/update item schemas.
+const ingredientsSchema = v.optional(
+	v.nullable(
+		v.pipe(
+			v.string(),
+			v.description(
+				'Comma-separated ingredients; each part is stored as an ingredient tag (lower-cased, de-duplicated).'
+			)
+		)
+	)
+);
+const optionalIngredientsSchema = v.optional(
+	v.nullable(
+		v.pipe(
+			v.string(),
+			v.description(
+				'Comma-separated ingredients that are OPTIONAL for this item — added or left out on request ' +
+					'(e.g. "cheese, jalapeños"). Stored as ingredient tags flagged optional.'
+			)
+		)
+	)
+);
+const optionalTagsSchema = v.optional(
+	v.pipe(
+		v.array(tagIdSchema),
+		v.description(
+			'Tags this item can OPTIONALLY satisfy on request (e.g. a dish that can be made vegan). ' +
+				'Same id set as `tags`. ' +
+				TAG_POLICY
 		)
 	)
 );
@@ -262,11 +297,13 @@ const updateLocationArgs = v.object({
 const foodItemSchema = v.object({
 	item_name: v.pipe(v.string(), v.minLength(1), v.description('Name of the menu item.')),
 	description: v.optional(v.nullable(v.string())),
-	ingredients: v.optional(v.nullable(v.string())),
+	ingredients: ingredientsSchema,
+	optional_ingredients: optionalIngredientsSchema,
 	price: v.optional(v.nullable(v.pipe(priceSchema, v.description('Price in CAD.')))),
 	tags: v.optional(
 		v.pipe(v.array(tagIdSchema), v.description('Tags to apply to this item. ' + TAG_POLICY))
 	),
+	optional_tags: optionalTagsSchema,
 	sources: createSourcesSchema,
 	id: v.optional(v.pipe(v.string(), v.minLength(1)))
 });
@@ -284,26 +321,6 @@ const createFoodsArgs = v.object({
 			'The menu items to create under the location, inserted atomically (all-or-nothing).'
 		)
 	)
-});
-
-const updateFoodArgs = v.object({
-	id: v.pipe(v.string(), v.minLength(1), v.description('Id of the menu item to update.')),
-	location_id: v.optional(v.pipe(v.string(), v.minLength(1))),
-	item_name: v.optional(v.pipe(v.string(), v.minLength(1))),
-	description: v.optional(v.nullable(v.string())),
-	ingredients: v.optional(v.nullable(v.string())),
-	price: v.optional(v.nullable(priceSchema)),
-	tags: v.optional(
-		v.pipe(
-			v.array(tagIdSchema),
-			v.description('Replaces the full tag set for this item (pass [] to clear). ' + TAG_POLICY)
-		)
-	),
-	sources: updateSourcesSchema
-});
-
-const listFoodArgs = v.object({
-	location_id: v.pipe(v.string(), v.minLength(1), v.description('Location whose menu to list.'))
 });
 
 const nearSchema = v.object({
@@ -471,7 +488,8 @@ const listMenusArgs = v.object({
 const menuItemSchema = v.object({
 	item_name: v.pipe(v.string(), v.minLength(1), v.description('Name of the menu item.')),
 	description: v.optional(v.nullable(v.string())),
-	ingredients: v.optional(v.nullable(v.string())),
+	ingredients: ingredientsSchema,
+	optional_ingredients: optionalIngredientsSchema,
 	price: v.optional(
 		v.nullable(
 			v.pipe(priceSchema, v.description('Default price; a branch can override it per-location.'))
@@ -480,6 +498,7 @@ const menuItemSchema = v.object({
 	tags: v.optional(
 		v.pipe(v.array(tagIdSchema), v.description('Tags to apply to this item. ' + TAG_POLICY))
 	),
+	optional_tags: optionalTagsSchema,
 	sources: createSourcesSchema,
 	id: v.optional(v.pipe(v.string(), v.minLength(1)))
 });
@@ -497,19 +516,35 @@ const createMenuItemsArgs = v.object({
 	)
 });
 
-const updateMenuItemArgs = v.object({
-	id: v.pipe(v.string(), v.minLength(1), v.description('Id of the menu item to update.')),
-	menu_id: v.optional(v.pipe(v.string(), v.minLength(1))),
+const updateItemArgs = v.object({
+	id: v.pipe(v.string(), v.minLength(1), v.description('Id of the item to update.')),
+	menu_id: v.optional(
+		v.pipe(v.string(), v.minLength(1), v.description('Move the item to a different menu (rare).'))
+	),
 	item_name: v.optional(v.pipe(v.string(), v.minLength(1))),
 	description: v.optional(v.nullable(v.string())),
-	ingredients: v.optional(v.nullable(v.string())),
+	ingredients: v.optional(
+		v.nullable(
+			v.pipe(
+				v.string(),
+				v.description(
+					'Replaces the full (non-optional) ingredient set for this item; pass "" to clear. ' +
+						'Comma-separated; each part stored as an ingredient tag.'
+				)
+			)
+		)
+	),
+	optional_ingredients: optionalIngredientsSchema,
 	price: v.optional(v.nullable(priceSchema)),
 	tags: v.optional(
 		v.pipe(
 			v.array(tagIdSchema),
-			v.description('Replaces the full tag set for this item (pass [] to clear). ' + TAG_POLICY)
+			v.description(
+				'Replaces the full dietary/course tag set for this item (pass [] to clear). ' + TAG_POLICY
+			)
 		)
 	),
+	optional_tags: optionalTagsSchema,
 	sources: updateSourcesSchema
 });
 
@@ -640,7 +675,7 @@ const tools = [
 		name: 'get_location',
 		description:
 			'Get a single location with its source URLs. `menu` lists only the items owned directly by this ' +
-			'location (its `food` rows). If `menu_id` is set the branch ALSO serves that shared brand menu — ' +
+			'venue (on its own private menu). If `menu_id` is a shared brand menu the location is a chain branch — ' +
 			"call get_menu to see/edit those items; `overrides` lists this branch's per-item deviations from " +
 			'them. Returns null if not found.',
 		schema: idArgs,
@@ -714,27 +749,11 @@ const tools = [
 		handler: async ({ id }) => ({ deleted: await deleteLocation(getDb(), id) })
 	}),
 	defineTool({
-		name: 'list_food',
-		description:
-			"List a location's own `food` items (with tags and sources). Shared chain-menu items are " +
-			'not included here — read those via get_menu.',
-		schema: listFoodArgs,
-		handler: async ({ location_id }) => getFoodByLocation(getDb(), location_id)
-	}),
-	defineTool({
-		name: 'get_food',
-		description:
-			"Get one of a location's own `food` items with its dietary tags and source URLs (for a shared " +
-			'chain-menu item use get_menu_item). Returns null if not found.',
-		schema: idArgs,
-		handler: async ({ id }) => getFoodById(getDb(), id)
-	}),
-	defineTool({
 		name: 'create_foods',
 		description:
-			'Create one or more menu items owned by ONE independent location (its own `food` rows), in a ' +
-			'single transaction (all-or-nothing): ' +
-			"if any item is invalid, none are written. Use this for a venue's own menu; for a chain whose branches share a menu, use create_menu_items instead. Pass a" +
+			'Create one or more menu items for ONE independent venue, on its own private menu (created ' +
+			'automatically the first time), in a single transaction (all-or-nothing): ' +
+			"if any item is invalid, none are written. Use this for a venue's own menu; for a chain whose branches share a menu, use create_menu_items instead (calling it on a chain branch errors). Pass a " +
 			'one-element `items` array to add a single item. Returns the created items (each with tags and sources).',
 		schema: createFoodsArgs,
 		handler: async (input) => {
@@ -749,33 +768,57 @@ const tools = [
 					item_name: it.item_name,
 					description: it.description ?? null,
 					ingredients: it.ingredients ?? null,
+					optionalIngredients: it.optional_ingredients ?? null,
 					price: it.price ?? null,
 					tags: it.tags,
+					optionalTags: it.optional_tags,
 					sources: normalizeSources(it.sources)
 				}))
 			);
-			return Promise.all(ids.map((id) => getFoodById(getDb(), id)));
+			return Promise.all(ids.map((id) => getItemById(getDb(), id)));
 		}
 	}),
 	defineTool({
-		name: 'update_food',
+		name: 'get_item',
 		description:
-			"Update one of a location's own `food` items (for shared chain items, use update_menu_item). " +
-			'Only provided fields change; if `tags` or `sources` is given it replaces that whole set (pass [] to clear). Returns the updated item, or null if the id does not exist.',
-		schema: updateFoodArgs,
-		handler: async ({ id, sources, ...patch }) =>
-			updateFood(getDb(), id, { ...patch, sources: normalizeSources(sources) })
+			"Get any menu item by id — a venue's own item or a chain's shared one — with its tags " +
+			"(dietary, course, ingredient) and source URLs. To browse a venue's items use get_location; " +
+			'for a chain menu use get_menu. Returns null if not found.',
+		schema: idArgs,
+		handler: async ({ id }) => getItemById(getDb(), id)
 	}),
 	defineTool({
-		name: 'delete_food',
-		description: 'Delete a single menu item. Returns { deleted: true } if a row was removed.',
+		name: 'update_item',
+		description:
+			'Update any menu item by id. For a shared chain item the change applies to EVERY branch serving ' +
+			'its menu — to change just one branch use set_location_item_override instead. Only provided fields ' +
+			'change: `tags`/`optional_tags` together replace the dietary/course set; `ingredients`/' +
+			'`optional_ingredients` replace the ingredient set; `sources` replaces sources (pass []/"" to ' +
+			'clear). Returns the updated item, or null if the id does not exist.',
+		schema: updateItemArgs,
+		handler: async ({ id, sources, optional_tags, optional_ingredients, ...patch }) =>
+			updateItem(getDb(), id, {
+				...patch,
+				optionalTags: optional_tags,
+				optionalIngredients: optional_ingredients,
+				sources: normalizeSources(sources)
+			})
+	}),
+	defineTool({
+		name: 'delete_item',
+		description:
+			"Delete any menu item by id (a venue's own or a chain's shared one, plus any per-location " +
+			'overrides of it). A shared item is removed from every branch serving its menu. Returns ' +
+			'{ deleted: true } if a row was removed.',
 		schema: idArgs,
-		handler: async ({ id }) => ({ deleted: await deleteFood(getDb(), id) })
+		handler: async ({ id }) => ({ deleted: await deleteItem(getDb(), id) })
 	}),
 	defineTool({
 		name: 'list_tags',
 		description:
-			'List the canonical, app-defined tags, each with a kind (dietary or course). These are fixed and cannot be created via this server.',
+			'List the canonical, app-defined tags, each with a tag_type (dietary or course). These are fixed ' +
+			'and cannot be created via this server. Ingredient tags (tag_type "ingredient") are not listed ' +
+			'here — they are data, created automatically from item `ingredients`.',
 		schema: v.object({}),
 		handler: () => getAllTags()
 	})
@@ -912,39 +955,15 @@ const chainTools = [
 					item_name: it.item_name,
 					description: it.description ?? null,
 					ingredients: it.ingredients ?? null,
+					optionalIngredients: it.optional_ingredients ?? null,
 					price: it.price ?? null,
 					tags: it.tags,
+					optionalTags: it.optional_tags,
 					sources: normalizeSources(it.sources)
 				}))
 			);
-			return Promise.all(ids.map((id) => getMenuItemById(getDb(), id)));
+			return Promise.all(ids.map((id) => getItemById(getDb(), id)));
 		}
-	}),
-	defineTool({
-		name: 'get_menu_item',
-		description:
-			'Get a single shared menu item with its dietary tags and source URLs. Returns null if not found.',
-		schema: idArgs,
-		handler: ({ id }) => getMenuItemById(getDb(), id)
-	}),
-	defineTool({
-		name: 'update_menu_item',
-		description:
-			'Update a shared menu item — the change applies to EVERY branch serving its menu. Only provided ' +
-			'fields change; if `tags`/`sources` is given it replaces that whole set (pass [] to clear). To ' +
-			'change just one branch, use set_location_item_override instead. Returns the updated item, or null ' +
-			'if the id does not exist.',
-		schema: updateMenuItemArgs,
-		handler: async ({ id, sources, ...patch }) =>
-			updateMenuItem(getDb(), id, { ...patch, sources: normalizeSources(sources) })
-	}),
-	defineTool({
-		name: 'delete_menu_item',
-		description:
-			'Delete a shared menu item (removed from every branch serving its menu, plus any per-location ' +
-			'overrides of it). Returns { deleted: true } if a row was removed.',
-		schema: idArgs,
-		handler: async ({ id }) => ({ deleted: await deleteMenuItem(getDb(), id) })
 	}),
 	defineTool({
 		name: 'set_location_item_override',

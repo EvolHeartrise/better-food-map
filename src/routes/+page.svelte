@@ -12,7 +12,7 @@
 	} from '$lib/data.remote';
 	import LocationMap from '$lib/components/LocationMap.svelte';
 	import { categoryLabel, type Category } from '$lib/category';
-	import type { MapData, MapLocation, Food, Bounds } from '$lib/server/db';
+	import type { MapData, MapLocation, Item, Bounds } from '$lib/server/db';
 
 	// The visible map area, reported by <LocationMap> (debounced) as the user pans
 	// and zooms, plus once on load. This is the ONLY thing that decides which data
@@ -51,28 +51,24 @@
 	const capped = $derived(mapData.locations.length >= MAX_RESULTS);
 
 	// The map page works against each location's fully-resolved `menu`, but the wire
-	// payload sends each shared brand menu only once (keyed by menu_id) instead of
-	// copying it onto every branch. Rebuild the effective menu here: a location's own
-	// `food` items, plus — for a chain branch — its shared menu items with per-branch
-	// overrides applied (items marked unavailable dropped, overridden prices used).
-	// Shared by the in-view set below and the by-id detail fetch.
+	// payload sends each menu only once (keyed by menu_id) instead of copying it onto
+	// every branch that serves it. Rebuild the effective menu here: the items of the
+	// location's menu (its own private menu, or a shared brand menu) with this
+	// location's per-item overrides applied — items marked unavailable dropped,
+	// overridden prices used. Shared by the in-view set below and the by-id detail fetch.
 	function resolveLocation(loc: MapLocation, menus: MapData['menus']): LocationData {
-		const menu: Food[] = [...loc.food];
+		const menu: Item[] = [];
 		if (loc.menu_id) {
-			const overrideByItem = new Map(loc.overrides.map((o) => [o.menu_item_id, o]));
+			const overrideByItem = new Map(loc.overrides.map((o) => [o.item_id, o]));
 			for (const item of menus[loc.menu_id] ?? []) {
 				const override = overrideByItem.get(item.id);
 				if (override?.available === false) continue; // not served at this branch
-				menu.push({
-					id: item.id,
-					location_id: loc.id,
-					item_name: item.item_name,
-					description: item.description,
-					ingredients: item.ingredients,
-					price: override?.price ?? item.price,
-					tags: item.tags,
-					sources: item.sources
-				});
+				// Reuse the shared item object unless this branch overrides its price.
+				if (override !== undefined && override.price !== null) {
+					menu.push({ ...item, price: override.price });
+				} else {
+					menu.push(item);
+				}
 			}
 		}
 		return { ...loc, menu };
@@ -94,7 +90,7 @@
 	);
 
 	// A location with its effective menu resolved (see resolveLocation).
-	type LocationData = MapLocation & { menu: Food[] };
+	type LocationData = MapLocation & { menu: Item[] };
 	type MenuItem = LocationData['menu'][number];
 
 	// Three independent inputs. `place` filters venues by name; `item`, `ingredient`
@@ -124,9 +120,13 @@
 
 	function itemMatches(menuItem: MenuItem): boolean {
 		if (itemTerm !== '' && !menuItem.item_name.toLowerCase().includes(itemTerm)) return false;
+		// Ingredients are now `ingredient`-typed tags; match the term as a substring of
+		// any ingredient tag name (names are stored lower-cased, like `ingredientTerm`).
 		if (
 			ingredientTerm !== '' &&
-			!(menuItem.ingredients ?? '').toLowerCase().includes(ingredientTerm)
+			!menuItem.tags.some(
+				(tag) => tag.tag_type === 'ingredient' && tag.name.includes(ingredientTerm)
+			)
 		)
 			return false;
 		if (selected.length > 0) {
@@ -349,15 +349,6 @@
 
 	function formatPrice(price: number | null): string {
 		return price === null ? '—' : currency.format(price);
-	}
-
-	// Split the comma-separated ingredient string into trimmed, non-empty parts.
-	function ingredientList(ingredients: string | null): string[] {
-		if (!ingredients) return [];
-		return ingredients
-			.split(',')
-			.map((part) => part.trim())
-			.filter((part) => part.length > 0);
 	}
 
 	// A short, readable name for a source: its label, else the bare hostname.
@@ -595,7 +586,7 @@
 							aria-pressed={selected.includes(tag.id)}
 							onclick={() => toggle(tag.id)}
 						>
-							{tag.label}
+							{tag.name}
 						</button>
 					{/each}
 				</div>
@@ -833,20 +824,27 @@
 	{/snippet}
 
 	<!-- Shared by the wide-screen floating popup and the narrow inline expansion:
-	     the item's tags, ingredients and data sources. -->
+	     the item's dietary/course tags, its ingredients and its data sources. Both
+	     come from the unified tag list, split by tag_type; an `optional` tag (e.g.
+	     "can be made vegan", or an ingredient added on request) is marked as such. -->
 	{#snippet itemExtras(menuItem: MenuItem)}
-		{@const extraIngredients = ingredientList(menuItem.ingredients)}
-		{#if menuItem.tags.length > 0}
+		{@const dietaryTags = menuItem.tags.filter((tag) => tag.tag_type !== 'ingredient')}
+		{@const ingredientTags = menuItem.tags.filter((tag) => tag.tag_type === 'ingredient')}
+		{#if dietaryTags.length > 0}
 			<ul class="tags">
-				{#each menuItem.tags as tag (tag.id)}
-					<li class="tag">{tag.label}</li>
+				{#each dietaryTags as tag (tag.id)}
+					<li class="tag" class:tag--optional={tag.optional}>
+						{tag.name}{tag.optional ? ' (optional)' : ''}
+					</li>
 				{/each}
 			</ul>
 		{/if}
-		{#if extraIngredients.length > 0}
+		{#if ingredientTags.length > 0}
 			<ul class="ingredients">
-				{#each extraIngredients as ingredient (ingredient)}
-					<li class="ingredient">{ingredient}</li>
+				{#each ingredientTags as tag (tag.id)}
+					<li class="ingredient" class:ingredient--optional={tag.optional}>
+						{tag.name}{tag.optional ? ' (optional)' : ''}
+					</li>
 				{/each}
 			</ul>
 		{/if}
@@ -1524,6 +1522,14 @@
 		border: 1px solid color-mix(in srgb, var(--color-accent) 35%, #fff);
 		border-radius: 999px;
 		padding: 0.1rem 0.5rem;
+	}
+
+	/* An optional tag/ingredient (e.g. "can be made vegan") reads as a hint rather
+	   than an asserted fact, so it's de-emphasised with a dashed border. */
+	.tag--optional,
+	.ingredient--optional {
+		font-weight: 500;
+		border-style: dashed;
 	}
 
 	.ingredients {
