@@ -58,6 +58,7 @@ import {
 } from '../src/lib/server/db';
 import { createHttpD1 } from '../src/lib/server/d1-http';
 import { searchPoi } from './osm/search-poi';
+import { findCoordinateDrift } from './osm/find-coordinate-drift';
 import { OsmPoiStore } from './osm/poi-store';
 import { haversineMeters } from './osm/geo';
 
@@ -413,6 +414,44 @@ const searchPoiArgs = v.object({
 	)
 });
 
+const findDriftArgs = v.object({
+	limit: v.optional(
+		v.pipe(
+			v.number(),
+			v.integer(),
+			v.minValue(1),
+			v.maxValue(200),
+			v.description('Maximum mismatched locations to return (default 50, max 200).')
+		)
+	),
+	tolerance_m: v.optional(
+		v.pipe(
+			v.number(),
+			v.minValue(0),
+			v.description(
+				'A location counts as OSM-aligned when a name-matching OSM POI sits within this many metres (default 1).'
+			)
+		)
+	),
+	search_radius_m: v.optional(
+		v.pipe(
+			v.number(),
+			v.minValue(0),
+			v.maxValue(50000),
+			v.description(
+				'How far to look for a name-matching OSM POI before reporting no match (default 250). ' +
+					'Widen to hunt relocated/far matches, but then check distance_m — a far match may be a different branch.'
+			)
+		)
+	),
+	include_unmatched: v.optional(
+		v.pipe(
+			v.boolean(),
+			v.description('Also report locations with no name-matching OSM POI nearby (default true).')
+		)
+	)
+});
+
 // --- Chains: brands, menus, menu items, per-location overrides ---
 
 const createBrandArgs = v.object({
@@ -696,7 +735,9 @@ const tools = [
 			'locations; pass a one-item `items` array to add a single place. For a chain branch, set ' +
 			'`menu_id` (and `brand_id`) on the item so it serves that shared menu; for an independent venue ' +
 			'omit them and add its menu with create_foods. Cite each source (encouraged), e.g. the osm_url ' +
-			'from search_poi. Ideal for bulk imports like backfilling a chain across a region. If any item ' +
+			'from search_poi. Ideal for bulk imports like backfilling a chain across a region. Use each ' +
+			"candidate's OSM coordinates verbatim — never geocode, hand-place, or round latitude/longitude, " +
+			'so de-duplication stays coordinate-exact. If any item ' +
 			'is invalid, nothing is written. Returns { created, location_ids } — fetch details with ' +
 			'get_location if needed.',
 		schema: createLocationsArgs,
@@ -1028,6 +1069,28 @@ const osmTools = [
 				limit: input.limit
 			});
 		}
+	}),
+	defineTool({
+		name: 'find_coordinate_drift',
+		description:
+			'Audit existing locations against the LOCAL OSM staging store and surface those whose stored ' +
+			'coordinates do NOT coincide with their OpenStreetMap POI — i.e. coordinate drift. Coordinates ' +
+			'must be OSM-sourced (see create_locations), so a healthy location sits ~0 m from its OSM POI; ' +
+			'this finds the exceptions so they can be snapped back. Each `drifted` entry carries the matched ' +
+			'OSM POI (`osm_url`, `osm_latitude`, `osm_longitude`, `distance_m`, `matched_osm_name`) — pass ' +
+			'`osm_latitude`/`osm_longitude` straight to update_location to fix it, and cite `osm_url`. ' +
+			'Locations with no name-matching OSM POI nearby are reported as `no_osm_match` (these have no ' +
+			'OSM counterpart to align to; set include_unmatched=false to omit them). Results are ' +
+			'worst-drift-first; `limit` caps how many are returned and `additional` is how many more ' +
+			'mismatches exist beyond it, with a `counts` breakdown by classification.',
+		schema: findDriftArgs,
+		handler: async (input) =>
+			findCoordinateDrift(getOsmStore(), getDb(), {
+				limit: input.limit,
+				tolerance_m: input.tolerance_m,
+				search_radius_m: input.search_radius_m,
+				include_unmatched: input.include_unmatched
+			})
 	})
 ] as const;
 
