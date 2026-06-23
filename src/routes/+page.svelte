@@ -10,7 +10,7 @@
 		getBrands,
 		getUserLocation
 	} from '$lib/data.remote';
-	import LocationMap from '$lib/components/LocationMap.svelte';
+	import LocationGlobe from '$lib/globe/LocationGlobe.svelte';
 	import { categoryLabel, type Category } from '$lib/category';
 	import type { MapData, MapLocation, Food, Bounds } from '$lib/server/db';
 
@@ -493,7 +493,7 @@
 
 <div class="app">
 	<div class="app__map">
-		<LocationMap
+		<LocationGlobe
 			locations={mapLocations}
 			selected={selectedLocation}
 			onselect={selectLocation}
@@ -888,7 +888,7 @@
 	}
 
 	/* The map fills the whole viewport. A z-index here establishes a stacking
-	   context so the panel (z-index 10) floats above every MapLibre pane/control. */
+	   context so the panel (z-index 10) floats above the globe canvas below it. */
 	.app__map {
 		position: absolute;
 		inset: 0;
