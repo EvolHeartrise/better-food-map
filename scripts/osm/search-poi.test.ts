@@ -104,7 +104,7 @@ test('centre+radius returns nearest-first with distance, excludes far POIs', asy
 
 test('exclude_existing drops same-point and same-name-nearby POIs, keeps the rest', async () => {
 	const store = storeWith([
-		row({ osm_id: 'n1', latitude: 49.2827, longitude: -123.1207, name: 'Coincident' }), // same spot as existing 'a'
+		row({ osm_id: 'n1', latitude: 49.2827, longitude: -123.1207, name: null }), // unnamed node on the same spot as existing 'a'
 		row({ osm_id: 'n2', latitude: 49.283, longitude: -123.1207, name: 'Tim Hortons' }), // ~22 m from existing 'b', same name
 		row({ osm_id: 'n3', latitude: 49.284, longitude: -123.1207, name: 'Brand New Spot' }) // far from both / different name
 	]);
@@ -119,6 +119,44 @@ test('exclude_existing drops same-point and same-name-nearby POIs, keeps the res
 	});
 	expect(res.candidates.map((c) => c.osm_id)).toEqual(['n3']);
 	expect(res.excluded_existing).toBe(2);
+	store.close();
+});
+
+test('exclude_existing keeps a different-brand POI sharing a coordinate (food court)', async () => {
+	const store = storeWith([
+		// A Quiznos on essentially the same spot as an existing KFC — distinct brands
+		// colocated in a food court, not a duplicate of each other.
+		row({ osm_id: 'n1', latitude: 49.2827, longitude: -123.1207, name: 'Quiznos' }),
+		// An unnamed node on that same spot stays a dup: no name to tell it apart.
+		row({ osm_id: 'n2', latitude: 49.2827, longitude: -123.1207, name: null })
+	]);
+	const db = fakeD1([{ id: 'kfc', name: 'KFC', latitude: 49.2827, longitude: -123.1207 }]);
+	const res = await searchPoi(store, db, {
+		latitude: CENTRE.lat,
+		longitude: CENTRE.lon,
+		radius_km: 1
+	});
+	expect(res.candidates.map((c) => c.osm_id)).toEqual(['n1']);
+	expect(res.excluded_existing).toBe(1);
+	store.close();
+});
+
+test('exclude_existing surfaces an unnamed POI ~22 m away (SAME_POINT_M is tight)', async () => {
+	const store = storeWith([
+		// Unnamed node ~22 m from the existing location: beyond the tightened same-point
+		// radius and with no name to match, so it is surfaced rather than absorbed.
+		row({ osm_id: 'n1', latitude: 49.2829, longitude: -123.1207, name: null }),
+		// Unnamed node on the exact spot is still treated as a duplicate.
+		row({ osm_id: 'n2', latitude: 49.2827, longitude: -123.1207, name: null })
+	]);
+	const db = fakeD1([{ id: 'a', name: 'Existing Cafe', latitude: 49.2827, longitude: -123.1207 }]);
+	const res = await searchPoi(store, db, {
+		latitude: CENTRE.lat,
+		longitude: CENTRE.lon,
+		radius_km: 1
+	});
+	expect(res.candidates.map((c) => c.osm_id)).toEqual(['n1']);
+	expect(res.excluded_existing).toBe(1);
 	store.close();
 });
 

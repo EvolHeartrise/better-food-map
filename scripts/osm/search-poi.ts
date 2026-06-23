@@ -65,7 +65,13 @@ const SCAN_CAP = 2000;
 
 // Dedup thresholds. A staging POI is considered already-present when an existing
 // location is essentially on the same spot, or close with a matching name.
-const SAME_POINT_M = 30;
+// The same-spot rule is suppressed when both names are known and clearly differ,
+// so distinct brands sharing a coordinate (food court / mall unit) aren't hidden.
+// Coordinates are OSM-sourced and passed through verbatim (see CLAUDE.md "Location
+// coordinates must be OSM-based"), so a venue we already imported sits ~0 m from
+// its staging POI. SAME_POINT_M is kept tight to that identity: real neighbours a
+// few metres away stay their own candidates instead of being silently absorbed.
+const SAME_POINT_M = 10;
 const SAME_NAME_M = 150;
 const MIN_NAME_OVERLAP = 4;
 
@@ -104,7 +110,7 @@ export function normalizeName(name: string | null | undefined): string {
 }
 
 /** True when two normalised names are equal or one meaningfully contains the other. */
-function namesMatch(a: string, b: string): boolean {
+export function namesMatch(a: string, b: string): boolean {
 	if (!a || !b) return false;
 	if (a === b) return true;
 	const shorter = a.length <= b.length ? a : b;
@@ -112,13 +118,27 @@ function namesMatch(a: string, b: string): boolean {
 	return shorter.length >= MIN_NAME_OVERLAP && longer.includes(shorter);
 }
 
+/**
+ * True when both names are known and clearly refer to different venues. Used to
+ * stop the same-point rule from collapsing distinct businesses that merely share
+ * a coordinate (e.g. several brands in one food court or mall unit). A missing
+ * name on either side is treated as "no conflict" — we can't tell them apart, so
+ * the conservative same-spot dedup still applies.
+ */
+function namesConflict(a: string, b: string): boolean {
+	return a !== '' && b !== '' && !namesMatch(a, b);
+}
+
 /** True if `poi` is essentially the same venue as one already in `existing`. */
 function isExistingDuplicate(poi: StoredPoi, existing: ExistingLocation[]): boolean {
 	const poiName = normalizeName(poi.name);
 	for (const loc of existing) {
+		const locName = normalizeName(loc.name);
 		const d = haversineMeters(poi.latitude, poi.longitude, loc.latitude, loc.longitude);
-		if (d <= SAME_POINT_M) return true;
-		if (d <= SAME_NAME_M && namesMatch(poiName, normalizeName(loc.name))) return true;
+		// Same spot: a duplicate unless the names clearly disagree (food-court neighbours).
+		if (d <= SAME_POINT_M && !namesConflict(poiName, locName)) return true;
+		// Nearby with a matching name: the same venue, just slightly displaced.
+		if (d <= SAME_NAME_M && namesMatch(poiName, locName)) return true;
 	}
 	return false;
 }

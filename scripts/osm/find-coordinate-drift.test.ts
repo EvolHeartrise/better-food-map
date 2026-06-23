@@ -1,0 +1,122 @@
+import { test, expect } from 'bun:test';
+import { findCoordinateDrift } from './find-coordinate-drift';
+import { OsmPoiStore } from './poi-store';
+import type { PoiRow } from './map-feature';
+import type { D1Like, D1PreparedLike } from '../../src/lib/server/db';
+
+interface Loc {
+	id: string;
+	name: string;
+	latitude: number;
+	longitude: number;
+}
+
+/** Minimal D1Like that returns the whole location list for the (param-less) scan query. */
+function fakeD1(locations: Loc[]): D1Like {
+	return {
+		prepare(): D1PreparedLike {
+			const stmt: D1PreparedLike = {
+				bind() {
+					return stmt;
+				},
+				async first<T>() {
+					const { results } = await stmt.all<T>();
+					return results[0] ?? null;
+				},
+				async all<T>() {
+					return { results: locations as T[] };
+				},
+				async run() {
+					return { meta: { changes: 0 } };
+				}
+			};
+			return stmt;
+		},
+		async batch() {
+			return [];
+		}
+	};
+}
+
+function row(over: Partial<PoiRow> & Pick<PoiRow, 'osm_id' | 'latitude' | 'longitude'>): PoiRow {
+	return {
+		osm_type: 'node',
+		numeric_id: Number(over.osm_id.slice(1)) || 1,
+		name: null,
+		osm_class: 'restaurant',
+		suggested_category: 'restaurant',
+		cuisine: null,
+		address: null,
+		phone: null,
+		website: null,
+		opening_hours: null,
+		diet_markers: [],
+		tags_json: '{}',
+		...over
+	};
+}
+
+function storeWith(rows: PoiRow[]): OsmPoiStore {
+	const store = OsmPoiStore.open(':memory:');
+	store.insertMany('test', rows);
+	return store;
+}
+
+// Three DB locations: one perfectly aligned, one drifted, one with no OSM match.
+function fixture() {
+	const store = storeWith([
+		row({ osm_id: 'n10', latitude: 49.28, longitude: -123.12, name: 'Joe Coffee' }), // == loc A
+		row({ osm_id: 'n20', latitude: 49.2845, longitude: -123.12, name: 'Burger Town' }) // ~45 m from loc B
+	]);
+	const db = fakeD1([
+		{ id: 'A', name: 'Joe Coffee', latitude: 49.28, longitude: -123.12 }, // aligned (0 m)
+		{ id: 'B', name: 'Burger Town', latitude: 49.2849, longitude: -123.12 }, // drifted ~45 m
+		{ id: 'C', name: 'Ghost Kitchen', latitude: 49.29, longitude: -123.12 } // no OSM match
+	]);
+	return { store, db };
+}
+
+test('flags drifted locations with a snap-to OSM target and ignores aligned ones', async () => {
+	const { store, db } = fixture();
+	const res = await findCoordinateDrift(store, db, {});
+	expect(res.scanned).toBe(3);
+	expect(res.counts).toEqual({ drifted: 1, no_osm_match: 1 });
+	expect(res.total_mismatches).toBe(2);
+	expect(res.mismatches.map((m) => m.id)).toEqual(['B', 'C']); // drifted first, then unmatched
+
+	const drifted = res.mismatches[0];
+	expect(drifted.classification).toBe('drifted');
+	expect(drifted.osm_url).toBe('https://www.openstreetmap.org/node/20');
+	expect(drifted.osm_latitude).toBe(49.2845);
+	expect(drifted.matched_osm_name).toBe('Burger Town');
+	expect(drifted.distance_m).toBeGreaterThan(0);
+
+	expect(res.mismatches[1].classification).toBe('no_osm_match');
+	expect(res.mismatches[1].osm_url).toBeUndefined();
+	store.close();
+});
+
+test('limit caps the returned set and additional reports the remainder', async () => {
+	const { store, db } = fixture();
+	const res = await findCoordinateDrift(store, db, { limit: 1 });
+	expect(res.returned).toBe(1);
+	expect(res.additional).toBe(1);
+	expect(res.mismatches.map((m) => m.id)).toEqual(['B']); // worst drift first
+	store.close();
+});
+
+test('include_unmatched=false drops no_osm_match locations from the result', async () => {
+	const { store, db } = fixture();
+	const res = await findCoordinateDrift(store, db, { include_unmatched: false });
+	expect(res.total_mismatches).toBe(1);
+	expect(res.mismatches.map((m) => m.id)).toEqual(['B']);
+	expect(res.counts.no_osm_match).toBe(1); // still reported in the breakdown
+	store.close();
+});
+
+test('a tolerant radius treats a small drift as aligned', async () => {
+	const { store, db } = fixture();
+	const res = await findCoordinateDrift(store, db, { tolerance_m: 100, include_unmatched: false });
+	expect(res.total_mismatches).toBe(0); // the ~45 m drift is now within tolerance
+	store.close();
+});
