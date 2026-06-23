@@ -64,7 +64,7 @@
 
 <!-- Opaque base sphere: the ocean/poles fallback and the raycast occluder. -->
 <T.Mesh onpointermove={occlude} onclick={occlude}>
-	<T.SphereGeometry args={[GLOBE_RADIUS, 64, 48]} />
+	<T.SphereGeometry args={[GLOBE_RADIUS, ...C.BASE_SPHERE_SEGMENTS]} />
 	<T.MeshBasicMaterial color={C.OCEAN_COLOR} />
 </T.Mesh>
 

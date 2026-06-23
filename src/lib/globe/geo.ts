@@ -30,7 +30,12 @@ function clamp(value: number, min: number, max: number): number {
 /**
  * lat/lng (degrees) → a point on a sphere of the given radius. The convention,
  * shared by the tile-mesh builder and marker placement so they always agree:
- * (lat 0, lng 0) sits on +X, the north pole on +Y, and (lat 0, lng 90) on +Z.
+ * (lat 0, lng 0) sits on +X, the north pole on +Y, and (lat 0, lng 90) on −Z.
+ *
+ * The −Z for east is deliberate: with +X toward the camera and +Y up, east must
+ * fall to the *right* of the screen (−Z is screen-right in three.js' right-handed
+ * space). The naive +Z would mirror the globe east–west — text and coastlines
+ * would read backwards — and would also wind the tile patches inward.
  */
 export function lngLatToVector3(lng: number, lat: number, radius = GLOBE_RADIUS): Vec3 {
 	const phi = lat * DEG2RAD;
@@ -39,7 +44,7 @@ export function lngLatToVector3(lng: number, lat: number, radius = GLOBE_RADIUS)
 	return {
 		x: radius * cosPhi * Math.cos(theta),
 		y: radius * Math.sin(phi),
-		z: radius * cosPhi * Math.sin(theta)
+		z: -radius * cosPhi * Math.sin(theta)
 	};
 }
 
@@ -51,7 +56,8 @@ export function lngLatToVector3(lng: number, lat: number, radius = GLOBE_RADIUS)
 export function vector3ToLngLat(v: Vec3): { lng: number; lat: number } {
 	const r = Math.hypot(v.x, v.y, v.z) || 1;
 	const lat = Math.asin(clamp(v.y / r, -1, 1)) * RAD2DEG;
-	const lng = Math.atan2(v.z, v.x) * RAD2DEG;
+	// Inverts the −Z-for-east convention in lngLatToVector3 (note the −v.z).
+	const lng = Math.atan2(-v.z, v.x) * RAD2DEG;
 	return { lng, lat };
 }
 
