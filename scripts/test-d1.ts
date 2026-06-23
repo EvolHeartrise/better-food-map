@@ -58,5 +58,6 @@ export function freshDb(): TestD1 {
 	db.exec(readFileSync('migrations/0001_init.sql', 'utf8'));
 	db.exec(readFileSync('migrations/0002_chains.sql', 'utf8'));
 	db.exec(readFileSync('migrations/0003_location_coords_index.sql', 'utf8'));
+	db.exec(readFileSync('migrations/0004_unify_items_and_tags.sql', 'utf8'));
 	return new TestD1(db);
 }
