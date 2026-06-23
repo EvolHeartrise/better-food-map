@@ -39,12 +39,14 @@ export const MAX_DETAIL_ZOOM = 19;
 // Hard cap on simultaneously-loaded detail tiles, a backstop on memory/requests.
 export const MAX_DETAIL_TILES = 48;
 // Mesh subdivision per tile patch. Low-zoom tiles span more curvature so they get
-// more segments; high-zoom tiles are nearly flat and need very few.
+// more segments; high-zoom tiles are nearly flat and need fewer. Generous counts
+// keep the draped imagery smoothly hugging the sphere rather than faceting — the
+// vertex totals stay small (a 32-seg tile is ~1k verts, ~16 base tiles).
 export function tileSegments(z: number): number {
-	if (z <= 2) return 12;
-	if (z <= 4) return 8;
-	if (z <= 7) return 4;
-	return 2;
+	if (z <= 2) return 32;
+	if (z <= 4) return 16;
+	if (z <= 7) return 8;
+	return 4;
 }
 // Altitude (fraction of radius) each layer sits above the base sphere, so layers
 // don't z-fight. Detail sits just above base imagery.
@@ -64,6 +66,11 @@ export const OSM_ATTRIBUTION_HTML =
 // Colour of the base sphere shown beneath the imagery (and at the poles, which
 // Mercator tiles never reach) — a muted ocean tone.
 export const OCEAN_COLOR = '#a9c7d8';
+
+// Width/height segments of the base sphere. High enough that its silhouette (the
+// globe's limb when zoomed out) and the poles read as a smooth curve, not a
+// faceted polygon — it's a single mesh, so the cost is negligible.
+export const BASE_SPHERE_SEGMENTS: [number, number] = [160, 120];
 
 // The scene background behind the globe — a deep "space" tone. Set as the scene's
 // background so it's painted regardless of the canvas's alpha.

@@ -26,7 +26,7 @@ import {
 const near = (a: number, b: number, eps = 1e-9) => expect(Math.abs(a - b)).toBeLessThan(eps);
 
 test('lngLatToVector3 places the canonical axes', () => {
-	// (0,0) → +X, north pole → +Y, (90,0) → +Z.
+	// (0,0) → +X, north pole → +Y, (90,0) → −Z (east is screen-right, not mirrored).
 	const origin = lngLatToVector3(0, 0);
 	near(origin.x, 1);
 	near(origin.y, 0);
@@ -37,7 +37,7 @@ test('lngLatToVector3 places the canonical axes', () => {
 	near(Math.hypot(pole.x, pole.z), 0, 1e-9);
 
 	const east = lngLatToVector3(90, 0);
-	near(east.z, 1);
+	near(east.z, -1);
 	near(east.x, 0, 1e-9);
 });
 

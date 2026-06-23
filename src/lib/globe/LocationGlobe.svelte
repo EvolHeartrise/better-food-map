@@ -4,6 +4,7 @@
 	// apart from the import. It hosts the Threlte <Canvas> (client-only) and the OSM
 	// attribution overlay; all of the 3D work lives in <GlobeScene> and its children.
 	import { Canvas } from '@threlte/core';
+	import { NoToneMapping } from 'three';
 	import { onMount } from 'svelte';
 	import GlobeScene from './GlobeScene.svelte';
 	import * as C from './constants';
@@ -45,7 +46,10 @@
 
 <div class="globe" role="application" aria-label="Globe of food locations">
 	{#if mounted}
-		<Canvas renderMode="always">
+		<!-- Threlte defaults to AgX tone mapping, which crushes the contrast of the
+		     flat OSM imagery; the globe is unlit sRGB tiles, so no tone mapping shows
+		     them at their true colour. -->
+		<Canvas renderMode="always" toneMapping={NoToneMapping}>
 			<GlobeScene {locations} {selected} {onselect} {initialCenter} {onviewchange} />
 		</Canvas>
 	{/if}
