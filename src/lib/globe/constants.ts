@@ -6,18 +6,21 @@ import { GLOBE_RADIUS } from './geo';
 // --- Camera & controls ----------------------------------------------------
 export const CAMERA_FOV = 45;
 // How close/far the camera may orbit. The minimum skims just above the surface for
-// a close, high-zoom look (kept a hair above the tallest marker so the camera
-// never dives inside one); the maximum frames the whole globe with space around it.
-export const MIN_CAMERA_DISTANCE = GLOBE_RADIUS * 1.01;
+// a close, high-zoom look; the maximum frames the whole globe with space around it.
+// (At this closest distance a marker sitting directly beneath the camera can rise
+// past it — markers float a touch off the surface — so the very tightest zoom onto
+// a pin may clip it; the map imagery is the focus there.)
+export const MIN_CAMERA_DISTANCE = GLOBE_RADIUS * 1.004;
 export const MAX_CAMERA_DISTANCE = GLOBE_RADIUS * 4.5;
 // Opening distance when no place is selected — a regional, tilted-down view.
 export const DEFAULT_CAMERA_DISTANCE = GLOBE_RADIUS * 2.6;
 // Distance the camera flies to when a location is selected (a close-in look).
 export const SELECTED_CAMERA_DISTANCE = GLOBE_RADIUS * 1.18;
-// Near plane must sit below the closest-zoom altitude (MIN_CAMERA_DISTANCE − R =
-// 0.01) or the surface clips; 0.004 leaves headroom while keeping enough depth
-// precision for the layered tiles (the detail layer also uses a polygon offset).
-export const CAMERA_NEAR = 0.004;
+// Near plane must sit below the closest-zoom distance to the nearest geometry, or
+// it clips: at MIN_CAMERA_DISTANCE (altitude 0.004) the detail tiles directly
+// below are only ~0.002 away, so 0.001 keeps them (and the surface) in view. The
+// detail layer's polygon offset covers the depth precision lost to the tight near.
+export const CAMERA_NEAR = 0.001;
 export const CAMERA_FAR = 100;
 
 // Fallback opening centre [lat, lng] when no IP-detected centre is supplied —
