@@ -19,6 +19,7 @@ import {
 	selectZoom,
 	padBounds,
 	slerpCamera,
+	rotateSpeedForDistance,
 	GLOBE_RADIUS,
 	MERCATOR_MAX_LAT
 } from '../src/lib/globe/geo';
@@ -194,4 +195,29 @@ test('slerpCamera arcs over the sphere at endpoints and midpoint', () => {
 	const midLng = vector3ToLngLat(mid).lng;
 	expect(midLng).toBeGreaterThan(0);
 	expect(midLng).toBeLessThan(90);
+});
+
+test('rotateSpeedForDistance scales drag sensitivity with zoom', () => {
+	const fov = 45;
+	// At the surface (distance = R) there's no altitude, so no rotation.
+	near(rotateSpeedForDistance(GLOBE_RADIUS, fov), 0);
+
+	// Matches the closed form (d − R)·tan(fov/2)/(π·R) at a sample distance.
+	const expected = (1.6 * Math.tan((fov / 2) * (Math.PI / 180))) / Math.PI;
+	near(rotateSpeedForDistance(2.6, fov), expected, 1e-12);
+
+	// Strictly increases with distance: zoomed in is gentle, zoomed out is fast.
+	const close = rotateSpeedForDistance(1.01, fov);
+	const mid = rotateSpeedForDistance(2.6, fov);
+	const farOut = rotateSpeedForDistance(4.5, fov);
+	expect(close).toBeGreaterThan(0);
+	expect(close).toBeLessThan(mid);
+	expect(mid).toBeLessThan(farOut);
+	// Closest zoom is far gentler than the old fixed 0.5.
+	expect(close).toBeLessThan(0.01);
+
+	// A one-viewport-height drag (2π·rotateSpeed rad) covers about the visible
+	// cap: at the surface-skimming distance that's well under a degree.
+	const dragRad = 2 * Math.PI * close;
+	expect(dragRad * (180 / Math.PI)).toBeLessThan(1);
 });

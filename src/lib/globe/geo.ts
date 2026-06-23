@@ -362,3 +362,36 @@ export function slerpCamera(from: Vec3, to: Vec3, t: number): Vec3 {
 	const dirLen = Math.hypot(dx, dy, dz) || 1;
 	return { x: (dx / dirLen) * dist, y: (dy / dirLen) * dist, z: (dz / dirLen) * dist };
 }
+
+// --- Drag sensitivity -----------------------------------------------------
+
+/**
+ * The OrbitControls `rotateSpeed` that makes a drag track the cursor at a given
+ * camera distance, so the grabbed point on the globe stays under the pointer.
+ *
+ * three's OrbitControls rotates by 2π·rotateSpeed radians per viewport-height of
+ * drag (it normalises both axes by clientHeight). To keep a surface point under
+ * the cursor, a one-pixel drag must rotate the globe by the angle that slides that
+ * point one pixel across the screen. Near the sub-camera point — distance d − R
+ * from the camera — a rotation dθ moves the surface tangentially by R·dθ,
+ * subtending R·dθ/(d − R) at the camera, while one screen pixel subtends
+ * 2·tan(fov/2)/H. Equating the per-pixel rotation with the per-pixel cursor angle
+ * and cancelling the viewport height H:
+ *
+ *   2π·rotateSpeed / H = 2·tan(fov/2)·(d − R) / (H·R)
+ *   rotateSpeed = (d − R)·tan(fov/2) / (π·R)
+ *
+ * Sensitivity therefore scales with how far out the camera is — tiny when zoomed
+ * in (a small drag nudges the globe), large when zoomed out — whereas a fixed
+ * rotateSpeed is only right at one end. (The same value serves both axes: for a
+ * square-pixel perspective camera the per-pixel angular density is equal
+ * horizontally and vertically.)
+ */
+export function rotateSpeedForDistance(
+	distance: number,
+	fovDeg: number,
+	radius = GLOBE_RADIUS
+): number {
+	const altitude = Math.max(distance - radius, 0);
+	return (altitude * Math.tan((fovDeg / 2) * DEG2RAD)) / (Math.PI * radius);
+}

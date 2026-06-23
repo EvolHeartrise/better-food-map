@@ -15,6 +15,7 @@
 		padBounds,
 		lngLatToVector3,
 		slerpCamera,
+		rotateSpeedForDistance,
 		type Vec3
 	} from './geo';
 	import * as C from './constants';
@@ -62,6 +63,17 @@
 	let needsReport = true;
 	let idleSeconds = 0;
 
+	// Current camera distance, tracked so drag sensitivity can follow the zoom.
+	// Only rotation/zoom move the camera, so this updates during zoom and stays put
+	// during a rotate drag — keeping the speed fixed for the duration of a drag.
+	let cameraDistance = $state(C.DEFAULT_CAMERA_DISTANCE);
+	const rotateSpeed = $derived(
+		Math.min(
+			C.MAX_ROTATE_SPEED,
+			Math.max(C.MIN_ROTATE_SPEED, rotateSpeedForDistance(cameraDistance, C.CAMERA_FOV))
+		)
+	);
+
 	function report(): void {
 		const cam = camera.current;
 		if (!(cam instanceof PerspectiveCamera)) return;
@@ -80,6 +92,11 @@
 	useTask((delta) => {
 		const cam = camera.current;
 		if (!cam) return;
+
+		// Track distance so drag sensitivity follows the zoom. Update only on a
+		// meaningful change to avoid per-frame reactive churn while at rest.
+		const distance = cam.position.length();
+		if (Math.abs(distance - cameraDistance) > 1e-4) cameraDistance = distance;
 
 		// Ease the camera toward the fly target: the direction slerps over the
 		// surface while the distance interpolates, a fixed fraction of the remaining
@@ -140,14 +157,15 @@
 	position={initialPosition}
 >
 	<!-- Orbit the globe centre; no panning (the globe stays framed) and zoom is
-	     clamped between just-above-the-surface and the whole-globe view. -->
+	     clamped between just-above-the-surface and the whole-globe view. rotateSpeed
+	     tracks the zoom so a drag keeps the grabbed point under the cursor. -->
 	<OrbitControls
 		enableDamping
 		dampingFactor={0.08}
 		enablePan={false}
 		minDistance={C.MIN_CAMERA_DISTANCE}
 		maxDistance={C.MAX_CAMERA_DISTANCE}
-		rotateSpeed={0.5}
+		{rotateSpeed}
 		zoomSpeed={0.8}
 	/>
 </T.PerspectiveCamera>
