@@ -1,10 +1,7 @@
 <script lang="ts">
-	import 'leaflet/dist/leaflet.css';
-	import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png';
-	import markerIcon from 'leaflet/dist/images/marker-icon.png';
-	import markerShadow from 'leaflet/dist/images/marker-shadow.png';
+	import 'maplibre-gl/dist/maplibre-gl.css';
 	import { onMount } from 'svelte';
-	import type * as Leaflet from 'leaflet';
+	import type { Map as MapLibreMap, Marker, Popup, StyleSpecification } from 'maplibre-gl';
 	import { categoryLabel, type Category } from '$lib/category';
 
 	// A geographic bounding box reported to the parent as the visible area. Kept
@@ -51,13 +48,24 @@
 
 	// Fallback map center, used when no `initialCenter` is supplied (e.g. IP
 	// geolocation is unavailable) — just a sensible starting view, not tied to any
-	// particular city.
+	// particular city. Stored `[lat, lng]` to match the prop contract; converted to
+	// MapLibre's `[lng, lat]` order at the call sites via `toLngLat`.
 	const DEFAULT_CENTER: [number, number] = [49.2827, -123.1207];
-	const DEFAULT_ZOOM = 13;
-	// Fly animation duration when centering on a selected location.
-	const FLY_DURATION = 0.6; // seconds
+	// MapLibre's camera zoom runs one level "lower" than Leaflet's for the same
+	// scale (its world base is a 512px tile vs Leaflet's 256px), so these are the
+	// old Leaflet values minus one: DEFAULT 13→12, SELECTED 16→15.
+	const DEFAULT_ZOOM = 12;
 	// Zoom level used when flying to a single selected location.
-	const SELECTED_ZOOM = 16;
+	const SELECTED_ZOOM = 15;
+	// Fly animation duration when centering on a selected location (milliseconds —
+	// MapLibre takes ms, where Leaflet took seconds).
+	const FLY_DURATION_MS = 600;
+	// OpenStreetMap's raster tiles stop at z19; cap the camera there so the user
+	// can't zoom past real tile data into blurry overzoomed scaling.
+	const MAX_ZOOM = 19;
+	// Marker fill, matching the app's accent (--color-accent) so pins read as part
+	// of the brand rather than MapLibre's default blue.
+	const MARKER_COLOR = '#2f6f4f';
 	// Grow the reported box beyond the strictly-visible bounds by this fraction of
 	// each span, so markers just off screen are already loaded when the user nudges
 	// the map, and small pans don't trigger a refetch. 0.2 = 20% on every side.
@@ -68,23 +76,19 @@
 
 	let mapEl: HTMLDivElement;
 
-	// Leaflet's JS is imported dynamically inside onMount (client-only) to stay
-	// SSR-safe; the types are erased at compile time so importing them is fine.
-	let L: typeof Leaflet | null = null;
-	let map: Leaflet.Map | null = null;
-	let markerLayer: Leaflet.LayerGroup | null = null;
-	// Markers keyed by location id, so we can open the selected one's tooltip. A
-	// plain (non-reactive) dictionary on purpose: it's an imperative cache written
-	// and read within the same $effect, so reactivity would self-invalidate it.
-	let markersById: Record<string, Leaflet.Marker> = {};
-	// A concrete marker icon built from bundled assets. We deliberately avoid
-	// `L.Icon.Default` because its `_getIconUrl` prepends a detected `imagePath`
-	// to the configured URL, which corrupts our already-resolved asset URLs into
-	// 404s. An explicit `L.icon` sidesteps that entirely.
-	let markerIconDef: Leaflet.Icon | null = null;
+	// MapLibre's JS is imported dynamically inside onMount (client-only) because it
+	// touches `window` at module load; the types are erased at compile time so
+	// importing them is fine. `lib` holds the module namespace once loaded.
+	let lib: typeof import('maplibre-gl') | null = null;
+	let map: MapLibreMap | null = null;
+	// Markers (with their hover popups) keyed by location id, so we can open the
+	// selected one's popup and clear them all on re-render. A plain (non-reactive)
+	// dictionary on purpose: it's an imperative cache written and read within the
+	// same $effect, so reactivity would self-invalidate it.
+	let markersById: Record<string, { marker: Marker; popup: Popup }> = {};
 
-	// Becomes true once the map is initialised; effects below gate on it so they
-	// don't fire against a half-built map (the Leaflet import is async).
+	// Becomes true once the map's first render is done; effects below gate on it so
+	// they don't fire against a half-built map (the import + style load are async).
 	let ready = $state(false);
 
 	// Pending debounced viewport report (see scheduleViewReport).
@@ -92,6 +96,12 @@
 	// The last selected id we flew to, so re-renders (e.g. a viewport refetch) don't
 	// re-fly to an already-open location — only a genuine change of selection does.
 	let lastSelectedId: string | null = null;
+
+	// The prop contract carries centres as `[lat, lng]` (Leaflet's order, and how
+	// the page supplies the IP-detected centre); MapLibre wants `[lng, lat]`.
+	function toLngLat([lat, lng]: [number, number]): [number, number] {
+		return [lng, lat];
+	}
 
 	function escapeHtml(value: string): string {
 		return value
@@ -112,10 +122,46 @@
 		return `<div class="map-tip">${parts.join('<br />')}</div>`;
 	}
 
-	function renderMarkers() {
-		if (!L || !map || !markerLayer || !markerIconDef) return;
+	// The map style: OpenStreetMap raster tiles on a 3D globe projection. MapLibre
+	// renders this flat (Web Mercator) when zoomed in and smoothly curves it into a
+	// globe as the user zooms out, with no work on our part. The `sky` atmosphere
+	// gives the zoomed-out globe its halo and fades out by the time the map has
+	// flattened (≈ zoom 7), so it never intrudes on the street-level view.
+	function mapStyle(): StyleSpecification {
+		return {
+			version: 8,
+			projection: { type: 'globe' },
+			sources: {
+				osm: {
+					type: 'raster',
+					tiles: [
+						'https://a.tile.openstreetmap.org/{z}/{x}/{y}.png',
+						'https://b.tile.openstreetmap.org/{z}/{x}/{y}.png',
+						'https://c.tile.openstreetmap.org/{z}/{x}/{y}.png'
+					],
+					tileSize: 256,
+					minzoom: 0,
+					maxzoom: MAX_ZOOM,
+					// OSM's tile policy / ODbL require this attribution; MapLibre surfaces
+					// it in the attribution control automatically.
+					attribution:
+						'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+				}
+			},
+			layers: [{ id: 'osm', type: 'raster', source: 'osm' }],
+			sky: {
+				'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 0, 1, 5, 1, 7, 0]
+			}
+		};
+	}
 
-		markerLayer.clearLayers();
+	function renderMarkers() {
+		if (!lib || !map) return;
+
+		for (const { marker, popup } of Object.values(markersById)) {
+			marker.remove();
+			popup.remove();
+		}
 		markersById = {};
 
 		// Show every in-view location, plus the selected location even when it falls
@@ -126,27 +172,56 @@
 		}
 
 		for (const loc of toRender) {
-			const point: [number, number] = [loc.latitude, loc.longitude];
-			const marker = L.marker(point, { icon: markerIconDef })
-				.bindTooltip(tooltipHtml(loc), { direction: 'top' })
-				.addTo(markerLayer);
-			marker.on('click', () => onselect?.(loc.id));
-			markersById[loc.id] = marker;
+			const lngLat: [number, number] = [loc.longitude, loc.latitude];
+			// The popup is managed by hand (rather than `marker.setPopup`) so its
+			// open/close is driven purely by hover and the selection effect — a click
+			// on the marker selects the place instead of toggling the popup.
+			const popup = new lib.Popup({
+				closeButton: false,
+				closeOnClick: false,
+				anchor: 'bottom',
+				offset: 36
+			})
+				.setLngLat(lngLat)
+				.setHTML(tooltipHtml(loc));
+
+			const marker = new lib.Marker({ color: MARKER_COLOR }).setLngLat(lngLat).addTo(map);
+
+			const el = marker.getElement();
+			el.style.cursor = 'pointer';
+			el.addEventListener('mouseenter', () => {
+				if (map) popup.addTo(map);
+			});
+			el.addEventListener('mouseleave', () => popup.remove());
+			el.addEventListener('click', (event) => {
+				// Keep the click from reaching the map (which would otherwise treat it
+				// as a background click) and open the location's detail panel.
+				event.stopPropagation();
+				onselect?.(loc.id);
+			});
+
+			markersById[loc.id] = { marker, popup };
 		}
 	}
 
 	// Smoothly zoom in on the selected location.
 	function flyToSelected() {
-		if (!L || !map || !selected) return;
-		map.flyTo([selected.latitude, selected.longitude], SELECTED_ZOOM, {
-			duration: FLY_DURATION
+		if (!map || !selected) return;
+		map.flyTo({
+			center: [selected.longitude, selected.latitude],
+			zoom: SELECTED_ZOOM,
+			duration: FLY_DURATION_MS
 		});
-		markersById[selected.id]?.openTooltip();
+		const entry = markersById[selected.id];
+		if (entry) entry.popup.addTo(map);
 	}
 
 	// The current visible box, grown by BOUNDS_PADDING, paired with the zoom level.
 	// Latitude is clamped to the valid range; longitude is left as-is (a box across
 	// the antimeridian isn't supported — the same planar assumption used elsewhere).
+	// Reported at every zoom now that the page has no fetch floor: when zoomed out
+	// onto the globe this is the visible cap of the world, and the server's result
+	// cap (MAP_RESULT_LIMIT) is what keeps that fetch bounded.
 	function currentView(): { bounds: Bounds; zoom: number } | null {
 		if (!map) return null;
 		const b = map.getBounds();
@@ -181,48 +256,37 @@
 		let active = true;
 
 		(async () => {
-			L = (await import('leaflet')).default;
+			lib = await import('maplibre-gl');
 			if (!active) return;
 
-			markerIconDef = L.icon({
-				iconUrl: markerIcon,
-				iconRetinaUrl: markerIcon2x,
-				shadowUrl: markerShadow,
-				// Leaflet's standard default-marker geometry.
-				iconSize: [25, 41],
-				iconAnchor: [12, 41],
-				popupAnchor: [1, -34],
-				tooltipAnchor: [16, -28],
-				shadowSize: [41, 41]
+			map = new lib.Map({
+				container: mapEl,
+				style: mapStyle(),
+				center: toLngLat(initialCenter ?? DEFAULT_CENTER),
+				zoom: DEFAULT_ZOOM,
+				maxZoom: MAX_ZOOM,
+				// The OSM credit is shown; MapLibre adds no self-attribution of its own.
+				attributionControl: { compact: false }
 			});
 
 			// Zoom control sits bottom-left, clear of the floating search (top-left)
-			// and results (top-right) panels that overlay the full-screen map.
-			map = L.map(mapEl, { zoomControl: false }).setView(
-				initialCenter ?? DEFAULT_CENTER,
-				DEFAULT_ZOOM
-			);
-			L.control.zoom({ position: 'bottomleft' }).addTo(map);
+			// and results (top-right) panels that overlay the full-screen map. No
+			// compass: rotation isn't part of the interaction, matching the old map.
+			map.addControl(new lib.NavigationControl({ showCompass: false }), 'bottom-left');
 
-			// Drop the optional "Leaflet" prefix; the OpenStreetMap credit below is
-			// kept because the OSM tile policy / ODbL require attribution.
-			map.attributionControl.setPrefix(false);
-
-			L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-				attribution:
-					'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-				maxZoom: 19
-			}).addTo(map);
-
-			markerLayer = L.layerGroup().addTo(map);
 			// Report the viewport as it changes so the parent can load data for it.
-			// `moveend` fires after both pans and zooms settle.
+			// `moveend` fires after both pans and zooms (and programmatic flights) settle.
 			map.on('moveend', scheduleViewReport);
 
-			renderMarkers();
-			ready = true;
-			// Kick off the first load immediately (no debounce) for the opening view.
-			reportView();
+			// `load` fires once the style is parsed and the first frame is painted —
+			// only then are markers safe to add and the opening view worth reporting.
+			map.on('load', () => {
+				if (!active) return;
+				ready = true;
+				renderMarkers();
+				// Kick off the first load immediately (no debounce) for the opening view.
+				reportView();
+			});
 		})();
 
 		return () => {
@@ -232,7 +296,6 @@
 			if (map) {
 				map.remove();
 				map = null;
-				markerLayer = null;
 				markersById = {};
 			}
 		};
@@ -272,12 +335,12 @@
 
 	/* Keep the zoom control and attribution clear of notches and the home indicator
 	   on devices that report safe-area insets (the viewport is `viewport-fit=cover`). */
-	.map :global(.leaflet-bottom.leaflet-left) {
+	.map :global(.maplibregl-ctrl-bottom-left) {
 		margin-bottom: env(safe-area-inset-bottom);
 		margin-left: env(safe-area-inset-left);
 	}
 
-	.map :global(.leaflet-bottom.leaflet-right) {
+	.map :global(.maplibregl-ctrl-bottom-right) {
 		margin-bottom: env(safe-area-inset-bottom);
 		margin-right: env(safe-area-inset-right);
 	}
