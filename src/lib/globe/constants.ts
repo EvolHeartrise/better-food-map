@@ -5,16 +5,19 @@ import { GLOBE_RADIUS } from './geo';
 
 // --- Camera & controls ----------------------------------------------------
 export const CAMERA_FOV = 45;
-// How close/far the camera may orbit. The minimum hovers just above the surface
-// (street-ish), the maximum frames the whole globe with space around it.
-export const MIN_CAMERA_DISTANCE = GLOBE_RADIUS * 1.04;
+// How close/far the camera may orbit. The minimum skims just above the surface for
+// a close, high-zoom look (kept a hair above the tallest marker so the camera
+// never dives inside one); the maximum frames the whole globe with space around it.
+export const MIN_CAMERA_DISTANCE = GLOBE_RADIUS * 1.01;
 export const MAX_CAMERA_DISTANCE = GLOBE_RADIUS * 4.5;
 // Opening distance when no place is selected — a regional, tilted-down view.
 export const DEFAULT_CAMERA_DISTANCE = GLOBE_RADIUS * 2.6;
 // Distance the camera flies to when a location is selected (a close-in look).
 export const SELECTED_CAMERA_DISTANCE = GLOBE_RADIUS * 1.18;
-// Near/far planes sized around the unit sphere with room for the cap and tiles.
-export const CAMERA_NEAR = 0.01;
+// Near plane must sit below the closest-zoom altitude (MIN_CAMERA_DISTANCE − R =
+// 0.01) or the surface clips; 0.004 leaves headroom while keeping enough depth
+// precision for the layered tiles (the detail layer also uses a polygon offset).
+export const CAMERA_NEAR = 0.004;
 export const CAMERA_FAR = 100;
 
 // Fallback opening centre [lat, lng] when no IP-detected centre is supplied —
@@ -31,13 +34,18 @@ export const FLY_RATE = 6;
 // imagery even when zoomed out; higher-detail tiles refine the viewed area on top.
 export const BASE_TILE_ZOOM = 2;
 // Roughly how many detail tiles should span the view horizontally; drives the
-// chosen detail zoom (see selectZoom).
-export const TILES_ACROSS = 2.5;
+// chosen detail zoom (see selectZoom). Tuned for ≈1:1 texel-to-pixel on a typical
+// viewport (each tile is 256px): ~4.5 tiles across a ~1200px width keeps the
+// imagery crisp and holds a detail level one step longer as you zoom out, where a
+// lower value would swap down to a blurrier zoom too early.
+export const TILES_ACROSS = 4.5;
 export const MIN_DETAIL_ZOOM = BASE_TILE_ZOOM;
 // OSM raster tiles stop at z19; never request past real tile data.
 export const MAX_DETAIL_ZOOM = 19;
 // Hard cap on simultaneously-loaded detail tiles, a backstop on memory/requests.
-export const MAX_DETAIL_TILES = 48;
+// Raised alongside TILES_ACROSS so the detail layer still covers the whole padded
+// viewport (incl. tall windows) before the cap trims its outer rings.
+export const MAX_DETAIL_TILES = 80;
 // Mesh subdivision per tile patch. Low-zoom tiles span more curvature so they get
 // more segments; high-zoom tiles are nearly flat and need fewer. Generous counts
 // keep the draped imagery smoothly hugging the sphere rather than faceting — the
