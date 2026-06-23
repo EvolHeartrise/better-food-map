@@ -24,6 +24,8 @@
 		segments: C.tileSegments,
 		altitude: C.BASE_TILE_ALTITUDE,
 		tileUrl: C.osmTileUrl,
+		// Draw above the opaque ocean sphere (level 0).
+		polygonOffsetLevel: 1,
 		onUpdate: invalidate
 	});
 	const detailLayer = new TileLayer({
@@ -31,8 +33,8 @@
 		segments: C.tileSegments,
 		altitude: C.DETAIL_TILE_ALTITUDE,
 		tileUrl: C.osmTileUrl,
-		// Keep the detail imagery cleanly above the base layer it overlaps.
-		polygonOffset: true,
+		// Draw above the base imagery it overlaps.
+		polygonOffsetLevel: 2,
 		onUpdate: invalidate
 	});
 

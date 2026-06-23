@@ -30,12 +30,13 @@ type TileLayerOptions = {
 	/** Resolve a tile to its image URL. */
 	tileUrl: (z: number, x: number, y: number) => string;
 	/**
-	 * Pull this layer slightly toward the camera in the depth buffer (a polygon
-	 * offset), so it reliably draws on top of a layer beneath it regardless of how
-	 * tight the near plane is. Used for the detail layer so it never z-fights the
-	 * base imagery it sits a hair above.
+	 * Depth-bias level for stacking. Each layer is pulled toward the camera in the
+	 * depth buffer by this amount (a polygon offset), so a higher level reliably
+	 * draws on top of a lower one regardless of how tight the near plane is. The
+	 * base sphere is level 0, base tiles 1, detail tiles 2 — keeping the imagery
+	 * from z-fighting now that the altitude gaps between layers are tiny. 0 = none.
 	 */
-	polygonOffset?: boolean;
+	polygonOffsetLevel?: number;
 	/** Optional hook fired after the group changes, for on-demand re-rendering. */
 	onUpdate?: () => void;
 };
@@ -117,15 +118,16 @@ export class TileLayer {
 		geometry.setIndex(new BufferAttribute(patch.indices, 1));
 
 		// Unlit imagery (MeshBasic) so the whole globe stays evenly readable, and
-		// DoubleSide so a patch is visible regardless of winding. The optional polygon
-		// offset (negative = toward the camera) keeps the detail layer on top of the
-		// base imagery without relying on fine depth precision.
+		// DoubleSide so a patch is visible regardless of winding. The polygon offset
+		// (negative = toward the camera, scaled by the layer's level) stacks the
+		// layers without relying on fine depth precision.
+		const level = this.options.polygonOffsetLevel ?? 0;
 		const material = new MeshBasicMaterial({
 			map: texture,
 			side: DoubleSide,
-			polygonOffset: this.options.polygonOffset ?? false,
-			polygonOffsetFactor: this.options.polygonOffset ? -1 : 0,
-			polygonOffsetUnits: this.options.polygonOffset ? -1 : 0
+			polygonOffset: level > 0,
+			polygonOffsetFactor: -level,
+			polygonOffsetUnits: -level
 		});
 		const mesh = new Mesh(geometry, material);
 		mesh.frustumCulled = true;
