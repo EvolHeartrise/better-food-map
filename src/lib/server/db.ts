@@ -325,6 +325,16 @@ const LOCATION_FIELDS = `id, name, category, latitude, longitude, address, phone
 const FOOD_FIELDS = `id, location_id, item_name, description, ingredients, price`;
 const MENU_ITEM_FIELDS = `id, menu_id, item_name, description, ingredients, price`;
 
+/**
+ * Hard cap on how many locations a single {@link getMapData} viewport read
+ * returns. The map page no longer gates fetching on a minimum zoom, so a fully
+ * zoomed-out box can cover the whole dataset; this bounds the payload — and the
+ * markers drawn — to a sane size. The alphabetically-first matches win (see the
+ * deterministic ORDER BY in {@link queryMapData}). Mirrored on the client only to
+ * label a capped result set; this module stays the source of truth for the value.
+ */
+export const MAP_RESULT_LIMIT = 200;
+
 // ---------------------------------------------------------------------------
 // Reads
 // ---------------------------------------------------------------------------
@@ -392,8 +402,10 @@ export async function getLocationsWithTags(db: D1Like): Promise<LocationWithTags
  * of being copied onto every branch that serves it.
  *
  * Scoping the read to the visible box keeps the payload bounded as the dataset
- * grows to whole countries — only what's on screen is fetched. Built in bulk to
- * avoid an N+1 query per location.
+ * grows to whole countries — only what's on screen is fetched — and at most
+ * {@link MAP_RESULT_LIMIT} locations (the alphabetically-first) are returned for
+ * any one box, so a zoomed-out view stays bounded too. Built in bulk to avoid an
+ * N+1 query per location.
  */
 export function getMapData(db: D1Like, bounds: Bounds): Promise<MapData> {
 	return queryMapData(db, `latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ?`, [
@@ -429,8 +441,18 @@ async function queryMapData(
 ): Promise<MapData> {
 	// Sub-selects that resolve, from `locFilter`, the in-scope location ids, the
 	// menus they reference, and (transitively) their food rows and menu items.
-	const inLocations = `SELECT id FROM locations WHERE ${locFilter}`;
-	const inMenus = `SELECT DISTINCT menu_id FROM locations WHERE menu_id IS NOT NULL AND ${locFilter}`;
+	//
+	// The location set is capped at MAP_RESULT_LIMIT via a deterministic
+	// `ORDER BY name, id LIMIT` applied IDENTICALLY here in `inLocations` and in
+	// the main row read below, so both select the exact same rows — every scoped
+	// sub-read (food, sources, overrides, and the menus those locations reference,
+	// via `id IN (inLocations)`) therefore covers precisely the returned set. The
+	// LIMIT is a trusted integer literal, so it is interpolated rather than bound;
+	// this leaves each statement's placeholder count unchanged, keeping the shared
+	// `.bind(...params)` correct.
+	const capClause = `ORDER BY name, id LIMIT ${MAP_RESULT_LIMIT}`;
+	const inLocations = `SELECT id FROM locations WHERE ${locFilter} ${capClause}`;
+	const inMenus = `SELECT DISTINCT menu_id FROM locations WHERE menu_id IS NOT NULL AND id IN (${inLocations})`;
 	const inFood = `SELECT f.id FROM food f WHERE f.location_id IN (${inLocations})`;
 	const inMenuItems = `SELECT mi.id FROM menu_items mi WHERE mi.menu_id IN (${inMenus})`;
 
@@ -447,7 +469,7 @@ async function queryMapData(
 		{ results: overrideRows }
 	] = await Promise.all([
 		db
-			.prepare(`SELECT ${LOCATION_FIELDS} FROM locations WHERE ${locFilter} ORDER BY name`)
+			.prepare(`SELECT ${LOCATION_FIELDS} FROM locations WHERE ${locFilter} ${capClause}`)
 			.bind(...params)
 			.all<LocationRow>(),
 		db

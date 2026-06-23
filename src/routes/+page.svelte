@@ -20,25 +20,21 @@
 	// has mounted and reported its opening view.
 	let viewport = $state<{ bounds: Bounds; zoom: number } | null>(null);
 
-	// Below this zoom the visible box covers too much ground to fetch responsibly
-	// (the dataset reaches toward whole-country coverage), so we hold off and ask
-	// the user to zoom in rather than pulling an unbounded result set.
-	const MIN_FETCH_ZOOM = 12;
-	const shouldFetch = $derived(viewport !== null && viewport.zoom >= MIN_FETCH_ZOOM);
+	// The server caps each viewport read at this many locations (see
+	// MAP_RESULT_LIMIT in $lib/server/db). That cap — not a minimum zoom — is what
+	// keeps a zoomed-out box from pulling an unbounded set: there is no longer any
+	// zoom floor, so every viewport fetches, however far out. Mirrored here only to
+	// label a capped result set in the UI; the server stays the source of truth.
+	const MAX_RESULTS = 200;
 
 	// Raw payload for the current viewport. Updated imperatively (rather than via an
 	// awaited $derived) so the markers already on screen stay put while the next box
-	// loads — panning/zooming never blanks the map. Reset to empty when zoomed out
-	// past MIN_FETCH_ZOOM.
+	// loads — panning/zooming never blanks the map.
 	const EMPTY_MAP_DATA: MapData = { locations: [], menus: {} };
 	let mapData = $state<MapData>(EMPTY_MAP_DATA);
 
 	$effect(() => {
 		if (!viewport) return;
-		if (viewport.zoom < MIN_FETCH_ZOOM) {
-			mapData = EMPTY_MAP_DATA;
-			return;
-		}
 		const bounds = viewport.bounds;
 		let cancelled = false;
 		getLocations(bounds).then((data) => {
@@ -48,6 +44,11 @@
 			cancelled = true;
 		};
 	});
+
+	// True when the server returned a full page of locations, i.e. the box held
+	// more than the cap and only the first MAX_RESULTS came back. Drives the "zoom
+	// in to see the rest" hint so the cap isn't silent.
+	const capped = $derived(mapData.locations.length >= MAX_RESULTS);
 
 	// The map page works against each location's fully-resolved `menu`, but the wire
 	// payload sends each shared brand menu only once (keyed by menu_id) instead of
@@ -724,12 +725,16 @@
 					{results.length === 1 ? 'place' : 'places'}
 				</p>
 
+				{#if capped}
+					<p class="results__note">
+						Only the first {MAX_RESULTS} places in view are loaded — zoom in to see the rest.
+					</p>
+				{/if}
+
 				{#if results.length === 0}
 					<p class="results__empty">
 						{#if viewport === null}
 							Loading the map…
-						{:else if !shouldFetch}
-							Zoom in to load places.
 						{:else if locations.length === 0}
 							No places in this area.
 						{:else}
@@ -883,7 +888,7 @@
 	}
 
 	/* The map fills the whole viewport. A z-index here establishes a stacking
-	   context so the panel (z-index 10) floats above every Leaflet pane/control. */
+	   context so the panel (z-index 10) floats above every MapLibre pane/control. */
 	.app__map {
 		position: absolute;
 		inset: 0;
@@ -1139,6 +1144,15 @@
 		font-size: 0.75rem;
 		font-weight: 600;
 		color: var(--color-text-muted);
+	}
+
+	/* Cap notice: shown when the viewport held more places than the server returns
+	   in one read (MAX_RESULTS). Accent-tinted so it reads as an actionable hint. */
+	.results__note {
+		margin: 0;
+		font-size: 0.72rem;
+		font-weight: 600;
+		color: var(--color-accent);
 	}
 
 	.results__empty {
