@@ -29,6 +29,13 @@ export const DEFAULT_CENTER: [number, number] = [49.2827, -123.1207];
 // camera covers ~1 - e^(-rate·seconds) of the remaining arc each second.
 export const FLY_RATE = 6;
 
+// Drag-to-rotate sensitivity is derived from the camera distance each frame (see
+// rotateSpeedForDistance) so the grabbed point tracks the cursor at any zoom.
+// These clamp the result purely defensively — across the allowed distance range
+// the formula already stays comfortably between them, so it governs the feel.
+export const MIN_ROTATE_SPEED = 0.0008;
+export const MAX_ROTATE_SPEED = 1;
+
 // --- Tiles ----------------------------------------------------------------
 // A low fixed zoom whose tiles always blanket the whole globe, so there's full
 // imagery even when zoomed out; higher-detail tiles refine the viewed area on top.
