@@ -6,6 +6,7 @@
 	import { getLocations, getLocationData, getBrands, getUserLocation } from '$lib/data.remote';
 	import LocationMap from '$lib/components/LocationMap.svelte';
 	import TagFilter from '$lib/components/TagFilter.svelte';
+	import FoodTag from '$lib/components/FoodTag.svelte';
 	import { categoryLabel, type Category } from '$lib/category';
 	import type { MapData, MapLocation, Item, Bounds, Tag } from '$lib/server/db';
 
@@ -793,20 +794,16 @@
 		{@const dietaryTags = menuItem.tags.filter((tag) => tag.tag_type !== 'ingredient')}
 		{@const ingredientTags = menuItem.tags.filter((tag) => tag.tag_type === 'ingredient')}
 		{#if dietaryTags.length > 0}
-			<ul class="tags">
+			<ul class="taglist">
 				{#each dietaryTags as tag (tag.id)}
-					<li class="tag" class:tag--optional={tag.optional}>
-						{tag.name}{tag.optional ? ' (optional)' : ''}
-					</li>
+					<li><FoodTag {tag} optional={tag.optional} /></li>
 				{/each}
 			</ul>
 		{/if}
 		{#if ingredientTags.length > 0}
-			<ul class="ingredients">
+			<ul class="taglist">
 				{#each ingredientTags as tag (tag.id)}
-					<li class="ingredient" class:ingredient--optional={tag.optional}>
-						{tag.name}{tag.optional ? ' (optional)' : ''}
-					</li>
+					<li><FoodTag {tag} optional={tag.optional} /></li>
 				{/each}
 			</ul>
 		{/if}
@@ -1411,49 +1408,15 @@
 		font-style: italic;
 	}
 
-	.tags {
+	/* Two pill rows under an item's details — dietary/course tags, then ingredient
+	   tags. The pills themselves are <FoodTag>; this only lays them out. */
+	.taglist {
 		list-style: none;
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.3rem;
 		margin: 0.4rem 0 0;
 		padding: 0;
-	}
-
-	.tag {
-		font-size: 0.72rem;
-		font-weight: 600;
-		color: var(--color-accent);
-		background-color: color-mix(in srgb, var(--color-accent) 12%, #fff);
-		border: 1px solid color-mix(in srgb, var(--color-accent) 35%, #fff);
-		border-radius: 999px;
-		padding: 0.1rem 0.5rem;
-	}
-
-	/* An optional tag/ingredient (e.g. "can be made vegan") reads as a hint rather
-	   than an asserted fact, so it's de-emphasised with a dashed border. */
-	.tag--optional,
-	.ingredient--optional {
-		font-weight: 500;
-		border-style: dashed;
-	}
-
-	.ingredients {
-		list-style: none;
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.3rem;
-		margin: 0.35rem 0 0;
-		padding: 0;
-	}
-
-	.ingredient {
-		font-size: 0.72rem;
-		color: var(--color-text-muted);
-		background-color: rgba(255, 255, 255, 0.6);
-		border: 1px solid var(--color-border);
-		border-radius: 999px;
-		padding: 0.1rem 0.5rem;
 	}
 
 	/* Provenance for the item. The popup is non-interactive (pointer-events: none),

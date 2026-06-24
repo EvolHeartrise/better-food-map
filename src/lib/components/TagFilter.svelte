@@ -2,6 +2,8 @@
 	import { getTags, searchTags } from '$lib/data.remote';
 	import type { Tag } from '$lib/server/db';
 	import type { Attachment } from 'svelte/attachments';
+	import FoodTag from '$lib/components/FoodTag.svelte';
+	import { tagDisplayName } from '$lib/tags';
 
 	// Two filter lists, surfaced to the parent via `bind:`. `included` tags must
 	// all be present on a menu item for it to match; `excluded` tags must all be
@@ -93,12 +95,6 @@
 			items: byType[type] ?? []
 		}));
 	});
-
-	// Ingredient names are stored lower-cased; title-case the first letter so they
-	// sit comfortably beside the already-capitalised curated tags ("Vegan").
-	function display(tag: Tag): string {
-		return tag.name.charAt(0).toUpperCase() + tag.name.slice(1);
-	}
 
 	function withoutTag(list: Tag[], id: string): Tag[] {
 		return list.filter((tag) => tag.id !== id);
@@ -223,10 +219,10 @@
 					type="button"
 					class="seltag seltag--include"
 					onclick={() => toggleInclude(tag)}
-					aria-label={`Remove included tag ${display(tag)}`}
+					aria-label={`Remove included tag ${tagDisplayName(tag.name)}`}
 				>
 					<span class="seltag__op">is</span>
-					<span class="seltag__name">{display(tag)}</span>
+					<FoodTag {tag} />
 					<span class="seltag__x" aria-hidden="true">✕</span>
 				</button>
 			{/each}
@@ -235,10 +231,10 @@
 					type="button"
 					class="seltag seltag--exclude"
 					onclick={() => toggleExclude(tag)}
-					aria-label={`Remove excluded tag ${display(tag)}`}
+					aria-label={`Remove excluded tag ${tagDisplayName(tag.name)}`}
 				>
 					<span class="seltag__op">not</span>
-					<span class="seltag__name">{display(tag)}</span>
+					<FoodTag {tag} />
 					<span class="seltag__x" aria-hidden="true">✕</span>
 				</button>
 			{/each}
@@ -296,13 +292,13 @@
 									<span class="opt__state" aria-hidden="true">
 										{#if isIncluded}✓{:else if isExcluded}✕{/if}
 									</span>
-									<span class="opt__name">{display(tag)}</span>
+									<FoodTag {tag} />
 								</button>
 								<button
 									type="button"
 									class="opt__exclude"
 									aria-pressed={isExcluded}
-									aria-label={`Exclude ${display(tag)}`}
+									aria-label={`Exclude ${tagDisplayName(tag.name)}`}
 									title={isExcluded ? 'Excluded — click to clear' : 'Exclude'}
 									onclick={() => toggleExclude(tag)}
 								>
@@ -338,51 +334,63 @@
 		align-items: center;
 	}
 
+	/* A selected tag chip wraps a <FoodTag> (the pill) with an operator badge and a
+	   remove ✕. The chip itself is a neutral removable button; its include/exclude
+	   role is carried by the operator badge's colour and a tinted border, so the
+	   FoodTag inside reads the same as it does anywhere else. */
 	.seltag {
 		display: inline-flex;
 		align-items: center;
 		gap: 0.3rem;
-		font-size: 0.78rem;
-		font-weight: 600;
-		border-radius: 999px;
-		padding: 0.18rem 0.5rem;
-		border: 1px solid transparent;
 		max-width: 100%;
+		padding: 0.15rem 0.4rem;
+		border-radius: 999px;
+		border: 1px solid var(--color-border);
+		background: rgba(255, 255, 255, 0.6);
 	}
 
+	/* The "is"/"not" operator: a small filled badge stating the chip's role. */
 	.seltag__op {
 		font-size: 0.6rem;
 		font-weight: 700;
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
-		opacity: 0.75;
-	}
-
-	.seltag__name {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
+		color: #fff;
+		padding: 0.05rem 0.32rem;
+		border-radius: 999px;
 	}
 
 	.seltag__x {
 		font-size: 0.7rem;
-		opacity: 0.8;
+		color: var(--color-text-muted);
 	}
 
 	.seltag--include {
-		color: #fff;
+		border-color: color-mix(in srgb, var(--color-accent) 35%, #fff);
+	}
+
+	.seltag--include .seltag__op {
 		background-color: var(--color-accent);
-		border-color: var(--color-accent);
 	}
 
 	.seltag--exclude {
-		color: var(--color-exclude);
-		background-color: color-mix(in srgb, var(--color-exclude) 10%, #fff);
 		border-color: color-mix(in srgb, var(--color-exclude) 35%, #fff);
 	}
 
+	.seltag--exclude .seltag__op {
+		background-color: var(--color-exclude);
+	}
+
 	.seltag:hover {
-		filter: brightness(0.97);
+		background: rgba(255, 255, 255, 0.85);
+	}
+
+	.seltag--include:hover .seltag__x {
+		color: var(--color-accent);
+	}
+
+	.seltag--exclude:hover .seltag__x {
+		color: var(--color-exclude);
 	}
 
 	.tagfilter__clear {
@@ -508,12 +516,6 @@
 		text-align: center;
 	}
 
-	.opt__name {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
 	.opt__exclude {
 		flex-shrink: 0;
 		width: 1.8rem;
@@ -540,7 +542,6 @@
 
 	.opt--excluded .opt__main {
 		color: var(--color-text-muted);
-		text-decoration: line-through;
 	}
 
 	.opt--excluded .opt__state {
