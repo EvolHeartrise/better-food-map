@@ -5,7 +5,9 @@
 	import { MediaQuery, SvelteSet } from 'svelte/reactivity';
 	import { getLocations, getLocationData, getBrands, getUserLocation } from '$lib/data.remote';
 	import LocationMap from '$lib/components/LocationMap.svelte';
-	import TagFilter from '$lib/components/TagFilter.svelte';
+	import TagPicker from '$lib/components/TagPicker.svelte';
+	import FoodTag from '$lib/components/FoodTag.svelte';
+	import Search from '@lucide/svelte/icons/search';
 	import { categoryLabel, type Category } from '$lib/category';
 	import type { MapData, MapLocation, Item, Bounds, Tag } from '$lib/server/db';
 
@@ -90,18 +92,18 @@
 	// Independent inputs. `place` filters venues by name; `item` and the tag
 	// include/exclude lists filter menu items. They combine with AND, and narrow
 	// within the locations currently visible on the map. Tags (dietary, course and
-	// ingredient) are picked through <TagFilter>: an item must carry every
-	// `included` tag and none of the `excluded` ones.
+	// ingredient) are picked through two <TagPicker>s — one for include, one for
+	// exclude: an item must carry every `included` tag and none of the `excluded`.
 	let place = $state('');
 	let item = $state('');
 	let included = $state<Tag[]>([]);
 	let excluded = $state<Tag[]>([]);
 
-	// On narrow (mobile) screens the search panel collapses to a header bar so the
-	// map isn't squeezed between it and the results sheet. Open by default so the
-	// filters stay discoverable; the toggle (shown only on narrow screens, via CSS)
-	// lets the user reclaim the map. The wide layout always shows the controls and
-	// hides the toggle, so this flag is inert there.
+	// On narrow (mobile) screens the row of floating search items collapses behind a
+	// "Filters" toggle so the map isn't crowded. Open by default so the filters stay
+	// discoverable; the toggle (shown only on narrow screens, via CSS) lets the user
+	// reclaim the map. The wide layout always shows the items and hides the toggle,
+	// so this flag is inert there.
 	let filtersOpen = $state(true);
 
 	const currency = new Intl.NumberFormat('en-CA', { style: 'currency', currency: 'CAD' });
@@ -114,6 +116,11 @@
 	const itemTerm = $derived(item.trim().toLowerCase());
 	const includedIds = $derived(new Set(included.map((tag) => tag.id)));
 	const excludedIds = $derived(new Set(excluded.map((tag) => tag.id)));
+	// Every tag claimed by either picker. Fed to both <TagPicker>s so a tag already
+	// chosen on one side drops out of both dropdowns — the include and exclude lists
+	// stay mutually exclusive (a tag can't be required and forbidden at once) without
+	// either picker reaching into the other's state.
+	const reservedIds = $derived(new Set([...included, ...excluded].map((tag) => tag.id)));
 	const hasItemFilter = $derived(itemTerm !== '' || includedIds.size > 0 || excludedIds.size > 0);
 
 	function itemMatches(menuItem: MenuItem): boolean {
@@ -482,79 +489,84 @@
 		/>
 	</div>
 
-	<aside class="panel panel--search" aria-label="Search and filters">
-		<header class="panel__brand">
-			<a class="panel__title" href={resolve('/')}>Better Food Map</a>
-			<!-- Shown only on narrow screens (CSS): collapses the filters to free the map. -->
-			<button
-				type="button"
-				class="panel__toggle"
-				aria-expanded={filtersOpen}
-				aria-controls="search-controls"
-				onclick={() => (filtersOpen = !filtersOpen)}
-			>
-				<span>{filtersOpen ? 'Hide' : 'Filters'}</span>
-				{#if !filtersOpen && hasQuery}
-					<span class="panel__toggle-dot" aria-hidden="true"></span>
-				{/if}
-				<span class="panel__toggle-icon" aria-hidden="true">{filtersOpen ? '▴' : '▾'}</span>
-			</button>
-		</header>
+	<!-- The search controls don't live in a panel: each is its own pill floating
+	     free over the map, laid out as a horizontal row. On narrow screens the row
+	     collapses behind the "Filters" toggle. -->
+	<div class="searchbar" role="search" aria-label="Search and filters">
+		<!-- Shown only on narrow screens (CSS): collapses the items to free the map. -->
+		<button
+			type="button"
+			class="searchbar__toggle"
+			aria-expanded={filtersOpen}
+			aria-controls="search-items"
+			onclick={() => (filtersOpen = !filtersOpen)}
+		>
+			<span>{filtersOpen ? 'Hide' : 'Filters'}</span>
+			{#if !filtersOpen && hasQuery}
+				<span class="searchbar__dot" aria-hidden="true"></span>
+			{/if}
+			<span class="searchbar__toggle-icon" aria-hidden="true">{filtersOpen ? '▴' : '▾'}</span>
+		</button>
 
-		<div class="controls" id="search-controls" class:controls--collapsed={!filtersOpen}>
-			<div class="field">
-				<span class="field__label" id="q-place-label">Place</span>
-				{#if selectedLocation}
-					{@const placeLabel = categoryLabel(selectedLocation.category)}
-					{@const placeMeta = [placeLabel, selectedLocation.address].filter(Boolean).join(' · ')}
-					<div class="place-card" aria-labelledby="q-place-label">
-						<div class="place-card__body">
-							<span class="place-card__name">{selectedLocation.name}</span>
-							{#if placeMeta}
-								<span class="place-card__meta">{placeMeta}</span>
-							{/if}
-						</div>
-						<button
-							type="button"
-							class="place-card__clear"
-							aria-label="Clear selected place"
-							onclick={closeDetail}
-						>
-							✕
-						</button>
+		<div
+			class="searchbar__items"
+			id="search-items"
+			class:searchbar__items--collapsed={!filtersOpen}
+		>
+			<!-- Place: a plain search pill, or — once a location is open — a tinted card
+			     standing in for it, with a clear (✕) that closes the detail. -->
+			{#if selectedLocation}
+				{@const placeLabel = categoryLabel(selectedLocation.category)}
+				{@const placeMeta = [placeLabel, selectedLocation.address].filter(Boolean).join(' · ')}
+				<div class="place-card" aria-label="Selected place">
+					<div class="place-card__body">
+						<span class="place-card__name">{selectedLocation.name}</span>
+						{#if placeMeta}
+							<span class="place-card__meta">{placeMeta}</span>
+						{/if}
 					</div>
-				{:else}
+					<button
+						type="button"
+						class="place-card__clear"
+						aria-label="Clear selected place"
+						onclick={closeDetail}
+					>
+						✕
+					</button>
+				</div>
+			{:else}
+				<!-- A label so a click anywhere in the pill (the search icon included)
+				     focuses the input; the input is the only control inside it. -->
+				<label class="searchpill">
 					<input
-						id="q-place"
-						class="field__input"
+						class="searchpill__input"
 						type="search"
 						placeholder="Place name…"
-						aria-labelledby="q-place-label"
+						aria-label="Search by place name"
 						bind:value={place}
 					/>
-				{/if}
-			</div>
+					<Search class="searchpill__icon" size={16} aria-hidden="true" />
+				</label>
+			{/if}
 
-			<div class="field">
-				<label class="field__label" for="q-item">Item</label>
+			<label class="searchpill">
 				<input
-					id="q-item"
-					class="field__input"
+					class="searchpill__input"
 					type="search"
 					placeholder="Item name…"
+					aria-label="Search by item name"
 					bind:value={item}
 				/>
-			</div>
+				<Search class="searchpill__icon" size={16} aria-hidden="true" />
+			</label>
 
-			<div class="field">
-				<span class="field__label" id="q-tags-label">Tags</span>
-				<!-- Searchable include/exclude picker over the whole tag vocabulary
-				     (dietary, course and ingredient tags). Replaces the old free-text
-				     ingredient box and the fixed dietary chip row. -->
-				<TagFilter bind:included bind:excluded />
-			</div>
+			<!-- Two searchable tag pickers — one for tags an item must carry, one for
+			     tags it must not. Each owns its own floating pill and dropdown; sharing
+			     `reservedIds` keeps the two lists mutually exclusive. -->
+			<TagPicker mode="include" bind:selected={included} {reservedIds} />
+			<TagPicker mode="exclude" bind:selected={excluded} {reservedIds} />
 		</div>
-	</aside>
+	</div>
 
 	<aside
 		class="panel panel--results"
@@ -793,20 +805,16 @@
 		{@const dietaryTags = menuItem.tags.filter((tag) => tag.tag_type !== 'ingredient')}
 		{@const ingredientTags = menuItem.tags.filter((tag) => tag.tag_type === 'ingredient')}
 		{#if dietaryTags.length > 0}
-			<ul class="tags">
+			<ul class="taglist">
 				{#each dietaryTags as tag (tag.id)}
-					<li class="tag" class:tag--optional={tag.optional}>
-						{tag.name}{tag.optional ? ' (optional)' : ''}
-					</li>
+					<li><FoodTag {tag} optional={tag.optional} /></li>
 				{/each}
 			</ul>
 		{/if}
 		{#if ingredientTags.length > 0}
-			<ul class="ingredients">
+			<ul class="taglist">
 				{#each ingredientTags as tag (tag.id)}
-					<li class="ingredient" class:ingredient--optional={tag.optional}>
-						{tag.name}{tag.optional ? ' (optional)' : ''}
-					</li>
+					<li><FoodTag {tag} optional={tag.optional} /></li>
 				{/each}
 			</ul>
 		{/if}
@@ -855,8 +863,8 @@
 		z-index: 0;
 	}
 
-	/* Both panels are top-aligned and float over the map: search on the left,
-	   results on the right. Each is capped to the viewport so it never overflows. */
+	/* The results panel floats over the map, top-right, capped to the viewport so it
+	   never overflows. (The search controls are no longer a panel — see .searchbar.) */
 	.panel {
 		position: absolute;
 		z-index: 10;
@@ -874,12 +882,6 @@
 		max-height: calc(100dvh - 2rem);
 	}
 
-	.panel--search {
-		left: calc(1rem + env(safe-area-inset-left));
-		width: min(20rem, calc(100vw - 2rem));
-		overflow-y: auto;
-	}
-
 	.panel--results {
 		right: calc(1rem + env(safe-area-inset-right));
 		width: min(22rem, calc(100vw - 2rem));
@@ -887,106 +889,129 @@
 		overflow: hidden;
 	}
 
-	.panel__brand {
+	/* The search controls, free-floating over the map: a horizontal, wrapping row of
+	   independent pills (brand "logo", Place, Item, Include, Exclude) anchored
+	   top-left. No shared surface — each child carries its own glass. The width is
+	   capped so the row keeps clear of the results panel on the right; it wraps to a
+	   new line before it would run underneath it. */
+	.searchbar {
+		position: absolute;
+		z-index: 10;
+		top: calc(1rem + env(safe-area-inset-top));
+		left: calc(1rem + env(safe-area-inset-left));
 		display: flex;
-		flex-direction: row;
-		align-items: center;
-		justify-content: space-between;
+		flex-wrap: wrap;
+		align-items: flex-start;
 		gap: 0.5rem;
+		/* Use the full width up to the results panel — no fixed cap, or the row would
+		   wrap early while space remains. The panel is 22rem wide at a 1rem right inset,
+		   so this stops ~2rem short of it (1rem left inset + 22rem panel + 1rem inset +
+		   2rem gap = 26rem reserved); the items wrap only when they'd cross that line. */
+		max-width: calc(100vw - 26rem);
 	}
 
-	.panel__title {
-		font-size: 1.1rem;
-		font-weight: 700;
-		color: var(--color-text);
-		letter-spacing: -0.01em;
+	/* On wide screens the items flow as direct children of the row (the wrapper is
+	   laid out as display: contents so it adds no box of its own); the narrow media
+	   query below turns it into its own wrapping row and lets the toggle fold it away. */
+	.searchbar__items {
+		display: contents;
 	}
 
-	.panel__title:hover {
-		text-decoration: none;
-		color: var(--color-accent);
-	}
-
-	/* Collapse control for the filters. Hidden on wide screens (where the panel
-	   always shows its controls); the media query at the bottom reveals it on
-	   narrow screens, where folding the panel hands the map back its space. */
-	.panel__toggle {
+	/* Collapse control for the items. Hidden on wide screens (which always show the
+	   items); the media query at the bottom reveals it on narrow screens, where
+	   folding the row hands the map back its space. */
+	.searchbar__toggle {
 		display: none;
 		align-items: center;
 		gap: 0.35rem;
-		padding: 0.4rem 0.6rem;
-		border: 1px solid var(--color-border);
-		border-radius: 0.6rem;
-		background: rgba(255, 255, 255, 0.7);
+		padding: 0.45rem 0.7rem;
+		border: 1px solid rgba(255, 255, 255, 0.6);
+		border-radius: 0.7rem;
+		background: rgba(255, 255, 255, 0.72);
+		backdrop-filter: blur(16px) saturate(180%);
+		-webkit-backdrop-filter: blur(16px) saturate(180%);
+		box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
 		color: var(--color-text);
 		font-size: 0.8rem;
 		font-weight: 600;
 	}
 
-	.panel__toggle-icon {
+	.searchbar__toggle-icon {
 		font-size: 0.7rem;
 		line-height: 1;
 	}
 
-	/* A small accent dot shown when the panel is collapsed but filters are active,
-	   so the user knows a search is still in effect behind the folded panel. */
-	.panel__toggle-dot {
+	/* A small accent dot shown when the row is collapsed but filters are active, so
+	   the user knows a search is still in effect behind the folded controls. */
+	.searchbar__dot {
 		width: 0.45rem;
 		height: 0.45rem;
 		border-radius: 999px;
 		background: var(--color-accent);
 	}
 
-	.controls {
+	/* A plain search pill (Place / Item): a glassy floating field matching the tag
+	   pickers, so every floating control reads as one family. The input grows to fill
+	   the pill so the trailing search icon sits flush at the right edge. */
+	.searchpill {
 		display: flex;
-		flex-direction: column;
-		gap: 0.6rem;
+		align-items: center;
+		gap: 0.35rem;
+		width: 11rem;
+		padding: 0.3rem 0.5rem;
+		cursor: text;
+		border-radius: 0.7rem;
+		background: rgba(255, 255, 255, 0.72);
+		backdrop-filter: blur(16px) saturate(180%);
+		-webkit-backdrop-filter: blur(16px) saturate(180%);
+		border: 1px solid rgba(255, 255, 255, 0.6);
+		box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
 	}
 
-	.field {
-		display: flex;
-		flex-direction: column;
-		gap: 0.25rem;
-	}
-
-	.field__label {
-		font-size: 0.7rem;
-		font-weight: 700;
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-		color: var(--color-text-muted);
-	}
-
-	.field__input {
-		width: 100%;
-		padding: 0.45rem 0.7rem;
-		font: inherit;
-		font-size: 0.9rem;
-		color: var(--color-text);
-		background: rgba(255, 255, 255, 0.7);
-		border: 1px solid var(--color-border);
-		border-radius: 0.6rem;
-		outline: none;
-	}
-
-	.field__input::placeholder {
-		color: var(--color-text-muted);
-	}
-
-	.field__input:focus {
+	.searchpill:focus-within {
 		border-color: var(--color-accent);
 	}
 
-	/* Read-only stand-in for the Place input shown while a location is pinned. The
-	   accent tint marks it as an active selection rather than an editable field. */
+	.searchpill__input {
+		flex: 1;
+		min-width: 0;
+		padding: 0.15rem 0.25rem;
+		font: inherit;
+		font-size: 0.9rem;
+		color: var(--color-text);
+		background: none;
+		border: none;
+		outline: none;
+	}
+
+	.searchpill__input::placeholder {
+		color: var(--color-text-muted);
+	}
+
+	/* The trailing search glyph. It lives inside the Lucide child's <svg>, so it's
+	   reached with a scoped :global descendant rule; currentColor drives its stroke. */
+	.searchpill :global(.searchpill__icon) {
+		flex-shrink: 0;
+		/* Decorative: let clicks fall through to the <label> so it focuses the input. */
+		pointer-events: none;
+		color: var(--color-text-muted);
+	}
+
+	/* Stand-in for the Place pill shown while a location is pinned: a floating
+	   accent-tinted card marking it as an active selection rather than an editable
+	   field. Carries its own glass shadow since it floats free like the pills. */
 	.place-card {
 		display: flex;
 		align-items: flex-start;
 		gap: 0.5rem;
+		max-width: 18rem;
 		padding: 0.5rem 0.6rem;
-		border-radius: 0.6rem;
-		background: color-mix(in srgb, var(--color-accent) 10%, #fff);
+		border-radius: 0.7rem;
+		background: color-mix(in srgb, var(--color-accent) 12%, rgba(255, 255, 255, 0.85));
+		backdrop-filter: blur(16px) saturate(180%);
+		-webkit-backdrop-filter: blur(16px) saturate(180%);
 		border: 1px solid color-mix(in srgb, var(--color-accent) 35%, #fff);
+		box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
 	}
 
 	.place-card__body {
@@ -1411,49 +1436,15 @@
 		font-style: italic;
 	}
 
-	.tags {
+	/* Two pill rows under an item's details — dietary/course tags, then ingredient
+	   tags. The pills themselves are <FoodTag>; this only lays them out. */
+	.taglist {
 		list-style: none;
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.3rem;
 		margin: 0.4rem 0 0;
 		padding: 0;
-	}
-
-	.tag {
-		font-size: 0.72rem;
-		font-weight: 600;
-		color: var(--color-accent);
-		background-color: color-mix(in srgb, var(--color-accent) 12%, #fff);
-		border: 1px solid color-mix(in srgb, var(--color-accent) 35%, #fff);
-		border-radius: 999px;
-		padding: 0.1rem 0.5rem;
-	}
-
-	/* An optional tag/ingredient (e.g. "can be made vegan") reads as a hint rather
-	   than an asserted fact, so it's de-emphasised with a dashed border. */
-	.tag--optional,
-	.ingredient--optional {
-		font-weight: 500;
-		border-style: dashed;
-	}
-
-	.ingredients {
-		list-style: none;
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.3rem;
-		margin: 0.35rem 0 0;
-		padding: 0;
-	}
-
-	.ingredient {
-		font-size: 0.72rem;
-		color: var(--color-text-muted);
-		background-color: rgba(255, 255, 255, 0.6);
-		border: 1px solid var(--color-border);
-		border-radius: 999px;
-		padding: 0.1rem 0.5rem;
 	}
 
 	/* Provenance for the item. The popup is non-interactive (pointer-events: none),
@@ -1514,13 +1505,31 @@
 		pointer-events: none;
 	}
 
-	/* Below ~48rem the two side panels can't sit abreast, so stack them:
-	   search across the top, results as a bottom sheet. */
+	/* Below ~48rem the search row and results can't sit abreast, so let the search
+	   row span the top (its items wrapping into their own row) and drop results to a
+	   bottom sheet. */
 	@media (max-width: 48rem) {
-		.panel--search {
-			left: calc(1rem + env(safe-area-inset-left));
+		.searchbar {
 			right: calc(1rem + env(safe-area-inset-right));
-			width: auto;
+			max-width: none;
+		}
+
+		/* The items become their own full-width wrapping row beneath the brand/toggle
+		   line, so the collapse toggle can fold just them away. */
+		.searchbar__items {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 0.5rem;
+			width: 100%;
+		}
+
+		.searchbar__items--collapsed {
+			display: none;
+		}
+
+		/* The toggle leads its own line; the items wrap into the full-width row below. */
+		.searchbar__toggle {
+			display: inline-flex;
 		}
 
 		.panel--results {
@@ -1532,21 +1541,9 @@
 			max-height: 45dvh;
 		}
 
-		/* Reveal the collapse toggle, and fold the controls away when collapsed so
-		   the panel shrinks to just its header bar — handing the map back its space. */
-		.panel__toggle {
-			display: inline-flex;
-		}
-
-		.controls--collapsed {
-			display: none;
-		}
-
-		/* 16px inputs stop iOS Safari from auto-zooming the page when one is focused;
-		   a touch more padding gives a comfier tap target. */
-		.field__input {
+		/* 16px inputs stop iOS Safari from auto-zooming the page when one is focused. */
+		.searchpill__input {
 			font-size: 1rem;
-			padding: 0.55rem 0.7rem;
 		}
 
 		.place-card__clear {
