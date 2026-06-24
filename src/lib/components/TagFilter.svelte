@@ -66,13 +66,21 @@
 		};
 	});
 
-	// With no query, offer the curated tags; once searching, the server results.
-	const options = $derived(query.trim() === '' ? defaultTags : results);
-	const capped = $derived(query.trim() !== '' && results.length >= MAX_RESULTS);
-
 	// Membership lookups for the option rows and selected chips.
 	const includedIds = $derived(new Set(included.map((tag) => tag.id)));
 	const excludedIds = $derived(new Set(excluded.map((tag) => tag.id)));
+
+	// With no query the curated tags are offered; once searching, the server
+	// results. Either way, tags already in the include/exclude lists are dropped:
+	// they show as chips above the input, so re-listing them here is redundant.
+	const matches = $derived(query.trim() === '' ? defaultTags : results);
+	const options = $derived(
+		matches.filter((tag) => !includedIds.has(tag.id) && !excludedIds.has(tag.id))
+	);
+	// The list is also empty when every match is already selected — kept distinct
+	// from "nothing matched" so the hint can say so rather than mislead.
+	const allMatchesSelected = $derived(matches.length > 0 && options.length === 0);
+	const capped = $derived(query.trim() !== '' && results.length >= MAX_RESULTS);
 
 	// Each option row carries its tag type as a label to the right of the tag,
 	// rather than splitting the list into "Dietary" / "Type" / "Ingredients"
@@ -261,7 +269,13 @@
 				<p class="combo__hint">Searching…</p>
 			{:else if options.length === 0}
 				<p class="combo__hint">
-					{query.trim() === '' ? 'Type to search tags.' : 'No tags match your search.'}
+					{#if allMatchesSelected}
+						Every matching tag is already in your filters.
+					{:else if query.trim() === ''}
+						Type to search tags.
+					{:else}
+						No tags match your search.
+					{/if}
 				</p>
 			{:else}
 				<ul class="combo__options">
