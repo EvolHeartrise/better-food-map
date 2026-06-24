@@ -3,16 +3,11 @@
 	import { pushState, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import { MediaQuery, SvelteSet } from 'svelte/reactivity';
-	import {
-		getLocations,
-		getLocationData,
-		getTags,
-		getBrands,
-		getUserLocation
-	} from '$lib/data.remote';
+	import { getLocations, getLocationData, getBrands, getUserLocation } from '$lib/data.remote';
 	import LocationMap from '$lib/components/LocationMap.svelte';
+	import TagFilter from '$lib/components/TagFilter.svelte';
 	import { categoryLabel, type Category } from '$lib/category';
-	import type { MapData, MapLocation, Item, Bounds } from '$lib/server/db';
+	import type { MapData, MapLocation, Item, Bounds, Tag } from '$lib/server/db';
 
 	// The visible map area, reported by <LocationMap> (debounced) as the user pans
 	// and zooms, plus once on load. This is the ONLY thing that decides which data
@@ -75,7 +70,6 @@
 	}
 
 	const locations = $derived(mapData.locations.map((loc) => resolveLocation(loc, mapData.menus)));
-	const allTags = $derived(await getTags());
 
 	// Chain/brand records, used only to label deduped result groups with the brand
 	// name ("KFC") rather than a single branch's `name`. Keyed by id for lookup.
@@ -93,13 +87,15 @@
 	type LocationData = MapLocation & { menu: Item[] };
 	type MenuItem = LocationData['menu'][number];
 
-	// Three independent inputs. `place` filters venues by name; `item`, `ingredient`
-	// and the `selected` tags filter menu items. They combine with AND, and narrow
-	// within the locations currently visible on the map.
+	// Independent inputs. `place` filters venues by name; `item` and the tag
+	// include/exclude lists filter menu items. They combine with AND, and narrow
+	// within the locations currently visible on the map. Tags (dietary, course and
+	// ingredient) are picked through <TagFilter>: an item must carry every
+	// `included` tag and none of the `excluded` ones.
 	let place = $state('');
 	let item = $state('');
-	let ingredient = $state('');
-	let selected = $state<string[]>([]);
+	let included = $state<Tag[]>([]);
+	let excluded = $state<Tag[]>([]);
 
 	// On narrow (mobile) screens the search panel collapses to a header bar so the
 	// map isn't squeezed between it and the results sheet. Open by default so the
@@ -113,25 +109,22 @@
 	// The item-level filters, normalised once. `hasItemFilter` is true when any of
 	// them is active; with none active they don't narrow a venue's menu at all.
 	// Shared by both the results list and the selected-location menu so the two
-	// always agree on what "matches".
+	// always agree on what "matches". The tag lists are reduced to id sets for the
+	// membership tests below.
 	const itemTerm = $derived(item.trim().toLowerCase());
-	const ingredientTerm = $derived(ingredient.trim().toLowerCase());
-	const hasItemFilter = $derived(itemTerm !== '' || ingredientTerm !== '' || selected.length > 0);
+	const includedIds = $derived(new Set(included.map((tag) => tag.id)));
+	const excludedIds = $derived(new Set(excluded.map((tag) => tag.id)));
+	const hasItemFilter = $derived(itemTerm !== '' || includedIds.size > 0 || excludedIds.size > 0);
 
 	function itemMatches(menuItem: MenuItem): boolean {
 		if (itemTerm !== '' && !menuItem.item_name.toLowerCase().includes(itemTerm)) return false;
-		// Ingredients are now `ingredient`-typed tags; match the term as a substring of
-		// any ingredient tag name (names are stored lower-cased, like `ingredientTerm`).
-		if (
-			ingredientTerm !== '' &&
-			!menuItem.tags.some(
-				(tag) => tag.tag_type === 'ingredient' && tag.name.includes(ingredientTerm)
-			)
-		)
-			return false;
-		if (selected.length > 0) {
+		// Tag filters: the item must carry every included tag and none of the
+		// excluded ones. Dietary, course and ingredient tags all live in the same
+		// `tags` list, so one id-set test covers all three.
+		if (includedIds.size > 0 || excludedIds.size > 0) {
 			const ids = new Set<string>(menuItem.tags.map((tag) => tag.id));
-			if (!selected.every((id) => ids.has(id))) return false;
+			for (const id of includedIds) if (!ids.has(id)) return false;
+			for (const id of excludedIds) if (ids.has(id)) return false;
 		}
 		return true;
 	}
@@ -340,12 +333,8 @@
 	}
 
 	const hasQuery = $derived(
-		place.trim() !== '' || item.trim() !== '' || ingredient.trim() !== '' || selected.length > 0
+		place.trim() !== '' || item.trim() !== '' || included.length > 0 || excluded.length > 0
 	);
-
-	function toggle(id: string): void {
-		selected = selected.includes(id) ? selected.filter((value) => value !== id) : [...selected, id];
-	}
 
 	function formatPrice(price: number | null): string {
 		return price === null ? '—' : currency.format(price);
@@ -558,38 +547,11 @@
 			</div>
 
 			<div class="field">
-				<label class="field__label" for="q-ingredient">Ingredient</label>
-				<input
-					id="q-ingredient"
-					class="field__input"
-					type="search"
-					placeholder="Ingredient…"
-					bind:value={ingredient}
-				/>
-			</div>
-
-			<div class="field">
-				<div class="field__head">
-					<span class="field__label" id="q-dietary">Dietary</span>
-					{#if selected.length > 0}
-						<button type="button" class="field__clear" onclick={() => (selected = [])}>
-							Clear
-						</button>
-					{/if}
-				</div>
-				<div class="chips" role="group" aria-labelledby="q-dietary">
-					{#each allTags as tag (tag.id)}
-						<button
-							type="button"
-							class="chip"
-							class:chip--active={selected.includes(tag.id)}
-							aria-pressed={selected.includes(tag.id)}
-							onclick={() => toggle(tag.id)}
-						>
-							{tag.name}
-						</button>
-					{/each}
-				</div>
+				<span class="field__label" id="q-tags-label">Tags</span>
+				<!-- Searchable include/exclude picker over the whole tag vocabulary
+				     (dietary, course and ingredient tags). Replaces the old free-text
+				     ingredient box and the fixed dietary chip row. -->
+				<TagFilter bind:included bind:excluded />
 			</div>
 		</div>
 	</aside>
@@ -987,13 +949,6 @@
 		gap: 0.25rem;
 	}
 
-	.field__head {
-		display: flex;
-		align-items: baseline;
-		justify-content: space-between;
-		gap: 1rem;
-	}
-
 	.field__label {
 		font-size: 0.7rem;
 		font-weight: 700;
@@ -1076,55 +1031,6 @@
 	.place-card__clear:hover {
 		color: #fff;
 		background: var(--color-accent);
-	}
-
-	.field__clear {
-		background: none;
-		border: none;
-		color: var(--color-accent);
-		font-size: 0.8rem;
-		font-weight: 600;
-		padding: 0;
-	}
-
-	.field__clear:hover {
-		text-decoration: underline;
-	}
-
-	.chips {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.4rem;
-	}
-
-	.chip {
-		font-size: 0.8rem;
-		font-weight: 600;
-		color: var(--color-text-muted);
-		background-color: rgba(255, 255, 255, 0.75);
-		border: 1px solid var(--color-border);
-		border-radius: 999px;
-		padding: 0.25rem 0.7rem;
-		transition:
-			background-color 0.12s,
-			color 0.12s,
-			border-color 0.12s;
-	}
-
-	.chip:hover {
-		border-color: var(--color-accent);
-		color: var(--color-accent);
-	}
-
-	.chip--active {
-		color: #fff;
-		background-color: var(--color-accent);
-		border-color: var(--color-accent);
-	}
-
-	.chip--active:hover {
-		color: #fff;
-		background-color: var(--color-accent-hover);
 	}
 
 	/* Fills remaining panel height; only the list inside it scrolls, so the
@@ -1641,16 +1547,6 @@
 		.field__input {
 			font-size: 1rem;
 			padding: 0.55rem 0.7rem;
-		}
-
-		/* Roomier tap targets on touch screens. */
-		.chip {
-			padding: 0.4rem 0.85rem;
-			font-size: 0.85rem;
-		}
-
-		.field__clear {
-			padding: 0.25rem 0.15rem;
 		}
 
 		.place-card__clear {

@@ -4,6 +4,7 @@ import {
 	getMapData,
 	getLocationMapData,
 	getAllTags,
+	searchTagVocabulary,
 	getBrands as getBrandsFromDb,
 	type D1Like,
 	type Tag,
@@ -75,11 +76,24 @@ export const getBrands = query(async (): Promise<Brand[]> => {
 });
 
 /**
- * Returns the canonical, app-defined dietary tag list. Used to render the
- * filter controls. Tags are not user-authored, so this needs no database read.
+ * Returns the canonical, app-defined dietary/course tag list (the 8 curated
+ * tags). Used as the tag filter's default options — what the picker shows before
+ * the user types. Tags are not user-authored, so this needs no database read.
  */
 export const getTags = query(async (): Promise<Tag[]> => {
 	return getAllTags();
+});
+
+/**
+ * Searches the full tag vocabulary (curated dietary/course tags AND the
+ * ingredient tags created from item data) by name substring, ranked and capped
+ * (see {@link searchTagVocabulary}). Backs the tag filter's searchable picker:
+ * the ingredient vocabulary is thousands of rows, so it is searched on the
+ * server per keystroke rather than shipped to the client. An empty query yields
+ * the curated tags.
+ */
+export const searchTags = query(v.string(), async (q): Promise<Tag[]> => {
+	return searchTagVocabulary(db(), q);
 });
 
 /**
