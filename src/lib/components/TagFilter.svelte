@@ -81,7 +81,7 @@
 	const TYPE_LABEL: Record<Tag['tag_type'], string> = {
 		dietary: 'Dietary',
 		course: 'Type',
-		ingredient: 'Ingredients'
+		ingredient: 'Ingredient'
 	};
 
 	function withoutTag(list: Tag[], id: string): Tag[] {
