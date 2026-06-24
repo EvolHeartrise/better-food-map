@@ -74,27 +74,15 @@
 	const includedIds = $derived(new Set(included.map((tag) => tag.id)));
 	const excludedIds = $derived(new Set(excluded.map((tag) => tag.id)));
 
-	// Group the option list by tag type so the picker reads as a command list
-	// with section headings (Dietary / Type / Ingredients), in that order.
+	// Each option row carries its tag type as a label to the right of the tag,
+	// rather than splitting the list into "Dietary" / "Type" / "Ingredients"
+	// sections. The list stays flat in `options`' natural order — the curated
+	// order for the default list, the server's relevance ranking while searching.
 	const TYPE_LABEL: Record<Tag['tag_type'], string> = {
 		dietary: 'Dietary',
 		course: 'Type',
 		ingredient: 'Ingredients'
 	};
-	const TYPE_ORDER: Tag['tag_type'][] = ['dietary', 'course', 'ingredient'];
-	const groups = $derived.by(() => {
-		// Plain scratch object (not a Map) so the no-mutable-Map lint rule stays
-		// happy — it's transient, rebuilt each time, never reactive state.
-		const byType: Record<string, Tag[]> = {};
-		for (const tag of options) {
-			(byType[tag.tag_type] ??= []).push(tag);
-		}
-		return TYPE_ORDER.filter((type) => byType[type]?.length).map((type) => ({
-			type,
-			label: TYPE_LABEL[type],
-			items: byType[type] ?? []
-		}));
-	});
 
 	function withoutTag(list: Tag[], id: string): Tag[] {
 		return list.filter((tag) => tag.id !== id);
@@ -276,38 +264,36 @@
 					{query.trim() === '' ? 'Type to search tags.' : 'No tags match your search.'}
 				</p>
 			{:else}
-				{#each groups as group (group.type)}
-					<p class="combo__group">{group.label}</p>
-					<ul class="combo__options">
-						{#each group.items as tag (tag.id)}
-							{@const isIncluded = includedIds.has(tag.id)}
-							{@const isExcluded = excludedIds.has(tag.id)}
-							<li class="opt" class:opt--included={isIncluded} class:opt--excluded={isExcluded}>
-								<button
-									type="button"
-									class="opt__main"
-									aria-pressed={isIncluded}
-									onclick={() => toggleInclude(tag)}
-								>
-									<span class="opt__state" aria-hidden="true">
-										{#if isIncluded}✓{:else if isExcluded}✕{/if}
-									</span>
-									<FoodTag {tag} />
-								</button>
-								<button
-									type="button"
-									class="opt__exclude"
-									aria-pressed={isExcluded}
-									aria-label={`Exclude ${tagDisplayName(tag.name)}`}
-									title={isExcluded ? 'Excluded — click to clear' : 'Exclude'}
-									onclick={() => toggleExclude(tag)}
-								>
-									⊘
-								</button>
-							</li>
-						{/each}
-					</ul>
-				{/each}
+				<ul class="combo__options">
+					{#each options as tag (tag.id)}
+						{@const isIncluded = includedIds.has(tag.id)}
+						{@const isExcluded = excludedIds.has(tag.id)}
+						<li class="opt" class:opt--included={isIncluded} class:opt--excluded={isExcluded}>
+							<button
+								type="button"
+								class="opt__main"
+								aria-pressed={isIncluded}
+								onclick={() => toggleInclude(tag)}
+							>
+								<span class="opt__state" aria-hidden="true">
+									{#if isIncluded}✓{:else if isExcluded}✕{/if}
+								</span>
+								<FoodTag {tag} />
+								<span class="opt__type">{TYPE_LABEL[tag.tag_type]}</span>
+							</button>
+							<button
+								type="button"
+								class="opt__exclude"
+								aria-pressed={isExcluded}
+								aria-label={`Exclude ${tagDisplayName(tag.name)}`}
+								title={isExcluded ? 'Excluded — click to clear' : 'Exclude'}
+								onclick={() => toggleExclude(tag)}
+							>
+								⊘
+							</button>
+						</li>
+					{/each}
+				</ul>
 				{#if capped}
 					<p class="combo__hint">Showing the first {MAX_RESULTS} — keep typing to narrow.</p>
 				{/if}
@@ -450,17 +436,18 @@
 		box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
 	}
 
-	.combo__group {
-		margin: 0.35rem 0 0.1rem;
+	/* The tag's type, shown to the right of the FoodTag in place of the old
+	   per-type section separators. `margin-left: auto` pushes it to the row's
+	   trailing edge; it never shrinks, so the label stays readable. */
+	.opt__type {
+		margin-left: auto;
+		flex-shrink: 0;
+		padding-left: 0.5rem;
 		font-size: 0.65rem;
 		font-weight: 700;
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
 		color: var(--color-text-muted);
-	}
-
-	.combo__group:first-child {
-		margin-top: 0;
 	}
 
 	.combo__options {
