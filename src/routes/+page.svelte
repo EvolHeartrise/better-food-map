@@ -471,7 +471,7 @@
 </script>
 
 <svelte:head>
-	<title>Better Food Map</title>
+	<title>BetterFoodMaps</title>
 	<meta
 		name="description"
 		content="Explore cafes, fast food and restaurants around the world on an interactive map."
