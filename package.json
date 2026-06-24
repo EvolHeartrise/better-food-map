@@ -24,6 +24,7 @@
 		"d1:migrate:local": "wrangler d1 migrations apply better-food-map --local"
 	},
 	"dependencies": {
+		"@lucide/svelte": "^1.21.0",
 		"@modelcontextprotocol/sdk": "^1.29.0",
 		"@valibot/to-json-schema": "^1.7.1",
 		"maplibre-gl": "^5.24.0",
