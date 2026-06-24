@@ -16,7 +16,7 @@ test('insertLocations writes a batch with sources and chain links', async () => 
 			category: 'cafe',
 			latitude: 49.28,
 			longitude: -123.12,
-			address: null,
+			address: '1 Test St',
 			phone: null,
 			website: null
 		},
@@ -60,7 +60,7 @@ test('insertLocations honours explicit ids and returns them in order', async () 
 			category: null,
 			latitude: 1,
 			longitude: 1,
-			address: null,
+			address: '1 Test St',
 			phone: null,
 			website: null
 		},
@@ -70,7 +70,7 @@ test('insertLocations honours explicit ids and returns them in order', async () 
 			category: null,
 			latitude: 2,
 			longitude: 2,
-			address: null,
+			address: '1 Test St',
 			phone: null,
 			website: null
 		}
@@ -87,7 +87,7 @@ test('insertLocations is all-or-nothing: a duplicate id rolls back the whole bat
 			category: null,
 			latitude: 1,
 			longitude: 1,
-			address: null,
+			address: '1 Test St',
 			phone: null,
 			website: null
 		}
@@ -102,7 +102,7 @@ test('insertLocations is all-or-nothing: a duplicate id rolls back the whole bat
 				category: null,
 				latitude: 3,
 				longitude: 3,
-				address: null,
+				address: '1 Test St',
 				phone: null,
 				website: null
 			},
@@ -112,7 +112,7 @@ test('insertLocations is all-or-nothing: a duplicate id rolls back the whole bat
 				category: null,
 				latitude: 4,
 				longitude: 4,
-				address: null,
+				address: '1 Test St',
 				phone: null,
 				website: null
 			}
@@ -123,4 +123,46 @@ test('insertLocations is all-or-nothing: a duplicate id rolls back the whole bat
 	expect(threw).toBe(true);
 	// The valid first item of the failed batch must NOT have been written.
 	expect(await getLocationById(db, 'fresh')).toBeNull();
+});
+
+test('a null or blank address is rejected by the DB constraint (migration 0005)', async () => {
+	const db = freshDb();
+	for (const bad of [null, '', '   '] as const) {
+		let threw = false;
+		try {
+			await insertLocations(db, [
+				{
+					name: 'No Address',
+					category: null,
+					latitude: 1,
+					longitude: 1,
+					address: bad,
+					phone: null,
+					website: null
+				}
+			]);
+		} catch {
+			threw = true;
+		}
+		expect(threw).toBe(true);
+	}
+	// A trailing-field update that blanks the address is rejected too.
+	const [id] = await insertLocations(db, [
+		{
+			name: 'Has Address',
+			category: null,
+			latitude: 1,
+			longitude: 1,
+			address: '5 Real Rd',
+			phone: null,
+			website: null
+		}
+	]);
+	let updateThrew = false;
+	try {
+		await db.prepare('UPDATE locations SET address = ? WHERE id = ?').bind('', id).run();
+	} catch {
+		updateThrew = true;
+	}
+	expect(updateThrew).toBe(true);
 });

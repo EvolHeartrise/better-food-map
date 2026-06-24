@@ -18,6 +18,7 @@
 		"db:mcp": "bun run scripts/db-mcp-server.ts",
 		"db:pull": "bun run scripts/db-pull.ts",
 		"osm:extract": "bun run scripts/osm-extract.ts",
+		"overture:enrich": "bun run scripts/overture-enrich.ts",
 		"test": "bun test scripts",
 		"d1:migrate": "wrangler d1 migrations apply better-food-map --remote",
 		"d1:migrate:local": "wrangler d1 migrations apply better-food-map --local"

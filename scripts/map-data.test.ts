@@ -50,7 +50,7 @@ test('getMapData sends each menu once, with per-branch overrides and a private m
 			category: 'fast_food',
 			latitude: 43.6,
 			longitude: -79.4,
-			address: null,
+			address: '1 Test St',
 			phone: null,
 			website: null,
 			brand_id: brandId,
@@ -61,7 +61,7 @@ test('getMapData sends each menu once, with per-branch overrides and a private m
 			category: 'fast_food',
 			latitude: 43.7,
 			longitude: -79.3,
-			address: null,
+			address: '1 Test St',
 			phone: null,
 			website: null,
 			brand_id: brandId,
@@ -74,7 +74,7 @@ test('getMapData sends each menu once, with per-branch overrides and a private m
 			category: 'cafe',
 			latitude: 49.2,
 			longitude: -123.1,
-			address: null,
+			address: '1 Test St',
 			phone: null,
 			website: null
 		}
