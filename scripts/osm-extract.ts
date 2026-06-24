@@ -7,8 +7,16 @@
 // Pipeline:
 //   1. osmium tags-filter  — keep only food POIs (FOOD_AMENITIES / FOOD_SHOPS)
 //   2. osmium export       — emit one GeoJSON feature per line (geojsonseq)
-//   3. load                — map each feature to a row and REPLACE the region in
-//                            the staging DB (default data/osm-poi.sqlite, gitignored)
+//   3. osmium tags-filter  — keep addressed building footprints (wr/addr:housenumber)
+//   4. osmium export       — emit those as geojsonseq too
+//   5. load                — map each food feature to a row, fill any missing
+//                            address from the building that CONTAINS it (point-in-
+//                            polygon, see osm/enrich-address.ts), and REPLACE the
+//                            region in the staging DB (default data/osm-poi.sqlite)
+//
+// Steps 3–4 (and the enrichment) are skipped with --no-enrich. About half of OSM
+// food POIs carry no addr:* of their own; enrichment recovers the civic address of
+// those sitting inside an addressed building — verbatim OSM data, never geocoded.
 //
 // Requires the `osmium` CLI (osmium-tool). Download region extracts from
 // https://download.geofabrik.de/ (e.g. north-america/canada-latest.osm.pbf).
@@ -20,6 +28,7 @@ import { mkdir, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { FOOD_AMENITIES, FOOD_SHOPS, type PoiRow } from './osm/map-feature';
 import { parseFeatureLine } from './osm/load-geojson';
+import { AddressEnricher, parseAddressedBuilding } from './osm/enrich-address';
 import { OsmPoiStore } from './osm/poi-store';
 
 interface Args {
@@ -27,10 +36,11 @@ interface Args {
 	input: string;
 	db: string;
 	keepTemp: boolean;
+	enrich: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
-	const args: Partial<Args> = { db: 'data/osm-poi.sqlite', keepTemp: false };
+	const args: Partial<Args> = { db: 'data/osm-poi.sqlite', keepTemp: false, enrich: true };
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i];
 		switch (a) {
@@ -45,6 +55,9 @@ function parseArgs(argv: string[]): Args {
 				break;
 			case '--keep-temp':
 				args.keepTemp = true;
+				break;
+			case '--no-enrich':
+				args.enrich = false;
 				break;
 			case '--help':
 			case '-h':
@@ -64,12 +77,13 @@ function parseArgs(argv: string[]): Args {
 
 function printUsageAndExit(code: number): never {
 	console.error(
-		'Usage: bun run osm:extract --region <name> --input <file.osm.pbf> [--db <path>] [--keep-temp]\n' +
+		'Usage: bun run osm:extract --region <name> --input <file.osm.pbf> [--db <path>] [--keep-temp] [--no-enrich]\n' +
 			'\n' +
 			'  --region     Label stored on each row (e.g. "canada"); re-running replaces it.\n' +
 			'  --input      Geofabrik .osm.pbf extract (https://download.geofabrik.de/).\n' +
 			'  --db         Staging SQLite path (default: data/osm-poi.sqlite).\n' +
-			'  --keep-temp  Keep the intermediate filtered .pbf / .geojsonl files.\n'
+			'  --keep-temp  Keep the intermediate filtered .pbf / .geojsonl files.\n' +
+			'  --no-enrich  Skip filling missing addresses from containing OSM buildings.\n'
 	);
 	process.exit(code);
 }
@@ -122,11 +136,17 @@ async function main(): Promise<void> {
 	await mkdir(dirname(args.db) || '.', { recursive: true });
 	const filteredPbf = join(tmpDir, `${args.region}.food.osm.pbf`);
 	const geojsonl = join(tmpDir, `${args.region}.food.geojsonl`);
+	const addressedPbf = join(tmpDir, `${args.region}.addressed.osm.pbf`);
+	const addressedGeojsonl = join(tmpDir, `${args.region}.addressed.geojsonl`);
+
+	const totalSteps = args.enrich ? 5 : 3;
+	let step = 0;
+	const phase = (msg: string): void => console.error(`[${++step}/${totalSteps}] ${msg}`);
 
 	// 1. Filter to food POIs only (nodes, ways and relations).
 	const amenityFilter = `nwr/amenity=${FOOD_AMENITIES.join(',')}`;
 	const shopFilter = `nwr/shop=${FOOD_SHOPS.join(',')}`;
-	console.error(`[1/3] Filtering food POIs from ${args.input} ...`);
+	phase(`Filtering food POIs from ${args.input} ...`);
 	await run([
 		'osmium',
 		'tags-filter',
@@ -139,7 +159,7 @@ async function main(): Promise<void> {
 	]);
 
 	// 2. Export to one GeoJSON feature per line, with type-prefixed ids.
-	console.error('[2/3] Exporting to GeoJSON ...');
+	phase('Exporting food POIs to GeoJSON ...');
 	await run([
 		'osmium',
 		'export',
@@ -153,26 +173,61 @@ async function main(): Promise<void> {
 		'--overwrite'
 	]);
 
-	// 3. Load into the staging store, replacing this region's rows.
-	console.error(`[3/3] Loading into ${args.db} (region "${args.region}") ...`);
+	// 3 & 4. Filter + export addressed building footprints (used to fill missing
+	//        venue addresses by containment). Skipped under --no-enrich.
+	if (args.enrich) {
+		phase('Filtering addressed buildings ...');
+		await run([
+			'osmium',
+			'tags-filter',
+			args.input,
+			'wr/addr:housenumber',
+			'-o',
+			addressedPbf,
+			'--overwrite'
+		]);
+		phase('Exporting addressed buildings to GeoJSON ...');
+		await run([
+			'osmium',
+			'export',
+			addressedPbf,
+			'-f',
+			'geojsonseq',
+			'-u',
+			'type_id',
+			'-o',
+			addressedGeojsonl,
+			'--overwrite'
+		]);
+	}
+
+	// 5. Load: parse every food feature into rows, fill missing addresses from the
+	//    building that contains each, then replace this region's rows in the store.
+	phase(`Loading into ${args.db} (region "${args.region}") ...`);
+	const rows: PoiRow[] = [];
+	let skipped = 0;
+	for await (const line of readLines(geojsonl)) {
+		const row = parseFeatureLine(line);
+		if (row) rows.push(row);
+		else if (line.trim()) skipped++;
+	}
+
+	let enriched = 0;
+	if (args.enrich) {
+		const enricher = new AddressEnricher(rows);
+		for await (const line of readLines(addressedGeojsonl)) {
+			const building = parseAddressedBuilding(line);
+			if (building) enricher.apply(building);
+		}
+		enriched = enricher.finalize();
+	}
+
 	const store = OsmPoiStore.open(args.db);
 	store.deleteRegion(args.region);
 	let inserted = 0;
-	let skipped = 0;
-	let batch: PoiRow[] = [];
-	for await (const line of readLines(geojsonl)) {
-		const row = parseFeatureLine(line);
-		if (row) {
-			batch.push(row);
-			if (batch.length >= BATCH_SIZE) {
-				inserted += store.insertMany(args.region, batch);
-				batch = [];
-			}
-		} else if (line.trim()) {
-			skipped++;
-		}
+	for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+		inserted += store.insertMany(args.region, rows.slice(i, i + BATCH_SIZE));
 	}
-	if (batch.length) inserted += store.insertMany(args.region, batch);
 
 	const total = store.count();
 	store.close();
@@ -181,8 +236,9 @@ async function main(): Promise<void> {
 
 	console.error(
 		`\nDone. Loaded ${inserted} food POIs for "${args.region}" ` +
-			`(${skipped} features skipped). Store now holds ${total} POIs across ` +
-			`regions. DB: ${args.db}`
+			`(${skipped} features skipped` +
+			(args.enrich ? `, ${enriched} addresses enriched from buildings` : '') +
+			`). Store now holds ${total} POIs across regions. DB: ${args.db}`
 	);
 }
 

@@ -59,6 +59,7 @@ import {
 import { createHttpD1 } from '../src/lib/server/d1-http';
 import { searchPoi } from './osm/search-poi';
 import { findCoordinateDrift } from './osm/find-coordinate-drift';
+import { findMissingAddress } from './osm/find-missing-address';
 import { OsmPoiStore } from './osm/poi-store';
 import { haversineMeters } from './osm/geo';
 
@@ -133,6 +134,20 @@ const SERVER_INSTRUCTIONS =
 const latitudeSchema = v.pipe(v.number(), v.minValue(-90), v.maxValue(90));
 const longitudeSchema = v.pipe(v.number(), v.minValue(-180), v.maxValue(180));
 const priceSchema = v.pipe(v.number(), v.minValue(0));
+
+// A street address is REQUIRED on every location (enforced at the DB level too —
+// see migration 0005). It must be a real street address, not a bare number or
+// postcode: trimmed, non-empty, and containing at least one letter (any script).
+// Take it verbatim from the venue's OSM/Overture data — never geocode or invent one.
+const addressSchema = v.pipe(
+	v.string(),
+	v.trim(),
+	v.minLength(1, 'address is required and must be non-empty'),
+	v.check(
+		(s) => /\p{L}/u.test(s),
+		'address must be a street address (contain a street name), not just a number or postcode'
+	)
+);
 
 // A single citation: a URL the data came from, plus an optional human label.
 const sourceSchema = v.object({
@@ -219,7 +234,13 @@ const createLocationArgs = v.object({
 	),
 	latitude: v.pipe(latitudeSchema, v.description('Latitude in decimal degrees.')),
 	longitude: v.pipe(longitudeSchema, v.description('Longitude in decimal degrees.')),
-	address: v.optional(v.nullable(v.string())),
+	address: v.pipe(
+		addressSchema,
+		v.description(
+			"Street address (REQUIRED). Use the venue's OSM/Overture address verbatim — e.g. the " +
+				'`address` of its search_poi candidate; never geocode, hand-write, or invent one.'
+		)
+	),
 	phone: v.optional(v.nullable(v.string())),
 	website: v.optional(v.nullable(v.string())),
 	brand_id: v.optional(
@@ -273,7 +294,12 @@ const updateLocationArgs = v.object({
 	category: v.optional(v.nullable(categorySchema)),
 	latitude: v.optional(latitudeSchema),
 	longitude: v.optional(longitudeSchema),
-	address: v.optional(v.nullable(v.string())),
+	address: v.optional(
+		v.pipe(
+			addressSchema,
+			v.description('Replace the street address. Must stay a real address; cannot be blanked.')
+		)
+	),
 	phone: v.optional(v.nullable(v.string())),
 	website: v.optional(v.nullable(v.string())),
 	brand_id: v.optional(
@@ -448,6 +474,48 @@ const findDriftArgs = v.object({
 		v.pipe(
 			v.boolean(),
 			v.description('Also report locations with no name-matching OSM POI nearby (default true).')
+		)
+	)
+});
+
+const findMissingAddressArgs = v.object({
+	limit: v.optional(
+		v.pipe(
+			v.number(),
+			v.integer(),
+			v.minValue(1),
+			v.maxValue(200),
+			v.description('Maximum flagged locations to return (default 50, max 200).')
+		)
+	),
+	search_radius_m: v.optional(
+		v.pipe(
+			v.number(),
+			v.minValue(0),
+			v.maxValue(50000),
+			v.description(
+				'How far to look for a name-matching OSM POI to take the address from (default 250). ' +
+					'A location is OSM-sourced, so its source POI sits ~0 m away; widen to hunt relocated ' +
+					'matches, but then check distance_m — a far match may be a different branch.'
+			)
+		)
+	),
+	include_incomplete: v.optional(
+		v.pipe(
+			v.boolean(),
+			v.description(
+				'Also flag locations whose stored address is a streetless fragment — a bare house number ' +
+					'or postcode with no letter (e.g. "31", "90210") — not just empty ones (default true).'
+			)
+		)
+	),
+	include_unfixable: v.optional(
+		v.pipe(
+			v.boolean(),
+			v.description(
+				'Include locations OSM cannot fix (osm_has_no_address, no_osm_match) in the list; they are ' +
+					'always counted regardless. Set false for just the actionable, OSM-fixable work list (default true).'
+			)
 		)
 	)
 });
@@ -732,7 +800,9 @@ const tools = [
 		name: 'create_locations',
 		description:
 			'Create one or more locations in a single atomic batch (all-or-nothing) — the only way to add ' +
-			'locations; pass a one-item `items` array to add a single place. For a chain branch, set ' +
+			'locations; pass a one-item `items` array to add a single place. Every location REQUIRES a ' +
+			"street address — pass the candidate's OSM/Overture `address` verbatim (never geocode or invent " +
+			'one); the call is rejected if any address is missing or is just a number/postcode. For a chain branch, set ' +
 			'`menu_id` (and `brand_id`) on the item so it serves that shared menu; for an independent venue ' +
 			'omit them and add its menu with create_foods. Cite each source (encouraged), e.g. the osm_url ' +
 			'from search_poi. Ideal for bulk imports like backfilling a chain across a region. Use each ' +
@@ -1091,6 +1161,30 @@ const osmTools = [
 				search_radius_m: input.search_radius_m,
 				include_unmatched: input.include_unmatched
 			})
+	}),
+	defineTool({
+		name: 'find_missing_address',
+		description:
+			'Audit existing locations for a MISSING address and, where possible, surface the address from ' +
+			'their OpenStreetMap POI so it can be backfilled. Addresses should be present and OSM-sourced, ' +
+			'like coordinates (see create_locations), so a location sits ~0 m from the OSM POI its address ' +
+			'should come from. Flags any location whose stored address is empty (`reason: "missing"`) or — ' +
+			'unless include_incomplete=false — a streetless fragment like a bare house number/postcode ' +
+			'(`reason: "incomplete"`). Each entry is classified by what can be done: `osm_fix_available` ' +
+			'(a name-matching OSM POI nearby HAS an address — pass its `osm_address` VERBATIM to ' +
+			'update_location and cite `osm_url`), `osm_has_no_address` (matched a POI, but it too lacks one ' +
+			'— needs another source), or `no_osm_match` (no name-matching POI within search_radius_m). ' +
+			'Results are actionable-first; set include_unfixable=false for just the OSM-fixable work list. ' +
+			'`limit` caps how many are returned, `additional` is how many more were flagged beyond it, and ' +
+			'`counts` breaks them down by classification and reason.',
+		schema: findMissingAddressArgs,
+		handler: async (input) =>
+			findMissingAddress(getOsmStore(), getDb(), {
+				limit: input.limit,
+				search_radius_m: input.search_radius_m,
+				include_incomplete: input.include_incomplete,
+				include_unfixable: input.include_unfixable
+			})
 	})
 ] as const;
 
@@ -1100,7 +1194,11 @@ const toolsByName = new Map(allTools.map((t) => [t.name, t] as const));
 
 /** valibot → JSON Schema for the MCP `inputSchema` field. */
 function inputSchemaFor(schema: AnySchema): Tool['inputSchema'] {
-	const json = toJsonSchema(schema) as Record<string, unknown>;
+	// errorMode 'ignore': skip actions that have no JSON Schema representation
+	// (e.g. `trim`, custom `check`) rather than throwing — they are still applied
+	// by v.parse at call time, so validation is unaffected; only the advertised
+	// hint omits what JSON Schema can't express.
+	const json = toJsonSchema(schema, { errorMode: 'ignore' }) as Record<string, unknown>;
 	delete json.$schema;
 	return json as Tool['inputSchema'];
 }

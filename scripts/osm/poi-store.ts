@@ -31,6 +31,13 @@ export interface StoredPoi {
 	phone: string | null;
 	website: string | null;
 	opening_hours: string | null;
+	/**
+	 * Where `address` came from when it was filled by enrichment rather than the
+	 * POI's own OSM tags: null = the POI's own OSM addr:* (or an OSM building it
+	 * sits in); a non-null label (e.g. "overture:<id> (2026-06-17.0)") = an
+	 * external feed, to be cited as a distinct source when backfilling.
+	 */
+	address_source: string | null;
 	diet_markers: string[];
 	region: string;
 }
@@ -63,6 +70,7 @@ CREATE TABLE IF NOT EXISTS osm_poi (
 	opening_hours TEXT,
 	diet_markers TEXT NOT NULL DEFAULT '[]',
 	tags_json TEXT NOT NULL DEFAULT '{}',
+	address_source TEXT,
 	region TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_osm_poi_lat ON osm_poi (latitude);
@@ -85,6 +93,17 @@ export class OsmPoiStore {
 		const db = new Database(path, { create: true });
 		db.exec('PRAGMA journal_mode = WAL;');
 		db.run(SCHEMA);
+		// Additive migrations for stores created before a column existed: the
+		// CREATE TABLE IF NOT EXISTS above won't add columns to an existing table.
+		// `ALTER TABLE ADD COLUMN` throws "duplicate column name" once applied, which
+		// we ignore — making this idempotent across re-opens.
+		for (const ddl of ['ALTER TABLE osm_poi ADD COLUMN address_source TEXT']) {
+			try {
+				db.run(ddl);
+			} catch {
+				// column already present
+			}
+		}
 		return new OsmPoiStore(db);
 	}
 
@@ -141,6 +160,33 @@ export class OsmPoiStore {
 		return run(rows);
 	}
 
+	/**
+	 * Fills `address` (and records its `address_source`) on existing rows, keyed by
+	 * osm_id, in one transaction. Used by enrichment passes (e.g. overture:enrich)
+	 * that add addresses to POIs lacking their own. Returns rows actually updated.
+	 */
+	updateAddresses(
+		updates: Iterable<{ osm_id: string; address: string; address_source: string | null }>
+	): number {
+		const stmt = this.db.prepare(
+			'UPDATE osm_poi SET address = $address, address_source = $address_source WHERE osm_id = $osm_id'
+		);
+		const run = this.db.transaction(
+			(items: Iterable<{ osm_id: string; address: string; address_source: string | null }>) => {
+				let n = 0;
+				for (const u of items) {
+					n += stmt.run({
+						$address: u.address,
+						$address_source: u.address_source,
+						$osm_id: u.osm_id
+					}).changes;
+				}
+				return n;
+			}
+		);
+		return run(updates);
+	}
+
 	/** Removes every row of a region. Returns the number deleted. */
 	deleteRegion(region: string): number {
 		return this.db.run('DELETE FROM osm_poi WHERE region = ?', [region]).changes;
@@ -152,6 +198,24 @@ export class OsmPoiStore {
 			? this.db.query('SELECT COUNT(*) AS n FROM osm_poi WHERE region = ?').get(region)
 			: this.db.query('SELECT COUNT(*) AS n FROM osm_poi').get();
 		return (row as { n: number }).n;
+	}
+
+	/**
+	 * Every POI lacking a usable address (its `address` is NULL or blank), across
+	 * all regions. Used by enrichment passes (overture:enrich) to find the work set.
+	 */
+	addresslessPois(): {
+		osm_id: string;
+		name: string | null;
+		latitude: number;
+		longitude: number;
+	}[] {
+		return this.db
+			.query(
+				`SELECT osm_id, name, latitude, longitude FROM osm_poi
+				 WHERE address IS NULL OR TRIM(address) = ''`
+			)
+			.all() as { osm_id: string; name: string | null; latitude: number; longitude: number }[];
 	}
 
 	/** Distinct region labels currently loaded. */
@@ -189,7 +253,7 @@ export class OsmPoiStore {
 		const rows = this.db
 			.query(
 				`SELECT osm_id, osm_type, numeric_id, name, osm_class, suggested_category, cuisine,
-					latitude, longitude, address, phone, website, opening_hours, diet_markers, region
+					latitude, longitude, address, phone, website, opening_hours, address_source, diet_markers, region
 				 FROM osm_poi
 				 WHERE ${where.join(' AND ')}
 				 LIMIT ?`
