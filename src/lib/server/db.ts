@@ -390,6 +390,68 @@ export function getAllTags(): Tag[] {
 	return TAGS.map((tag) => ({ ...tag }));
 }
 
+/**
+ * Hard cap on how many tag matches {@link searchTagVocabulary} returns for one
+ * query. The tag filter's picker only needs the top matches, and the ingredient
+ * vocabulary runs to thousands of rows. Mirrored on the client only to label a
+ * capped result set; this module stays the source of truth for the value.
+ */
+export const TAG_SEARCH_LIMIT = 50;
+
+/**
+ * Searches the whole tag vocabulary — the curated dietary/course tags AND the
+ * `ingredient` tags created from item data — by name substring, for the tag
+ * filter's searchable picker. An empty query returns just the curated tags (the
+ * common default the picker shows before the user types). Otherwise matches are
+ * ranked exact → prefix → substring, then curated (dietary, course) before
+ * ingredient, then SHORTEST name first so clean ingredient names ("aioli") sort
+ * above the long free-text phrases some menus produced ("a side of maple syrup
+ * and fresh fruit slices…"), then alphabetical. Capped at {@link TAG_SEARCH_LIMIT}.
+ *
+ * The substring match runs against `tags_fts`, an FTS5 trigram index over tag
+ * names (see migrations/0006), so a `LIKE '%q%'` scan over thousands of
+ * ingredient rows becomes an index lookup. Two constraints follow from the
+ * trigram LIKE optimisation and are load-bearing:
+ *   • No `ESCAPE` clause — it disables the trigram index (forces a full scan).
+ *     Any `%`/`_` the user typed is simply dropped (both are vanishingly rare in
+ *     tag names); if nothing is left, the query is treated as empty.
+ *   • Patterns shorter than 3 characters fall back to a scan of the (small) FTS
+ *     table — still correct, just unindexed.
+ */
+export async function searchTagVocabulary(
+	db: D1Like,
+	rawQuery: string,
+	limit = TAG_SEARCH_LIMIT
+): Promise<Tag[]> {
+	const q = rawQuery.trim().toLowerCase();
+	if (q === '') return getAllTags();
+	const safe = q.replace(/[%_]/g, '');
+	if (safe === '') return getAllTags();
+	// `LIMIT` is a trusted integer constant, so it is interpolated rather than
+	// bound (matching MAP_RESULT_LIMIT above); every user value is bound. The
+	// ranking's LOWER()/LENGTH() expressions run only over the matched rows.
+	const { results } = await db
+		.prepare(
+			`SELECT t.id, t.name, t.tag_type
+			 FROM tags_fts f
+			 JOIN tags t ON t.rowid = f.rowid
+			 WHERE f.name LIKE ?
+			 ORDER BY
+				CASE
+					WHEN LOWER(t.name) = ? THEN 0
+					WHEN LOWER(t.name) LIKE ? THEN 1
+					ELSE 2
+				END,
+				CASE t.tag_type WHEN 'dietary' THEN 0 WHEN 'course' THEN 1 ELSE 2 END,
+				LENGTH(t.name),
+				t.name
+			 LIMIT ${limit}`
+		)
+		.bind(`%${safe}%`, safe, `${safe}%`)
+		.all<Tag>();
+	return results;
+}
+
 export async function getLocationsWithTags(db: D1Like): Promise<LocationWithTags[]> {
 	const [{ results: locations }, { results: tagRows }, { results: sourceRows }] = await Promise.all(
 		[
