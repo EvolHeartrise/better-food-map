@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { getTags, searchTags } from '$lib/data.remote';
 	import type { Tag } from '$lib/server/db';
+	import type { Attachment } from 'svelte/attachments';
 
 	// Two filter lists, surfaced to the parent via `bind:`. `included` tags must
 	// all be present on a menu item for it to match; `excluded` tags must all be
@@ -130,32 +131,85 @@
 
 	let rootEl: HTMLElement;
 	let searchEl = $state<HTMLInputElement>();
+	let panelEl = $state<HTMLElement>();
+
+	// Teleport the floating panel to <body> so its `position: fixed` is resolved
+	// against the viewport — not trapped and clipped by the search panel, whose
+	// backdrop-filter makes it the containing block for fixed descendants. (The
+	// menu-item popup in +page.svelte sidesteps the same trap by rendering at the
+	// page root.) The node is stashed in `panelEl` so the outside-pointerdown check
+	// can recognise clicks landing inside the portaled panel.
+	const portalPanel: Attachment<HTMLElement> = (node) => {
+		panelEl = node;
+		document.body.appendChild(node);
+		return () => {
+			node.remove();
+			panelEl = undefined;
+		};
+	};
+
+	// The result panel floats `fixed`, anchored under the input, so opening it
+	// never expands the search panel or shifts its layout — and so it escapes that
+	// panel's `overflow`. These hold the input's measured viewport position; the
+	// panel sits just below its lower edge and mirrors its width.
+	const PANEL_GAP = 4;
+	let panelTop = $state(0);
+	let panelLeft = $state(0);
+	let panelWidth = $state(0);
+
+	function positionPanel(): void {
+		if (!searchEl) return;
+		const rect = searchEl.getBoundingClientRect();
+		panelTop = rect.bottom + PANEL_GAP;
+		panelLeft = rect.left;
+		panelWidth = rect.width;
+	}
 
 	function openPanel(): void {
 		open = true;
+		positionPanel();
 	}
 
+	// Closing also clears the query, so the always-visible input falls back to its
+	// placeholder and a later reopen starts fresh from the curated tag list.
 	function closePanel(): void {
 		open = false;
 		query = '';
 	}
 
-	function toggleOpen(): void {
-		if (open) closePanel();
-		else openPanel();
-	}
-
-	// While open: focus the search box, and close on a pointerdown anywhere
-	// outside the component (the trigger lives inside `rootEl`, so clicking it is
-	// "inside" and falls through to its own toggle handler instead of closing).
+	// While open: keep the floating panel glued under the input as the search panel
+	// scrolls or the window resizes, and close on a pointerdown outside the
+	// component or on Escape. A pointerdown counts as "inside" if it lands on the
+	// input/chips (`rootEl`) or the portaled panel (`panelEl`, which lives under
+	// <body>, not `rootEl`), so interacting with either leaves the dropdown open.
+	// Blurring on Escape lets a later click refocus the input and reopen it. Scroll
+	// is captured because the search panel scrolls internally, not the window.
 	$effect(() => {
 		if (!open) return;
-		searchEl?.focus();
 		function onPointerDown(event: PointerEvent): void {
-			if (rootEl && !rootEl.contains(event.target as Node)) closePanel();
+			const target = event.target as Node;
+			if (rootEl?.contains(target) || panelEl?.contains(target)) return;
+			closePanel();
+		}
+		function onKeyDown(event: KeyboardEvent): void {
+			if (event.key === 'Escape') {
+				closePanel();
+				searchEl?.blur();
+			}
+		}
+		function reposition(): void {
+			positionPanel();
 		}
 		window.addEventListener('pointerdown', onPointerDown, true);
-		return () => window.removeEventListener('pointerdown', onPointerDown, true);
+		window.addEventListener('keydown', onKeyDown, true);
+		window.addEventListener('scroll', reposition, true);
+		window.addEventListener('resize', reposition);
+		return () => {
+			window.removeEventListener('pointerdown', onPointerDown, true);
+			window.removeEventListener('keydown', onKeyDown, true);
+			window.removeEventListener('scroll', reposition, true);
+			window.removeEventListener('resize', reposition);
+		};
 	});
 
 	const hasSelection = $derived(included.length > 0 || excluded.length > 0);
@@ -192,82 +246,76 @@
 		</div>
 	{/if}
 
-	<button
-		type="button"
-		class="tagfilter__trigger"
-		class:tagfilter__trigger--open={open}
+	<input
+		bind:this={searchEl}
+		bind:value={query}
+		type="search"
+		class="tagfilter__search"
+		placeholder="Search tags…"
+		aria-label="Search tags"
+		role="combobox"
 		aria-expanded={open}
-		aria-haspopup="listbox"
-		onclick={toggleOpen}
-	>
-		<span class="tagfilter__trigger-text">Search tags…</span>
-		<span class="tagfilter__chev" aria-hidden="true">{open ? '▴' : '▾'}</span>
-	</button>
+		aria-controls="tagfilter-results"
+		aria-autocomplete="list"
+		onfocus={openPanel}
+	/>
 
 	{#if open}
-		<!-- The command panel: a search box over a grouped, scrollable result list.
-		     Rendered inline (in the panel's scroll flow) rather than floated, so it
-		     can never be clipped by the search panel's own overflow. -->
+		<!-- The result panel: a grouped, scrollable list floating below the input.
+		     Portaled to <body> and positioned `fixed` (anchored to the input, see
+		     positionPanel) so it never pushes the search panel's layout and isn't
+		     clipped by its overflow / backdrop-filter containing block. -->
 		<div
-			class="combo"
+			{@attach portalPanel}
+			id="tagfilter-results"
+			class="combo__list"
 			role="group"
-			aria-label="Tag search"
-			onkeydowncapture={(e) => e.key === 'Escape' && closePanel()}
+			aria-label="Tag results"
+			style="top: {panelTop}px; left: {panelLeft}px; width: {panelWidth}px;"
 		>
-			<input
-				bind:this={searchEl}
-				bind:value={query}
-				type="search"
-				class="combo__search"
-				placeholder="Search dietary, type, ingredients…"
-				aria-label="Search tags"
-			/>
-
-			<div class="combo__list">
-				{#if loading && options.length === 0}
-					<p class="combo__hint">Searching…</p>
-				{:else if options.length === 0}
-					<p class="combo__hint">
-						{query.trim() === '' ? 'Type to search tags.' : 'No tags match your search.'}
-					</p>
-				{:else}
-					{#each groups as group (group.type)}
-						<p class="combo__group">{group.label}</p>
-						<ul class="combo__options">
-							{#each group.items as tag (tag.id)}
-								{@const isIncluded = includedIds.has(tag.id)}
-								{@const isExcluded = excludedIds.has(tag.id)}
-								<li class="opt" class:opt--included={isIncluded} class:opt--excluded={isExcluded}>
-									<button
-										type="button"
-										class="opt__main"
-										aria-pressed={isIncluded}
-										onclick={() => toggleInclude(tag)}
-									>
-										<span class="opt__state" aria-hidden="true">
-											{#if isIncluded}✓{:else if isExcluded}✕{/if}
-										</span>
-										<span class="opt__name">{display(tag)}</span>
-									</button>
-									<button
-										type="button"
-										class="opt__exclude"
-										aria-pressed={isExcluded}
-										aria-label={`Exclude ${display(tag)}`}
-										title={isExcluded ? 'Excluded — click to clear' : 'Exclude'}
-										onclick={() => toggleExclude(tag)}
-									>
-										⊘
-									</button>
-								</li>
-							{/each}
-						</ul>
-					{/each}
-					{#if capped}
-						<p class="combo__hint">Showing the first {MAX_RESULTS} — keep typing to narrow.</p>
-					{/if}
+			{#if loading && options.length === 0}
+				<p class="combo__hint">Searching…</p>
+			{:else if options.length === 0}
+				<p class="combo__hint">
+					{query.trim() === '' ? 'Type to search tags.' : 'No tags match your search.'}
+				</p>
+			{:else}
+				{#each groups as group (group.type)}
+					<p class="combo__group">{group.label}</p>
+					<ul class="combo__options">
+						{#each group.items as tag (tag.id)}
+							{@const isIncluded = includedIds.has(tag.id)}
+							{@const isExcluded = excludedIds.has(tag.id)}
+							<li class="opt" class:opt--included={isIncluded} class:opt--excluded={isExcluded}>
+								<button
+									type="button"
+									class="opt__main"
+									aria-pressed={isIncluded}
+									onclick={() => toggleInclude(tag)}
+								>
+									<span class="opt__state" aria-hidden="true">
+										{#if isIncluded}✓{:else if isExcluded}✕{/if}
+									</span>
+									<span class="opt__name">{display(tag)}</span>
+								</button>
+								<button
+									type="button"
+									class="opt__exclude"
+									aria-pressed={isExcluded}
+									aria-label={`Exclude ${display(tag)}`}
+									title={isExcluded ? 'Excluded — click to clear' : 'Exclude'}
+									onclick={() => toggleExclude(tag)}
+								>
+									⊘
+								</button>
+							</li>
+						{/each}
+					</ul>
+				{/each}
+				{#if capped}
+					<p class="combo__hint">Showing the first {MAX_RESULTS} — keep typing to narrow.</p>
 				{/if}
-			</div>
+			{/if}
 		</div>
 	{/if}
 </div>
@@ -282,7 +330,7 @@
 		gap: 0.4rem;
 	}
 
-	/* Selected include/exclude tags, shown as removable chips above the trigger. */
+	/* Selected include/exclude tags, shown as removable chips above the input. */
 	.tagfilter__selected {
 		display: flex;
 		flex-wrap: wrap;
@@ -350,68 +398,48 @@
 		text-decoration: underline;
 	}
 
-	/* shadcn-style combobox trigger: a full-width bordered button with a chevron. */
-	.tagfilter__trigger {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 0.5rem;
+	/* The real tag search input: a full-width bordered field, styled to match the
+	   surrounding filter controls, that opens the result panel below it on focus. */
+	.tagfilter__search {
 		width: 100%;
 		padding: 0.45rem 0.7rem;
+		font: inherit;
 		font-size: 0.9rem;
-		color: var(--color-text-muted);
+		color: var(--color-text);
 		background: rgba(255, 255, 255, 0.7);
 		border: 1px solid var(--color-border);
 		border-radius: 0.6rem;
-		text-align: left;
-	}
-
-	.tagfilter__trigger:hover {
-		border-color: var(--color-accent);
-	}
-
-	.tagfilter__trigger--open {
-		border-color: var(--color-accent);
-	}
-
-	.tagfilter__chev {
-		font-size: 0.7rem;
-		line-height: 1;
-		color: var(--color-text-muted);
-	}
-
-	.combo {
-		display: flex;
-		flex-direction: column;
-		gap: 0.4rem;
-		padding: 0.5rem;
-		border: 1px solid var(--color-border);
-		border-radius: 0.7rem;
-		background: rgba(255, 255, 255, 0.92);
-	}
-
-	.combo__search {
-		width: 100%;
-		padding: 0.4rem 0.6rem;
-		font: inherit;
-		font-size: 0.88rem;
-		color: var(--color-text);
-		background: #fff;
-		border: 1px solid var(--color-border);
-		border-radius: 0.5rem;
 		outline: none;
 	}
 
-	.combo__search:focus {
+	.tagfilter__search::placeholder {
+		color: var(--color-text-muted);
+	}
+
+	.tagfilter__search:hover,
+	.tagfilter__search:focus {
 		border-color: var(--color-accent);
 	}
 
+	/* The dropdown panel of grouped results. Floated `fixed` over the page (its
+	   top/left/width are set inline from the input's measured position) so it never
+	   expands the search panel or shifts its layout, and escapes its overflow. The
+	   glassy backdrop and shadow match the app's other floating layers. */
 	.combo__list {
+		position: fixed;
+		z-index: 30;
 		max-height: 16rem;
 		overflow-y: auto;
 		display: flex;
 		flex-direction: column;
 		gap: 0.15rem;
+		padding: 0.5rem;
+		border: 1px solid rgba(255, 255, 255, 0.6);
+		border-radius: 0.7rem;
+		background: rgba(255, 255, 255, 0.92);
+		backdrop-filter: blur(16px) saturate(180%);
+		-webkit-backdrop-filter: blur(16px) saturate(180%);
+		box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
 	}
 
 	.combo__group {
@@ -527,7 +555,7 @@
 
 	/* Roomier tap targets and no iOS auto-zoom (16px input) on touch screens. */
 	@media (max-width: 48rem) {
-		.combo__search {
+		.tagfilter__search {
 			font-size: 1rem;
 		}
 
