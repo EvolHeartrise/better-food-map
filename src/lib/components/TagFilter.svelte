@@ -209,7 +209,7 @@
 					onclick={() => toggleInclude(tag)}
 					aria-label={`Remove included tag ${tagDisplayName(tag.name)}`}
 				>
-					<span class="seltag__op">is</span>
+					<span class="seltag__op">+</span>
 					<FoodTag {tag} />
 					<span class="seltag__x" aria-hidden="true">✕</span>
 				</button>
@@ -221,7 +221,7 @@
 					onclick={() => toggleExclude(tag)}
 					aria-label={`Remove excluded tag ${tagDisplayName(tag.name)}`}
 				>
-					<span class="seltag__op">not</span>
+					<span class="seltag__op">−</span>
 					<FoodTag {tag} />
 					<span class="seltag__x" aria-hidden="true">✕</span>
 				</button>
@@ -337,14 +337,19 @@
 		background: rgba(255, 255, 255, 0.6);
 	}
 
-	/* The "is"/"not" operator: a small filled badge stating the chip's role. */
+	/* The +/− operator: a small filled glyph stating the chip's role, echoing the
+	   +/− controls in the picker below. */
 	.seltag__op {
-		font-size: 0.6rem;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+		width: 1.05rem;
+		height: 1.05rem;
+		font-size: 0.85rem;
 		font-weight: 700;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
+		line-height: 1;
 		color: #fff;
-		padding: 0.05rem 0.32rem;
 		border-radius: 999px;
 	}
 
