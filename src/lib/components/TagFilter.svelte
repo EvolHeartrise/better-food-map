@@ -339,13 +339,14 @@
 	/* A selected tag chip wraps a <FoodTag> (the pill) with an operator badge and a
 	   remove ✕. The chip itself is a neutral removable button; its include/exclude
 	   role is carried by the operator badge's colour and a tinted border, so the
-	   FoodTag inside reads the same as it does anywhere else. */
+	   FoodTag inside reads the same as it does anywhere else. No padding and a hair
+	   gap so the outer pill hugs the FoodTag rather than floating around it. */
 	.seltag {
 		display: inline-flex;
 		align-items: center;
-		gap: 0.3rem;
+		gap: 0.1rem;
 		max-width: 100%;
-		padding: 0.15rem 0.4rem;
+		padding: 0;
 		border-radius: 999px;
 		border: 1px solid var(--color-border);
 		background: rgba(255, 255, 255, 0.6);
