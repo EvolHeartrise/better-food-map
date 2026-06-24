@@ -268,29 +268,31 @@
 					{#each options as tag (tag.id)}
 						{@const isIncluded = includedIds.has(tag.id)}
 						{@const isExcluded = excludedIds.has(tag.id)}
-						<li class="opt" class:opt--included={isIncluded} class:opt--excluded={isExcluded}>
-							<button
-								type="button"
-								class="opt__main"
-								aria-pressed={isIncluded}
-								onclick={() => toggleInclude(tag)}
-							>
-								<span class="opt__state" aria-hidden="true">
-									{#if isIncluded}✓{:else if isExcluded}✕{/if}
-								</span>
-								<FoodTag {tag} />
-								<span class="opt__type">{TYPE_LABEL[tag.tag_type]}</span>
-							</button>
-							<button
-								type="button"
-								class="opt__exclude"
-								aria-pressed={isExcluded}
-								aria-label={`Exclude ${tagDisplayName(tag.name)}`}
-								title={isExcluded ? 'Excluded — click to clear' : 'Exclude'}
-								onclick={() => toggleExclude(tag)}
-							>
-								⊘
-							</button>
+						<li class="opt" class:opt--excluded={isExcluded}>
+							<div class="opt__ops">
+								<button
+									type="button"
+									class="opt__op opt__op--include"
+									aria-pressed={isIncluded}
+									aria-label={`Include ${tagDisplayName(tag.name)}`}
+									title={isIncluded ? 'Included — click to clear' : 'Include'}
+									onclick={() => toggleInclude(tag)}
+								>
+									+
+								</button>
+								<button
+									type="button"
+									class="opt__op opt__op--exclude"
+									aria-pressed={isExcluded}
+									aria-label={`Exclude ${tagDisplayName(tag.name)}`}
+									title={isExcluded ? 'Excluded — click to clear' : 'Exclude'}
+									onclick={() => toggleExclude(tag)}
+								>
+									−
+								</button>
+							</div>
+							<FoodTag {tag} />
+							<span class="opt__type">{TYPE_LABEL[tag.tag_type]}</span>
 						</li>
 					{/each}
 				</ul>
@@ -466,79 +468,78 @@
 		color: var(--color-text-muted);
 	}
 
-	/* An option row: a wide "include" toggle plus a trailing "exclude" toggle.
-	   They're siblings (not nested buttons) so both stay valid, focusable controls. */
+	/* An option row: the include (+) and exclude (−) controls at the left, then the
+	   tag pill and its type. The two controls are separate, focusable buttons. */
 	.opt {
-		display: flex;
-		align-items: stretch;
-		gap: 0.25rem;
-		border-radius: 0.5rem;
-	}
-
-	.opt__main {
-		flex: 1;
-		min-width: 0;
 		display: flex;
 		align-items: center;
 		gap: 0.45rem;
-		padding: 0.35rem 0.5rem;
+		padding: 0.3rem 0.5rem;
 		font-size: 0.85rem;
-		color: var(--color-text);
-		background: none;
-		border: 1px solid transparent;
 		border-radius: 0.5rem;
-		text-align: left;
 	}
 
-	.opt__main:hover {
+	.opt:hover {
 		background: color-mix(in srgb, var(--color-accent) 8%, #fff);
 	}
 
-	.opt__state {
+	.opt__ops {
 		flex-shrink: 0;
-		width: 0.9rem;
-		font-size: 0.8rem;
-		font-weight: 700;
-		color: var(--color-accent);
-		text-align: center;
+		display: flex;
+		gap: 0.2rem;
 	}
 
-	.opt__exclude {
-		flex-shrink: 0;
-		width: 1.8rem;
+	/* The +/− buttons. Outlined by default; the active one fills with its colour
+	   (accent for include, danger for exclude) to show the current state. */
+	.opt__op {
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		font-size: 0.95rem;
+		width: 1.5rem;
+		height: 1.5rem;
+		padding: 0;
+		font-size: 1rem;
+		font-weight: 700;
 		line-height: 1;
-		color: var(--color-text-muted);
 		background: none;
 		border: 1px solid var(--color-border);
-		border-radius: 0.5rem;
+		border-radius: 0.4rem;
 	}
 
-	.opt__exclude:hover {
+	.opt__op--include {
+		color: var(--color-accent);
+	}
+
+	.opt__op--include:hover {
+		border-color: var(--color-accent);
+		background: color-mix(in srgb, var(--color-accent) 10%, #fff);
+	}
+
+	.opt__op--include[aria-pressed='true'] {
+		color: #fff;
+		background: var(--color-accent);
+		border-color: var(--color-accent);
+	}
+
+	.opt__op--exclude {
 		color: var(--color-exclude);
+	}
+
+	.opt__op--exclude:hover {
 		border-color: var(--color-exclude);
+		background: color-mix(in srgb, var(--color-exclude) 10%, #fff);
 	}
 
-	.opt--included .opt__main {
-		background: color-mix(in srgb, var(--color-accent) 12%, #fff);
-		border-color: color-mix(in srgb, var(--color-accent) 35%, #fff);
-	}
-
-	.opt--excluded .opt__main {
-		color: var(--color-text-muted);
-	}
-
-	.opt--excluded .opt__state {
-		color: var(--color-exclude);
-	}
-
-	.opt--excluded .opt__exclude {
+	.opt__op--exclude[aria-pressed='true'] {
 		color: #fff;
 		background: var(--color-exclude);
 		border-color: var(--color-exclude);
+	}
+
+	/* An excluded row reads as "filtered out": mute its type label (the FoodTag
+	   keeps its own colour, and the filled − button marks the state). */
+	.opt--excluded {
+		color: var(--color-text-muted);
 	}
 
 	/* Roomier tap targets and no iOS auto-zoom (16px input) on touch screens. */
@@ -547,12 +548,9 @@
 			font-size: 1rem;
 		}
 
-		.opt__main {
-			padding: 0.5rem;
-		}
-
-		.opt__exclude {
-			width: 2.2rem;
+		.opt__op {
+			width: 1.9rem;
+			height: 1.9rem;
 		}
 	}
 </style>
