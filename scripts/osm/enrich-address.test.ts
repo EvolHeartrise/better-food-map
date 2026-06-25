@@ -48,7 +48,6 @@ test('parseAddressedBuilding parses an RS-prefixed addressed polygon', () => {
 	const b = parseAddressedBuilding(line);
 	expect(b).not.toBeNull();
 	if (!b) return; // narrows the type so the assertions below need no non-null `!`
-	expect(b.osmId).toBe('a123');
 	expect(b.address).toBe('12 Main St, Vancouver');
 	expect(b.polygons.length).toBe(1);
 });
@@ -85,7 +84,6 @@ test('enriches an address-less venue inside an addressed building, leaving other
 
 	const enr = new AddressEnricher(rows);
 	enr.apply({
-		osmId: 'a1',
 		address: '12 Main St, Vancouver',
 		polygons: [square(49.281, -123.121, 0.001)]
 	});
@@ -100,12 +98,10 @@ test('enriches an address-less venue inside an addressed building, leaving other
 test('when nested buildings contain a venue, the smallest (most specific) address wins', () => {
 	const venue = poi({ osm_id: 'n1', latitude: 49.281, longitude: -123.121 });
 	const big = {
-		osmId: 'a-big',
 		address: '1 Plaza Way',
 		polygons: [square(49.281, -123.121, 0.01)]
 	};
 	const small = {
-		osmId: 'a-small',
 		address: '12 Main St',
 		polygons: [square(49.281, -123.121, 0.0005)]
 	};
@@ -120,5 +116,35 @@ test('when nested buildings contain a venue, the smallest (most specific) addres
 		for (const b of order) enr.apply(b);
 		enr.finalize();
 		expect(venue.address).toBe('12 Main St');
+	}
+});
+
+test('a MultiPolygon building is scored by the polygon that contains the venue', () => {
+	const venue = poi({ osm_id: 'n1', latitude: 49.281, longitude: -123.121 });
+
+	// A MultiPolygon whose FIRST polygon is a large footprint elsewhere and whose
+	// SECOND, small polygon actually contains the venue. The containing (small)
+	// polygon's area must drive the smallest-wins tie-break — not polygons[0].
+	const multi = {
+		address: '12 Main St, Unit 5',
+		polygons: [square(49.4, -123.4, 0.01), square(49.281, -123.121, 0.0005)]
+	};
+	// A single medium building also covering the venue: bigger than `multi`'s small
+	// containing polygon, smaller than its far first polygon.
+	const medium = {
+		address: '1 Plaza Way',
+		polygons: [square(49.281, -123.121, 0.003)]
+	};
+
+	for (const order of [
+		[multi, medium],
+		[medium, multi]
+	]) {
+		venue.address = null;
+		const enr = new AddressEnricher([venue]);
+		for (const b of order) enr.apply(b);
+		enr.finalize();
+		// With the old polygons[0] scoring, `multi` looked huge and `medium` won.
+		expect(venue.address).toBe('12 Main St, Unit 5');
 	}
 });

@@ -16,10 +16,9 @@
 // ---------------------------------------------------------------------------
 
 import type { D1Like } from '../../src/lib/server/db';
-import { bboxAround, haversineMeters } from './geo';
 import { osmUrl } from './map-feature';
-import type { OsmPoiStore, StoredPoi } from './poi-store';
-import { normalizeName, namesMatch } from './search-poi';
+import type { OsmPoiStore } from './poi-store';
+import { LOCATION_AUDIT, nearestNameMatch } from './poi-match';
 
 export interface FindMissingAddressParams {
 	/** Max flagged locations to return (default 50, max 200). */
@@ -98,11 +97,7 @@ export interface FindMissingAddressResult {
 	};
 }
 
-const DEFAULT_LIMIT = 50;
-const MAX_LIMIT = 200;
-const DEFAULT_SEARCH_RADIUS_M = 250;
-const MAX_SEARCH_RADIUS_M = 50000;
-const PER_LOCATION_CANDIDATE_CAP = 500;
+const { DEFAULT_LIMIT, MAX_LIMIT, DEFAULT_SEARCH_RADIUS_M, MAX_SEARCH_RADIUS_M } = LOCATION_AUDIT;
 
 interface LocationRow {
 	id: string;
@@ -219,16 +214,7 @@ export async function findMissingAddress(
 
 		// Find the nearest name-matching OSM POI — the one this venue's address
 		// should come from. A location is OSM-sourced, so it sits ~0 m from it.
-		const bbox = bboxAround(loc.latitude, loc.longitude, searchRadiusKm);
-		const candidates = store.searchBbox(bbox, { cap: PER_LOCATION_CANDIDATE_CAP });
-		const locName = normalizeName(loc.name);
-
-		let best: { poi: StoredPoi; dist: number } | null = null;
-		for (const poi of candidates) {
-			if (!namesMatch(locName, normalizeName(poi.name))) continue;
-			const dist = haversineMeters(loc.latitude, loc.longitude, poi.latitude, poi.longitude);
-			if (!best || dist < best.dist) best = { poi, dist };
-		}
+		const best = nearestNameMatch(store, loc, searchRadiusKm);
 
 		const base = {
 			id: loc.id,
