@@ -34,6 +34,7 @@ import {
 	normalizeRegion,
 	formatAddress
 } from '../src/lib/address';
+import { blankToNull } from '../src/lib/text';
 import { createHttpD1 } from '../src/lib/server/d1-http';
 import type { D1Like } from '../src/lib/server/db';
 
@@ -92,13 +93,6 @@ const EMPTY: RawParts = { street: null, city: null, region: null, postcode: null
 
 // --- Pure helpers (unit-tested) --------------------------------------------
 
-/** Trims and collapses whitespace; '' → null. */
-function clean(v: string | null | undefined): string | null {
-	if (!v) return null;
-	const t = v.replace(/\s+/g, ' ').trim();
-	return t.length ? t : null;
-}
-
 /**
  * Recovers an OSM object reference from an openstreetmap.org URL such as
  * `https://www.openstreetmap.org/node/123`. Returns null for any other URL.
@@ -137,10 +131,10 @@ export function partsFromOsmTags(tags: Record<string, string>): RawParts {
 		tags['addr:hamlet'];
 	return {
 		street: composeStreet(tags['addr:housenumber'], tags['addr:street'], tags['addr:unit']),
-		city: clean(city),
-		region: clean(tags['addr:state'] ?? tags['addr:province']),
-		postcode: clean(tags['addr:postcode']),
-		country: clean(tags['addr:country'])
+		city: blankToNull(city),
+		region: blankToNull(tags['addr:state'] ?? tags['addr:province']),
+		postcode: blankToNull(tags['addr:postcode']),
+		country: blankToNull(tags['addr:country'])
 	};
 }
 
@@ -165,11 +159,11 @@ export function partsFromNominatim(addr: NominatimAddress): RawParts {
 
 	return {
 		street: composeStreet(addr.house_number, addr.road, addr.unit),
-		city: clean(city),
-		region: clean(isoRegion ?? addr.state ?? addr.province ?? addr.region),
-		postcode: clean(addr.postcode),
+		city: blankToNull(city),
+		region: blankToNull(isoRegion ?? addr.state ?? addr.province ?? addr.region),
+		postcode: blankToNull(addr.postcode),
 		// Prefer the ISO-2 country_code Nominatim returns (e.g. "ca").
-		country: clean(addr.country_code ?? isoCountry ?? addr.country)
+		country: blankToNull(addr.country_code ?? isoCountry ?? addr.country)
 	};
 }
 
@@ -226,10 +220,10 @@ export function parseAddressLine(line: string | null | undefined): RawParts {
 	const street = segs.length ? segs[0] : null;
 	const city = segs.length > 1 ? segs[segs.length - 1] : null;
 	return {
-		street: clean(street),
-		city: clean(city),
-		region: clean(region),
-		postcode: clean(postcode),
+		street: blankToNull(street),
+		city: blankToNull(city),
+		region: blankToNull(region),
+		postcode: blankToNull(postcode),
 		country: null
 	};
 }
@@ -323,8 +317,8 @@ export function normalizeParts(raw: RawParts): NormalizedResult {
 		else if (normalizeRegion(raw.region, 'US')) country = 'US';
 	}
 
-	const street = clean(raw.street);
-	const city = clean(raw.city);
+	const street = blankToNull(raw.street);
+	const city = blankToNull(raw.city);
 	const region = normalizeRegion(raw.region, country);
 	const postcode = normalizePostcode(raw.postcode, country);
 

@@ -490,57 +490,72 @@ const bboxSchema = v.object({
 	max_lon: longitudeSchema
 });
 
-const searchPoiArgs = v.object({
-	latitude: v.optional(
-		v.pipe(latitudeSchema, v.description('Centre latitude (with longitude + radius_km).'))
-	),
-	longitude: v.optional(
-		v.pipe(longitudeSchema, v.description('Centre longitude (with latitude + radius_km).'))
-	),
-	radius_km: v.optional(
-		v.pipe(
-			v.number(),
-			v.minValue(0),
-			v.maxValue(50),
-			v.description('Search radius in km around the centre (max 50).')
+const searchPoiArgs = v.pipe(
+	v.object({
+		latitude: v.optional(
+			v.pipe(latitudeSchema, v.description('Centre latitude (with longitude + radius_km).'))
+		),
+		longitude: v.optional(
+			v.pipe(longitudeSchema, v.description('Centre longitude (with latitude + radius_km).'))
+		),
+		radius_km: v.optional(
+			v.pipe(
+				v.number(),
+				v.minValue(0),
+				v.maxValue(50),
+				v.description('Search radius in km around the centre (max 50).')
+			)
+		),
+		bbox: v.optional(
+			v.pipe(
+				bboxSchema,
+				v.description('Bounding box to search. Provide this OR latitude+longitude+radius_km.')
+			)
+		),
+		category: v.optional(
+			v.pipe(categorySchema, v.description('Only POIs whose suggested category is this.'))
+		),
+		name: v.optional(
+			v.pipe(
+				v.string(),
+				v.minLength(1),
+				v.description('Case-insensitive substring match on the POI name.')
+			)
+		),
+		cuisine: v.optional(
+			v.pipe(
+				v.string(),
+				v.minLength(1),
+				v.description('Case-insensitive substring match on the OSM cuisine tag.')
+			)
+		),
+		exclude_existing: v.optional(
+			v.pipe(
+				v.boolean(),
+				v.description('Omit POIs already present in the database (default true).')
+			)
+		),
+		limit: v.optional(
+			v.pipe(
+				v.number(),
+				v.integer(),
+				v.minValue(1),
+				v.maxValue(200),
+				v.description('Maximum candidates to return (default 50, max 200).')
+			)
 		)
-	),
-	bbox: v.optional(
-		v.pipe(
-			bboxSchema,
-			v.description('Bounding box to search. Provide this OR latitude+longitude+radius_km.')
-		)
-	),
-	category: v.optional(
-		v.pipe(categorySchema, v.description('Only POIs whose suggested category is this.'))
-	),
-	name: v.optional(
-		v.pipe(
-			v.string(),
-			v.minLength(1),
-			v.description('Case-insensitive substring match on the POI name.')
-		)
-	),
-	cuisine: v.optional(
-		v.pipe(
-			v.string(),
-			v.minLength(1),
-			v.description('Case-insensitive substring match on the OSM cuisine tag.')
-		)
-	),
-	exclude_existing: v.optional(
-		v.pipe(v.boolean(), v.description('Omit POIs already present in the database (default true).'))
-	),
-	limit: v.optional(
-		v.pipe(
-			v.number(),
-			v.integer(),
-			v.minValue(1),
-			v.maxValue(200),
-			v.description('Maximum candidates to return (default 50, max 200).')
-		)
-	)
-});
+	}),
+	v.check((input) => {
+		const hasBbox = input.bbox !== undefined;
+		const centreCount = [input.latitude, input.longitude, input.radius_km].filter(
+			(value) => value !== undefined
+		).length;
+		// Exactly one fully-specified area mode: a `bbox`, OR all three centre params.
+		// Catches a partial centre (e.g. latitude only) and both-at-once up front,
+		// rather than letting search_poi's resolveArea throw deep in the handler.
+		return hasBbox ? centreCount === 0 : centreCount === 3;
+	}, 'Provide EITHER `bbox` OR all of `latitude`, `longitude` and `radius_km` (not both, and centre coordinates must be complete).')
+);
 
 const findDriftArgs = v.object({
 	limit: v.optional(

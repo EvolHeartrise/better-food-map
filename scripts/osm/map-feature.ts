@@ -12,6 +12,7 @@
 // canonical category union rather than restating it. The scripts layer already
 // depends on src/lib (see search-poi.ts), so this adds no new coupling.
 import type { Category } from '../../src/lib/category';
+import { blankToNull } from '../../src/lib/text';
 
 /** A GeoJSON feature, as produced by osmium export (geometry may be any type). */
 export interface OsmFeature {
@@ -207,13 +208,6 @@ export function parseOsmId(raw: string | number | undefined): ParsedId | null {
 	return { osm_id: `n${numeric}`, osm_type: 'node', numeric_id: numeric };
 }
 
-/** Trims and collapses whitespace; returns null for empty/whitespace-only input. */
-function clean(value: string | undefined): string | null {
-	if (!value) return null;
-	const trimmed = value.replace(/\s+/g, ' ').trim();
-	return trimmed.length ? trimmed : null;
-}
-
 /**
  * Maps one OSM GeoJSON feature to a {@link PoiRow}, or null if it is not a food
  * POI we recognise (wrong/absent class, no id, or no usable geometry).
@@ -236,16 +230,16 @@ export function mapFeature(feature: OsmFeature): PoiRow | null {
 		osm_id: id.osm_id,
 		osm_type: id.osm_type,
 		numeric_id: id.numeric_id,
-		name: clean(props.name),
+		name: blankToNull(props.name),
 		osm_class: osmClass,
 		suggested_category: suggestedCategory(osmClass),
-		cuisine: clean(props.cuisine),
+		cuisine: blankToNull(props.cuisine),
 		latitude,
 		longitude,
 		address: composeAddress(props),
-		phone: clean(props.phone ?? props['contact:phone']),
-		website: clean(props.website ?? props['contact:website']),
-		opening_hours: clean(props.opening_hours),
+		phone: blankToNull(props.phone ?? props['contact:phone']),
+		website: blankToNull(props.website ?? props['contact:website']),
+		opening_hours: blankToNull(props.opening_hours),
 		diet_markers: dietMarkers(props),
 		tags_json: JSON.stringify(props)
 	};

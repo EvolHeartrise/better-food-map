@@ -19,12 +19,11 @@
 // The streaming wiring lives in scripts/osm-extract.ts.
 // ---------------------------------------------------------------------------
 
+import { SpatialGrid } from './geo';
 import { composeAddress, type PoiRow } from './map-feature';
 
 /** An addressed building footprint parsed from one geojsonseq line. */
 export interface ParsedBuilding {
-	/** osmium type-prefixed id (e.g. "w123"/"a456"), or null when not exported. */
-	osmId: string | null;
 	/** The composed civic address (never empty). */
 	address: string;
 	/** One or more polygons; each is [outerRing, ...holeRings]; each ring is [lon, lat] pairs. */
@@ -33,7 +32,6 @@ export interface ParsedBuilding {
 
 /** Minimal shape of a GeoJSON feature line; coordinates are validated structurally at use. */
 interface RawFeature {
-	id?: string | number;
 	geometry?: { type?: string; coordinates?: unknown } | null;
 	properties?: Record<string, string> | null;
 }
@@ -41,8 +39,6 @@ interface RawFeature {
 // ~1.1 km cells: small enough that a building's bbox spans only a handful, large
 // enough that the index stays compact. Matches the grid in find_* tooling.
 const CELL_DEG = 0.01;
-const cellKey = (lat: number, lon: number): string =>
-	`${Math.floor(lat / CELL_DEG)}:${Math.floor(lon / CELL_DEG)}`;
 
 /**
  * Parses one `osmium export -f geojsonseq` line into an addressed building, or
@@ -74,8 +70,7 @@ export function parseAddressedBuilding(line: string): ParsedBuilding | null {
 
 	const coords = geometry.coordinates as number[][][] | number[][][][];
 	const polygons = (geometry.type === 'Polygon' ? [coords] : coords) as number[][][][];
-	const osmId = feature.id === undefined ? null : String(feature.id);
-	return { osmId, address, polygons };
+	return { address, polygons };
 }
 
 /** Ray-casting point-in-ring test (ring is a [lon, lat] vertex list). */
@@ -117,16 +112,13 @@ function ringArea(ring: number[][]): number {
  * buildings are processed one at a time and never retained.
  */
 export class AddressEnricher {
-	private readonly grid = new Map<string, number[]>();
+	private readonly grid = new SpatialGrid(CELL_DEG);
 	private readonly best = new Map<number, { address: string; area: number }>();
 
 	constructor(private readonly rows: PoiRow[]) {
 		rows.forEach((row, i) => {
 			if (row.address && row.address.trim()) return; // already has its own address
-			const key = cellKey(row.latitude, row.longitude);
-			const bucket = this.grid.get(key);
-			if (bucket) bucket.push(i);
-			else this.grid.set(key, [i]);
+			this.grid.insert(i, row.latitude, row.longitude);
 		});
 	}
 
@@ -145,21 +137,18 @@ export class AddressEnricher {
 					if (lon > maxLon) maxLon = lon;
 				}
 
-		for (let cy = Math.floor(minLat / CELL_DEG); cy <= Math.floor(maxLat / CELL_DEG); cy++) {
-			for (let cx = Math.floor(minLon / CELL_DEG); cx <= Math.floor(maxLon / CELL_DEG); cx++) {
-				const candidates = this.grid.get(`${cy}:${cx}`);
-				if (!candidates) continue;
-				for (const idx of candidates) {
-					const row = this.rows[idx];
-					if (row.latitude < minLat || row.latitude > maxLat) continue;
-					if (row.longitude < minLon || row.longitude > maxLon) continue;
-					if (!building.polygons.some((poly) => pointInPolygon(row.latitude, row.longitude, poly)))
-						continue;
-					const area = ringArea(building.polygons[0][0]);
-					const prev = this.best.get(idx);
-					if (!prev || area < prev.area) this.best.set(idx, { address: building.address, area });
-				}
-			}
+		for (const idx of this.grid.candidatesInBbox({ minLat, maxLat, minLon, maxLon })) {
+			const row = this.rows[idx];
+			// Score the row against the polygon that ACTUALLY contains it (a building
+			// may be a MultiPolygon), not always the first — its footprint is what the
+			// smallest-area "most specific address wins" tie-break must compare.
+			const containing = building.polygons.find((poly) =>
+				pointInPolygon(row.latitude, row.longitude, poly)
+			);
+			if (!containing) continue;
+			const area = ringArea(containing[0]);
+			const prev = this.best.get(idx);
+			if (!prev || area < prev.area) this.best.set(idx, { address: building.address, area });
 		}
 	}
 
