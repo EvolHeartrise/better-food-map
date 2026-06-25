@@ -57,6 +57,7 @@ import {
 	type D1Like
 } from '../src/lib/server/db';
 import { createHttpD1 } from '../src/lib/server/d1-http';
+import { normalizeRegion, normalizePostcode, normalizeCountry } from '../src/lib/address';
 import { searchPoi } from './osm/search-poi';
 import { findCoordinateDrift } from './osm/find-coordinate-drift';
 import { findMissingAddress } from './osm/find-missing-address';
@@ -135,19 +136,121 @@ const latitudeSchema = v.pipe(v.number(), v.minValue(-90), v.maxValue(90));
 const longitudeSchema = v.pipe(v.number(), v.minValue(-180), v.maxValue(180));
 const priceSchema = v.pipe(v.number(), v.minValue(0));
 
-// A street address is REQUIRED on every location (enforced at the DB level too —
-// see migration 0005). It must be a real street address, not a bare number or
-// postcode: trimmed, non-empty, and containing at least one letter (any script).
-// Take it verbatim from the venue's OSM/Overture data — never geocode or invent one.
-const addressSchema = v.pipe(
+// Addresses are stored as STRUCTURED parts (see src/lib/address.ts and migrations
+// 0008/0009). `street`, `city`, `region`, `country` are REQUIRED; `postcode` is
+// optional. Take every part from the venue's OSM/Overture data — never geocode or
+// invent one. `region`/`postcode`/`country` are normalized server-side (province
+// → 2-letter code, postcode → canonical spacing, country → ISO-2), so a source
+// spelling like "Ontario" or "ontario" is accepted and stored as "ON".
+const streetSchema = v.pipe(
 	v.string(),
 	v.trim(),
-	v.minLength(1, 'address is required and must be non-empty'),
+	v.minLength(1, 'street is required and must be non-empty'),
 	v.check(
 		(s) => /\p{L}/u.test(s),
-		'address must be a street address (contain a street name), not just a number or postcode'
+		'street must be a real street (contain a street name), not just a number'
 	)
 );
+const citySchema = v.pipe(v.string(), v.trim(), v.minLength(1, 'city is required'));
+const regionSchema = v.pipe(v.string(), v.trim(), v.minLength(1, 'region is required'));
+const postcodeSchema = v.pipe(v.string(), v.trim(), v.minLength(1));
+const countryPartSchema = v.pipe(v.string(), v.trim(), v.minLength(1));
+
+/** Field descriptions reused on create_locations and update_location. */
+const STREET_DESC =
+	'House number + street (+ unit), e.g. "1909 W 4th Ave". Take the street line from the candidate\'s ' +
+	'OSM/Overture address; never geocode or invent one.';
+const CITY_DESC = 'Municipality, e.g. "Vancouver".';
+const REGION_DESC =
+	'Province/state — a 2-letter code ("BC") or full name ("British Columbia"); stored as the 2-letter code.';
+const POSTCODE_DESC =
+	'Postal/ZIP code (optional). Stored canonically (e.g. "V6J 1M5"); omit when the source has none.';
+const COUNTRY_DESC =
+	'Country — name ("Canada") or ISO-2 code ("CA"); stored as ISO-2. Defaults to CA.';
+
+/**
+ * Normalizes raw structured address args into the stored parts, throwing a clear
+ * MCP error when a required part cannot be resolved. Reused by create_locations
+ * and update_location so storage stays uniform regardless of how a source spelled
+ * a province / postcode / country.
+ */
+function normalizeAddressParts(args: {
+	street: string;
+	city: string;
+	region: string;
+	postcode?: string | null;
+	country?: string | null;
+}): { street: string; city: string; region: string; postcode: string | null; country: string } {
+	const country = normalizeCountry(args.country ?? 'CA') ?? 'CA';
+	const region = normalizeRegion(args.region, country);
+	if (!region) {
+		throw new Error(
+			`region "${args.region}" is not a recognized province/state for ${country}. ` +
+				'Pass a 2-letter code or full name.'
+		);
+	}
+	let postcode: string | null = null;
+	if (args.postcode && args.postcode.trim()) {
+		postcode = normalizePostcode(args.postcode, country);
+		if (!postcode) {
+			throw new Error(
+				`postcode "${args.postcode}" is not a valid ${country} postal/ZIP code. ` +
+					'Omit it rather than storing a partial code.'
+			);
+		}
+	}
+	return { street: args.street.trim(), city: args.city.trim(), region, postcode, country };
+}
+
+/**
+ * Normalizes only the address parts PRESENT in an update patch (a partial update
+ * may touch just one part). region/postcode are validated against the patch's
+ * country when given, else auto-detected (CA/US). Throws on an unresolvable value;
+ * `postcode: null`/'' clears it.
+ */
+function normalizeAddressPatch(patch: {
+	street?: string;
+	city?: string;
+	region?: string;
+	postcode?: string | null;
+	country?: string;
+}): Partial<{
+	street: string;
+	city: string;
+	region: string;
+	postcode: string | null;
+	country: string;
+}> {
+	const out: Partial<{
+		street: string;
+		city: string;
+		region: string;
+		postcode: string | null;
+		country: string;
+	}> = {};
+	if (patch.country !== undefined) {
+		const c = normalizeCountry(patch.country);
+		if (!c) throw new Error(`country "${patch.country}" is not a recognized country.`);
+		out.country = c;
+	}
+	if (patch.street !== undefined) out.street = patch.street.trim();
+	if (patch.city !== undefined) out.city = patch.city.trim();
+	if (patch.region !== undefined) {
+		const r = normalizeRegion(patch.region, out.country);
+		if (!r) throw new Error(`region "${patch.region}" is not a recognized province/state.`);
+		out.region = r;
+	}
+	if (patch.postcode !== undefined) {
+		if (patch.postcode === null || patch.postcode.trim() === '') {
+			out.postcode = null;
+		} else {
+			const p = normalizePostcode(patch.postcode, out.country);
+			if (!p) throw new Error(`postcode "${patch.postcode}" is not a valid postal/ZIP code.`);
+			out.postcode = p;
+		}
+	}
+	return out;
+}
 
 // A single citation: a URL the data came from, plus an optional human label.
 const sourceSchema = v.object({
@@ -234,13 +337,11 @@ const createLocationArgs = v.object({
 	),
 	latitude: v.pipe(latitudeSchema, v.description('Latitude in decimal degrees.')),
 	longitude: v.pipe(longitudeSchema, v.description('Longitude in decimal degrees.')),
-	address: v.pipe(
-		addressSchema,
-		v.description(
-			"Street address (REQUIRED). Use the venue's OSM/Overture address verbatim — e.g. the " +
-				'`address` of its search_poi candidate; never geocode, hand-write, or invent one.'
-		)
-	),
+	street: v.pipe(streetSchema, v.description(STREET_DESC)),
+	city: v.pipe(citySchema, v.description(CITY_DESC)),
+	region: v.pipe(regionSchema, v.description(REGION_DESC)),
+	postcode: v.optional(v.nullable(v.pipe(postcodeSchema, v.description(POSTCODE_DESC)))),
+	country: v.optional(v.nullable(v.pipe(countryPartSchema, v.description(COUNTRY_DESC)))),
 	phone: v.optional(v.nullable(v.string())),
 	website: v.optional(v.nullable(v.string())),
 	brand_id: v.optional(
@@ -294,11 +395,12 @@ const updateLocationArgs = v.object({
 	category: v.optional(v.nullable(categorySchema)),
 	latitude: v.optional(latitudeSchema),
 	longitude: v.optional(longitudeSchema),
-	address: v.optional(
-		v.pipe(
-			addressSchema,
-			v.description('Replace the street address. Must stay a real address; cannot be blanked.')
-		)
+	street: v.optional(v.pipe(streetSchema, v.description(`Replace the street. ${STREET_DESC}`))),
+	city: v.optional(v.pipe(citySchema, v.description(`Replace the city. ${CITY_DESC}`))),
+	region: v.optional(v.pipe(regionSchema, v.description(`Replace the region. ${REGION_DESC}`))),
+	postcode: v.optional(v.nullable(v.pipe(postcodeSchema, v.description(POSTCODE_DESC)))),
+	country: v.optional(
+		v.pipe(countryPartSchema, v.description(`Replace the country. ${COUNTRY_DESC}`))
 	),
 	phone: v.optional(v.nullable(v.string())),
 	website: v.optional(v.nullable(v.string())),
@@ -801,8 +903,9 @@ const tools = [
 		description:
 			'Create one or more locations in a single atomic batch (all-or-nothing) — the only way to add ' +
 			'locations; pass a one-item `items` array to add a single place. Every location REQUIRES a ' +
-			"street address — pass the candidate's OSM/Overture `address` verbatim (never geocode or invent " +
-			'one); the call is rejected if any address is missing or is just a number/postcode. For a chain branch, set ' +
+			"structured address — split the candidate's OSM/Overture address into `street`, `city`, `region`, " +
+			'`country` (all required) and `postcode` (optional); never geocode or invent parts. region/postcode/' +
+			'country are normalized for you (e.g. "Ontario" → "ON"). For a chain branch, set ' +
 			'`menu_id` (and `brand_id`) on the item so it serves that shared menu; for an independent venue ' +
 			'omit them and add its menu with create_foods. Cite each source (encouraged), e.g. the osm_url ' +
 			'from search_poi. Ideal for bulk imports like backfilling a chain across a region. Use each ' +
@@ -829,7 +932,7 @@ const tools = [
 					category: it.category ?? null,
 					latitude: it.latitude,
 					longitude: it.longitude,
-					address: it.address ?? null,
+					...normalizeAddressParts(it),
 					phone: it.phone ?? null,
 					website: it.website ?? null,
 					brand_id: it.brand_id ?? null,
@@ -847,9 +950,10 @@ const tools = [
 			'given it replaces the whole source set (pass [] to clear). Set `menu_id`/`brand_id` to attach the ' +
 			'branch to a chain menu, or null to detach it. Returns the updated row, or null if the id does not exist.',
 		schema: updateLocationArgs,
-		handler: async ({ id, sources, ...patch }) => {
+		handler: async ({ id, sources, street, city, region, postcode, country, ...patch }) => {
 			await assertBrandMenuRefs(patch.brand_id, patch.menu_id);
-			return updateLocation(getDb(), id, { ...patch, sources: normalizeSources(sources) });
+			const addr = normalizeAddressPatch({ street, city, region, postcode, country });
+			return updateLocation(getDb(), id, { ...patch, ...addr, sources: normalizeSources(sources) });
 		}
 	}),
 	defineTool({
