@@ -7,7 +7,6 @@
 	import {
 		getCurrentUser,
 		getLikes,
-		getRecentSearches,
 		setLocationLiked,
 		setItemLiked,
 		logSearch
@@ -19,7 +18,7 @@
 	import LikeButton from '$lib/components/LikeButton.svelte';
 	import Search from '@lucide/svelte/icons/search';
 	import { categoryLabel, type Category } from '$lib/category';
-	import type { MapData, MapLocation, Item, Bounds, Tag, SearchHistoryEntry } from '$lib/server/db';
+	import type { MapData, MapLocation, Item, Bounds, Tag } from '$lib/server/db';
 
 	// The visible map area, reported by <LocationMap> (debounced) as the user pans
 	// and zooms, plus once on load. This is the ONLY thing that decides which data
@@ -353,12 +352,11 @@
 		place.trim() !== '' || item.trim() !== '' || included.length > 0 || excluded.length > 0
 	);
 
-	// --- Account, likes & search history --------------------------------------
+	// --- Account & likes -------------------------------------------------------
 	// The signed-in user (null when signed out) drives the account control and gates
-	// the like buttons. Likes and recent searches are read only when signed in.
+	// the like buttons. Likes are read only when signed in.
 	const user = $derived(await getCurrentUser());
 	const serverLikes = $derived(user ? await getLikes() : { locationIds: [], itemIds: [] });
-	const recentSearches = $derived(user ? await getRecentSearches() : []);
 
 	// Optimistic like state: a pending map of just-toggled ids layered over the
 	// server set, so a tap reflects instantly without waiting on the round trip (and
@@ -396,18 +394,11 @@
 		setItemLiked({ itemId: id, liked: !liked }).catch(() => pendingItemLikes.set(id, liked));
 	}
 
-	// Re-apply a past search picked in the account menu: restore the four filters.
-	function applySearch(entry: SearchHistoryEntry) {
-		place = entry.place;
-		item = entry.item;
-		included = entry.included;
-		excluded = entry.excluded;
-	}
-
 	// Auto-log each search a signed-in user runs. Debounced so a burst of keystrokes
 	// logs once it settles, and de-duplicated so an unchanged query isn't re-logged.
-	// Fire-and-forget telemetry powering the "recent searches" list (uncapped server
-	// side for now); `logSearch` is a no-op server-side when signed out.
+	// The history feeds the tag pickers' suggestions; `logSearch` refreshes those
+	// queries server-side (single-flight), so there's nothing to do here on success.
+	// It's a no-op server-side when signed out.
 	let lastLoggedSearch = '';
 	$effect(() => {
 		if (!user || !hasQuery) return;
@@ -421,9 +412,7 @@
 		if (signature === lastLoggedSearch) return;
 		const timer = setTimeout(() => {
 			lastLoggedSearch = signature;
-			logSearch(payload)
-				.then(() => getRecentSearches().refresh())
-				.catch(() => {});
+			logSearch(payload).catch(() => {});
 		}, 1000);
 		return () => clearTimeout(timer);
 	});
@@ -578,7 +567,7 @@
 	     free over the map, laid out as a horizontal row. On narrow screens the row
 	     collapses behind the "Filters" toggle. -->
 	<div class="searchbar" role="search" aria-label="Search and filters">
-		<AccountMenu {user} {recentSearches} onApplySearch={applySearch} />
+		<AccountMenu {user} />
 
 		<!-- Shown only on narrow screens (CSS): collapses the items to free the map. -->
 		<button

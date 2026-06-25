@@ -1,23 +1,17 @@
 <script lang="ts">
 	import LogIn from '@lucide/svelte/icons/log-in';
 	import LogOut from '@lucide/svelte/icons/log-out';
-	import Clock from '@lucide/svelte/icons/clock';
 	import { resolve } from '$app/paths';
 	import { signOut } from '$lib/user.remote';
-	import type { User, SearchHistoryEntry } from '$lib/server/db';
+	import type { User } from '$lib/server/db';
 
 	// The account control: a "Sign in" pill when signed out, or an avatar that opens
-	// a popover (name, recent searches, sign out) when signed in. It owns only its
-	// open/closed state and the sign-out call; the parent supplies the user and the
-	// recent-search list and decides what re-applying a search does.
+	// a popover (name, sign out) when signed in. It owns only its open/closed state
+	// and the sign-out call; the parent supplies the user.
 	let {
-		user,
-		recentSearches,
-		onApplySearch
+		user
 	}: {
 		user: User | null;
-		recentSearches: SearchHistoryEntry[];
-		onApplySearch: (entry: SearchHistoryEntry) => void;
 	} = $props();
 
 	let open = $state(false);
@@ -39,21 +33,6 @@
 		await signOut();
 		// Re-run the load so locals.user (and every user-scoped query) resets cleanly.
 		location.reload();
-	}
-
-	function applyAndClose(entry: SearchHistoryEntry) {
-		onApplySearch(entry);
-		open = false;
-	}
-
-	/** A compact, human description of a logged search for the recent list. */
-	function summarize(entry: SearchHistoryEntry): string {
-		const parts: string[] = [];
-		if (entry.place.trim()) parts.push(`“${entry.place.trim()}”`);
-		if (entry.item.trim()) parts.push(entry.item.trim());
-		for (const tag of entry.included) parts.push(tag.name);
-		for (const tag of entry.excluded) parts.push(`no ${tag.name}`);
-		return parts.join(' · ') || 'All places';
 	}
 </script>
 
@@ -82,30 +61,6 @@
 					<span class="account__header-name">{user.name ?? 'Signed in'}</span>
 					{#if user.email}
 						<span class="account__header-email">{user.email}</span>
-					{/if}
-				</div>
-
-				<div class="account__section">
-					<p class="account__section-title">
-						<Clock size={13} aria-hidden="true" />
-						Recent searches
-					</p>
-					{#if recentSearches.length === 0}
-						<p class="account__empty">Your searches will show up here.</p>
-					{:else}
-						<ul class="account__searches">
-							{#each recentSearches as entry (entry.id)}
-								<li>
-									<button
-										type="button"
-										class="account__search"
-										onclick={() => applyAndClose(entry)}
-									>
-										{summarize(entry)}
-									</button>
-								</li>
-							{/each}
-						</ul>
 					{/if}
 				</div>
 
@@ -195,7 +150,6 @@
 		flex-direction: column;
 		gap: 0.1rem;
 		padding: 0.4rem 0.5rem 0.5rem;
-		border-bottom: 1px solid rgba(0, 0, 0, 0.08);
 	}
 
 	.account__header-name {
@@ -209,60 +163,6 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-	}
-
-	.account__section {
-		padding: 0.5rem 0.25rem;
-	}
-
-	.account__section-title {
-		display: flex;
-		align-items: center;
-		gap: 0.35rem;
-		margin: 0 0 0.35rem;
-		padding: 0 0.25rem;
-		font-size: 0.72rem;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		color: rgba(0, 0, 0, 0.5);
-	}
-
-	.account__empty {
-		margin: 0;
-		padding: 0 0.25rem;
-		font-size: 0.82rem;
-		color: rgba(0, 0, 0, 0.5);
-	}
-
-	.account__searches {
-		list-style: none;
-		margin: 0;
-		padding: 0;
-		display: flex;
-		flex-direction: column;
-		max-height: 14rem;
-		overflow-y: auto;
-	}
-
-	.account__search {
-		display: block;
-		width: 100%;
-		padding: 0.4rem 0.45rem;
-		border: none;
-		border-radius: 0.5rem;
-		background: transparent;
-		color: inherit;
-		font: inherit;
-		font-size: 0.84rem;
-		text-align: left;
-		cursor: pointer;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.account__search:hover {
-		background: rgba(0, 0, 0, 0.06);
 	}
 
 	.account__signout {

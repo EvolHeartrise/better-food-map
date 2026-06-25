@@ -1492,17 +1492,6 @@ export interface UserLikes {
 	itemIds: string[];
 }
 
-/** One logged search, with its tag filters rehydrated from JSON. */
-export interface SearchHistoryEntry {
-	id: string;
-	place: string;
-	item: string;
-	included: Tag[];
-	excluded: Tag[];
-	/** When it was logged, as Unix milliseconds. */
-	created_at: number;
-}
-
 /** The Google profile fields stored on a user, refreshed on each sign-in. */
 export interface OAuthProfile {
 	email: string | null;
@@ -1763,62 +1752,92 @@ export async function logSearch(db: D1Like, entry: SearchLogEntry): Promise<void
 }
 
 /**
- * Hard cap on how many history rows {@link getSearchHistory} returns. The history
- * table is uncapped (migration 0007), but the "recent searches" UI only needs the
- * latest few; this bounds the read.
+ * Hard cap on how many tag suggestions {@link getTagSuggestions} returns for one
+ * picker — bounding both the default (empty-query) list and the popularity
+ * re-rank of typed results. Mirrored on the client only to size the rank map;
+ * this module stays the source of truth for the value.
  */
-export const SEARCH_HISTORY_LIMIT = 20;
+export const TAG_SUGGESTION_LIMIT = 30;
 
-/** Parses a stored tag-filter JSON blob back to a {@link Tag} list, tolerating junk. */
-function parseStoredTags(raw: string): Tag[] {
-	try {
-		const value: unknown = JSON.parse(raw);
-		if (!Array.isArray(value)) return [];
-		return value.filter(
-			(t): t is Tag =>
-				typeof t === 'object' &&
-				t !== null &&
-				typeof (t as Tag).id === 'string' &&
-				typeof (t as Tag).name === 'string' &&
-				((t as Tag).tag_type === 'dietary' ||
-					(t as Tag).tag_type === 'course' ||
-					(t as Tag).tag_type === 'ingredient')
-		);
-	} catch {
-		return [];
-	}
-}
+/** Which half of the tag filter a suggestion is for: the include set or the exclude set. */
+export type TagFilterMode = 'include' | 'exclude';
 
-/** Returns a user's most recent searches, newest first (see {@link SEARCH_HISTORY_LIMIT}). */
-export async function getSearchHistory(
+/**
+ * Suggests tags for one tag-filter picker, mined from the searches users have run
+ * ({@link logSearch}). For `mode` it reads that column of `search_history`
+ * (`included_tags` for 'include', `excluded_tags` for 'exclude'), so the two
+ * pickers draw on SEPARATE popularity pools — a tag people frequently EXCLUDE
+ * doesn't bubble up in the INCLUDE picker.
+ *
+ * Ordering: the signed-in user's own tags in this mode first, most-recently-used
+ * first; then the globally most-searched tags in this mode by frequency; then
+ * alphabetical as a stable tiebreak. De-duplicated across the two tiers and
+ * capped at {@link TAG_SUGGESTION_LIMIT}. A null `userId` (signed out) drops the
+ * personal tier, leaving just the global popularity ranking.
+ *
+ * Each stored tag is JSON ({id,name,tag_type}); `json_each` expands the array and
+ * each element is JOINed to the live `tags` row by id — so a tag since deleted is
+ * dropped, and a since-renamed one shows its current name. The tag pickers are the
+ * only consumer; an empty result (a fresh database with no matching history) is
+ * expected and simply surfaces nothing until searches accrue.
+ */
+export async function getTagSuggestions(
 	db: D1Like,
-	userId: string,
-	limit = SEARCH_HISTORY_LIMIT
-): Promise<SearchHistoryEntry[]> {
-	// Interpolated rather than bound (as elsewhere in this module), so coerce to a
-	// non-negative integer first: unlike the trusted literals MAP_RESULT_LIMIT /
-	// TAG_SEARCH_LIMIT, `limit` is a public parameter.
+	userId: string | null,
+	mode: TagFilterMode,
+	limit = TAG_SUGGESTION_LIMIT
+): Promise<Tag[]> {
+	// The column is a trusted literal chosen by `mode`, never user input, so it is
+	// interpolated (matching the LIMIT convention in this module); the user id and
+	// every other user value below is bound.
+	const column = mode === 'include' ? 'included_tags' : 'excluded_tags';
 	const safeLimit = Math.max(0, Math.trunc(limit));
-	const { results } = await db
-		.prepare(
-			`SELECT id, place, item, included_tags, excluded_tags, created_at
-			 FROM search_history WHERE user_id = ? ORDER BY created_at DESC LIMIT ${safeLimit}`
-		)
-		.bind(userId)
-		.all<{
-			id: string;
-			place: string;
-			item: string;
-			included_tags: string;
-			excluded_tags: string;
-			created_at: number;
-		}>();
-	return results.map((row) => ({
-		id: row.id,
-		place: row.place,
-		item: row.item,
-		included: parseStoredTags(row.included_tags),
-		excluded: parseStoredTags(row.excluded_tags),
-		created_at: row.created_at
-	}));
+	if (safeLimit === 0) return [];
+
+	// Global popularity in this mode: expand each logged search's JSON tag array,
+	// tally rows by tag id, and resolve each to its live tag row.
+	const popularStmt = db.prepare(
+		`SELECT t.id AS id, t.name AS name, t.tag_type AS tag_type, COUNT(*) AS n
+		 FROM search_history sh, json_each(sh.${column}) j
+		 JOIN tags t ON t.id = json_extract(j.value, '$.id')
+		 GROUP BY t.id
+		 ORDER BY n DESC, t.name
+		 LIMIT ${safeLimit}`
+	);
+
+	// The signed-in user's own tags in this mode, most-recently-used first.
+	const recentStmt =
+		userId === null
+			? null
+			: db
+					.prepare(
+						`SELECT t.id AS id, t.name AS name, t.tag_type AS tag_type,
+						        MAX(sh.created_at) AS last_used
+						 FROM search_history sh, json_each(sh.${column}) j
+						 JOIN tags t ON t.id = json_extract(j.value, '$.id')
+						 WHERE sh.user_id = ?
+						 GROUP BY t.id
+						 ORDER BY last_used DESC
+						 LIMIT ${safeLimit}`
+					)
+					.bind(userId);
+
+	const [{ results: popular }, recent] = await Promise.all([
+		popularStmt.all<Tag & { n: number }>(),
+		recentStmt
+			? recentStmt.all<Tag & { last_used: number }>().then((r) => r.results)
+			: Promise.resolve<Tag[]>([])
+	]);
+
+	// Personal-recent first, then global-popular, de-duplicated, capped. Strip the
+	// ranking columns (n / last_used) back to a bare Tag.
+	const merged: Tag[] = [];
+	const seen = new Set<string>();
+	for (const tag of [...recent, ...popular]) {
+		if (seen.has(tag.id)) continue;
+		seen.add(tag.id);
+		merged.push({ id: tag.id, name: tag.name, tag_type: tag.tag_type });
+		if (merged.length >= safeLimit) break;
+	}
+	return merged;
 }
