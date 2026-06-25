@@ -1,11 +1,11 @@
 import * as v from 'valibot';
 import { query, getRequestEvent } from '$app/server';
-import { requireDb as db } from '$lib/server/context';
+import { requireDb as db, currentUser } from '$lib/server/context';
 import {
 	getMapData,
 	getLocationMapData,
-	getAllTags,
 	searchTagVocabulary,
+	getTagSuggestions as getTagSuggestionsFromDb,
 	getBrands as getBrandsFromDb,
 	type Tag,
 	type Brand,
@@ -58,15 +58,6 @@ export const getBrands = query(async (): Promise<Brand[]> => {
 });
 
 /**
- * Returns the canonical, app-defined dietary/course tag list (the 8 curated
- * tags). Used as the tag filter's default options — what the picker shows before
- * the user types. Tags are not user-authored, so this needs no database read.
- */
-export const getTags = query(async (): Promise<Tag[]> => {
-	return getAllTags();
-});
-
-/**
  * Searches the full tag vocabulary (curated dietary/course tags AND the
  * ingredient tags created from item data) by name substring, ranked and capped
  * (see {@link searchTagVocabulary}). Backs the tag filter's searchable picker:
@@ -77,6 +68,22 @@ export const getTags = query(async (): Promise<Tag[]> => {
 export const searchTags = query(v.string(), async (q): Promise<Tag[]> => {
 	return searchTagVocabulary(db(), q);
 });
+
+/**
+ * Suggested tags for one tag-filter picker (`include` or `exclude`) — the list
+ * it shows before the user types, and the popularity signal it re-ranks typed
+ * results by. Drawn from logged searches: the tags most searched in that mode
+ * across all users, with the signed-in user's own recently-used tags floated to
+ * the front (see {@link getTagSuggestionsFromDb}). Empty when no history matches
+ * (e.g. a fresh database), in which case the picker simply waits for a query.
+ */
+export const getTagSuggestions = query(
+	v.picklist(['include', 'exclude']),
+	async (mode): Promise<Tag[]> => {
+		const user = currentUser();
+		return getTagSuggestionsFromDb(db(), user?.id ?? null, mode);
+	}
+);
 
 /**
  * Best-effort opening location for the map, from Cloudflare's edge IP

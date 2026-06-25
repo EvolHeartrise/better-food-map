@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { getTags, searchTags } from '$lib/data.remote';
+	import { getTagSuggestions, searchTags } from '$lib/data.remote';
 	import type { Tag } from '$lib/server/db';
 	import type { Attachment } from 'svelte/attachments';
 	import FoodTag from '$lib/components/FoodTag.svelte';
@@ -51,39 +51,51 @@
 	// The highlighted option for keyboard navigation; -1 means "nothing highlighted".
 	let activeIndex = $state(-1);
 
-	// The curated dietary/course tags, shown as the default option list before the
-	// user types. Fetched once; cheap and static server-side.
-	let defaultTags = $state<Tag[]>([]);
+	// The default option list, shown before the user types: tags mined from search
+	// history for THIS picker's mode — the most-searched tags across all users, with
+	// the current user's recently-used tags first (see getTagSuggestions). Read via
+	// `.current` so it's non-suspending (the field renders immediately) and updates
+	// in place when `logSearch` refreshes the query after a search. May be empty on a
+	// fresh database with no matching history yet.
+	const suggestionsResource = $derived(getTagSuggestions(mode));
 	$effect(() => {
-		getTags().then((tags) => (defaultTags = tags));
+		// Touch the resource so its fetch starts on mount, not on first focus (the
+		// list is otherwise only read inside the open dropdown).
+		void suggestionsResource.current;
 	});
+	const suggestions: Tag[] = $derived(suggestionsResource.current ?? []);
+	// A tag's position in the suggestion list (lower = more popular / more recent for
+	// this user). Used to re-order typed search results so the most-searched matches
+	// surface first.
+	const suggestionRank: Map<string, number> = $derived(
+		new Map(suggestions.map((tag, index) => [tag.id, index]))
+	);
 
-	// Server search results for the current (debounced) query. `loading` covers the
-	// gap between a keystroke and its results so the list can say so.
+	// Server search results for the current (debounced) query, plus the query they
+	// were fetched for — so we can tell results that match the current query from a
+	// search still in flight (see `displayed` below). The empty query fetches
+	// nothing; it shows the suggestion list instead. Results are deliberately NOT
+	// cleared between queries, so the last set stays available to display while the
+	// next one loads.
 	let results = $state<Tag[]>([]);
-	let loading = $state(false);
+	let resultsQuery = $state<string | null>(null);
 	$effect(() => {
 		const q = query.trim();
 		// A new query invalidates the old highlight.
 		activeIndex = -1;
-		if (q === '') {
-			results = [];
-			loading = false;
-			return;
-		}
-		loading = true;
+		if (q === '') return;
 		let cancelled = false;
 		const timer = setTimeout(() => {
 			searchTags(q)
 				.then((tags) => {
 					if (cancelled) return;
 					results = tags;
-					loading = false;
+					resultsQuery = q;
 				})
 				.catch(() => {
 					if (cancelled) return;
 					results = [];
-					loading = false;
+					resultsQuery = q;
 				});
 		}, SEARCH_DEBOUNCE_MS);
 		return () => {
@@ -92,15 +104,53 @@
 		};
 	});
 
-	// With no query the curated tags are offered; once searching, the server
-	// results. Either way, tags already chosen on either side (`reservedIds`) are
-	// dropped: the picker that holds one shows it as a chip, and the other must not
-	// offer it — that mutual exclusion is what keeps include/exclude consistent.
-	const matches = $derived(query.trim() === '' ? defaultTags : results);
-	const options = $derived(matches.filter((tag) => !reservedIds.has(tag.id)));
+	// Typed results, re-ranked by the same popularity/recency signal as the default
+	// list (so "the searching process" surfaces most-searched matches first): an
+	// exact name match stays pinned to the top — typing a tag's full name should
+	// always surface it — then suggested tags by their rank, then the server's own
+	// relevance order for the rest (preserved by the stable sort).
+	const rankedResults = $derived.by(() => {
+		const q = query.trim().toLowerCase();
+		if (q === '') return results;
+		return results.toSorted((a, b) => {
+			const aExact = a.name.toLowerCase() === q ? 0 : 1;
+			const bExact = b.name.toLowerCase() === q ? 0 : 1;
+			if (aExact !== bExact) return aExact - bExact;
+			const aRank = suggestionRank.get(a.id) ?? Number.POSITIVE_INFINITY;
+			const bRank = suggestionRank.get(b.id) ?? Number.POSITIVE_INFINITY;
+			return aRank - bRank;
+		});
+	});
+
+	// The list the dropdown actually renders. It's "sticky": when the query changes,
+	// the previously shown list stays put and is only swapped once the new data is
+	// ready — rather than blanking to a "Searching…"/empty state mid-search. With no
+	// query that list is the history-derived suggestions; once the search for the
+	// current query has come back, the re-ranked results. While a search is in flight
+	// `displayed` is left untouched, so the first keystroke after focus keeps the
+	// suggestion list up and refining a search keeps its prior results up, until the
+	// new results land.
+	let displayed = $state<Tag[]>([]);
+	$effect(() => {
+		const q = query.trim();
+		if (q === '') {
+			displayed = suggestions;
+		} else if (resultsQuery === q) {
+			displayed = rankedResults;
+		}
+		// else: results for `q` are still loading — leave `displayed` as it is.
+	});
+
+	// Tags already chosen on either side (`reservedIds`) are dropped: the picker that
+	// holds one shows it as a chip, and the other must not offer it — that mutual
+	// exclusion is what keeps include/exclude consistent.
+	const options = $derived(displayed.filter((tag) => !reservedIds.has(tag.id)));
 	// Distinct from "nothing matched" so the hint can say so rather than mislead.
-	const allMatchesReserved = $derived(matches.length > 0 && options.length === 0);
-	const capped = $derived(query.trim() !== '' && results.length >= MAX_RESULTS);
+	const allMatchesReserved = $derived(displayed.length > 0 && options.length === 0);
+	// True once the current query's results are in (or there's no query) — lets the
+	// "no matches" hint wait for the search instead of flashing before it returns.
+	const searchSettled = $derived(query.trim() === '' || resultsQuery === query.trim());
+	const capped = $derived(searchSettled && query.trim() !== '' && results.length >= MAX_RESULTS);
 
 	// Each option row carries its tag type as a label to its right, rather than
 	// splitting the list into "Dietary" / "Type" / "Ingredients" sections.
@@ -113,7 +163,7 @@
 	function selectTag(tag: Tag): void {
 		selected = [...selected, tag];
 		// Clear the query so the field is ready for the next tag and the dropdown
-		// falls back to the curated list; keep focus and the panel open.
+		// falls back to the suggestion list; keep focus and the panel open.
 		query = '';
 		activeIndex = -1;
 		searchEl?.focus();
@@ -230,7 +280,7 @@
 	}
 
 	// Closing also clears the query, so the field falls back to its placeholder and
-	// a later reopen starts fresh from the curated tag list.
+	// a later reopen starts fresh from the suggestion list.
 	function closePanel(): void {
 		open = false;
 		query = '';
@@ -325,18 +375,19 @@
 			aria-label={`${LABEL} tag results`}
 			style="top: {panelTop}px; left: {panelLeft}px; width: {panelWidth}px; --picker-accent: {accentColor};"
 		>
-			{#if loading && options.length === 0}
-				<p class="combo__hint">Searching…</p>
-			{:else if options.length === 0}
-				<p class="combo__hint">
-					{#if allMatchesReserved}
-						Every matching tag is already in your filters.
-					{:else if query.trim() === ''}
-						Type to search tags.
-					{:else}
-						No tags match your search.
-					{/if}
-				</p>
+			{#if options.length === 0}
+				<!-- No "Searching…" state: while a search is in flight `displayed` keeps the
+				     previous list up, so an empty list here means we've settled on nothing to
+				     show. The "no matches" line waits for the search via `searchSettled`, so it
+				     can't flash before results return; a pending first search with no list to
+				     fall back to simply shows nothing. -->
+				{#if allMatchesReserved}
+					<p class="combo__hint">Every matching tag is already in your filters.</p>
+				{:else if query.trim() === ''}
+					<p class="combo__hint">Type to search tags.</p>
+				{:else if searchSettled}
+					<p class="combo__hint">No tags match your search.</p>
+				{/if}
 			{:else}
 				<ul class="combo__options">
 					{#each options as tag, index (tag.id)}
