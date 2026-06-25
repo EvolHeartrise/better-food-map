@@ -27,5 +27,11 @@ export default defineConfig({
 				}
 			}
 		})
-	]
+	],
+	server: {
+		// Dev server port. The Google OAuth callback is derived from this origin
+		// (http://localhost:5050/auth/callback/google in dev), so keep it in step
+		// with the redirect URI registered in the Google console (see .dev.vars).
+		port: 5050
+	}
 });
