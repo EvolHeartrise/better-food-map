@@ -6,11 +6,10 @@ import {
 	setLocationLike,
 	setItemLike,
 	logSearch as logSearchToDb,
-	getSearchHistory,
 	type User,
-	type UserLikes,
-	type SearchHistoryEntry
+	type UserLikes
 } from '$lib/server/db';
+import { getTagSuggestions } from '$lib/data.remote';
 import { SESSION_COOKIE, clearSessionCookie, invalidateSessionToken } from '$lib/server/auth';
 
 /**
@@ -66,7 +65,12 @@ const SearchSchema = v.object({
 /**
  * Auto-logs a search to the signed-in user's history (uncapped — see migration
  * 0007). A no-op when signed out, so the client can fire it without first checking
- * auth; it's best-effort telemetry, not a user-visible action.
+ * auth. The history is what feeds the tag pickers' suggestions, so after a
+ * successful log we refresh both pickers' suggestion queries on the server and
+ * ship the updated lists back in this same response (a single-flight mutation —
+ * the args are fixed, so the matching client instances are known). That surfaces
+ * the user's just-used tags without a second round trip; the framework awaits the
+ * refreshes before responding, so the returned promises are safe to discard.
  */
 export const logSearch = command(SearchSchema, async (entry) => {
 	const user = currentUser();
@@ -80,13 +84,8 @@ export const logSearch = command(SearchSchema, async (entry) => {
 		excluded: entry.excluded,
 		createdAt: Date.now()
 	});
-});
-
-/** The signed-in user's most recent searches (newest first), or empty when signed out. */
-export const getRecentSearches = query(async (): Promise<SearchHistoryEntry[]> => {
-	const user = currentUser();
-	if (!user) return [];
-	return getSearchHistory(requireDb(), user.id);
+	void getTagSuggestions('include').refresh();
+	void getTagSuggestions('exclude').refresh();
 });
 
 /** Signs out: invalidates the session row and clears the cookie. */
