@@ -24,7 +24,7 @@
 	// and zooms, plus once on load. This is the ONLY thing that decides which data
 	// we fetch — the area filter is now "whatever's on screen". Null until the map
 	// has mounted and reported its opening view.
-	let viewport = $state<{ bounds: Bounds; zoom: number } | null>(null);
+	let viewport = $state<Bounds | null>(null);
 
 	// The server caps each viewport read at this many locations (see
 	// MAP_RESULT_LIMIT in $lib/server/db). That cap — not a minimum zoom — is what
@@ -41,7 +41,7 @@
 
 	$effect(() => {
 		if (!viewport) return;
-		const bounds = viewport.bounds;
+		const bounds = viewport;
 		let cancelled = false;
 		getLocations(bounds).then((data) => {
 			if (!cancelled) mapData = data;
@@ -558,7 +558,7 @@
 			selected={selectedLocation}
 			onselect={selectLocation}
 			{initialCenter}
-			onviewchange={(view) => (viewport = view)}
+			onviewchange={(bounds) => (viewport = bounds)}
 		/>
 	</div>
 

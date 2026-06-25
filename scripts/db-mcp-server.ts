@@ -1290,8 +1290,9 @@ const osmTools = [
 			'should come from. Flags any location whose stored address is empty (`reason: "missing"`) or — ' +
 			'unless include_incomplete=false — a streetless fragment like a bare house number/postcode ' +
 			'(`reason: "incomplete"`). Each entry is classified by what can be done: `osm_fix_available` ' +
-			'(a name-matching OSM POI nearby HAS an address — pass its `osm_address` VERBATIM to ' +
-			'update_location and cite `osm_url`), `osm_has_no_address` (matched a POI, but it too lacks one ' +
+			'(a name-matching OSM POI nearby HAS an address — pass its structured `osm_address_parts` to ' +
+			'update_location, or split the `osm_address` preview into parts when `osm_address_parts` is ' +
+			'absent, and cite `osm_url`), `osm_has_no_address` (matched a POI, but it too lacks one ' +
 			'— needs another source), or `no_osm_match` (no name-matching POI within search_radius_m). ' +
 			'Results are actionable-first; set include_unfixable=false for just the OSM-fixable work list. ' +
 			'`limit` caps how many are returned, `additional` is how many more were flagged beyond it, and ' +

@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { findMissingAddress, isUsableAddress } from './find-missing-address';
+import { findMissingAddress, usableAddress } from './find-missing-address';
 import { OsmPoiStore } from './poi-store';
 import type { PoiRow } from './map-feature';
 import type { D1Like, D1PreparedLike } from '../../src/lib/server/db';
@@ -130,14 +130,50 @@ function fixture() {
 	return { store, db };
 }
 
-test('isUsableAddress flags streetless fragments but keeps real addresses', () => {
-	expect(isUsableAddress('12 Main St')).toBe(true);
-	expect(isUsableAddress('東京都港区1-2-3')).toBe(true); // letters in a non-Latin script
-	expect(isUsableAddress('31')).toBe(false);
-	expect(isUsableAddress('90210')).toBe(false);
-	expect(isUsableAddress('')).toBe(false);
-	expect(isUsableAddress('   ')).toBe(false);
-	expect(isUsableAddress(null)).toBe(false);
+test('usableAddress keeps real addresses (trimmed) and rejects streetless fragments', () => {
+	expect(usableAddress('12 Main St')).toBe('12 Main St');
+	expect(usableAddress('  12 Main St  ')).toBe('12 Main St');
+	expect(usableAddress('東京都港区1-2-3')).toBe('東京都港区1-2-3'); // letters in a non-Latin script
+	expect(usableAddress('31')).toBeNull();
+	expect(usableAddress('90210')).toBeNull();
+	expect(usableAddress('')).toBeNull();
+	expect(usableAddress('   ')).toBeNull();
+	expect(usableAddress(null)).toBeNull();
+});
+
+test('osm_address_parts is surfaced from the matched POI’s own addr:* tags', async () => {
+	const store = storeWith([
+		row({
+			osm_id: 'n40',
+			latitude: 49.284,
+			longitude: -123.124,
+			name: 'Sushi Bar',
+			address: '100-6485 120 St, Surrey, BC V3R 0N3',
+			tags_json: JSON.stringify({
+				'addr:unit': '100',
+				'addr:housenumber': '6485',
+				'addr:street': '120 St',
+				'addr:city': 'Surrey',
+				'addr:state': 'BC',
+				'addr:postcode': 'V3R 0N3',
+				'addr:country': 'CA'
+			})
+		})
+	]);
+	const db = fakeD1([
+		{ id: 'S', name: 'Sushi Bar', latitude: 49.284, longitude: -123.124, ...NO_ADDR }
+	]);
+	const res = await findMissingAddress(store, db, {});
+	const s = res.locations[0];
+	expect(s.classification).toBe('osm_fix_available');
+	expect(s.osm_address_parts).toEqual({
+		street: '100-6485 120 St',
+		city: 'Surrey',
+		region: 'BC',
+		postcode: 'V3R 0N3',
+		country: 'CA'
+	});
+	store.close();
 });
 
 test('classifies missing/incomplete addresses by what OSM can supply', async () => {
@@ -159,6 +195,7 @@ test('classifies missing/incomplete addresses by what OSM can supply', async () 
 	expect(b.reason).toBe('missing');
 	expect(b.current_address).toBeNull();
 	expect(b.osm_address).toBe('12 Main St');
+	expect(b.osm_address_parts).toBeUndefined(); // POI carries no addr:* tags → no structured parts
 	expect(b.osm_url).toBe('https://www.openstreetmap.org/node/10');
 	expect(b.matched_osm_name).toBe('Joe Coffee');
 

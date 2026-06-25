@@ -7,17 +7,19 @@
 // (see CLAUDE.md "Location coordinates must be OSM-based"). A location imported
 // from OSM sits ~0 m from its staging POI, so the POI that NAME-matches it nearby
 // is the one its address should come from. For each flagged location this finds
-// that POI and returns its composed `osm_address` (plus `osm_url` to cite) ready
-// to pass straight to update_location — or reports that OSM has no address to
-// give (the POI is itself addressless, or there is no name-matching POI nearby).
+// that POI and returns its structured `osm_address_parts` (street/city/region/
+// postcode/country, ready for update_location) — plus a single-line `osm_address`
+// preview and `osm_url` to cite — or reports that OSM has no address to give (the
+// POI is itself addressless, or there is no name-matching POI nearby).
 //
 // Like find_coordinate_drift, the only non-deterministic input is the single D1
 // read; the matching itself is offline against the staging store.
 // ---------------------------------------------------------------------------
 
 import type { D1Like } from '../../src/lib/server/db';
-import { osmUrl } from './map-feature';
-import type { OsmPoiStore } from './poi-store';
+import { composeAddressLine } from '../../src/lib/address';
+import { osmAddressParts, osmUrl } from './map-feature';
+import type { OsmPoiStore, StoredPoi } from './poi-store';
 import { LOCATION_AUDIT, nearestNameMatch } from './poi-match';
 
 export interface FindMissingAddressParams {
@@ -62,7 +64,23 @@ export interface MissingAddressLocation {
 	 *   'no_osm_match'       — no name-matching OSM POI within search_radius_m.
 	 */
 	classification: 'osm_fix_available' | 'osm_has_no_address' | 'no_osm_match';
-	/** The address to pass VERBATIM to update_location (osm_fix_available only). */
+	/**
+	 * Structured parts to pass to update_location (osm_fix_available only, and only
+	 * when the matched POI carries its OWN `addr:*` tags — present is preferred over
+	 * splitting `osm_address` by hand). The server normalizes region/postcode/country,
+	 * so pass the parts through unchanged. May be partial (e.g. no country); supply
+	 * any still-missing required part yourself. Absent when the address came from an
+	 * external feed or a containing building rather than the POI's own tags — then
+	 * split `osm_address` into parts yourself.
+	 */
+	osm_address_parts?: Partial<
+		Record<'street' | 'city' | 'region' | 'postcode' | 'country', string>
+	>;
+	/**
+	 * A single-line preview of the matched OSM address (osm_fix_available only).
+	 * Prefer `osm_address_parts` for update_location; fall back to splitting this
+	 * into structured parts when `osm_address_parts` is absent.
+	 */
 	osm_address?: string;
 	/**
 	 * Where `osm_address` came from (osm_fix_available only): null/absent = the
@@ -125,8 +143,27 @@ export function usableAddress(address: string | null | undefined): string | null
 	return trimmed !== '' && /\p{L}/u.test(trimmed) ? trimmed : null;
 }
 
-export function isUsableAddress(address: string | null | undefined): boolean {
-	return usableAddress(address) !== null;
+/**
+ * The matched POI's OWN address parts (from its `addr:*` tags), as a ready-to-pass
+ * update_location patch — or undefined when the POI carries no addr:* tags (its
+ * address came from an enrichment feed or a containing building, not its own tags),
+ * in which case the caller exposes only the single-line `osm_address`.
+ */
+function osmFixParts(poi: StoredPoi): MissingAddressLocation['osm_address_parts'] {
+	let props: Record<string, string>;
+	try {
+		props = JSON.parse(poi.tags_json) as Record<string, string>;
+	} catch {
+		return undefined;
+	}
+	const parts = osmAddressParts(props);
+	const out: NonNullable<MissingAddressLocation['osm_address_parts']> = {};
+	if (parts.street) out.street = parts.street;
+	if (parts.city) out.city = parts.city;
+	if (parts.region) out.region = parts.region;
+	if (parts.postcode) out.postcode = parts.postcode;
+	if (parts.country) out.country = parts.country;
+	return Object.keys(out).length ? out : undefined;
 }
 
 /** The REQUIRED structured parts (street/city/region/country) that are absent. */
@@ -146,13 +183,7 @@ export function missingRequiredParts(row: {
 
 /** Best-effort single-line view of whatever parts are stored (for diagnostics). */
 function displayParts(row: LocationRow): string | null {
-	const regionAndPostcode = row.postcode
-		? `${(row.region ?? '').trim()} ${row.postcode}`.trim()
-		: row.region;
-	const parts = [row.street, row.city, regionAndPostcode]
-		.map((p) => p?.trim())
-		.filter((p): p is string => Boolean(p));
-	return parts.length ? parts.join(', ') : null;
+	return composeAddressLine(row);
 }
 
 async function allLocations(db: D1Like): Promise<LocationRow[]> {
@@ -243,6 +274,7 @@ export async function findMissingAddress(
 				...base,
 				classification: 'osm_fix_available',
 				osm_address: osmAddress,
+				osm_address_parts: osmFixParts(best.poi),
 				address_source: best.poi.address_source ?? null,
 				...matched
 			});

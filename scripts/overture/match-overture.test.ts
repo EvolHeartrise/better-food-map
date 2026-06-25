@@ -25,7 +25,7 @@ test('composeOvertureAddress joins present parts and returns null when all empty
 			region: 'BC',
 			postcode: 'V4C 6R4'
 		})
-	).toBe('8737 120 St, Delta, BC, V4C 6R4');
+	).toBe('8737 120 St, Delta, BC V4C 6R4');
 	expect(composeOvertureAddress({ freeform: '12 Main St' })).toBe('12 Main St');
 	expect(composeOvertureAddress({ freeform: null, locality: '  ' })).toBeNull();
 });

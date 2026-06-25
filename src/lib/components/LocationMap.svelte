@@ -34,16 +34,16 @@
 		// unavailable). The camera otherwise only moves when the user pans/zooms or
 		// selects a place — search/filter changes never move it.
 		initialCenter = null,
-		// Called (debounced) with the visible bounding box and zoom whenever the map
-		// settles after a pan/zoom, plus once on load. The parent fetches location
-		// data for this box, so only what's on screen is ever loaded.
+		// Called (debounced) with the visible bounding box whenever the map settles
+		// after a pan/zoom, plus once on load. The parent fetches location data for
+		// this box, so only what's on screen is ever loaded.
 		onviewchange
 	}: {
 		locations: Location[];
 		selected?: Location | null;
 		onselect?: (id: string) => void;
 		initialCenter?: [number, number] | null;
-		onviewchange?: (view: { bounds: Bounds; zoom: number }) => void;
+		onviewchange?: (bounds: Bounds) => void;
 	} = $props();
 
 	// Fallback map center, used when no `initialCenter` is supplied (e.g. IP
@@ -216,13 +216,13 @@
 		if (entry) entry.popup.addTo(map);
 	}
 
-	// The current visible box, grown by BOUNDS_PADDING, paired with the zoom level.
-	// Latitude is clamped to the valid range; longitude is left as-is (a box across
-	// the antimeridian isn't supported — the same planar assumption used elsewhere).
-	// Reported at every zoom now that the page has no fetch floor: when zoomed out
-	// onto the globe this is the visible cap of the world, and the server's result
-	// cap (MAP_RESULT_LIMIT) is what keeps that fetch bounded.
-	function currentView(): { bounds: Bounds; zoom: number } | null {
+	// The current visible box, grown by BOUNDS_PADDING. Latitude is clamped to the
+	// valid range; longitude is left as-is (a box across the antimeridian isn't
+	// supported — the same planar assumption used elsewhere). Reported at every zoom
+	// now that the page has no fetch floor: when zoomed out onto the globe this is
+	// the visible cap of the world, and the server's result cap (MAP_RESULT_LIMIT)
+	// is what keeps that fetch bounded.
+	function currentView(): Bounds | null {
 		if (!map) return null;
 		const b = map.getBounds();
 		const south = b.getSouth();
@@ -232,13 +232,10 @@
 		const padLat = (north - south) * BOUNDS_PADDING;
 		const padLng = (east - west) * BOUNDS_PADDING;
 		return {
-			bounds: {
-				minLat: Math.max(-90, south - padLat),
-				maxLat: Math.min(90, north + padLat),
-				minLng: west - padLng,
-				maxLng: east + padLng
-			},
-			zoom: map.getZoom()
+			minLat: Math.max(-90, south - padLat),
+			maxLat: Math.min(90, north + padLat),
+			minLng: west - padLng,
+			maxLng: east + padLng
 		};
 	}
 

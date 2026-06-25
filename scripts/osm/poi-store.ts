@@ -39,6 +39,8 @@ export interface StoredPoi {
 	 */
 	address_source: string | null;
 	diet_markers: string[];
+	/** Full original OSM tag set, JSON-encoded — the source of the POI's own `addr:*` parts. */
+	tags_json: string;
 	region: string;
 }
 
@@ -253,7 +255,7 @@ export class OsmPoiStore {
 		const rows = this.db
 			.query(
 				`SELECT osm_id, osm_type, numeric_id, name, osm_class, suggested_category, cuisine,
-					latitude, longitude, address, phone, website, opening_hours, address_source, diet_markers, region
+					latitude, longitude, address, phone, website, opening_hours, address_source, diet_markers, tags_json, region
 				 FROM osm_poi
 				 WHERE ${where.join(' AND ')}
 				 LIMIT ?`
