@@ -6,6 +6,6 @@
 # under scripts/ — not the deployed app.
 
 # Google OAuth 2.0 "Web application" client (Google Cloud console → Credentials).
-# Add http://localhost:5173/auth/callback/google as an authorized redirect URI.
+# Add http://localhost:5050/auth/callback/google as an authorized redirect URI.
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=

@@ -128,7 +128,7 @@ Google Cloud **OAuth 2.0 Client** of type "Web application". Register these
 authorized redirect URIs on it:
 
 - `https://betterfoodmaps.com/auth/callback/google` (production)
-- `http://localhost:5173/auth/callback/google` (local `vite dev`)
+- `http://localhost:5050/auth/callback/google` (local `vite dev`)
 
 **Local dev:** copy `.dev.vars.example` to `.dev.vars` and fill the two values —
 the Cloudflare adapter loads them into `platform.env` during `vite dev`.
