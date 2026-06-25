@@ -4,6 +4,7 @@ import {
 	composeAddress,
 	dietMarkers,
 	mapFeature,
+	osmAddressParts,
 	osmUrl,
 	parseOsmId,
 	representativePoint,
@@ -38,7 +39,7 @@ test('suggestedCategory maps to the app enum, null where no clean fit', () => {
 	expect(suggestedCategory('ice_cream')).toBeNull();
 });
 
-test('composeAddress joins present addr:* parts, null when none', () => {
+test('composeAddress joins present addr:* parts (region/postcode space-joined), null when none', () => {
 	expect(
 		composeAddress({
 			'addr:housenumber': '123',
@@ -47,9 +48,48 @@ test('composeAddress joins present addr:* parts, null when none', () => {
 			'addr:province': 'BC',
 			'addr:postcode': 'V6A 1A1'
 		})
-	).toBe('123 Main St, Vancouver, BC, V6A 1A1');
+	).toBe('123 Main St, Vancouver, BC V6A 1A1');
 	expect(composeAddress({ 'addr:city': 'Vancouver' })).toBe('Vancouver');
 	expect(composeAddress({})).toBeNull();
+});
+
+test('composeAddress includes addr:unit in the street (Canadian hyphen style)', () => {
+	expect(
+		composeAddress({
+			'addr:unit': '100',
+			'addr:housenumber': '6485',
+			'addr:street': '120 St',
+			'addr:city': 'Surrey',
+			'addr:province': 'BC'
+		})
+	).toBe('100-6485 120 St, Surrey, BC');
+});
+
+test('osmAddressParts extracts raw addr:* parts (street via composeStreet)', () => {
+	expect(
+		osmAddressParts({
+			'addr:unit': '100',
+			'addr:housenumber': '6485',
+			'addr:street': '120 St',
+			'addr:city': 'Surrey',
+			'addr:state': 'British Columbia',
+			'addr:postcode': 'V3R 0N3',
+			'addr:country': 'CA'
+		})
+	).toEqual({
+		street: '100-6485 120 St',
+		city: 'Surrey',
+		region: 'British Columbia',
+		postcode: 'V3R 0N3',
+		country: 'CA'
+	});
+	expect(osmAddressParts({})).toEqual({
+		street: null,
+		city: null,
+		region: null,
+		postcode: null,
+		country: null
+	});
 });
 
 test('dietMarkers maps only explicit yes/only diet tags', () => {
