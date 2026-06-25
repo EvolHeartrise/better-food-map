@@ -14,6 +14,8 @@
 // source spelled them.
 // ---------------------------------------------------------------------------
 
+import { blankToNull, collapseWhitespace, stripDiacritics } from './text';
+
 /** A structured postal address. `postcode` is the only optional part. */
 export interface AddressParts {
 	/** House number + street (+ unit), e.g. "1909 W 4th Ave" or "100-6485 120 St". */
@@ -194,12 +196,7 @@ const US_REGION_NAMES: Record<string, string> = {
 
 /** Lowercases, trims, collapses whitespace, and folds the lone accented vowels we expect. */
 function foldName(value: string): string {
-	return value
-		.normalize('NFD')
-		.replace(/[̀-ͯ]/g, '') // strip diacritics (Québec → quebec)
-		.replace(/\s+/g, ' ')
-		.trim()
-		.toLowerCase();
+	return collapseWhitespace(stripDiacritics(value)).toLowerCase();
 }
 
 /**
@@ -314,10 +311,10 @@ export function composeStreet(
 	street: string | null | undefined,
 	unit?: string | null
 ): string | null {
-	const st = street?.replace(/\s+/g, ' ').trim();
+	const st = blankToNull(street);
 	if (!st) return null;
-	const num = houseNumber?.replace(/\s+/g, ' ').trim();
-	const u = unit?.replace(/\s+/g, ' ').trim();
+	const num = blankToNull(houseNumber);
+	const u = blankToNull(unit);
 	const numberPart = num && u ? `${u}-${num}` : (num ?? '');
 	const head = numberPart ? `${numberPart} ${st}` : st;
 	return u && !num ? `${head}, Unit ${u}` : head;

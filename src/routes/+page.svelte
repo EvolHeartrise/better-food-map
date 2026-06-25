@@ -96,7 +96,6 @@
 
 	// A location with its effective menu resolved (see resolveLocation).
 	type LocationData = MapLocation & { menu: Item[] };
-	type MenuItem = LocationData['menu'][number];
 
 	// Independent inputs. `place` filters venues by name; `item` and the tag
 	// include/exclude lists filter menu items. They combine with AND, and narrow
@@ -132,7 +131,7 @@
 	const reservedIds = $derived(new Set([...included, ...excluded].map((tag) => tag.id)));
 	const hasItemFilter = $derived(itemTerm !== '' || includedIds.size > 0 || excludedIds.size > 0);
 
-	function itemMatches(menuItem: MenuItem): boolean {
+	function itemMatches(menuItem: Item): boolean {
 		if (itemTerm !== '' && !menuItem.item_name.toLowerCase().includes(itemTerm)) return false;
 		// Tag filters: the item must carry every included tag and none of the
 		// excluded ones. Dietary, course and ingredient tags all live in the same
@@ -153,7 +152,7 @@
 	const results = $derived.by(() => {
 		const placeTerm = place.trim().toLowerCase();
 
-		const out: Array<{ loc: LocationData; items: MenuItem[] }> = [];
+		const out: Array<{ loc: LocationData; items: Item[] }> = [];
 		for (const loc of locations) {
 			if (placeTerm !== '' && !loc.name.toLowerCase().includes(placeTerm)) continue;
 			if (!hasItemFilter) {
@@ -179,8 +178,8 @@
 	// cards. We collapse locations that share a `menu_id` into a single group
 	// labelled with the brand name and branch count; everything else (independent
 	// venues, and one-off chains with a single matching branch) stays a plain card.
-	type ResultEntry = { loc: LocationData; items: MenuItem[] };
-	type SingleResult = { kind: 'single'; key: string; loc: LocationData; items: MenuItem[] };
+	type ResultEntry = { loc: LocationData; items: Item[] };
+	type SingleResult = { kind: 'single'; key: string; loc: LocationData; items: Item[] };
 	type GroupResult = {
 		kind: 'group';
 		key: string; // the shared menu_id
@@ -189,7 +188,7 @@
 		members: ResultEntry[];
 		// Matched menu items for the group. Every branch serves the same menu, so
 		// the item-filter matches are identical across members — show them once.
-		items: MenuItem[];
+		items: Item[];
 	};
 	type DisplayResult = SingleResult | GroupResult;
 
@@ -298,7 +297,7 @@
 	// The menu shown in the detail panel for the selected location. The same
 	// item/ingredient/dietary filters that narrow the results list apply here too;
 	// with none active (`hasItemFilter` false) the full menu is shown.
-	const detailMenu = $derived.by<MenuItem[]>(() => {
+	const detailMenu = $derived.by<Item[]>(() => {
 		if (!selectedLocation) return [];
 		if (!hasItemFilter) return selectedLocation.menu;
 		return selectedLocation.menu.filter(itemMatches);
@@ -910,7 +909,7 @@
 
 	<!-- The matched-menu-item list shown under a result card (when an item/
 	     ingredient/dietary filter is active). Shared by plain and chain-group cards. -->
-	{#snippet matchedItems(items: MenuItem[])}
+	{#snippet matchedItems(items: Item[])}
 		{#if items.length > 0}
 			<ul class="card__items">
 				{#each items as menuItem (menuItem.id)}
@@ -929,7 +928,7 @@
 	     the item's dietary/course tags, its ingredients and its data sources. Both
 	     come from the unified tag list, split by tag_type; an `optional` tag (e.g.
 	     "can be made vegan", or an ingredient added on request) is marked as such. -->
-	{#snippet itemExtras(menuItem: MenuItem)}
+	{#snippet itemExtras(menuItem: Item)}
 		{@const dietaryTags = menuItem.tags.filter((tag) => tag.tag_type !== 'ingredient')}
 		{@const ingredientTags = menuItem.tags.filter((tag) => tag.tag_type === 'ingredient')}
 		{#if dietaryTags.length > 0}
