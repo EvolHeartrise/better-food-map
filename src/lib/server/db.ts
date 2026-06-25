@@ -1459,3 +1459,354 @@ export async function deleteLocationItemOverride(
 		.run();
 	return res.meta.changes > 0;
 }
+
+// ---------------------------------------------------------------------------
+// Users, sessions, likes and search history (the user-owned data added by
+// migration 0007). Unlike everything above — curated map data written by the MCP
+// tooling — these rows are written by the deployed app at runtime. The functions
+// stay runtime-agnostic (a `D1Like` handle in, async out) like the rest of this
+// module; the crypto/cookie glue lives in src/lib/server/auth.ts. Timestamps are
+// Unix milliseconds, supplied by the caller (`now`) so this layer reads no clock.
+// ---------------------------------------------------------------------------
+
+/** A signed-in person (mirrors the Google ID-token profile claims). */
+export interface User {
+	id: string;
+	email: string | null;
+	email_verified: boolean;
+	name: string | null;
+	picture: string | null;
+}
+
+/** An active login. `id` is the SHA-256 hash of the cookie token (see auth.ts). */
+export interface Session {
+	id: string;
+	user_id: string;
+	/** Expiry as Unix milliseconds. */
+	expires_at: number;
+}
+
+/** The ids a user has liked, newest first. */
+export interface UserLikes {
+	locationIds: string[];
+	itemIds: string[];
+}
+
+/** One logged search, with its tag filters rehydrated from JSON. */
+export interface SearchHistoryEntry {
+	id: string;
+	place: string;
+	item: string;
+	included: Tag[];
+	excluded: Tag[];
+	/** When it was logged, as Unix milliseconds. */
+	created_at: number;
+}
+
+/** The Google profile fields stored on a user, refreshed on each sign-in. */
+export interface OAuthProfile {
+	email: string | null;
+	email_verified: boolean;
+	name: string | null;
+	picture: string | null;
+}
+
+/** Raw `users` row (`email_verified` stored as 0/1). */
+interface UserRow {
+	id: string;
+	email: string | null;
+	email_verified: number;
+	name: string | null;
+	picture: string | null;
+}
+
+function toUser(row: UserRow): User {
+	return {
+		id: row.id,
+		email: row.email,
+		email_verified: row.email_verified !== 0,
+		name: row.name,
+		picture: row.picture
+	};
+}
+
+const USER_FIELDS = `id, email, email_verified, name, picture`;
+
+export async function getUserById(db: D1Like, id: string): Promise<User | null> {
+	const row = await db
+		.prepare(`SELECT ${USER_FIELDS} FROM users WHERE id = ?`)
+		.bind(id)
+		.first<UserRow>();
+	return row ? toUser(row) : null;
+}
+
+/** Looks up the user behind a provider identity (e.g. a Google `sub`), or null. */
+export async function getUserByOAuth(
+	db: D1Like,
+	provider: string,
+	providerUserId: string
+): Promise<User | null> {
+	const row = await db
+		.prepare(
+			`SELECT ${USER_FIELDS.split(', ')
+				.map((f) => `u.${f}`)
+				.join(', ')}
+			 FROM oauth_accounts a JOIN users u ON u.id = a.user_id
+			 WHERE a.provider = ? AND a.provider_user_id = ?`
+		)
+		.bind(provider, providerUserId)
+		.first<UserRow>();
+	return row ? toUser(row) : null;
+}
+
+/**
+ * Resolves the user for a provider identity, creating one on first sign-in.
+ * Either way the stored profile is refreshed from the latest claims, so a renamed
+ * or re-pictured Google account stays in sync. Returns the up-to-date {@link User}.
+ */
+export async function upsertOAuthUser(
+	db: D1Like,
+	provider: string,
+	providerUserId: string,
+	profile: OAuthProfile,
+	now: number
+): Promise<User> {
+	const verified = profile.email_verified ? 1 : 0;
+	const existing = await getUserByOAuth(db, provider, providerUserId);
+	if (existing) {
+		await db
+			.prepare(`UPDATE users SET email = ?, email_verified = ?, name = ?, picture = ? WHERE id = ?`)
+			.bind(profile.email, verified, profile.name, profile.picture, existing.id)
+			.run();
+		return { ...existing, ...profile };
+	}
+	const id = crypto.randomUUID();
+	await db.batch([
+		db
+			.prepare(
+				`INSERT INTO users (id, email, email_verified, name, picture, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?)`
+			)
+			.bind(id, profile.email, verified, profile.name, profile.picture, now),
+		db
+			.prepare(
+				`INSERT INTO oauth_accounts (provider, provider_user_id, user_id, created_at)
+				 VALUES (?, ?, ?, ?)`
+			)
+			.bind(provider, providerUserId, id, now)
+	]);
+	return { id, ...profile };
+}
+
+export async function createSession(
+	db: D1Like,
+	sessionId: string,
+	userId: string,
+	expiresAt: number,
+	now: number
+): Promise<Session> {
+	await db
+		.prepare(`INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)`)
+		.bind(sessionId, userId, expiresAt, now)
+		.run();
+	return { id: sessionId, user_id: userId, expires_at: expiresAt };
+}
+
+/** Loads a session and its user in one read (the per-request auth lookup), or null. */
+export async function getSessionWithUser(
+	db: D1Like,
+	sessionId: string
+): Promise<{ session: Session; user: User } | null> {
+	const row = await db
+		.prepare(
+			`SELECT s.id AS session_id, s.user_id AS user_id, s.expires_at AS expires_at,
+				u.email AS email, u.email_verified AS email_verified, u.name AS name, u.picture AS picture
+			 FROM sessions s JOIN users u ON u.id = s.user_id
+			 WHERE s.id = ?`
+		)
+		.bind(sessionId)
+		.first<{
+			session_id: string;
+			user_id: string;
+			expires_at: number;
+			email: string | null;
+			email_verified: number;
+			name: string | null;
+			picture: string | null;
+		}>();
+	if (!row) return null;
+	return {
+		session: { id: row.session_id, user_id: row.user_id, expires_at: row.expires_at },
+		user: toUser({
+			id: row.user_id,
+			email: row.email,
+			email_verified: row.email_verified,
+			name: row.name,
+			picture: row.picture
+		})
+	};
+}
+
+export async function updateSessionExpiry(
+	db: D1Like,
+	sessionId: string,
+	expiresAt: number
+): Promise<void> {
+	await db
+		.prepare(`UPDATE sessions SET expires_at = ? WHERE id = ?`)
+		.bind(expiresAt, sessionId)
+		.run();
+}
+
+export async function deleteSession(db: D1Like, sessionId: string): Promise<void> {
+	await db.prepare(`DELETE FROM sessions WHERE id = ?`).bind(sessionId).run();
+}
+
+/** Returns a user's liked location and item ids, newest first. */
+export async function getUserLikes(db: D1Like, userId: string): Promise<UserLikes> {
+	const [{ results: locs }, { results: items }] = await Promise.all([
+		db
+			.prepare(`SELECT location_id FROM liked_locations WHERE user_id = ? ORDER BY created_at DESC`)
+			.bind(userId)
+			.all<{ location_id: string }>(),
+		db
+			.prepare(`SELECT item_id FROM liked_items WHERE user_id = ? ORDER BY created_at DESC`)
+			.bind(userId)
+			.all<{ item_id: string }>()
+	]);
+	return {
+		locationIds: locs.map((r) => r.location_id),
+		itemIds: items.map((r) => r.item_id)
+	};
+}
+
+/** Likes (or, when `liked` is false, unlikes) a location for a user. Idempotent. */
+export async function setLocationLike(
+	db: D1Like,
+	userId: string,
+	locationId: string,
+	liked: boolean,
+	now: number
+): Promise<void> {
+	if (liked) {
+		await db
+			.prepare(
+				`INSERT OR IGNORE INTO liked_locations (user_id, location_id, created_at) VALUES (?, ?, ?)`
+			)
+			.bind(userId, locationId, now)
+			.run();
+	} else {
+		await db
+			.prepare(`DELETE FROM liked_locations WHERE user_id = ? AND location_id = ?`)
+			.bind(userId, locationId)
+			.run();
+	}
+}
+
+/** Likes (or, when `liked` is false, unlikes) a menu item for a user. Idempotent. */
+export async function setItemLike(
+	db: D1Like,
+	userId: string,
+	itemId: string,
+	liked: boolean,
+	now: number
+): Promise<void> {
+	if (liked) {
+		await db
+			.prepare(`INSERT OR IGNORE INTO liked_items (user_id, item_id, created_at) VALUES (?, ?, ?)`)
+			.bind(userId, itemId, now)
+			.run();
+	} else {
+		await db
+			.prepare(`DELETE FROM liked_items WHERE user_id = ? AND item_id = ?`)
+			.bind(userId, itemId)
+			.run();
+	}
+}
+
+/** One search to log. Tag lists are stored verbatim as JSON for rehydration. */
+export interface SearchLogEntry {
+	id: string;
+	userId: string;
+	place: string;
+	item: string;
+	included: Tag[];
+	excluded: Tag[];
+	createdAt: number;
+}
+
+/** Appends a search to the user's history. Uncapped — see migration 0007. */
+export async function logSearch(db: D1Like, entry: SearchLogEntry): Promise<void> {
+	await db
+		.prepare(
+			`INSERT INTO search_history
+				(id, user_id, place, item, included_tags, excluded_tags, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`
+		)
+		.bind(
+			entry.id,
+			entry.userId,
+			entry.place,
+			entry.item,
+			JSON.stringify(entry.included),
+			JSON.stringify(entry.excluded),
+			entry.createdAt
+		)
+		.run();
+}
+
+/**
+ * Hard cap on how many history rows {@link getSearchHistory} returns. The history
+ * table is uncapped (migration 0007), but the "recent searches" UI only needs the
+ * latest few; this bounds the read.
+ */
+export const SEARCH_HISTORY_LIMIT = 20;
+
+/** Parses a stored tag-filter JSON blob back to a {@link Tag} list, tolerating junk. */
+function parseStoredTags(raw: string): Tag[] {
+	try {
+		const value: unknown = JSON.parse(raw);
+		if (!Array.isArray(value)) return [];
+		return value.filter(
+			(t): t is Tag =>
+				typeof t === 'object' &&
+				t !== null &&
+				typeof (t as Tag).id === 'string' &&
+				typeof (t as Tag).name === 'string'
+		);
+	} catch {
+		return [];
+	}
+}
+
+/** Returns a user's most recent searches, newest first (see {@link SEARCH_HISTORY_LIMIT}). */
+export async function getSearchHistory(
+	db: D1Like,
+	userId: string,
+	limit = SEARCH_HISTORY_LIMIT
+): Promise<SearchHistoryEntry[]> {
+	// `limit` is a trusted integer constant, interpolated rather than bound (as
+	// elsewhere in this module); every user value is bound.
+	const { results } = await db
+		.prepare(
+			`SELECT id, place, item, included_tags, excluded_tags, created_at
+			 FROM search_history WHERE user_id = ? ORDER BY created_at DESC LIMIT ${limit}`
+		)
+		.bind(userId)
+		.all<{
+			id: string;
+			place: string;
+			item: string;
+			included_tags: string;
+			excluded_tags: string;
+			created_at: number;
+		}>();
+	return results.map((row) => ({
+		id: row.id,
+		place: row.place,
+		item: row.item,
+		included: parseStoredTags(row.included_tags),
+		excluded: parseStoredTags(row.excluded_tags),
+		created_at: row.created_at
+	}));
+}
