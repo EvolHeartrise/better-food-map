@@ -148,12 +148,6 @@ export interface Item {
 	sources: Source[];
 }
 
-// Back-compat aliases. A venue's own item (formerly a `food` row) and a chain's
-// shared item (formerly a `menu_items` row) are now the same `items` row, so
-// both names refer to {@link Item}. Kept so existing callers keep type-checking.
-export type Food = Item;
-export type MenuItem = Item;
-
 export interface LocationWithTags extends Location {
 	/** Distinct dietary/course tags offered across this location's menu. */
 	tags: Tag[];
@@ -1057,7 +1051,7 @@ async function resolvePrivateMenus(
 			if (owner.brand_id !== null) {
 				throw new Error(
 					`Location "${locationId}" serves a shared chain menu; its menu items are shared across ` +
-						`the chain. Edit them with update_menu_item, or record a per-branch difference with ` +
+						`the chain. Edit them with update_item, or record a per-branch difference with ` +
 						`set_location_item_override.`
 				);
 			}
@@ -1549,16 +1543,6 @@ function toUser(row: UserRow): User {
 		name: row.name,
 		picture: row.picture
 	};
-}
-
-const USER_FIELDS = `id, email, email_verified, name, picture`;
-
-export async function getUserById(db: D1Like, id: string): Promise<User | null> {
-	const row = await db
-		.prepare(`SELECT ${USER_FIELDS} FROM users WHERE id = ?`)
-		.bind(id)
-		.first<UserRow>();
-	return row ? toUser(row) : null;
 }
 
 /** Looks up the user behind a provider identity (e.g. a Google `sub`), or null. */
