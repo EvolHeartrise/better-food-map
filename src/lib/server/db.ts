@@ -1548,9 +1548,7 @@ export async function getUserByOAuth(
 ): Promise<User | null> {
 	const row = await db
 		.prepare(
-			`SELECT ${USER_FIELDS.split(', ')
-				.map((f) => `u.${f}`)
-				.join(', ')}
+			`SELECT u.id, u.email, u.email_verified, u.name, u.picture
 			 FROM oauth_accounts a JOIN users u ON u.id = a.user_id
 			 WHERE a.provider = ? AND a.provider_user_id = ?`
 		)
@@ -1581,20 +1579,29 @@ export async function upsertOAuthUser(
 		return { ...existing, ...profile };
 	}
 	const id = crypto.randomUUID();
-	await db.batch([
-		db
-			.prepare(
-				`INSERT INTO users (id, email, email_verified, name, picture, created_at)
-				 VALUES (?, ?, ?, ?, ?, ?)`
-			)
-			.bind(id, profile.email, verified, profile.name, profile.picture, now),
-		db
-			.prepare(
-				`INSERT INTO oauth_accounts (provider, provider_user_id, user_id, created_at)
-				 VALUES (?, ?, ?, ?)`
-			)
-			.bind(provider, providerUserId, id, now)
-	]);
+	try {
+		await db.batch([
+			db
+				.prepare(
+					`INSERT INTO users (id, email, email_verified, name, picture, created_at)
+					 VALUES (?, ?, ?, ?, ?, ?)`
+				)
+				.bind(id, profile.email, verified, profile.name, profile.picture, now),
+			db
+				.prepare(
+					`INSERT INTO oauth_accounts (provider, provider_user_id, user_id, created_at)
+					 VALUES (?, ?, ?, ?)`
+				)
+				.bind(provider, providerUserId, id, now)
+		]);
+	} catch (err) {
+		// Lost a race with a concurrent first sign-in for the same account: the
+		// oauth_accounts PK insert conflicted and the batch rolled back atomically
+		// (so no orphan user row). Fall back to the user the winning request created.
+		const raced = await getUserByOAuth(db, provider, providerUserId);
+		if (!raced) throw err;
+		return raced;
+	}
 	return { id, ...profile };
 }
 
@@ -1772,7 +1779,10 @@ function parseStoredTags(raw: string): Tag[] {
 				typeof t === 'object' &&
 				t !== null &&
 				typeof (t as Tag).id === 'string' &&
-				typeof (t as Tag).name === 'string'
+				typeof (t as Tag).name === 'string' &&
+				((t as Tag).tag_type === 'dietary' ||
+					(t as Tag).tag_type === 'course' ||
+					(t as Tag).tag_type === 'ingredient')
 		);
 	} catch {
 		return [];
@@ -1785,12 +1795,14 @@ export async function getSearchHistory(
 	userId: string,
 	limit = SEARCH_HISTORY_LIMIT
 ): Promise<SearchHistoryEntry[]> {
-	// `limit` is a trusted integer constant, interpolated rather than bound (as
-	// elsewhere in this module); every user value is bound.
+	// Interpolated rather than bound (as elsewhere in this module), so coerce to a
+	// non-negative integer first: unlike the trusted literals MAP_RESULT_LIMIT /
+	// TAG_SEARCH_LIMIT, `limit` is a public parameter.
+	const safeLimit = Math.max(0, Math.trunc(limit));
 	const { results } = await db
 		.prepare(
 			`SELECT id, place, item, included_tags, excluded_tags, created_at
-			 FROM search_history WHERE user_id = ? ORDER BY created_at DESC LIMIT ${limit}`
+			 FROM search_history WHERE user_id = ? ORDER BY created_at DESC LIMIT ${safeLimit}`
 		)
 		.bind(userId)
 		.all<{

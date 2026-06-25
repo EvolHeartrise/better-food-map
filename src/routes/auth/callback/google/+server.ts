@@ -21,12 +21,18 @@ export const GET: RequestHandler = async (event) => {
 
 	const code = event.url.searchParams.get('code');
 	const state = event.url.searchParams.get('state');
+	const oauthError = event.url.searchParams.get('error');
 	const storedState = event.cookies.get(STATE_COOKIE) ?? null;
 	const codeVerifier = event.cookies.get(CODE_VERIFIER_COOKIE) ?? null;
 
 	// Clear the in-flight cookies regardless of outcome so a stale state can't linger.
 	event.cookies.delete(STATE_COOKIE, { path: '/' });
 	event.cookies.delete(CODE_VERIFIER_COOKIE, { path: '/' });
+
+	// The user declined consent (or Google reported an error): Google sends back
+	// `?error=…` and no code. That's a normal cancellation, not a fault — send them
+	// back to the map rather than showing a 400 page.
+	if (oauthError) redirect(302, '/');
 
 	if (!code || !state || !storedState || !codeVerifier || state !== storedState) {
 		error(400, 'Invalid OAuth callback.');

@@ -2,6 +2,7 @@
 // short-lived HttpOnly cookies, and redirect the browser to Google's consent
 // screen. The matching callback (../../callback/google) verifies them.
 import { generateState, generateCodeVerifier } from 'arctic';
+import { dev } from '$app/environment';
 import {
 	createGoogleClient,
 	GOOGLE_SCOPES,
@@ -19,7 +20,8 @@ export const GET: RequestHandler = (event) => {
 	const cookieOptions = {
 		path: '/',
 		httpOnly: true,
-		secure: true,
+		// Dropped under `vite dev` so the cookie sets over plain-HTTP localhost.
+		secure: !dev,
 		sameSite: 'lax' as const,
 		maxAge: 60 * 10 // 10 minutes to complete the round trip
 	};
