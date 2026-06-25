@@ -22,6 +22,9 @@
 // keeps this module runtime-agnostic). `category.ts` is the canonical, client-safe
 // home of the category union; re-exported below as part of this module's contract.
 import type { Category } from '../category';
+// Value import (tiny, pure, client-safe): the canonical display-address formatter,
+// so the single-line `address` is composed identically wherever a location is read.
+import { formatAddress } from '../address';
 
 // ---------------------------------------------------------------------------
 // Minimal D1 interface (the real `D1Database` binding and the HTTP shim in
@@ -99,7 +102,21 @@ export interface Location {
 	category: Category | null;
 	latitude: number;
 	longitude: number;
-	address: string | null;
+	/** House number + street (+ unit), e.g. "1909 W 4th Ave". */
+	street: string;
+	/** Municipality, e.g. "Vancouver". */
+	city: string;
+	/** 2-letter province/state code, e.g. "BC". */
+	region: string;
+	/** Postal/ZIP code in canonical form, or null when none could be resolved. */
+	postcode: string | null;
+	/** ISO-3166-1 alpha-2 country code, e.g. "CA". */
+	country: string;
+	/**
+	 * Canonical single-line display address, DERIVED from the structured parts via
+	 * {@link formatAddress} on read (never stored), so it is always normalized.
+	 */
+	address: string;
 	phone: string | null;
 	website: string | null;
 	/** Chain this location belongs to, or `null` for an independent venue. */
@@ -259,7 +276,9 @@ interface OverrideRow {
 }
 
 /** Internal raw shape of a `locations` row before its sources are attached. */
-type LocationRow = Omit<Location, 'sources'>;
+// The raw DB row: the structured columns, but not `sources` (joined) or the
+// derived `address` (composed on read).
+type LocationRow = Omit<Location, 'sources' | 'address'>;
 
 /** Raw `*_sources` row keyed by its owner id (item_id or location_id). */
 interface SourceRow {
@@ -367,7 +386,7 @@ function ingredientTagId(name: string): string {
 // SQL (D1 enforces foreign keys; schema lives in migrations/)
 // ---------------------------------------------------------------------------
 
-const LOCATION_FIELDS = `id, name, category, latitude, longitude, address, phone, website, brand_id, menu_id`;
+const LOCATION_FIELDS = `id, name, category, latitude, longitude, street, city, region, postcode, country, phone, website, brand_id, menu_id`;
 const ITEM_FIELDS = `id, menu_id, item_name, description, price`;
 /** Item-tag join projection (aliased to {@link ItemTagRow}). */
 const ITEM_TAG_SELECT = `t.id AS id, t.name AS name, t.tag_type AS tag_type, it.optional AS optional`;
@@ -485,6 +504,7 @@ export async function getLocationsWithTags(db: D1Like): Promise<LocationWithTags
 
 	return locations.map((loc) => ({
 		...loc,
+		address: formatAddress(loc),
 		tags: tagsByLocation.get(loc.id) ?? [],
 		sources: sourcesByLocation.get(loc.id) ?? []
 	}));
@@ -642,6 +662,7 @@ async function queryMapData(
 
 	const mapLocations: MapLocation[] = locations.map((loc) => ({
 		...loc,
+		address: formatAddress(loc),
 		sources: sourcesByLocation.get(loc.id) ?? [],
 		overrides: overridesByLocation.get(loc.id) ?? []
 	}));
@@ -661,7 +682,7 @@ export async function getLocationById(db: D1Like, id: string): Promise<Location 
 			.all<Source>()
 	]);
 	if (!row) return null;
-	return { ...row, sources };
+	return { ...row, address: formatAddress(row), sources };
 }
 
 /** Returns all items of a menu, each with its tags and sources (item + menu-level). */
@@ -857,7 +878,10 @@ function insertItemStmts(
 // ---------------------------------------------------------------------------
 
 /** Arguments accepted by {@link insertLocations} (one per location). */
-export type LocationInsert = Omit<Location, 'id' | 'sources' | 'brand_id' | 'menu_id'> & {
+export type LocationInsert = Omit<
+	Location,
+	'id' | 'sources' | 'brand_id' | 'menu_id' | 'address'
+> & {
 	id?: string;
 	brand_id?: string | null;
 	menu_id?: string | null;
@@ -880,8 +904,8 @@ export async function insertLocations(db: D1Like, locs: LocationInsert[]): Promi
 		stmts.push(
 			db
 				.prepare(
-					`INSERT INTO locations (id, name, category, latitude, longitude, address, phone, website, brand_id, menu_id)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+					`INSERT INTO locations (id, name, category, latitude, longitude, street, city, region, postcode, country, phone, website, brand_id, menu_id)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 				)
 				.bind(
 					id,
@@ -889,7 +913,11 @@ export async function insertLocations(db: D1Like, locs: LocationInsert[]): Promi
 					loc.category,
 					loc.latitude,
 					loc.longitude,
-					loc.address,
+					loc.street,
+					loc.city,
+					loc.region,
+					loc.postcode,
+					loc.country,
 					loc.phone,
 					loc.website,
 					loc.brand_id ?? null,
@@ -916,7 +944,11 @@ const LOCATION_COLUMNS = [
 	'category',
 	'latitude',
 	'longitude',
-	'address',
+	'street',
+	'city',
+	'region',
+	'postcode',
+	'country',
 	'phone',
 	'website',
 	'brand_id',

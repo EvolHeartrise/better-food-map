@@ -42,7 +42,11 @@ test('ingredient tags become searchable, and rank after a curated exact match', 
 			category: 'cafe',
 			latitude: 49.2,
 			longitude: -123.1,
-			address: '1 Test St',
+			street: '1 Test St',
+			city: 'Vancouver',
+			region: 'BC',
+			postcode: 'V6J 1M5',
+			country: 'CA',
 			phone: null,
 			website: null
 		}
