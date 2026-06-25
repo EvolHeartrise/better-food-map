@@ -4,6 +4,7 @@
 // cookie holds an opaque token whose SHA-256 hash is the row's primary key, so the
 // raw token never touches the database.
 import type { Cookies } from '@sveltejs/kit';
+import { dev } from '$app/environment';
 import {
 	createSession,
 	deleteSession,
@@ -99,12 +100,16 @@ export async function invalidateSessionToken(db: D1Like, token: string): Promise
 	await deleteSession(db, await sha256Hex(token));
 }
 
-/** Sets the session cookie: HttpOnly, Secure, SameSite=Lax, expiring with the session. */
+/**
+ * Sets the session cookie: HttpOnly, Secure, SameSite=Lax, expiring with the
+ * session. `Secure` is dropped under `vite dev` so the cookie still sets over
+ * plain-HTTP `http://localhost`; production is always HTTPS.
+ */
 export function setSessionCookie(cookies: Cookies, token: string, expiresAt: number): void {
 	cookies.set(SESSION_COOKIE, token, {
 		path: '/',
 		httpOnly: true,
-		secure: true,
+		secure: !dev,
 		sameSite: 'lax',
 		expires: new Date(expiresAt)
 	});
