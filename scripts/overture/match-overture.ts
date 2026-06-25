@@ -13,7 +13,7 @@
 // over the public GeoParquet release); this module only does the matching.
 // ---------------------------------------------------------------------------
 
-import { bboxAround, haversineMeters } from '../osm/geo';
+import { bboxAround, haversineMeters, SpatialGrid } from '../osm/geo';
 import { normalizeName } from '../osm/search-poi';
 
 /** One Overture place candidate (address already composed and non-empty). */
@@ -45,8 +45,6 @@ export interface OvertureMatch {
 // Cell ≈ 500 m, comfortably larger than any sane match radius, so a place only
 // needs to probe the handful of cells its search box overlaps.
 const CELL_DEG = 0.005;
-const cellKey = (lat: number, lon: number): string =>
-	`${Math.floor(lat / CELL_DEG)}:${Math.floor(lon / CELL_DEG)}`;
 
 /**
  * True when two normalised names plausibly refer to the same venue. Looser than
@@ -89,45 +87,21 @@ export function matchOverturePlaces(
 	const radiusKm = opts.radiusM / 1000;
 
 	// Index the POIs (the smaller, fixed set) once; stream places past them.
-	const grid = new Map<string, number[]>();
-	pois.forEach((poi, i) => {
-		const key = cellKey(poi.latitude, poi.longitude);
-		const bucket = grid.get(key);
-		if (bucket) bucket.push(i);
-		else grid.set(key, [i]);
-	});
+	const grid = new SpatialGrid(CELL_DEG);
+	pois.forEach((poi, i) => grid.insert(i, poi.latitude, poi.longitude));
 
 	const best = new Map<number, { place: OverturePlace; dist: number }>();
 	for (const place of places) {
 		if (!place.address) continue;
 		const placeName = normalizeName(place.name);
 		const box = bboxAround(place.latitude, place.longitude, radiusKm);
-		for (
-			let cy = Math.floor(box.minLat / CELL_DEG);
-			cy <= Math.floor(box.maxLat / CELL_DEG);
-			cy++
-		) {
-			for (
-				let cx = Math.floor(box.minLon / CELL_DEG);
-				cx <= Math.floor(box.maxLon / CELL_DEG);
-				cx++
-			) {
-				const candidates = grid.get(`${cy}:${cx}`);
-				if (!candidates) continue;
-				for (const idx of candidates) {
-					const poi = pois[idx];
-					if (!nameRelated(normalizeName(poi.name), placeName)) continue;
-					const dist = haversineMeters(
-						poi.latitude,
-						poi.longitude,
-						place.latitude,
-						place.longitude
-					);
-					if (dist > opts.radiusM) continue;
-					const prev = best.get(idx);
-					if (!prev || dist < prev.dist) best.set(idx, { place, dist });
-				}
-			}
+		for (const idx of grid.candidatesInBbox(box)) {
+			const poi = pois[idx];
+			if (!nameRelated(normalizeName(poi.name), placeName)) continue;
+			const dist = haversineMeters(poi.latitude, poi.longitude, place.latitude, place.longitude);
+			if (dist > opts.radiusM) continue;
+			const prev = best.get(idx);
+			if (!prev || dist < prev.dist) best.set(idx, { place, dist });
 		}
 	}
 

@@ -9,6 +9,7 @@
 // ---------------------------------------------------------------------------
 
 import type { D1Like } from '../../src/lib/server/db';
+import { stripDiacritics } from '../../src/lib/text';
 import { bboxAround, haversineMeters, type Bbox } from './geo';
 import { osmUrl } from './map-feature';
 import type { OsmPoiStore, StoredPoi } from './poi-store';
@@ -101,9 +102,7 @@ function resolveArea(params: SearchPoiParams): {
 /** Normalises a venue name for fuzzy comparison: lowercase, accents and punctuation stripped. */
 export function normalizeName(name: string | null | undefined): string {
 	if (!name) return '';
-	return name
-		.normalize('NFD')
-		.replace(/[̀-ͯ]/g, '') // strip combining diacritical marks
+	return stripDiacritics(name)
 		.toLowerCase()
 		.replace(/&/g, ' and ')
 		.replace(/[^a-z0-9]+/g, '');
