@@ -13,6 +13,7 @@
 // over the public GeoParquet release); this module only does the matching.
 // ---------------------------------------------------------------------------
 
+import { composeAddressLine } from '../../src/lib/address';
 import { bboxAround, haversineMeters, SpatialGrid } from '../osm/geo';
 import { normalizeName } from '../osm/search-poi';
 
@@ -59,17 +60,24 @@ export function nameRelated(a: string, b: string): boolean {
 	return short.length >= 3 && long.includes(short);
 }
 
-/** Composes a single-line address from Overture address parts (null if all empty). */
+/**
+ * Composes a single-line address from Overture address parts (null if all empty).
+ * Delegates to the canonical {@link composeAddressLine} so Overture-sourced
+ * staging strings render in the same `…, REGION postcode` format as OSM-sourced
+ * ones and the app's display addresses.
+ */
 export function composeOvertureAddress(parts: {
 	freeform?: string | null;
 	locality?: string | null;
 	region?: string | null;
 	postcode?: string | null;
 }): string | null {
-	const out = [parts.freeform, parts.locality, parts.region, parts.postcode].filter(
-		(p): p is string => Boolean(p && p.trim())
-	);
-	return out.length ? out.join(', ') : null;
+	return composeAddressLine({
+		street: parts.freeform,
+		city: parts.locality,
+		region: parts.region,
+		postcode: parts.postcode
+	});
 }
 
 /**

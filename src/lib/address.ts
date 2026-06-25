@@ -31,10 +31,36 @@ export interface AddressParts {
 }
 
 /**
+ * Composes a single-line address from possibly-missing parts: `street, city,
+ * REGION postcode` (region and postcode joined by a space; any blank part
+ * dropped). Returns null when no part is present. The null-tolerant sibling of
+ * {@link formatAddress}: the ingestion/staging composers (OSM, Overture, the
+ * audit tools) work from raw, partial source fields, so they share this ONE
+ * renderer rather than each hand-rolling a `.filter(Boolean).join(', ')` — which
+ * is what kept their region/postcode separator drifting apart.
+ */
+export function composeAddressLine(parts: {
+	street?: string | null;
+	city?: string | null;
+	region?: string | null;
+	postcode?: string | null;
+}): string | null {
+	const region = blankToNull(parts.region)?.trim();
+	const postcode = blankToNull(parts.postcode)?.trim();
+	const regionAndPostcode = region && postcode ? `${region} ${postcode}` : (region ?? postcode);
+	const line = [parts.street, parts.city, regionAndPostcode]
+		.map((p) => p?.trim())
+		.filter((p): p is string => Boolean(p))
+		.join(', ');
+	return line || null;
+}
+
+/**
  * The canonical single-line display address: `street, city, REGION postcode`
  * (region and postcode joined by a space; postcode omitted when null). Country
  * is intentionally not rendered — it is stored, not shown, on this map. Example:
- * `1909 W 4th Ave, Vancouver, BC V6J 1M5`.
+ * `1909 W 4th Ave, Vancouver, BC V6J 1M5`. Empty string only when every part is
+ * blank (never for a normally-populated, required-parts row).
  */
 export function formatAddress(parts: {
 	street: string;
@@ -42,11 +68,7 @@ export function formatAddress(parts: {
 	region: string;
 	postcode: string | null;
 }): string {
-	const regionAndPostcode = parts.postcode ? `${parts.region} ${parts.postcode}` : parts.region;
-	return [parts.street, parts.city, regionAndPostcode]
-		.map((p) => p.trim())
-		.filter(Boolean)
-		.join(', ');
+	return composeAddressLine(parts) ?? '';
 }
 
 /** Canadian province/territory codes. */

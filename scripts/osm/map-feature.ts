@@ -12,6 +12,7 @@
 // canonical category union rather than restating it. The scripts layer already
 // depends on src/lib (see search-poi.ts), so this adds no new coupling.
 import type { Category } from '../../src/lib/category';
+import { composeAddressLine, composeStreet } from '../../src/lib/address';
 import { blankToNull } from '../../src/lib/text';
 
 /** A GeoJSON feature, as produced by osmium export (geometry may be any type). */
@@ -107,16 +108,40 @@ export function suggestedCategory(osmClass: string): SuggestedCategory | null {
 	}
 }
 
-/** Composes a single-line address from OSM `addr:*` tags (null if none present). */
+/** Structured address parts extracted from a POI's OSM `addr:*` tags (each null when absent). */
+export interface OsmAddressParts {
+	street: string | null;
+	city: string | null;
+	region: string | null;
+	postcode: string | null;
+	country: string | null;
+}
+
+/**
+ * Extracts structured address parts from OSM `addr:*` tags, as the raw source
+ * values — `region`/`postcode`/`country` are NOT normalized here (the MCP server
+ * canonicalizes them when they reach create_locations/update_location). The
+ * `street` part includes the unit (Canadian hyphen style), composed by the same
+ * {@link composeStreet} the backfill uses, so staging and backfill agree.
+ */
+export function osmAddressParts(props: Record<string, string>): OsmAddressParts {
+	return {
+		street: composeStreet(props['addr:housenumber'], props['addr:street'], props['addr:unit']),
+		city: blankToNull(props['addr:city']),
+		region: blankToNull(props['addr:state'] ?? props['addr:province']),
+		postcode: blankToNull(props['addr:postcode']),
+		country: blankToNull(props['addr:country'])
+	};
+}
+
+/**
+ * Composes a single-line address from OSM `addr:*` tags (null if none present).
+ * Delegates the parts→string rendering to the canonical {@link composeAddressLine}
+ * so staging strings match the display format the rest of the app uses.
+ */
 export function composeAddress(props: Record<string, string>): string | null {
-	const houseAndStreet = [props['addr:housenumber'], props['addr:street']]
-		.filter(Boolean)
-		.join(' ');
-	const region = props['addr:state'] ?? props['addr:province'];
-	const parts = [houseAndStreet, props['addr:city'], region, props['addr:postcode']].filter(
-		(p): p is string => Boolean(p && p.trim())
-	);
-	return parts.length ? parts.join(', ') : null;
+	const { street, city, region, postcode } = osmAddressParts(props);
+	return composeAddressLine({ street, city, region, postcode });
 }
 
 /** Venue-level dietary markers OSM explicitly asserts (`diet:x=yes|only`), mapped to tag ids. */
