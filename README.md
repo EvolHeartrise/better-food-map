@@ -106,6 +106,40 @@ Then, in an MCP client, discover venues still missing from the map:
 The store is regenerable, so refresh a region any time by re-running the
 extract; Geofabrik updates daily.
 
+## Accounts & sign-in (Google OAuth)
+
+Signed-in users can **like** locations and menu items, and their searches are
+auto-logged as history. Sign-in is **Google OAuth only** (no passwords),
+implemented directly with [Arctic](https://arcticjs.dev):
+
+- `src/lib/server/oauth.ts` builds the Google client; `src/routes/auth/login/google`
+  starts the flow and `src/routes/auth/callback/google` completes it.
+- Sessions are **database-backed** (`sessions` table). The cookie holds an opaque
+  token whose SHA-256 hash is the row key, so the raw token is never stored
+  (`src/lib/server/auth.ts`). The session hook in `src/hooks.server.ts` resolves it
+  into `locals.user` on every request.
+- User-owned data lives in the tables added by
+  `migrations/0007_users_likes_searches.sql` (`users`, `oauth_accounts`,
+  `sessions`, `liked_locations`, `liked_items`, `search_history`). Reads and
+  writes go through `src/lib/user.remote.ts`.
+
+It needs two secrets — `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` — from a
+Google Cloud **OAuth 2.0 Client** of type "Web application". Register these
+authorized redirect URIs on it:
+
+- `https://betterfoodmaps.com/auth/callback/google` (production)
+- `http://localhost:5173/auth/callback/google` (local `vite dev`)
+
+**Local dev:** copy `.dev.vars.example` to `.dev.vars` and fill the two values —
+the Cloudflare adapter loads them into `platform.env` during `vite dev`.
+
+**Production:** set them as Worker secrets:
+
+```sh
+bunx wrangler secret put GOOGLE_CLIENT_ID
+bunx wrangler secret put GOOGLE_CLIENT_SECRET
+```
+
 ## Deploying to Cloudflare
 
 The app deploys to **Cloudflare Workers** (Static Assets) via
@@ -126,6 +160,10 @@ bun run d1:migrate            # wrangler d1 migrations apply … --remote
 
 # 4. Copy .env.example to .env and fill in CLOUDFLARE_ACCOUNT_ID,
 #    CLOUDFLARE_DATABASE_ID, and a CLOUDFLARE_API_TOKEN (D1 Edit permission).
+
+# 5. Set the Google OAuth secrets (see "Accounts & sign-in" above):
+#    bunx wrangler secret put GOOGLE_CLIENT_ID
+#    bunx wrangler secret put GOOGLE_CLIENT_SECRET
 ```
 
 The production D1 is already provisioned and seeded; these steps document the

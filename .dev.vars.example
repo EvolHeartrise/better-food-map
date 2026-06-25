@@ -1,0 +1,11 @@
+# Worker secrets for LOCAL development (`vite dev` / `wrangler dev`). The Cloudflare
+# adapter loads this file into `platform.env`. Copy to `.dev.vars` and fill in.
+# In production these are set as Worker secrets (`wrangler secret put …`), NOT here.
+#
+# This is separate from `.env`, which holds credentials for the MCP/REST tooling
+# under scripts/ — not the deployed app.
+
+# Google OAuth 2.0 "Web application" client (Google Cloud console → Credentials).
+# Add http://localhost:5173/auth/callback/google as an authorized redirect URI.
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
