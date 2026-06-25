@@ -50,9 +50,11 @@ export interface MissingAddressLocation {
 	name: string;
 	latitude: number;
 	longitude: number;
-	/** The address stored today: null when missing, a streetless fragment when 'incomplete'. */
+	/** A single-line view of the parts stored today (null when nothing usable is stored). */
 	current_address: string | null;
-	/** Why this location was flagged: no address at all, or a non-empty streetless fragment. */
+	/** Required structured parts that are absent, e.g. ["region", "country"]. */
+	missing_parts: string[];
+	/** Why this location was flagged: no street at all, or a street but a missing required part. */
 	reason: 'missing' | 'incomplete';
 	/**
 	 * What can be done about it:
@@ -107,7 +109,11 @@ interface LocationRow {
 	name: string;
 	latitude: number;
 	longitude: number;
-	address: string | null;
+	street: string | null;
+	city: string | null;
+	region: string | null;
+	postcode: string | null;
+	country: string | null;
 }
 
 /**
@@ -128,9 +134,37 @@ export function isUsableAddress(address: string | null | undefined): boolean {
 	return usableAddress(address) !== null;
 }
 
+/** The REQUIRED structured parts (street/city/region/country) that are absent. */
+export function missingRequiredParts(row: {
+	street: string | null;
+	city: string | null;
+	region: string | null;
+	country: string | null;
+}): string[] {
+	const out: string[] = [];
+	if (!row.street?.trim()) out.push('street');
+	if (!row.city?.trim()) out.push('city');
+	if (!row.region?.trim()) out.push('region');
+	if (!row.country?.trim()) out.push('country');
+	return out;
+}
+
+/** Best-effort single-line view of whatever parts are stored (for diagnostics). */
+function displayParts(row: LocationRow): string | null {
+	const regionAndPostcode = row.postcode
+		? `${(row.region ?? '').trim()} ${row.postcode}`.trim()
+		: row.region;
+	const parts = [row.street, row.city, regionAndPostcode]
+		.map((p) => p?.trim())
+		.filter((p): p is string => Boolean(p));
+	return parts.length ? parts.join(', ') : null;
+}
+
 async function allLocations(db: D1Like): Promise<LocationRow[]> {
 	const { results } = await db
-		.prepare('SELECT id, name, latitude, longitude, address FROM locations')
+		.prepare(
+			'SELECT id, name, latitude, longitude, street, city, region, postcode, country FROM locations'
+		)
 		.all<LocationRow>();
 	return results;
 }
@@ -167,15 +201,18 @@ export async function findMissingAddress(
 	let incompleteCount = 0;
 
 	for (const loc of locations) {
-		const hasAddress = loc.address !== null && loc.address.trim() !== '';
-		// Decide whether (and why) this location needs an address.
+		const missingParts = missingRequiredParts(loc);
+		// Decide whether (and why) this location needs attention. A location with no
+		// street is 'missing'; one that has a street but lacks another required part
+		// (city/region/country) is 'incomplete'.
 		let reason: 'missing' | 'incomplete';
-		if (!hasAddress) {
+		if (missingParts.includes('street')) {
 			reason = 'missing';
-		} else if (includeIncomplete && !isUsableAddress(loc.address)) {
+		} else if (missingParts.length > 0) {
+			if (!includeIncomplete) continue;
 			reason = 'incomplete';
 		} else {
-			continue; // has a usable address — nothing to do
+			continue; // all required parts present — nothing to do
 		}
 		if (reason === 'missing') missingCount++;
 		else incompleteCount++;
@@ -198,7 +235,8 @@ export async function findMissingAddress(
 			name: loc.name,
 			latitude: loc.latitude,
 			longitude: loc.longitude,
-			current_address: loc.address,
+			current_address: displayParts(loc),
+			missing_parts: missingParts,
 			reason
 		} as const;
 

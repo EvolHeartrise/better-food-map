@@ -62,5 +62,7 @@ export function freshDb(): TestD1 {
 	db.exec(readFileSync('migrations/0005_require_address.sql', 'utf8'));
 	db.exec(readFileSync('migrations/0006_tag_search_index.sql', 'utf8'));
 	db.exec(readFileSync('migrations/0007_users_likes_searches.sql', 'utf8'));
+	db.exec(readFileSync('migrations/0008_location_address_parts.sql', 'utf8'));
+	db.exec(readFileSync('migrations/0009_require_address_parts.sql', 'utf8'));
 	return new TestD1(db);
 }

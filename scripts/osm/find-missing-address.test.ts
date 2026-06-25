@@ -9,8 +9,15 @@ interface Loc {
 	name: string;
 	latitude: number;
 	longitude: number;
-	address: string | null;
+	street: string | null;
+	city: string | null;
+	region: string | null;
+	postcode: string | null;
+	country: string | null;
 }
+
+/** All address parts null — a fully address-less location. */
+const NO_ADDR = { street: null, city: null, region: null, postcode: null, country: null };
 
 /** Minimal D1Like that returns the whole location list for the (param-less) scan query. */
 function fakeD1(locations: Loc[]): D1Like {
@@ -64,11 +71,11 @@ function storeWith(rows: PoiRow[]): OsmPoiStore {
 }
 
 // Five DB locations covering every outcome:
-//   A — has a usable address                         → skipped
-//   B — null address, OSM POI nearby WITH an address → osm_fix_available (missing)
-//   C — null address, OSM POI nearby with NO address → osm_has_no_address (missing)
-//   D — null address, no name-matching OSM POI       → no_osm_match (missing)
-//   E — streetless "31", OSM POI nearby WITH address → osm_fix_available (incomplete)
+//   A — all required parts present                       → skipped
+//   B — no parts, OSM POI nearby WITH an address         → osm_fix_available (missing)
+//   C — no parts, OSM POI nearby with NO address         → osm_has_no_address (missing)
+//   D — no parts, no name-matching OSM POI               → no_osm_match (missing)
+//   E — street only (missing city/region/country), POI WITH address → osm_fix_available (incomplete)
 function fixture() {
 	const store = storeWith([
 		row({
@@ -94,11 +101,31 @@ function fixture() {
 		})
 	]);
 	const db = fakeD1([
-		{ id: 'A', name: 'Cafe Aligned', latitude: 49.28, longitude: -123.12, address: '1 Real Rd' },
-		{ id: 'B', name: 'Joe Coffee', latitude: 49.281, longitude: -123.121, address: null },
-		{ id: 'C', name: 'Burger Town', latitude: 49.282, longitude: -123.122, address: null },
-		{ id: 'D', name: 'Ghost Kitchen', latitude: 49.29, longitude: -123.12, address: null },
-		{ id: 'E', name: 'Pizza Plus', latitude: 49.283, longitude: -123.123, address: '31' }
+		{
+			id: 'A',
+			name: 'Cafe Aligned',
+			latitude: 49.28,
+			longitude: -123.12,
+			street: '1 Real Rd',
+			city: 'Vancouver',
+			region: 'BC',
+			postcode: 'V6J 1M5',
+			country: 'CA'
+		},
+		{ id: 'B', name: 'Joe Coffee', latitude: 49.281, longitude: -123.121, ...NO_ADDR },
+		{ id: 'C', name: 'Burger Town', latitude: 49.282, longitude: -123.122, ...NO_ADDR },
+		{ id: 'D', name: 'Ghost Kitchen', latitude: 49.29, longitude: -123.12, ...NO_ADDR },
+		{
+			id: 'E',
+			name: 'Pizza Plus',
+			latitude: 49.283,
+			longitude: -123.123,
+			street: '31',
+			city: null,
+			region: null,
+			postcode: null,
+			country: null
+		}
 	]);
 	return { store, db };
 }
