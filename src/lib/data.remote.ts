@@ -1,12 +1,12 @@
 import * as v from 'valibot';
 import { query, getRequestEvent } from '$app/server';
+import { requireDb as db } from '$lib/server/context';
 import {
 	getMapData,
 	getLocationMapData,
 	getAllTags,
 	searchTagVocabulary,
 	getBrands as getBrandsFromDb,
-	type D1Like,
 	type Tag,
 	type Brand,
 	type MapData
@@ -23,24 +23,6 @@ const BoundsSchema = v.object({
 	minLng: v.number(),
 	maxLng: v.number()
 });
-
-/**
- * The request-scoped D1 binding. On Cloudflare it lives on `platform.env.DB`
- * (configured in wrangler.jsonc and emulated locally by the adapter during
- * `vite dev`). Throws a clear error if it is missing rather than failing deep
- * inside a query.
- */
-function db(): D1Like {
-	const { platform } = getRequestEvent();
-	const binding = platform?.env?.DB;
-	if (!binding) {
-		throw new Error(
-			'D1 binding "DB" is not available on platform.env. Check the d1_databases block in ' +
-				'wrangler.jsonc and run the app through the Cloudflare adapter (vite dev / wrangler dev).'
-		);
-	}
-	return binding;
-}
 
 /**
  * Returns everything the map page needs for the given viewport (see

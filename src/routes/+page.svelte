@@ -2,14 +2,24 @@
 	import { resolve } from '$app/paths';
 	import { pushState, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
-	import { MediaQuery, SvelteSet } from 'svelte/reactivity';
+	import { MediaQuery, SvelteSet, SvelteMap } from 'svelte/reactivity';
 	import { getLocations, getLocationData, getBrands, getUserLocation } from '$lib/data.remote';
+	import {
+		getCurrentUser,
+		getLikes,
+		getRecentSearches,
+		setLocationLiked,
+		setItemLiked,
+		logSearch
+	} from '$lib/user.remote';
 	import LocationMap from '$lib/components/LocationMap.svelte';
 	import TagPicker from '$lib/components/TagPicker.svelte';
 	import FoodTag from '$lib/components/FoodTag.svelte';
+	import AccountMenu from '$lib/components/AccountMenu.svelte';
+	import LikeButton from '$lib/components/LikeButton.svelte';
 	import Search from '@lucide/svelte/icons/search';
 	import { categoryLabel, type Category } from '$lib/category';
-	import type { MapData, MapLocation, Item, Bounds, Tag } from '$lib/server/db';
+	import type { MapData, MapLocation, Item, Bounds, Tag, SearchHistoryEntry } from '$lib/server/db';
 
 	// The visible map area, reported by <LocationMap> (debounced) as the user pans
 	// and zooms, plus once on load. This is the ONLY thing that decides which data
@@ -343,6 +353,81 @@
 		place.trim() !== '' || item.trim() !== '' || included.length > 0 || excluded.length > 0
 	);
 
+	// --- Account, likes & search history --------------------------------------
+	// The signed-in user (null when signed out) drives the account control and gates
+	// the like buttons. Likes and recent searches are read only when signed in.
+	const user = $derived(await getCurrentUser());
+	const serverLikes = $derived(user ? await getLikes() : { locationIds: [], itemIds: [] });
+	const recentSearches = $derived(user ? await getRecentSearches() : []);
+
+	// Optimistic like state: a pending map of just-toggled ids layered over the
+	// server set, so a tap reflects instantly without waiting on the round trip (and
+	// reverts if it fails). The pending maps are reactive, so the id sets below
+	// recompute as toggles land; a later server reload supersedes the pending entry.
+	const pendingLocationLikes = new SvelteMap<string, boolean>();
+	const pendingItemLikes = new SvelteMap<string, boolean>();
+
+	function overlayLikes(
+		serverIds: string[],
+		pending: SvelteMap<string, boolean>
+	): SvelteSet<string> {
+		const ids = new SvelteSet(serverIds);
+		for (const [id, liked] of pending) {
+			if (liked) ids.add(id);
+			else ids.delete(id);
+		}
+		return ids;
+	}
+
+	const likedLocationIds = $derived(overlayLikes(serverLikes.locationIds, pendingLocationLikes));
+	const likedItemIds = $derived(overlayLikes(serverLikes.itemIds, pendingItemLikes));
+
+	function toggleLocationLike(id: string) {
+		const liked = likedLocationIds.has(id);
+		pendingLocationLikes.set(id, !liked);
+		setLocationLiked({ locationId: id, liked: !liked }).catch(() =>
+			pendingLocationLikes.set(id, liked)
+		);
+	}
+
+	function toggleItemLike(id: string) {
+		const liked = likedItemIds.has(id);
+		pendingItemLikes.set(id, !liked);
+		setItemLiked({ itemId: id, liked: !liked }).catch(() => pendingItemLikes.set(id, liked));
+	}
+
+	// Re-apply a past search picked in the account menu: restore the four filters.
+	function applySearch(entry: SearchHistoryEntry) {
+		place = entry.place;
+		item = entry.item;
+		included = entry.included;
+		excluded = entry.excluded;
+	}
+
+	// Auto-log each search a signed-in user runs. Debounced so a burst of keystrokes
+	// logs once it settles, and de-duplicated so an unchanged query isn't re-logged.
+	// Fire-and-forget telemetry powering the "recent searches" list (uncapped server
+	// side for now); `logSearch` is a no-op server-side when signed out.
+	let lastLoggedSearch = '';
+	$effect(() => {
+		if (!user || !hasQuery) return;
+		const payload = {
+			place: place.trim(),
+			item: item.trim(),
+			included: included.map((t) => ({ id: t.id, name: t.name, tag_type: t.tag_type })),
+			excluded: excluded.map((t) => ({ id: t.id, name: t.name, tag_type: t.tag_type }))
+		};
+		const signature = JSON.stringify(payload);
+		if (signature === lastLoggedSearch) return;
+		const timer = setTimeout(() => {
+			lastLoggedSearch = signature;
+			logSearch(payload)
+				.then(() => getRecentSearches().refresh())
+				.catch(() => {});
+		}, 1000);
+		return () => clearTimeout(timer);
+	});
+
 	function formatPrice(price: number | null): string {
 		return price === null ? '—' : currency.format(price);
 	}
@@ -493,6 +578,8 @@
 	     free over the map, laid out as a horizontal row. On narrow screens the row
 	     collapses behind the "Filters" toggle. -->
 	<div class="searchbar" role="search" aria-label="Search and filters">
+		<AccountMenu {user} {recentSearches} onApplySearch={applySearch} />
+
 		<!-- Shown only on narrow screens (CSS): collapses the items to free the map. -->
 		<button
 			type="button"
@@ -574,6 +661,7 @@
 	>
 		{#if selectedLocation}
 			{@const label = categoryLabel(selectedLocation.category)}
+			{@const selectedLocationId = selectedLocation.id}
 			<section class="detail">
 				<button type="button" class="detail__back" onclick={closeDetail}>
 					← Back to results
@@ -584,6 +672,18 @@
 						<h2 class="detail__name">{selectedLocation.name}</h2>
 						{#if label}
 							<span class="badge">{label}</span>
+						{/if}
+						{#if user}
+							<span class="detail__like">
+								<LikeButton
+									liked={likedLocationIds.has(selectedLocationId)}
+									onToggle={() => toggleLocationLike(selectedLocationId)}
+									label={likedLocationIds.has(selectedLocationId)
+										? 'Unlike this place'
+										: 'Like this place'}
+									size={18}
+								/>
+							</span>
 						{/if}
 					</header>
 
@@ -649,7 +749,7 @@
 							{/if}
 							<ul class="menu__list">
 								{#each detailMenu as menuItem (menuItem.id)}
-									<li class="menu__item">
+									<li class="menu__item" class:menu__item--likeable={!!user}>
 										<button
 											type="button"
 											class="menu__trigger"
@@ -670,6 +770,17 @@
 												>
 											{/if}
 										</button>
+										{#if user}
+											<span class="menu__like">
+												<LikeButton
+													liked={likedItemIds.has(menuItem.id)}
+													onToggle={() => toggleItemLike(menuItem.id)}
+													label={likedItemIds.has(menuItem.id)
+														? `Unlike ${menuItem.item_name}`
+														: `Like ${menuItem.item_name}`}
+												/>
+											</span>
+										{/if}
 										<!-- No room for the floating popup beside the bottom sheet on narrow screens, so the tapped item's details expand inline instead. -->
 										{#if narrowViewport.current && activeMenuItemId === menuItem.id}
 											<div class="menu__details">
@@ -712,7 +823,12 @@
 							{#if result.kind === 'single'}
 								{@const label = categoryLabel(result.loc.category)}
 								<li>
-									<button type="button" class="card" onclick={() => selectLocation(result.loc.id)}>
+									<button
+										type="button"
+										class="card"
+										class:card--likeable={!!user}
+										onclick={() => selectLocation(result.loc.id)}
+									>
 										<span class="card__name">{result.loc.name}</span>
 										{#if label}
 											<span class="card__category">{label}</span>
@@ -722,6 +838,17 @@
 										{/if}
 										{@render matchedItems(result.items)}
 									</button>
+									{#if user}
+										<span class="card__like">
+											<LikeButton
+												liked={likedLocationIds.has(result.loc.id)}
+												onToggle={() => toggleLocationLike(result.loc.id)}
+												label={likedLocationIds.has(result.loc.id)
+													? `Unlike ${result.loc.name}`
+													: `Like ${result.loc.name}`}
+											/>
+										</span>
+									{/if}
 								</li>
 							{:else}
 								{@const label = categoryLabel(result.category)}
@@ -757,6 +884,7 @@
 													<button
 														type="button"
 														class="card card--member"
+														class:card--likeable={!!user}
 														onclick={() => selectLocation(member.loc.id)}
 													>
 														{#if member.loc.address}
@@ -767,6 +895,17 @@
 															>
 														{/if}
 													</button>
+													{#if user}
+														<span class="card__like">
+															<LikeButton
+																liked={likedLocationIds.has(member.loc.id)}
+																onToggle={() => toggleLocationLike(member.loc.id)}
+																label={likedLocationIds.has(member.loc.id)
+																	? `Unlike ${result.name}`
+																	: `Like ${result.name}`}
+															/>
+														</span>
+													{/if}
 												</li>
 											{/each}
 										</ul>
@@ -1263,6 +1402,47 @@
 		/* Negative margin lets the scrollbar sit at the panel edge. */
 		margin: 0 -0.4rem;
 		padding: 0 0.4rem 0.2rem;
+	}
+
+	/* Like buttons (LikeButton.svelte) overlaid on result cards and menu rows. Each
+	   sits absolutely in the top-right of its row as a SIBLING of the row's button —
+	   never nested, since a <button> can't contain another button — so a tap likes
+	   the row without also activating it. The row reserves right padding for it only
+	   when signed in (the `--likeable` modifier), so the signed-out layout is
+	   unchanged. */
+	.results__list > li,
+	.group__members > li {
+		position: relative;
+	}
+
+	.card--likeable {
+		padding-right: 2.1rem;
+	}
+
+	.card__like {
+		position: absolute;
+		top: 0.4rem;
+		right: 0.4rem;
+		z-index: 1;
+	}
+
+	.menu__item--likeable {
+		position: relative;
+	}
+
+	.menu__item--likeable .menu__trigger {
+		padding-right: 1.9rem;
+	}
+
+	.menu__like {
+		position: absolute;
+		top: 0.5rem;
+		right: 0;
+		z-index: 1;
+	}
+
+	.detail__like {
+		margin-left: auto;
 	}
 
 	.detail__header {
