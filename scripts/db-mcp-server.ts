@@ -145,12 +145,18 @@ const MODEL_OVERVIEW =
 const INGREDIENT_TAG_STANDARD =
 	'Ingredient standard: an ingredient is a NOUN naming ONE food component (e.g. "tomato", "cashew", ' +
 	'"paneer", "soy sauce", "coconut milk"). Keep them generic and reusable across menus, and ATOMIC — ' +
-	'one ingredient per comma-separated part (split "beets & cilantro" into "beets, cilantro"). Do NOT ' +
-	'put a dish description, preparation, serving note, price, size or choice list in `ingredients` ' +
+	'one ingredient per comma-separated part (split "beets & cilantro" into "beets, cilantro"). DROP ' +
+	'cooking-method, cut/form and sourcing qualifiers down to the base component: write "chicken", not ' +
+	'"grilled chicken", "whole chicken" or "house chicken" — the dietary filter keys on WHAT the ' +
+	'component is, not how it was cooked, cut or sourced. (Transformation preps that yield a distinct ' +
+	'product — smoked, pickled, dried, fermented — and idioms like "hot sauce" do stay.) Do NOT put a ' +
+	'dish description, preparation, serving note, price, size or choice list in `ingredients` ' +
 	'(no "served with…", "topped with…", "12 oz", "choice of milk") — prose belongs in the item ' +
 	'`description`, and dietary/course facts in `tags`. REUSE an existing tag instead of a near-duplicate: ' +
 	'call search_tags first. Spellings are auto-canonicalized for you (accents folded; known plurals and ' +
-	'synonyms mapped to one canonical tag), but search_tags is still the way to match the established name.';
+	'synonyms mapped to one canonical tag), but search_tags is still the way to match the established name. ' +
+	'The create/update tools return a `warnings` array when a part reads like a qualifier, a conjunction ' +
+	'or prose — heed it (the warning is advisory and never blocks the write).';
 
 // One-line pointer to {@link INGREDIENT_TAG_STANDARD} for the per-field ingredient
 // descriptions, keeping the advertised JSON Schema lean (the full standard is in the

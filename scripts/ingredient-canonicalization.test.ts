@@ -130,3 +130,59 @@ test('ingredientProseWarning flags descriptions/prices but passes real ingredien
 		ingredientProseWarning('a side of maple syrup and fresh fruit slices and so much more here')
 	).not.toBeNull();
 });
+
+test('ingredientProseWarning flags prep/cut/sourcing qualifiers down to the base noun', () => {
+	// Cooking-method qualifiers — fold to the base ingredient.
+	expect(ingredientProseWarning('grilled chicken')).not.toBeNull();
+	expect(ingredientProseWarning('deep fried chicken')).not.toBeNull();
+	expect(ingredientProseWarning('steamed milk')).not.toBeNull();
+	expect(ingredientProseWarning('tandoor-baked')).not.toBeNull();
+	// Cut/form qualifiers.
+	expect(ingredientProseWarning('whole chicken')).not.toBeNull();
+	expect(ingredientProseWarning('ground beef')).not.toBeNull();
+	expect(ingredientProseWarning('diced tomato')).not.toBeNull();
+	// Sourcing / freshness qualifiers.
+	expect(ingredientProseWarning('house fries')).not.toBeNull();
+	expect(ingredientProseWarning('fresh herbs')).not.toBeNull();
+});
+
+test('ingredientProseWarning flags conjunctions, slashes and process clauses', () => {
+	expect(ingredientProseWarning('chopped almonds and pistachios')).not.toBeNull();
+	expect(ingredientProseWarning('kale & spinach')).not.toBeNull();
+	expect(ingredientProseWarning('lettuce/greens')).not.toBeNull();
+	expect(ingredientProseWarning('steamed then fried')).not.toBeNull();
+	expect(ingredientProseWarning('baked in the tandoor')).not.toBeNull();
+	expect(ingredientProseWarning('lamb braised in yogurt')).not.toBeNull();
+});
+
+test('ingredientProseWarning leaves transformation preps and idiomatic compounds clean', () => {
+	// Transformation-defining preps yield a distinct product — kept (see fold/keep policy).
+	for (const keep of [
+		'smoked paprika',
+		'smoked salmon',
+		'pickled onion',
+		'dried mint',
+		'fermented black bean',
+		'whipped cream',
+		'marinated tofu',
+		'breaded chicken'
+	]) {
+		expect(ingredientProseWarning(keep)).toBeNull();
+	}
+	// Idioms and genuine compound ingredients whose first word is part of the identity.
+	for (const keep of [
+		'hot sauce',
+		'cold brew',
+		'soy sauce',
+		'fish sauce',
+		'coconut milk',
+		'oat milk',
+		'whole wheat flour',
+		'whole milk',
+		'green onion',
+		'bell pepper',
+		'brown sugar'
+	]) {
+		expect(ingredientProseWarning(keep)).toBeNull();
+	}
+});
