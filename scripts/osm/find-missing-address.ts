@@ -8,7 +8,7 @@
 // from OSM sits ~0 m from its staging POI, so the POI that NAME-matches it nearby
 // is the one its address should come from. For each flagged location this finds
 // that POI and returns its structured `osm_address_parts` (street/city/region/
-// postcode/country, ready for update_location) — plus a single-line `osm_address`
+// postcode/country, ready for update_locations) — plus a single-line `osm_address`
 // preview and `osm_url` to cite — or reports that OSM has no address to give (the
 // POI is itself addressless, or there is no name-matching POI nearby).
 //
@@ -18,7 +18,7 @@
 
 import type { D1Like } from '../../src/lib/server/db';
 import { composeAddressLine } from '../../src/lib/address';
-import { osmAddressParts, osmUrl } from './map-feature';
+import { osmOwnAddressParts, osmUrl } from './map-feature';
 import type { OsmPoiStore, StoredPoi } from './poi-store';
 import { LOCATION_AUDIT, nearestNameMatch } from './poi-match';
 
@@ -65,7 +65,7 @@ export interface MissingAddressLocation {
 	 */
 	classification: 'osm_fix_available' | 'osm_has_no_address' | 'no_osm_match';
 	/**
-	 * Structured parts to pass to update_location (osm_fix_available only, and only
+	 * Structured parts to pass to update_locations (osm_fix_available only, and only
 	 * when the matched POI carries its OWN `addr:*` tags — present is preferred over
 	 * splitting `osm_address` by hand). The server normalizes region/postcode/country,
 	 * so pass the parts through unchanged. May be partial (e.g. no country); supply
@@ -78,7 +78,7 @@ export interface MissingAddressLocation {
 	>;
 	/**
 	 * A single-line preview of the matched OSM address (osm_fix_available only).
-	 * Prefer `osm_address_parts` for update_location; fall back to splitting this
+	 * Prefer `osm_address_parts` for update_locations; fall back to splitting this
 	 * into structured parts when `osm_address_parts` is absent.
 	 */
 	osm_address?: string;
@@ -145,25 +145,12 @@ export function usableAddress(address: string | null | undefined): string | null
 
 /**
  * The matched POI's OWN address parts (from its `addr:*` tags), as a ready-to-pass
- * update_location patch — or undefined when the POI carries no addr:* tags (its
+ * update_locations patch — or undefined when the POI carries no addr:* tags (its
  * address came from an enrichment feed or a containing building, not its own tags),
  * in which case the caller exposes only the single-line `osm_address`.
  */
 function osmFixParts(poi: StoredPoi): MissingAddressLocation['osm_address_parts'] {
-	let props: Record<string, string>;
-	try {
-		props = JSON.parse(poi.tags_json) as Record<string, string>;
-	} catch {
-		return undefined;
-	}
-	const parts = osmAddressParts(props);
-	const out: NonNullable<MissingAddressLocation['osm_address_parts']> = {};
-	if (parts.street) out.street = parts.street;
-	if (parts.city) out.city = parts.city;
-	if (parts.region) out.region = parts.region;
-	if (parts.postcode) out.postcode = parts.postcode;
-	if (parts.country) out.country = parts.country;
-	return Object.keys(out).length ? out : undefined;
+	return osmOwnAddressParts(poi.tags_json);
 }
 
 /** The REQUIRED structured parts (street/city/region/country) that are absent. */
@@ -200,7 +187,7 @@ async function allLocations(db: D1Like): Promise<LocationRow[]> {
  * `include_incomplete`, a streetless fragment), and matches each to the nearest
  * name-matching OSM staging POI (same normalisation/containment rule as
  * search_poi's dedup). The POI's address — when it has a usable one — is returned
- * as `osm_address` for a verbatim update_location backfill.
+ * as `osm_address` for a verbatim update_locations backfill.
  *
  * Returns actionable-first (osm_fix_available, then osm_has_no_address, then
  * no_osm_match) so the `limit` window surfaces the easy OSM backfills first, with
