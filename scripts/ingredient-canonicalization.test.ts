@@ -106,6 +106,17 @@ test('searching a variant spelling returns the canonical tag (read side of the m
 	expect((await searchTagVocabulary(db, 'chickpea')).map((t) => t.id)).toContain('ing:chickpea');
 });
 
+test('an accented query matches the accent-folded canonical tag (no alias row needed)', async () => {
+	const db = freshDb();
+	const cafe = await seedCafe(db);
+	// Stored folded as ing:jalapeno on write.
+	await insertFoods(db, [
+		{ location_id: cafe, item_name: 'Nachos', ingredients: 'Jalapeño', price: 9 }
+	]);
+	// The user types the accented form; folding the query makes it match.
+	expect((await searchTagVocabulary(db, 'jalapeño')).map((t) => t.id)).toContain('ing:jalapeno');
+});
+
 test('ingredientProseWarning flags descriptions/prices but passes real ingredients', () => {
 	// Clean component nouns — no warning.
 	expect(ingredientProseWarning('tomato')).toBeNull();
