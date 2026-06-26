@@ -476,8 +476,15 @@ export async function searchTagVocabulary(
 export interface LocationListFilter {
 	bbox?: Bounds;
 	category?: Category;
+	/** Case-insensitive substring match on the location name (LIKE %query%). */
+	nameLike?: string;
 	limit?: number;
 	offset?: number;
+}
+
+/** Escapes LIKE wildcards in user input (paired with `ESCAPE '\'`). */
+function escapeLikePattern(value: string): string {
+	return value.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
 
 export async function getLocationsWithTags(
@@ -496,6 +503,10 @@ export async function getLocationsWithTags(
 	if (filter.category) {
 		conds.push('l.category = ?');
 		params.push(filter.category);
+	}
+	if (filter.nameLike && filter.nameLike.trim() !== '') {
+		conds.push("l.name LIKE ? ESCAPE '\\'");
+		params.push(`%${escapeLikePattern(filter.nameLike.trim())}%`);
 	}
 	const whereSql = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
 	const tagExtra = conds.length ? ` AND ${conds.join(' AND ')}` : '';
@@ -555,6 +566,31 @@ export async function getLocationsWithTags(
 		tags: tagsByLocation.get(loc.id) ?? [],
 		sources: sourcesByLocation.get(loc.id) ?? []
 	}));
+}
+
+/**
+ * The subset of `ids` that already exist as rows in `table`. Lets the MCP create
+ * tools make explicit-id inserts idempotent: a caller that retries a batch with
+ * the same ids (e.g. after a dropped response) can skip the rows already written
+ * instead of failing the whole batch on a primary-key collision.
+ */
+const EXISTING_IDS_TABLES = new Set(['locations', 'items', 'brands', 'menus']);
+
+export async function existingIds(
+	db: D1Like,
+	table: 'locations' | 'items' | 'brands' | 'menus',
+	ids: string[]
+): Promise<Set<string>> {
+	// `table` is interpolated into the SQL, so guard it against an allowlist at
+	// runtime (the TS union is erased and can't stop a future dynamic caller).
+	if (!EXISTING_IDS_TABLES.has(table)) throw new Error(`existingIds: invalid table "${table}".`);
+	if (ids.length === 0) return new Set();
+	const placeholders = ids.map(() => '?').join(', ');
+	const { results } = await db
+		.prepare(`SELECT id FROM ${table} WHERE id IN (${placeholders})`)
+		.bind(...ids)
+		.all<{ id: string }>();
+	return new Set(results.map((r) => r.id));
 }
 
 /**

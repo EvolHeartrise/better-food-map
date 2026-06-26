@@ -59,7 +59,6 @@ export interface PoiCandidate {
 	phone: string | null;
 	website: string | null;
 	opening_hours: string | null;
-	diet_markers: string[];
 	/** Distance from the query centre in metres (only for centre+radius queries). */
 	distance_m?: number;
 }
@@ -186,7 +185,6 @@ function toCandidate(poi: StoredPoi, distance_m?: number): PoiCandidate {
 		phone: poi.phone,
 		website: poi.website,
 		opening_hours: poi.opening_hours,
-		diet_markers: poi.diet_markers,
 		...(distance_m === undefined ? {} : { distance_m: Math.round(distance_m) })
 	};
 }

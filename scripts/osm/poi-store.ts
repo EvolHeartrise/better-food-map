@@ -265,6 +265,23 @@ export class OsmPoiStore {
 		return rows.map((r) => ({ ...r, diet_markers: parseMarkers(r.diet_markers) }));
 	}
 
+	/**
+	 * A single POI by its `osm_id` (the staging-store primary key, as returned by
+	 * search_poi), or null when absent. Used by create_locations' import path to
+	 * take coordinates + address VERBATIM from OSM rather than trusting the caller
+	 * to copy them through.
+	 */
+	getByOsmId(osmId: string): StoredPoi | null {
+		const row = this.db
+			.query(
+				`SELECT osm_id, osm_type, numeric_id, name, osm_class, suggested_category, cuisine,
+					latitude, longitude, address, phone, website, opening_hours, address_source, diet_markers, tags_json, region
+				 FROM osm_poi WHERE osm_id = ?`
+			)
+			.get(osmId) as RawStoredRow | null;
+		return row ? { ...row, diet_markers: parseMarkers(row.diet_markers) } : null;
+	}
+
 	close(): void {
 		this.db.close();
 	}

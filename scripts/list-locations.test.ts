@@ -5,7 +5,12 @@
 // overview still rides along for exactly the rows returned.
 
 import { test, expect } from 'bun:test';
-import { insertLocations, getLocationsWithTags, type D1Like } from '../src/lib/server/db';
+import {
+	insertLocations,
+	getLocationsWithTags,
+	existingIds,
+	type D1Like
+} from '../src/lib/server/db';
 import { freshDb } from './test-d1';
 
 const VAN_ADDR = {
@@ -96,4 +101,34 @@ test('getLocationsWithTags with no filter returns every location', async () => {
 	const db = freshDb();
 	await seed(db);
 	expect((await getLocationsWithTags(db)).length).toBe(3);
+});
+
+test('getLocationsWithTags filters by nameLike (case-insensitive substring, behind find_locations)', async () => {
+	const db = freshDb();
+	await seed(db);
+	expect((await getLocationsWithTags(db, { nameLike: 'van' })).map((l) => l.id).toSorted()).toEqual(
+		['van1', 'van2']
+	);
+	// Case-insensitive, and narrows further on a more specific substring.
+	expect((await getLocationsWithTags(db, { nameLike: 'CAFE' })).map((l) => l.id)).toEqual(['van1']);
+	expect(await getLocationsWithTags(db, { nameLike: 'nomatch' })).toEqual([]);
+});
+
+test('getLocationsWithTags combines nameLike with category', async () => {
+	const db = freshDb();
+	await seed(db);
+	// "Van" matches van1 (cafe) and van2 (bakery); category narrows to the bakery.
+	expect(
+		(await getLocationsWithTags(db, { nameLike: 'Van', category: 'bakery' })).map((l) => l.id)
+	).toEqual(['van2']);
+});
+
+test('existingIds returns only the ids already present (for idempotent retries)', async () => {
+	const db = freshDb();
+	await seed(db);
+	const found = await existingIds(db, 'locations', ['van1', 'ghost', 'tor1']);
+	expect([...found].toSorted()).toEqual(['tor1', 'van1']);
+	expect(await existingIds(db, 'locations', [])).toEqual(new Set());
+	// The interpolated table name is guarded against anything outside the allowlist.
+	expect(existingIds(db, 'sqlite_master' as never, ['x'])).rejects.toThrow(/invalid table/);
 });

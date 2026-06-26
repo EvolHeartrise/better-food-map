@@ -53,6 +53,7 @@ import {
 	getLocationItemOverrides,
 	setLocationItemOverride,
 	deleteLocationItemOverride,
+	existingIds,
 	TAGS,
 	type D1Like,
 	type LocationWithTags
@@ -63,6 +64,7 @@ import { searchPoi } from './osm/search-poi';
 import { findCoordinateDrift } from './osm/find-coordinate-drift';
 import { findMissingAddress } from './osm/find-missing-address';
 import { OsmPoiStore } from './osm/poi-store';
+import { osmOwnAddressParts, osmUrl } from './osm/map-feature';
 import { bboxAround, haversineMeters } from './osm/geo';
 
 // The D1 client is created lazily so the server can start and advertise its
@@ -139,7 +141,7 @@ const SERVER_INSTRUCTIONS =
 	'them whenever you add scraped data so it stays verifiable.\n\n' +
 	'To find venues still missing from the map, use search_poi: it reads a local OpenStreetMap ' +
 	'food-POI staging store (built offline, not the live D1), already de-duplicated against existing ' +
-	'locations, and returns candidates with an osm_url to cite as the source — then add each with ' +
+	'locations, and returns candidates each carrying an `osm_id` (pass it to create_locations to import OSM coordinates + address verbatim) — then add each with ' +
 	`create_locations.\n\n${MODEL_OVERVIEW}\n\nTag policy: ${TAG_POLICY}`;
 
 const latitudeSchema = v.pipe(v.number(), v.minValue(-90), v.maxValue(90));
@@ -177,6 +179,15 @@ const POSTCODE_DESC =
 	'Postal/ZIP code (optional). Stored canonically (e.g. "V6J 1M5"); omit when the source has none.';
 const COUNTRY_DESC =
 	'Country — name ("Canada") or ISO-2 code ("CA"); stored as ISO-2. Defaults to CA.';
+const OSM_ID_DESC =
+	'PREFERRED way to add a venue: the `osm_id` of a search_poi candidate (same local OSM staging ' +
+	"store). When set, the server takes this venue's latitude/longitude VERBATIM from that OSM POI — " +
+	"guaranteeing the coordinate-exact match the map's de-duplication relies on, so you never copy or " +
+	"geocode coordinates — and fills the address from the POI's own addr:* tags, auto-citing its " +
+	'osm_url as a source. OMIT latitude/longitude when using osm_id (passing them is rejected). You may ' +
+	'still pass street/city/region/postcode/country to override or supply parts the POI lacks (e.g. ' +
+	"city/region) — take those from the POI's admin context, never geocode. Fall back to the manual " +
+	'latitude/longitude + address only for a venue genuinely not in OSM.';
 
 /**
  * Normalizes raw structured address args into the stored parts, throwing a clear
@@ -196,7 +207,10 @@ function normalizeAddressParts(args: {
 	if (!region) {
 		throw new Error(
 			`region "${args.region}" is not a recognized province/state for ${country}. ` +
-				'Pass a 2-letter code or full name.'
+				'Pass a 2-letter code or full name' +
+				(args.country === null || args.country === undefined
+					? ` (country defaulted to ${country}; if this venue is elsewhere, pass its country too).`
+					: '.')
 		);
 	}
 	let postcode: string | null = null;
@@ -359,14 +373,40 @@ const createLocationArgs = v.object({
 	name: v.pipe(v.string(), v.minLength(1), v.description('Display name of the place.')),
 	category: v.optional(
 		v.nullable(
-			v.pipe(categorySchema, v.description('One of: cafe, fast_food, restaurant, bakery.'))
+			v.pipe(
+				categorySchema,
+				v.description(
+					"One of: cafe, fast_food, restaurant, bakery. With `osm_id`, defaults to the POI's suggested category."
+				)
+			)
 		)
 	),
-	latitude: v.pipe(latitudeSchema, v.description('Latitude in decimal degrees.')),
-	longitude: v.pipe(longitudeSchema, v.description('Longitude in decimal degrees.')),
-	street: v.pipe(streetSchema, v.description(STREET_DESC)),
-	city: v.pipe(citySchema, v.description(CITY_DESC)),
-	region: v.pipe(regionSchema, v.description(REGION_DESC)),
+	osm_id: v.optional(v.pipe(v.string(), v.minLength(1), v.description(OSM_ID_DESC))),
+	latitude: v.optional(
+		v.pipe(
+			latitudeSchema,
+			v.description(
+				'Latitude in decimal degrees. Required without `osm_id`; omit when `osm_id` is set.'
+			)
+		)
+	),
+	longitude: v.optional(
+		v.pipe(
+			longitudeSchema,
+			v.description(
+				'Longitude in decimal degrees. Required without `osm_id`; omit when `osm_id` is set.'
+			)
+		)
+	),
+	street: v.optional(
+		v.pipe(streetSchema, v.description(`${STREET_DESC} Required unless \`osm_id\` supplies it.`))
+	),
+	city: v.optional(
+		v.pipe(citySchema, v.description(`${CITY_DESC} Required unless \`osm_id\` supplies it.`))
+	),
+	region: v.optional(
+		v.pipe(regionSchema, v.description(`${REGION_DESC} Required unless \`osm_id\` supplies it.`))
+	),
 	postcode: v.optional(v.nullable(v.pipe(postcodeSchema, v.description(POSTCODE_DESC)))),
 	country: v.optional(v.nullable(v.pipe(countryPartSchema, v.description(COUNTRY_DESC)))),
 	phone: v.optional(v.nullable(v.string())),
@@ -507,6 +547,35 @@ const listLocationsArgs = v.object({
 	),
 	category: v.optional(
 		v.pipe(categorySchema, v.description('Only return locations in this category.'))
+	),
+	limit: v.optional(
+		v.pipe(v.number(), v.integer(), v.minValue(1), v.description('Maximum number to return.'))
+	),
+	offset: v.optional(
+		v.pipe(
+			v.number(),
+			v.integer(),
+			v.minValue(0),
+			v.description('Skip this many results (paging).')
+		)
+	)
+});
+
+const findLocationsArgs = v.object({
+	query: v.pipe(
+		v.string(),
+		v.trim(),
+		v.minLength(1, 'query must be a non-empty, non-blank substring.'),
+		v.description('Case-insensitive substring matched against the location name.')
+	),
+	near: v.optional(
+		v.pipe(
+			nearSchema,
+			v.description('Only return matches within radius_km of this point, ordered nearest first.')
+		)
+	),
+	category: v.optional(
+		v.pipe(categorySchema, v.description('Only return matches in this category.'))
 	),
 	limit: v.optional(
 		v.pipe(v.number(), v.integer(), v.minValue(1), v.description('Maximum number to return.'))
@@ -858,12 +927,30 @@ interface ToolDef<S extends AnySchema> {
 	name: string;
 	description: string;
 	schema: S;
+	/** MCP behavioural hints advertised to clients (read-only/destructive/idempotent). */
+	annotations?: Tool['annotations'];
 	handler: (input: v.InferOutput<S>) => unknown;
 }
 
 function defineTool<S extends AnySchema>(def: ToolDef<S>): ToolDef<S> {
 	return def;
 }
+
+// Reusable MCP tool annotation sets. `openWorldHint: false` everywhere — every tool
+// operates on our own database or the local OSM store, never an open/external world.
+//   READ_ONLY  — pure reads (auto-approvable by clients).
+//   CREATE     — additive inserts (not destructive); idempotent only on explicit ids.
+//   DESTRUCTIVE— writes that replace or remove existing data; safe to re-run (idempotent).
+//     Includes set_location_item_override: it replaces the whole override row, so an
+//     {available}-only call clears a previously-set price — a destructive overwrite.
+const READ_ONLY = { readOnlyHint: true, openWorldHint: false } as const;
+const CREATE = { readOnlyHint: false, destructiveHint: false, openWorldHint: false } as const;
+const DESTRUCTIVE = {
+	readOnlyHint: false,
+	destructiveHint: true,
+	idempotentHint: true,
+	openWorldHint: false
+} as const;
 
 /** Normalizes optional source labels to null so they match the DB `Source` type. */
 function normalizeSources(
@@ -896,9 +983,170 @@ async function assertBrandMenuRefs(
 	}
 }
 
+type CreateLocationItem = v.InferOutput<typeof createLocationArgs>;
+
+/** Coordinates + normalized address + category + sources, ready for insertLocations. */
+interface ResolvedLocationCore {
+	latitude: number;
+	longitude: number;
+	category: v.InferOutput<typeof categorySchema> | null;
+	street: string;
+	city: string;
+	region: string;
+	postcode: string | null;
+	country: string;
+	sources: { url: string; label: string | null }[] | undefined;
+}
+
+/**
+ * Resolves one create_locations item's coordinates + address, enforcing the
+ * OSM-based coordinate policy. With `osm_id` the coordinates come VERBATIM from the
+ * matching staging-store POI (and its osm_url is auto-cited); the address defaults
+ * to the POI's own addr:* tags, with any caller-supplied part overriding. Without
+ * `osm_id`, latitude/longitude and street/city/region are required and used as
+ * given. Throws an MCP-friendly error on unresolved or conflicting input.
+ */
+function resolveLocationInsertCore(it: CreateLocationItem): ResolvedLocationCore {
+	const sources = normalizeSources(it.sources);
+	if (it.osm_id) {
+		if (it.latitude !== undefined || it.longitude !== undefined) {
+			throw new Error(
+				`"${it.name}": do not pass latitude/longitude together with osm_id — coordinates are taken ` +
+					'verbatim from the OSM POI to guarantee an exact match. Omit them.'
+			);
+		}
+		const poi = getOsmStore().getByOsmId(it.osm_id);
+		if (!poi) {
+			throw new Error(
+				`No OSM POI "${it.osm_id}" in the staging store. Use an osm_id from a search_poi candidate, ` +
+					'or omit osm_id and pass latitude/longitude + address for a venue not in OSM.'
+			);
+		}
+		// Caller-supplied parts override the POI's own addr:* tags; absent parts fall
+		// back to the POI. (`??` means a caller can't blank a POI-derived part — there's
+		// no reason to import a venue and then strip its address, so that's intended.)
+		const own = osmOwnAddressParts(poi.tags_json) ?? {};
+		const street = it.street ?? own.street;
+		const city = it.city ?? own.city;
+		const region = it.region ?? own.region;
+		const missing = (
+			[
+				['street', street],
+				['city', city],
+				['region', region]
+			] as const
+		)
+			.filter(([, value]) => !value)
+			.map(([key]) => key);
+		if (missing.length) {
+			throw new Error(
+				`OSM POI "${it.osm_id}" (${poi.name ?? 'unnamed'}) has no ${missing.join('/')} in its ` +
+					`addr:* tags — pass ${missing.join(', ')} explicitly (from the POI's admin context; never geocode).`
+			);
+		}
+		const addr = normalizeAddressParts({
+			street: street as string,
+			city: city as string,
+			region: region as string,
+			postcode: it.postcode ?? own.postcode ?? null,
+			country: it.country ?? own.country ?? null
+		});
+		const osmHref = osmUrl(poi.osm_type, poi.numeric_id);
+		const hasOsmSource = sources?.some((s) => s.url === osmHref) ?? false;
+		const withOsmSource: { url: string; label: string | null }[] = hasOsmSource
+			? (sources as { url: string; label: string | null }[])
+			: [{ url: osmHref, label: 'OpenStreetMap' }, ...(sources ?? [])];
+		return {
+			latitude: poi.latitude,
+			longitude: poi.longitude,
+			category: it.category ?? poi.suggested_category ?? null,
+			...addr,
+			sources: withOsmSource
+		};
+	}
+	if (it.latitude === undefined || it.longitude === undefined) {
+		throw new Error(
+			`"${it.name}": latitude and longitude are required — or pass an osm_id to import them verbatim from OSM.`
+		);
+	}
+	if (it.street === undefined || it.city === undefined || it.region === undefined) {
+		throw new Error(
+			`"${it.name}": street, city and region are required — or pass an osm_id to import the address from OSM.`
+		);
+	}
+	return {
+		latitude: it.latitude,
+		longitude: it.longitude,
+		category: it.category ?? null,
+		...normalizeAddressParts({
+			street: it.street,
+			city: it.city,
+			region: it.region,
+			postcode: it.postcode,
+			country: it.country
+		}),
+		sources
+	};
+}
+
+/** Lightweight location overview, shared by list_locations and find_locations. */
+function projectLocationOverview(loc: LocationWithTags) {
+	return {
+		id: loc.id,
+		name: loc.name,
+		category: loc.category,
+		latitude: loc.latitude,
+		longitude: loc.longitude,
+		address: loc.address,
+		phone: loc.phone,
+		website: loc.website,
+		brand_id: loc.brand_id,
+		menu_id: loc.menu_id,
+		tags: loc.tags.map((t) => t.id)
+	};
+}
+
+/**
+ * Shared query path for the location-overview tools. With `near`, pushes the
+ * covering bbox (+ filters) into SQL then refines to the exact circle, sorts
+ * nearest-first and pages in memory (geo math the DB lacks); without it,
+ * category/name/paging push straight into SQL. `nameLike` is a case-insensitive
+ * substring match on the location name.
+ */
+async function queryLocations(opts: {
+	near?: { latitude: number; longitude: number; radius_km: number };
+	category?: v.InferOutput<typeof categorySchema>;
+	nameLike?: string;
+	limit?: number;
+	offset?: number;
+}) {
+	const { near, category, nameLike, limit, offset } = opts;
+	if (near) {
+		const box = bboxAround(near.latitude, near.longitude, near.radius_km);
+		const rows = await getLocationsWithTags(getDb(), {
+			bbox: { minLat: box.minLat, maxLat: box.maxLat, minLng: box.minLon, maxLng: box.maxLon },
+			category,
+			nameLike
+		});
+		const withinCircle = rows
+			.map((r) => ({
+				r,
+				d: haversineMeters(near.latitude, near.longitude, r.latitude, r.longitude) / 1000
+			}))
+			.filter((x) => x.d <= near.radius_km)
+			.toSorted((a, b) => a.d - b.d);
+		const start = offset ?? 0;
+		const page = withinCircle.slice(start, limit === undefined ? undefined : start + limit);
+		return page.map((x) => projectLocationOverview(x.r));
+	}
+	const rows = await getLocationsWithTags(getDb(), { category, nameLike, limit, offset });
+	return rows.map(projectLocationOverview);
+}
+
 const tools = [
 	defineTool({
 		name: 'list_locations',
+		annotations: READ_ONLY,
 		description:
 			'List locations as a lightweight overview — id, name, category, coordinates, address, phone, ' +
 			'website, brand_id/menu_id (set for chain branches), and the distinct tag ids offered across the ' +
@@ -906,46 +1154,26 @@ const tools = [
 			'Supports optional `near`/`category` filtering and `limit`/`offset` paging. Use get_location for ' +
 			'a single place with its menu and sources.',
 		schema: listLocationsArgs,
-		handler: async ({ near, category, limit, offset }) => {
-			const project = (loc: LocationWithTags) => ({
-				id: loc.id,
-				name: loc.name,
-				category: loc.category,
-				latitude: loc.latitude,
-				longitude: loc.longitude,
-				address: loc.address,
-				phone: loc.phone,
-				website: loc.website,
-				brand_id: loc.brand_id,
-				menu_id: loc.menu_id,
-				tags: loc.tags.map((t) => t.id)
-			});
-			if (near) {
-				// Push the covering bbox (+ category) into SQL, then refine to the exact
-				// circle, sort nearest-first and page in memory (the geo math the DB lacks).
-				const box = bboxAround(near.latitude, near.longitude, near.radius_km);
-				const rows = await getLocationsWithTags(getDb(), {
-					bbox: { minLat: box.minLat, maxLat: box.maxLat, minLng: box.minLon, maxLng: box.maxLon },
-					category
-				});
-				const withinCircle = rows
-					.map((r) => ({
-						r,
-						d: haversineMeters(near.latitude, near.longitude, r.latitude, r.longitude) / 1000
-					}))
-					.filter((x) => x.d <= near.radius_km)
-					.toSorted((a, b) => a.d - b.d);
-				const start = offset ?? 0;
-				const page = withinCircle.slice(start, limit === undefined ? undefined : start + limit);
-				return page.map((x) => project(x.r));
-			}
-			// No spatial filter: category + paging push straight into SQL.
-			const rows = await getLocationsWithTags(getDb(), { category, limit, offset });
-			return rows.map(project);
-		}
+		handler: ({ near, category, limit, offset }) =>
+			queryLocations({ near, category, limit, offset })
+	}),
+	defineTool({
+		name: 'find_locations',
+		annotations: READ_ONLY,
+		description:
+			'Search the LIVE map database for existing locations by name (case-insensitive substring), ' +
+			'returning the same lightweight overview as list_locations. Use it to check whether a venue is ' +
+			'already on the map (de-dup before adding) or to find a place to edit/inspect by name. This reads ' +
+			'the live D1 — distinct from search_poi, which finds OSM venues NOT yet on the map. Optionally ' +
+			'narrow with `near`/`category` and page with `limit`/`offset`. For a single place with its full ' +
+			'menu and sources, call get_location with the id.',
+		schema: findLocationsArgs,
+		handler: ({ query, near, category, limit, offset }) =>
+			queryLocations({ near, category, nameLike: query, limit, offset })
 	}),
 	defineTool({
 		name: 'get_location',
+		annotations: READ_ONLY,
 		description:
 			'Get a single location with its source URLs. `menu` lists only the items owned directly by this ' +
 			'venue (on its own private menu). If `menu_id` is a shared brand menu the location is a chain branch — ' +
@@ -964,20 +1192,26 @@ const tools = [
 	}),
 	defineTool({
 		name: 'create_locations',
+		annotations: CREATE,
 		description:
 			'Create one or more locations in a single atomic batch (all-or-nothing) — the only way to add ' +
-			'locations; pass a one-item `items` array to add a single place. Every location REQUIRES a ' +
-			"structured address — split the candidate's OSM/Overture address into `street`, `city`, `region`, " +
-			'`country` (all required) and `postcode` (optional); never geocode or invent parts (pass a ' +
-			"search_poi candidate's `address_parts` straight through). region/postcode/country are normalized " +
-			'for you (e.g. "Ontario" → "ON"). For a chain branch, set `menu_id` (and `brand_id`) on the item so ' +
-			'it serves that shared menu; for an INDEPENDENT venue omit them and optionally pass `menu_items` to ' +
-			'create its own menu in the SAME batch (else add it later with create_foods). Cite each source ' +
-			'(encouraged), e.g. the osm_url from search_poi. Ideal for bulk imports like backfilling a chain ' +
-			"across a region. Use each candidate's OSM coordinates verbatim — never geocode, hand-place, or " +
-			'round latitude/longitude, so de-duplication stays coordinate-exact. If any item is invalid, ' +
-			'nothing is written. Returns { created, location_ids, items_created, item_ids } — fetch details ' +
-			'with get_location if needed.',
+			'locations; pass a one-item `items` array to add a single place. PREFERRED: give each item the ' +
+			"`osm_id` of a search_poi candidate — the server then takes that venue's coordinates VERBATIM " +
+			"from OSM (keeping de-duplication coordinate-exact), fills its address from the POI's addr:* " +
+			'tags, and auto-cites the osm_url; you supply only brand/menu links and any menu_items, plus ' +
+			'street/city/region to override or fill parts the POI lacks. ONLY for a venue genuinely not in ' +
+			'OSM, fall back to the manual path: pass latitude/longitude plus a structured address (`street`, ' +
+			'`city`, `region`, `country` required, `postcode` optional; never geocode or invent parts). ' +
+			'region/postcode/country are normalized for you (e.g. "Ontario" → "ON"). For a chain branch, set ' +
+			'`menu_id` (and `brand_id`) so it serves that shared menu; for an INDEPENDENT venue omit them and ' +
+			'optionally pass `menu_items` to create its own menu in the SAME batch (else add it later with ' +
+			'create_foods). Ideal for bulk imports like backfilling a chain across a region. Idempotent on ' +
+			'explicit ids: items whose `id` already exists are skipped (reported in `skipped_existing_ids`), ' +
+			'so a retried batch is safe (for a location with inline `menu_items`, give it an explicit `id` ' +
+			'too, so its items are skipped with it). If any remaining item is invalid, nothing is written. ' +
+			'Returns ' +
+			'{ created, location_ids, items_created, item_ids, skipped_existing_ids } — fetch details with ' +
+			'get_location if needed.',
 		schema: createLocationsArgs,
 		handler: async ({ items }) => {
 			// Validate each DISTINCT brand/menu pair once — a chain backfill reuses a
@@ -989,10 +1223,24 @@ const tools = [
 				checkedPairs.add(key);
 				await assertBrandMenuRefs(it.brand_id, it.menu_id);
 			}
+			// Idempotency: skip items whose explicit id already exists, so retrying a batch
+			// that already landed is a no-op rather than a primary-key collision.
+			const explicitIds = items.map((it) => it.id).filter((id): id is string => Boolean(id));
+			const already = explicitIds.length
+				? await existingIds(getDb(), 'locations', explicitIds)
+				: new Set<string>();
+			const skippedExistingIds: string[] = [];
+			const toInsert = items.filter((it) => {
+				if (it.id && already.has(it.id)) {
+					skippedExistingIds.push(it.id);
+					return false;
+				}
+				return true;
+			});
 			// Pre-assign ids to any inline menu_items so we can return them; the location,
 			// its private menu and these items all land in the one atomic batch.
 			const itemIds: string[] = [];
-			const inserts = items.map((it) => {
+			const inserts = toInsert.map((it) => {
 				if (it.menu_items?.length && (it.brand_id || it.menu_id)) {
 					throw new Error(
 						`"${it.name}" has \`menu_items\` but is linked to a chain (brand_id/menu_id). Inline items ` +
@@ -1015,32 +1263,39 @@ const tools = [
 						sources: normalizeSources(mi.sources)
 					};
 				});
+				const core = resolveLocationInsertCore(it);
 				return {
 					id: it.id,
 					name: it.name,
-					category: it.category ?? null,
-					latitude: it.latitude,
-					longitude: it.longitude,
-					...normalizeAddressParts(it),
+					category: core.category,
+					latitude: core.latitude,
+					longitude: core.longitude,
+					street: core.street,
+					city: core.city,
+					region: core.region,
+					postcode: core.postcode,
+					country: core.country,
 					phone: it.phone ?? null,
 					website: it.website ?? null,
 					brand_id: it.brand_id ?? null,
 					menu_id: it.menu_id ?? null,
-					sources: normalizeSources(it.sources),
+					sources: core.sources,
 					...(menuItems.length ? { items: menuItems } : {})
 				};
 			});
-			const ids = await insertLocations(getDb(), inserts);
+			const ids = inserts.length ? await insertLocations(getDb(), inserts) : [];
 			return {
 				created: ids.length,
 				location_ids: ids,
 				items_created: itemIds.length,
-				item_ids: itemIds
+				item_ids: itemIds,
+				skipped_existing_ids: skippedExistingIds
 			};
 		}
 	}),
 	defineTool({
 		name: 'update_locations',
+		annotations: DESTRUCTIVE,
 		description:
 			'Update one or more existing locations in a single atomic batch — pass a one-item `items` array to ' +
 			'edit one place. Each patch carries an `id` plus only the fields to change; a given `sources` array ' +
@@ -1073,6 +1328,7 @@ const tools = [
 	}),
 	defineTool({
 		name: 'delete_location',
+		annotations: DESTRUCTIVE,
 		description:
 			'Delete a location and (by cascade) all of its menu items. Returns { deleted: true } if a row was removed.',
 		schema: idArgs,
@@ -1080,38 +1336,54 @@ const tools = [
 	}),
 	defineTool({
 		name: 'create_foods',
+		annotations: CREATE,
 		description:
 			'Create one or more menu items for ONE independent venue, on its own private menu (created ' +
 			'automatically the first time), in a single transaction (all-or-nothing): ' +
 			"if any item is invalid, none are written. Use this for a venue's own menu; for a chain whose branches share a menu, use create_menu_items instead (calling it on a chain branch errors). Pass a " +
 			'one-element `items` array to add a single item. Tip: when creating the venue too, pass these as ' +
-			'`menu_items` on create_locations to do it in one call. Returns { created, item_ids } — read full ' +
+			'`menu_items` on create_locations to do it in one call. Returns { created, item_ids, skipped_existing_ids } (ids already present are skipped, making retries safe) — read full ' +
 			'items with get_item / get_location if needed.',
 		schema: createFoodsArgs,
 		handler: async (input) => {
 			if (!(await getLocationById(getDb(), input.location_id))) {
 				throw new Error(`No location with id "${input.location_id}".`);
 			}
-			const ids = await insertFoods(
-				getDb(),
-				input.items.map((it) => ({
-					id: it.id,
-					location_id: input.location_id,
-					item_name: it.item_name,
-					description: it.description ?? null,
-					ingredients: it.ingredients ?? null,
-					optionalIngredients: it.optional_ingredients ?? null,
-					price: it.price ?? null,
-					tags: it.tags,
-					optionalTags: it.optional_tags,
-					sources: normalizeSources(it.sources)
-				}))
-			);
-			return { created: ids.length, item_ids: ids };
+			const explicitIds = input.items.map((it) => it.id).filter((id): id is string => Boolean(id));
+			const already = explicitIds.length
+				? await existingIds(getDb(), 'items', explicitIds)
+				: new Set<string>();
+			const skippedExistingIds: string[] = [];
+			const toInsert = input.items.filter((it) => {
+				if (it.id && already.has(it.id)) {
+					skippedExistingIds.push(it.id);
+					return false;
+				}
+				return true;
+			});
+			const ids = toInsert.length
+				? await insertFoods(
+						getDb(),
+						toInsert.map((it) => ({
+							id: it.id,
+							location_id: input.location_id,
+							item_name: it.item_name,
+							description: it.description ?? null,
+							ingredients: it.ingredients ?? null,
+							optionalIngredients: it.optional_ingredients ?? null,
+							price: it.price ?? null,
+							tags: it.tags,
+							optionalTags: it.optional_tags,
+							sources: normalizeSources(it.sources)
+						}))
+					)
+				: [];
+			return { created: ids.length, item_ids: ids, skipped_existing_ids: skippedExistingIds };
 		}
 	}),
 	defineTool({
 		name: 'get_item',
+		annotations: READ_ONLY,
 		description:
 			"Get any menu item by id — a venue's own item or a chain's shared one — with its tags " +
 			"(dietary, course, ingredient) and source URLs. To browse a venue's items use get_location; " +
@@ -1121,6 +1393,7 @@ const tools = [
 	}),
 	defineTool({
 		name: 'update_item',
+		annotations: DESTRUCTIVE,
 		description:
 			'Update any menu item by id. For a shared chain item the change applies to EVERY branch serving ' +
 			'its menu — to change just one branch use set_location_item_override instead. Only provided fields ' +
@@ -1138,6 +1411,7 @@ const tools = [
 	}),
 	defineTool({
 		name: 'delete_item',
+		annotations: DESTRUCTIVE,
 		description:
 			"Delete any menu item by id (a venue's own or a chain's shared one, plus any per-location " +
 			'overrides of it). A shared item is removed from every branch serving its menu. Returns ' +
@@ -1147,6 +1421,7 @@ const tools = [
 	}),
 	defineTool({
 		name: 'list_tags',
+		annotations: READ_ONLY,
 		description:
 			'List the canonical, app-defined tags, each with a tag_type (dietary or course). These are fixed ' +
 			'and cannot be created via this server. Ingredient tags (tag_type "ingredient") are not listed ' +
@@ -1161,22 +1436,28 @@ const tools = [
 const chainTools = [
 	defineTool({
 		name: 'create_brand',
+		annotations: CREATE,
 		description:
 			"Create a chain/brand (e.g. McDonald's). A brand owns one or more regional menus (create_menu); " +
 			'a location joins the chain by setting its brand_id/menu_id. Returns { id } — read it back with get_brand.',
 		schema: createBrandArgs,
 		handler: async (input) => {
+			// Idempotent on an explicit id: a retry that already created the brand is a no-op.
+			if (input.id && (await getBrandById(getDb(), input.id))) {
+				return { id: input.id, already_existed: true };
+			}
 			const id = await insertBrand(getDb(), {
 				id: input.id,
 				name: input.name,
 				website: input.website ?? null,
 				logo_url: input.logo_url ?? null
 			});
-			return { id };
+			return { id, already_existed: false };
 		}
 	}),
 	defineTool({
 		name: 'list_brands',
+		annotations: READ_ONLY,
 		description:
 			'List all chains/brands (id, name, website, logo_url). Use get_brand for one brand with its menus.',
 		schema: v.object({}),
@@ -1184,6 +1465,7 @@ const chainTools = [
 	}),
 	defineTool({
 		name: 'get_brand',
+		annotations: READ_ONLY,
 		description:
 			'Get a brand plus its menus as summaries (id, name, region, last_verified, item_count). Call ' +
 			"get_menu for a menu's items. Returns null if not found.",
@@ -1196,6 +1478,7 @@ const chainTools = [
 	}),
 	defineTool({
 		name: 'update_brand',
+		annotations: DESTRUCTIVE,
 		description:
 			'Update a brand. Only provided fields change. Returns the updated brand, or null if the id does not exist.',
 		schema: updateBrandArgs,
@@ -1203,6 +1486,7 @@ const chainTools = [
 	}),
 	defineTool({
 		name: 'delete_brand',
+		annotations: DESTRUCTIVE,
 		description:
 			'Delete a brand and (by cascade) its menus and their items. Branches that referenced it revert to ' +
 			'independent (brand_id/menu_id cleared). Returns { deleted: true } if a row was removed.',
@@ -1211,6 +1495,7 @@ const chainTools = [
 	}),
 	defineTool({
 		name: 'create_menu',
+		annotations: CREATE,
 		description:
 			'Create a regional menu under a brand (e.g. name "Subway UK", region "GB"). Add its shared items ' +
 			'with create_menu_items, then point each branch at it via location.menu_id. Optionally cite the ' +
@@ -1220,6 +1505,10 @@ const chainTools = [
 			if (!(await getBrandById(getDb(), input.brand_id))) {
 				throw new Error(`No brand with id "${input.brand_id}".`);
 			}
+			// Idempotent on an explicit id: a retry that already created the menu is a no-op.
+			if (input.id && (await getMenuById(getDb(), input.id))) {
+				return { id: input.id, already_existed: true };
+			}
 			const id = await insertMenu(getDb(), {
 				id: input.id,
 				brand_id: input.brand_id,
@@ -1228,11 +1517,12 @@ const chainTools = [
 				last_verified: input.last_verified ?? null,
 				sources: normalizeSources(input.sources)
 			});
-			return { id };
+			return { id, already_existed: false };
 		}
 	}),
 	defineTool({
 		name: 'list_menus',
+		annotations: READ_ONLY,
 		description:
 			'List menus (id, brand_id, name, region, last_verified, item_count), optionally filtered to one ' +
 			"brand. Use get_menu for a menu's items.",
@@ -1241,6 +1531,7 @@ const chainTools = [
 	}),
 	defineTool({
 		name: 'get_menu',
+		annotations: READ_ONLY,
 		description:
 			"Get a menu with its full item list (each item carries its tags and sources) and the menu's own " +
 			'source URLs. Returns null if not found.',
@@ -1249,6 +1540,7 @@ const chainTools = [
 	}),
 	defineTool({
 		name: 'update_menu',
+		annotations: DESTRUCTIVE,
 		description:
 			'Update a menu. Only provided fields change; if `sources` is given it replaces the whole source set ' +
 			'(pass [] to clear). Returns the updated menu, or null if the id does not exist.',
@@ -1262,6 +1554,7 @@ const chainTools = [
 	}),
 	defineTool({
 		name: 'delete_menu',
+		annotations: DESTRUCTIVE,
 		description:
 			'Delete a menu and (by cascade) its items. Branches serving it revert to independent (menu_id ' +
 			'cleared). Returns { deleted: true } if a row was removed.',
@@ -1270,36 +1563,52 @@ const chainTools = [
 	}),
 	defineTool({
 		name: 'create_menu_items',
+		annotations: CREATE,
 		description:
 			'Create one or more SHARED items on a brand menu in one transaction (all-or-nothing). Defined once ' +
 			'here, they appear at every branch serving this menu — never copy them per location. For an ' +
-			"independent venue's own menu use create_foods instead. Returns { created, item_ids } — read full " +
+			"independent venue's own menu use create_foods instead. Returns { created, item_ids, skipped_existing_ids } (ids already present are skipped, making retries safe) — read full " +
 			'items with get_item / get_menu if needed.',
 		schema: createMenuItemsArgs,
 		handler: async (input) => {
 			if (!(await getMenuById(getDb(), input.menu_id))) {
 				throw new Error(`No menu with id "${input.menu_id}".`);
 			}
-			const ids = await insertMenuItems(
-				getDb(),
-				input.items.map((it) => ({
-					id: it.id,
-					menu_id: input.menu_id,
-					item_name: it.item_name,
-					description: it.description ?? null,
-					ingredients: it.ingredients ?? null,
-					optionalIngredients: it.optional_ingredients ?? null,
-					price: it.price ?? null,
-					tags: it.tags,
-					optionalTags: it.optional_tags,
-					sources: normalizeSources(it.sources)
-				}))
-			);
-			return { created: ids.length, item_ids: ids };
+			const explicitIds = input.items.map((it) => it.id).filter((id): id is string => Boolean(id));
+			const already = explicitIds.length
+				? await existingIds(getDb(), 'items', explicitIds)
+				: new Set<string>();
+			const skippedExistingIds: string[] = [];
+			const toInsert = input.items.filter((it) => {
+				if (it.id && already.has(it.id)) {
+					skippedExistingIds.push(it.id);
+					return false;
+				}
+				return true;
+			});
+			const ids = toInsert.length
+				? await insertMenuItems(
+						getDb(),
+						toInsert.map((it) => ({
+							id: it.id,
+							menu_id: input.menu_id,
+							item_name: it.item_name,
+							description: it.description ?? null,
+							ingredients: it.ingredients ?? null,
+							optionalIngredients: it.optional_ingredients ?? null,
+							price: it.price ?? null,
+							tags: it.tags,
+							optionalTags: it.optional_tags,
+							sources: normalizeSources(it.sources)
+						}))
+					)
+				: [];
+			return { created: ids.length, item_ids: ids, skipped_existing_ids: skippedExistingIds };
 		}
 	}),
 	defineTool({
 		name: 'set_location_item_override',
+		annotations: DESTRUCTIVE,
 		description:
 			'Record how ONE branch differs from its shared menu for ONE item: available=false hides the item ' +
 			'at that branch; price overrides it there. Pass null for either to inherit the menu default. ' +
@@ -1312,6 +1621,7 @@ const chainTools = [
 	}),
 	defineTool({
 		name: 'delete_location_item_override',
+		annotations: DESTRUCTIVE,
 		description:
 			"Remove a branch's override of a shared menu item, so it inherits the menu default again. Returns " +
 			'{ deleted: true } if an override was removed.',
@@ -1327,21 +1637,20 @@ const chainTools = [
 const osmTools = [
 	defineTool({
 		name: 'search_poi',
+		annotations: READ_ONLY,
 		description:
 			'Find OpenStreetMap food venues to add to the map, from the LOCAL OSM staging store ' +
 			'(built offline via `bun run osm:extract`; not the live D1). Give either a centre ' +
 			'(latitude + longitude + radius_km) or a `bbox`. By default it omits venues already in ' +
 			'the database (set exclude_existing=false to see all), so you get only what is still ' +
 			'missing — ordered nearest-first for centre+radius queries. Each candidate includes an ' +
-			'`osm_url` to cite as the source, a `suggested_category` (cafe/fast_food/restaurant/bakery, ' +
-			'or null for bars/pubs/ice_cream/food_court — pick the best fit), and OSM ' +
-			'phone/website/cuisine/opening_hours where tagged. For the address it gives both a single-line ' +
-			'`address` and structured `address_parts` (street/city/region/postcode/country, absent parts ' +
-			'dropped) — pass `address_parts` straight to create_locations (it normalizes them); split the ' +
-			'single line yourself only when `address_parts` is absent. `diet_markers` are venue-level ' +
-			'OSM diet:* markers (informational only — still apply per-item dietary tags per the ' +
-			'source-asserted policy). Workflow: call this, then create_locations, passing each ' +
-			'osm_url in `sources`.',
+			'`osm_id` and `osm_url`, a `suggested_category` (cafe/fast_food/restaurant/bakery, ' +
+			'or null for bars/pubs/ice_cream/food_court — pick the best fit), OSM ' +
+			'phone/website/cuisine/opening_hours where tagged, and a single-line `address` plus ' +
+			'structured `address_parts`. Workflow: call this, then create_locations passing each ' +
+			"candidate's `osm_id` — the server then takes that venue's coordinates VERBATIM from OSM " +
+			'and fills its address from the POI, auto-citing the osm_url, so you never copy or geocode ' +
+			'coordinates by hand.',
 		schema: searchPoiArgs,
 		handler: async (input) => {
 			const db = input.exclude_existing === false ? null : getDb();
@@ -1367,6 +1676,7 @@ const osmTools = [
 	}),
 	defineTool({
 		name: 'find_coordinate_drift',
+		annotations: READ_ONLY,
 		description:
 			'Audit existing locations against the LOCAL OSM staging store and surface those whose stored ' +
 			'coordinates do NOT coincide with their OpenStreetMap POI — i.e. coordinate drift. Coordinates ' +
@@ -1389,6 +1699,7 @@ const osmTools = [
 	}),
 	defineTool({
 		name: 'find_missing_address',
+		annotations: READ_ONLY,
 		description:
 			'Audit existing locations for a MISSING address and, where possible, surface the address from ' +
 			'their OpenStreetMap POI so it can be backfilled. Addresses should be present and OSM-sourced, ' +
@@ -1442,7 +1753,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 	tools: allTools.map((t) => ({
 		name: t.name,
 		description: t.description,
-		inputSchema: inputSchemaFor(t.schema)
+		inputSchema: inputSchemaFor(t.schema),
+		...(t.annotations ? { annotations: t.annotations } : {})
 	}))
 }));
 
