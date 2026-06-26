@@ -5,7 +5,7 @@
 // the production D1.
 
 import { test, expect } from 'bun:test';
-import { insertLocations, getLocationById } from '../src/lib/server/db';
+import { insertLocations, getLocationById, getFoodByLocation } from '../src/lib/server/db';
 import { freshDb } from './test-d1';
 
 /** Structured address parts shared by fixtures (all required parts present). */
@@ -210,4 +210,61 @@ test('a missing required address part is rejected by the DB triggers (migration 
 		updateThrew = true;
 	}
 	expect(updateThrew).toBe(true);
+});
+
+test('insertLocations creates an independent venue and its own menu in one batch', async () => {
+	const db = freshDb();
+	const [id] = await insertLocations(db, [
+		{
+			name: 'Inline Menu Cafe',
+			category: 'cafe',
+			latitude: 49.28,
+			longitude: -123.12,
+			...ADDR,
+			phone: null,
+			website: null,
+			items: [
+				{ item_name: 'Oat Latte', price: 5, tags: ['vegan'], ingredients: 'oat milk, espresso' },
+				{ item_name: 'Croissant', price: 3 }
+			]
+		}
+	]);
+
+	// A private menu was created and the location points at it.
+	const loc = await getLocationById(db, id);
+	expect(loc?.menu_id).toBe(`pm-${id}`);
+
+	const menu = await getFoodByLocation(db, id);
+	expect(menu.map((i) => i.item_name).toSorted()).toEqual(['Croissant', 'Oat Latte']);
+	const latte = menu.find((i) => i.item_name === 'Oat Latte');
+	expect(latte?.price).toBe(5);
+	expect(latte?.tags.some((t) => t.id === 'vegan')).toBe(true);
+	// Ingredients become ingredient tags on the same item.
+	expect(latte?.tags.some((t) => t.id === 'ing:oat milk')).toBe(true);
+});
+
+test('insertLocations rejects inline items on a chain branch and writes nothing', async () => {
+	const db = freshDb();
+	let threw = false;
+	try {
+		await insertLocations(db, [
+			{
+				id: 'branch-x',
+				name: 'Chain Branch',
+				category: 'fast_food',
+				latitude: 1,
+				longitude: 1,
+				...ADDR,
+				phone: null,
+				website: null,
+				brand_id: 'b1',
+				menu_id: 'm1',
+				items: [{ item_name: 'Not allowed on a shared menu' }]
+			}
+		]);
+	} catch {
+		threw = true;
+	}
+	expect(threw).toBe(true);
+	expect(await getLocationById(db, 'branch-x')).toBeNull();
 });

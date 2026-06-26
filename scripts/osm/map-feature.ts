@@ -120,7 +120,7 @@ export interface OsmAddressParts {
 /**
  * Extracts structured address parts from OSM `addr:*` tags, as the raw source
  * values — `region`/`postcode`/`country` are NOT normalized here (the MCP server
- * canonicalizes them when they reach create_locations/update_location). The
+ * canonicalizes them when they reach create_locations/update_locations). The
  * `street` part includes the unit (Canadian hyphen style), composed by the same
  * {@link composeStreet} the backfill uses, so staging and backfill agree.
  */
@@ -132,6 +132,35 @@ export function osmAddressParts(props: Record<string, string>): OsmAddressParts 
 		postcode: blankToNull(props['addr:postcode']),
 		country: blankToNull(props['addr:country'])
 	};
+}
+
+/** A POI's own structured address parts with the absent ones dropped (for tool output). */
+export type PoiAddressParts = Partial<
+	Record<'street' | 'city' | 'region' | 'postcode' | 'country', string>
+>;
+
+/**
+ * The POI's OWN structured address parts (from its `addr:*` tags), parsed from a
+ * stored `tags_json` blob with the null parts dropped — or undefined when it
+ * carries none (its address came from an enrichment feed or a containing building,
+ * not its own tags). The ready-to-pass form for create_locations/update_locations;
+ * shared by search_poi and find_missing_address so both expose it identically.
+ */
+export function osmOwnAddressParts(tagsJson: string): PoiAddressParts | undefined {
+	let props: Record<string, string>;
+	try {
+		props = JSON.parse(tagsJson) as Record<string, string>;
+	} catch {
+		return undefined;
+	}
+	const parts = osmAddressParts(props);
+	const out: PoiAddressParts = {};
+	if (parts.street) out.street = parts.street;
+	if (parts.city) out.city = parts.city;
+	if (parts.region) out.region = parts.region;
+	if (parts.postcode) out.postcode = parts.postcode;
+	if (parts.country) out.country = parts.country;
+	return Object.keys(out).length ? out : undefined;
 }
 
 /**

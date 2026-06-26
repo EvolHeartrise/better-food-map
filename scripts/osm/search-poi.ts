@@ -11,7 +11,7 @@
 import type { D1Like } from '../../src/lib/server/db';
 import { stripDiacritics } from '../../src/lib/text';
 import { bboxAround, haversineMeters, type Bbox } from './geo';
-import { osmUrl } from './map-feature';
+import { osmOwnAddressParts, osmUrl, type PoiAddressParts } from './map-feature';
 import type { OsmPoiStore, StoredPoi } from './poi-store';
 
 export interface SearchPoiParams {
@@ -41,7 +41,21 @@ export interface PoiCandidate {
 	cuisine: string | null;
 	latitude: number;
 	longitude: number;
+	/** Single-line OSM address preview (null when the POI has none). */
 	address: string | null;
+	/**
+	 * The POI's OWN structured address parts (street/city/region/postcode/country),
+	 * absent parts dropped — pass straight to create_locations (it normalizes
+	 * region/postcode/country). Omitted when the POI carries no `addr:*` tags of its
+	 * own; then split the single-line `address` into parts yourself.
+	 */
+	address_parts?: PoiAddressParts;
+	/**
+	 * Where `address` came from when it wasn't the POI's own OSM tags: null = the
+	 * POI's own `addr:*` (cite `osm_url`); a non-null label (e.g.
+	 * "overture:<id> (2026-06-17.0)") = an external feed to cite as an extra source.
+	 */
+	address_source: string | null;
 	phone: string | null;
 	website: string | null;
 	opening_hours: string | null;
@@ -155,6 +169,7 @@ async function existingInBbox(db: D1Like, bbox: Bbox): Promise<ExistingLocation[
 }
 
 function toCandidate(poi: StoredPoi, distance_m?: number): PoiCandidate {
+	const addressParts = osmOwnAddressParts(poi.tags_json);
 	return {
 		osm_id: poi.osm_id,
 		osm_type: poi.osm_type,
@@ -166,6 +181,8 @@ function toCandidate(poi: StoredPoi, distance_m?: number): PoiCandidate {
 		latitude: poi.latitude,
 		longitude: poi.longitude,
 		address: poi.address,
+		...(addressParts ? { address_parts: addressParts } : {}),
+		address_source: poi.address_source,
 		phone: poi.phone,
 		website: poi.website,
 		opening_hours: poi.opening_hours,

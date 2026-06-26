@@ -465,10 +465,55 @@ export async function searchTagVocabulary(
 	return results;
 }
 
-export async function getLocationsWithTags(db: D1Like): Promise<LocationWithTags[]> {
+/**
+ * Optional server-side filters for {@link getLocationsWithTags}, pushed into SQL
+ * so a bounded list no longer reads (and ships) the whole table. `bbox` and
+ * `category` narrow the rows — and the joined tag/source scans with them; `limit`/
+ * `offset` page the name-ordered result. A radius query is served by passing the
+ * covering `bbox` and refining to the exact circle in the caller, so this layer
+ * stays geo-free. With no filter the behaviour is unchanged (every location).
+ */
+export interface LocationListFilter {
+	bbox?: Bounds;
+	category?: Category;
+	limit?: number;
+	offset?: number;
+}
+
+export async function getLocationsWithTags(
+	db: D1Like,
+	filter: LocationListFilter = {}
+): Promise<LocationWithTags[]> {
+	// bbox/category predicates (bound), shared verbatim by all three reads so the
+	// joined tag/source scans cover exactly the same rows. Aliased to `l` so the
+	// identical condition strings drop into every query.
+	const conds: string[] = [];
+	const params: (string | number)[] = [];
+	if (filter.bbox) {
+		conds.push('l.latitude BETWEEN ? AND ?', 'l.longitude BETWEEN ? AND ?');
+		params.push(filter.bbox.minLat, filter.bbox.maxLat, filter.bbox.minLng, filter.bbox.maxLng);
+	}
+	if (filter.category) {
+		conds.push('l.category = ?');
+		params.push(filter.category);
+	}
+	const whereSql = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+	const tagExtra = conds.length ? ` AND ${conds.join(' AND ')}` : '';
+	// LIMIT/OFFSET are trusted integers → interpolated (matching MAP_RESULT_LIMIT),
+	// so the one bound `params` set stays identical across all three statements.
+	let pagingSql = '';
+	if (filter.limit !== undefined) pagingSql = ` LIMIT ${Math.max(0, Math.trunc(filter.limit))}`;
+	else if (filter.offset) pagingSql = ' LIMIT -1';
+	if (filter.offset) pagingSql += ` OFFSET ${Math.max(0, Math.trunc(filter.offset))}`;
+
 	const [{ results: locations }, { results: tagRows }, { results: sourceRows }] = await Promise.all(
 		[
-			db.prepare(`SELECT ${LOCATION_FIELDS} FROM locations ORDER BY name`).all<LocationRow>(),
+			db
+				.prepare(
+					`SELECT ${LOCATION_FIELDS} FROM locations l ${whereSql} ORDER BY l.name${pagingSql}`
+				)
+				.bind(...params)
+				.all<LocationRow>(),
 			// Distinct dietary/course tags offered across a location's menu, excluding
 			// items it has overridden to unavailable. Ingredient tags are omitted — the
 			// location overview is about dietary options, not every ingredient.
@@ -483,12 +528,20 @@ export async function getLocationsWithTags(db: D1Like): Promise<LocationWithTags
 					ON o.location_id = l.id AND o.item_id = i.id
 				 WHERE l.menu_id IS NOT NULL
 					AND t.tag_type IN ('dietary', 'course')
-					AND (o.available IS NULL OR o.available <> 0)
+					AND (o.available IS NULL OR o.available <> 0)${tagExtra}
 				 ORDER BY l.id, t.rowid`
 				)
+				.bind(...params)
 				.all<LocationTagRow>(),
 			db
-				.prepare(`SELECT location_id AS owner_id, url, label FROM location_sources ORDER BY rowid`)
+				.prepare(
+					`SELECT location_id AS owner_id, url, label FROM location_sources` +
+						(conds.length
+							? ` WHERE location_id IN (SELECT l.id FROM locations l ${whereSql})`
+							: '') +
+						` ORDER BY rowid`
+				)
+				.bind(...(conds.length ? params : []))
 				.all<SourceRow>()
 		]
 	);
@@ -842,7 +895,7 @@ function sourceLinkStmts(
 }
 
 /** Shape of one item to insert into a given menu. */
-interface ItemInsertSpec extends ItemContent {
+export interface ItemInsertSpec extends ItemContent {
 	id?: string;
 	item_name: string;
 	description?: string | null;
@@ -880,14 +933,22 @@ export type LocationInsert = Omit<
 	brand_id?: string | null;
 	menu_id?: string | null;
 	sources?: Source[];
+	/**
+	 * The venue's OWN menu items, created on a private menu in the SAME atomic
+	 * batch as the location (independent venues only). Equivalent to a follow-up
+	 * {@link insertFoods} call folded in. Must NOT be combined with `brand_id`/
+	 * `menu_id` — a chain branch shares its menu rather than owning items.
+	 */
+	items?: ItemInsertSpec[];
 };
 
 /**
- * Inserts many locations (with their sources) in one atomic batch and returns
- * their ids in input order: either every location is written or, on any error,
- * none are. Pass a single location to add just one. Ideal for backfilling a
- * chain's branches — give each the same `brand_id`/`menu_id` so they all serve
- * the shared menu.
+ * Inserts many locations (with their sources, and optionally each venue's own
+ * menu items) in one atomic batch and returns their ids in input order: either
+ * every location is written or, on any error, none are. Pass a single location to
+ * add just one. Ideal for backfilling a chain's branches — give each the same
+ * `brand_id`/`menu_id` so they all serve the shared menu — or for adding an
+ * independent venue and its menu at once via `items`.
  */
 export async function insertLocations(db: D1Like, locs: LocationInsert[]): Promise<string[]> {
 	const ids: string[] = [];
@@ -895,6 +956,28 @@ export async function insertLocations(db: D1Like, locs: LocationInsert[]): Promi
 	for (const loc of locs) {
 		const id = loc.id ?? crypto.randomUUID();
 		ids.push(id);
+		const hasItems = loc.items !== undefined && loc.items.length > 0;
+		if (hasItems && (loc.brand_id || loc.menu_id)) {
+			throw new Error(
+				`Location "${loc.name}" has inline \`items\` but is linked to a chain ` +
+					`(brand_id/menu_id). Inline items are for an independent venue's own menu; a chain ` +
+					`branch shares its menu — use create_menu_items, or set_location_item_override for a delta.`
+			);
+		}
+		// An independent venue with inline items gets a private menu created in the
+		// same batch (id `pm-<location>`, matching resolvePrivateMenus), pointed at by
+		// the location's menu_id. The menu row must precede the location INSERT that
+		// references it (immediate FK).
+		const privateMenuId = hasItems ? `pm-${id}` : null;
+		if (privateMenuId) {
+			stmts.push(
+				db
+					.prepare(
+						`INSERT INTO menus (id, brand_id, name, region, last_verified) VALUES (?, NULL, ?, NULL, NULL)`
+					)
+					.bind(privateMenuId, loc.name)
+			);
+		}
 		stmts.push(
 			db
 				.prepare(
@@ -915,7 +998,7 @@ export async function insertLocations(db: D1Like, locs: LocationInsert[]): Promi
 					loc.phone,
 					loc.website,
 					loc.brand_id ?? null,
-					loc.menu_id ?? null
+					loc.menu_id ?? privateMenuId
 				)
 		);
 		for (const source of loc.sources ?? []) {
@@ -926,6 +1009,11 @@ export async function insertLocations(db: D1Like, locs: LocationInsert[]): Promi
 					)
 					.bind(id, source.url, source.label ?? null)
 			);
+		}
+		if (privateMenuId) {
+			for (const item of loc.items ?? []) {
+				stmts.push(...insertItemStmts(db, item.id ?? crypto.randomUUID(), privateMenuId, item));
+			}
 		}
 	}
 	await db.batch(stmts);
@@ -949,21 +1037,17 @@ const LOCATION_COLUMNS = [
 	'menu_id'
 ] as const;
 
+/** A partial update to one location, keyed by id (for {@link updateLocations}). */
+export type LocationPatch = Partial<Omit<Location, 'id' | 'address'>> & { id: string };
+
 /**
- * Applies a partial update to a location. Only the fields present in `patch`
- * are written; if `patch.sources` is given it replaces the whole source set
- * (pass `[]` to clear). Returns the updated row, or `null` if no location has
- * that id. The scalar update and source replacement run as one atomic batch.
+ * Statements that apply one location patch: the scalar SET (only the columns
+ * present in `patch`) and, when `patch.sources` is given, a full source-set
+ * replacement (pass `[]` to clear). No existence check — {@link updateLocations}
+ * resolves which ids exist up front so the whole batch stays a single round trip.
  */
-export async function updateLocation(
-	db: D1Like,
-	id: string,
-	patch: Partial<Omit<Location, 'id'>>
-): Promise<Location | null> {
-	if (!(await getLocationById(db, id))) return null;
-
+function locationUpdateStmts(db: D1Like, patch: LocationPatch): D1PreparedLike[] {
 	const stmts: D1PreparedLike[] = [];
-
 	const assignments: string[] = [];
 	const values: (string | number | null)[] = [];
 	for (const col of LOCATION_COLUMNS) {
@@ -974,25 +1058,60 @@ export async function updateLocation(
 	}
 	if (assignments.length > 0) {
 		stmts.push(
-			db.prepare(`UPDATE locations SET ${assignments.join(', ')} WHERE id = ?`).bind(...values, id)
+			db
+				.prepare(`UPDATE locations SET ${assignments.join(', ')} WHERE id = ?`)
+				.bind(...values, patch.id)
 		);
 	}
-
 	if (patch.sources !== undefined) {
-		stmts.push(db.prepare(`DELETE FROM location_sources WHERE location_id = ?`).bind(id));
+		stmts.push(db.prepare(`DELETE FROM location_sources WHERE location_id = ?`).bind(patch.id));
 		for (const source of patch.sources) {
 			stmts.push(
 				db
 					.prepare(
 						`INSERT OR IGNORE INTO location_sources (location_id, url, label) VALUES (?, ?, ?)`
 					)
-					.bind(id, source.url, source.label ?? null)
+					.bind(patch.id, source.url, source.label ?? null)
 			);
 		}
 	}
+	return stmts;
+}
 
+/**
+ * Applies many partial location updates in one atomic batch. Each patch touches
+ * only the fields it carries; a `sources` array replaces that location's whole
+ * source set (`[]` clears it). Ids that don't exist are skipped and reported in
+ * `notFoundIds` rather than aborting the batch. Returns which ids were updated and
+ * which were not found. Ideal for mass backfills from the address/coordinate
+ * audits — one round trip instead of one update call per location.
+ */
+export async function updateLocations(
+	db: D1Like,
+	patches: LocationPatch[]
+): Promise<{ updatedIds: string[]; notFoundIds: string[] }> {
+	if (patches.length === 0) return { updatedIds: [], notFoundIds: [] };
+	const ids = patches.map((p) => p.id);
+	const placeholders = ids.map(() => '?').join(', ');
+	const { results } = await db
+		.prepare(`SELECT id FROM locations WHERE id IN (${placeholders})`)
+		.bind(...ids)
+		.all<{ id: string }>();
+	const existing = new Set(results.map((r) => r.id));
+
+	const updatedIds: string[] = [];
+	const notFoundIds: string[] = [];
+	const stmts: D1PreparedLike[] = [];
+	for (const patch of patches) {
+		if (!existing.has(patch.id)) {
+			notFoundIds.push(patch.id);
+			continue;
+		}
+		updatedIds.push(patch.id);
+		stmts.push(...locationUpdateStmts(db, patch));
+	}
 	if (stmts.length > 0) await db.batch(stmts);
-	return getLocationById(db, id);
+	return { updatedIds, notFoundIds };
 }
 
 export async function deleteLocation(db: D1Like, id: string): Promise<boolean> {
