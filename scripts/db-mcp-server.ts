@@ -54,12 +54,15 @@ import {
 	setLocationItemOverride,
 	deleteLocationItemOverride,
 	existingIds,
+	searchTagVocabulary,
 	TAGS,
+	TAG_SEARCH_LIMIT,
 	type D1Like,
 	type LocationWithTags
 } from '../src/lib/server/db';
 import { createHttpD1 } from '../src/lib/server/d1-http';
 import { normalizeRegion, normalizePostcode, normalizeCountry } from '../src/lib/address';
+import { ingredientProseWarning } from '../src/lib/tags';
 import { searchPoi } from './osm/search-poi';
 import { findCoordinateDrift } from './osm/find-coordinate-drift';
 import { findMissingAddress } from './osm/find-missing-address';
@@ -135,6 +138,27 @@ const MODEL_OVERVIEW =
 	'each part is stored as an ingredient tag. Use `optional_tags` / `optional_ingredients` for ' +
 	'things that can be added or left out (e.g. an item that can be made vegan, or cheese on request).';
 
+// The single source of truth for what makes a good authored ingredient tag.
+// Advertised in the server instructions and reused (short form) on every
+// ingredient-bearing field so the rule lives in exactly one place — mirrors how
+// TAG_POLICY is handled for dietary/course tags.
+const INGREDIENT_TAG_STANDARD =
+	'Ingredient standard: an ingredient is a NOUN naming ONE food component (e.g. "tomato", "cashew", ' +
+	'"paneer", "soy sauce", "coconut milk"). Keep them generic and reusable across menus, and ATOMIC — ' +
+	'one ingredient per comma-separated part (split "beets & cilantro" into "beets, cilantro"). Do NOT ' +
+	'put a dish description, preparation, serving note, price, size or choice list in `ingredients` ' +
+	'(no "served with…", "topped with…", "12 oz", "choice of milk") — prose belongs in the item ' +
+	'`description`, and dietary/course facts in `tags`. REUSE an existing tag instead of a near-duplicate: ' +
+	'call search_tags first. Spellings are auto-canonicalized for you (accents folded; known plurals and ' +
+	'synonyms mapped to one canonical tag), but search_tags is still the way to match the established name.';
+
+// One-line pointer to {@link INGREDIENT_TAG_STANDARD} for the per-field ingredient
+// descriptions, keeping the advertised JSON Schema lean (the full standard is in the
+// server instructions).
+const INGREDIENT_STANDARD_SHORT =
+	'Each part must be ONE component noun — never a description, price or serving note (those go in ' +
+	'`description`). Call search_tags to reuse the canonical tag. See the ingredient standard.';
+
 const SERVER_INSTRUCTIONS =
 	'CRUD tools over the food-map database (locations, chains/brands, and their menu items). Each ' +
 	'location, menu, and item may carry source URLs documenting where the data came from — include ' +
@@ -142,7 +166,7 @@ const SERVER_INSTRUCTIONS =
 	'To find venues still missing from the map, use search_poi: it reads a local OpenStreetMap ' +
 	'food-POI staging store (built offline, not the live D1), already de-duplicated against existing ' +
 	'locations, and returns candidates each carrying an `osm_id` (pass it to create_locations to import OSM coordinates + address verbatim) — then add each with ' +
-	`create_locations.\n\n${MODEL_OVERVIEW}\n\nTag policy: ${TAG_POLICY}`;
+	`create_locations.\n\n${MODEL_OVERVIEW}\n\nTag policy: ${TAG_POLICY}\n\n${INGREDIENT_TAG_STANDARD}`;
 
 const latitudeSchema = v.pipe(v.number(), v.minValue(-90), v.maxValue(90));
 const longitudeSchema = v.pipe(v.number(), v.minValue(-180), v.maxValue(180));
@@ -321,7 +345,9 @@ const ingredientsSchema = v.optional(
 		v.pipe(
 			v.string(),
 			v.description(
-				'Comma-separated ingredients; each part is stored as an ingredient tag (lower-cased, de-duplicated).'
+				'Comma-separated ingredients; each part is stored as an ingredient tag (canonicalized: ' +
+					'lower-cased, accents folded, de-duplicated). ' +
+					INGREDIENT_STANDARD_SHORT
 			)
 		)
 	)
@@ -332,7 +358,8 @@ const optionalIngredientsSchema = v.optional(
 			v.string(),
 			v.description(
 				'Comma-separated ingredients that are OPTIONAL for this item — added or left out on request ' +
-					'(e.g. "cheese, jalapeños"). Stored as ingredient tags flagged optional.'
+					'(e.g. "cheese, jalapeños"). Stored as ingredient tags flagged optional. ' +
+					INGREDIENT_STANDARD_SHORT
 			)
 		)
 	)
@@ -586,6 +613,27 @@ const findLocationsArgs = v.object({
 			v.integer(),
 			v.minValue(0),
 			v.description('Skip this many results (paging).')
+		)
+	)
+});
+
+const searchTagsArgs = v.object({
+	query: v.optional(
+		v.pipe(
+			v.string(),
+			v.description(
+				'Case-insensitive substring matched against tag names AND known alias spellings. ' +
+					'Omit or pass "" to list just the curated dietary/course tags.'
+			)
+		)
+	),
+	limit: v.optional(
+		v.pipe(
+			v.number(),
+			v.integer(),
+			v.minValue(1),
+			v.maxValue(200),
+			v.description(`Maximum tags to return (default ${TAG_SEARCH_LIMIT}, max 200).`)
 		)
 	)
 });
@@ -960,6 +1008,40 @@ function normalizeSources(
 }
 
 /**
+ * Advisory check: scans an item's `ingredients`/`optional_ingredients` for parts
+ * that read like a description/price/serving note rather than a component noun, and
+ * returns a labelled warning per offending part. Warn-only — the write still
+ * proceeds; the create/update tools attach any warnings to their result so the
+ * agent can move that prose into `description`. See the ingredient standard.
+ */
+function ingredientWarnings(item: {
+	item_name: string;
+	ingredients?: string | null;
+	optional_ingredients?: string | null;
+}): string[] {
+	const out: string[] = [];
+	const fields = [
+		['ingredients', item.ingredients],
+		['optional_ingredients', item.optional_ingredients]
+	] as const;
+	for (const [field, raw] of fields) {
+		if (!raw) continue;
+		for (const part of raw.split(',')) {
+			const reason = ingredientProseWarning(part);
+			if (reason) out.push(`"${item.item_name}" ${field} "${part.trim()}" ${reason}.`);
+		}
+	}
+	return out;
+}
+
+/** Aggregates {@link ingredientWarnings} across a batch of items. */
+function collectIngredientWarnings(
+	items: { item_name: string; ingredients?: string | null; optional_ingredients?: string | null }[]
+): string[] {
+	return items.flatMap(ingredientWarnings);
+}
+
+/**
  * Validates that any referenced brand/menu exists (and, when both are given,
  * that the menu belongs to that brand) before linking a location to them.
  * `null`/`undefined` ids are skipped (detaching is always allowed).
@@ -1284,12 +1366,14 @@ const tools = [
 				};
 			});
 			const ids = inserts.length ? await insertLocations(getDb(), inserts) : [];
+			const warnings = collectIngredientWarnings(toInsert.flatMap((it) => it.menu_items ?? []));
 			return {
 				created: ids.length,
 				location_ids: ids,
 				items_created: itemIds.length,
 				item_ids: itemIds,
-				skipped_existing_ids: skippedExistingIds
+				skipped_existing_ids: skippedExistingIds,
+				...(warnings.length ? { warnings } : {})
 			};
 		}
 	}),
@@ -1378,7 +1462,13 @@ const tools = [
 						}))
 					)
 				: [];
-			return { created: ids.length, item_ids: ids, skipped_existing_ids: skippedExistingIds };
+			const warnings = collectIngredientWarnings(toInsert);
+			return {
+				created: ids.length,
+				item_ids: ids,
+				skipped_existing_ids: skippedExistingIds,
+				...(warnings.length ? { warnings } : {})
+			};
 		}
 	}),
 	defineTool({
@@ -1401,13 +1491,22 @@ const tools = [
 			'`optional_ingredients` replace the ingredient set; `sources` replaces sources (pass []/"" to ' +
 			'clear). Returns the updated item, or null if the id does not exist.',
 		schema: updateItemArgs,
-		handler: async ({ id, sources, optional_tags, optional_ingredients, ...patch }) =>
-			updateItem(getDb(), id, {
+		handler: async ({ id, sources, optional_tags, optional_ingredients, ...patch }) => {
+			const updated = await updateItem(getDb(), id, {
 				...patch,
 				optionalTags: optional_tags,
 				optionalIngredients: optional_ingredients,
 				sources: normalizeSources(sources)
-			})
+			});
+			if (!updated) return null;
+			// Only the ingredient fields actually present in this patch are checked.
+			const warnings = ingredientWarnings({
+				item_name: patch.item_name ?? updated.item_name,
+				ingredients: patch.ingredients,
+				optional_ingredients
+			});
+			return warnings.length ? { ...updated, warnings } : updated;
+		}
 	}),
 	defineTool({
 		name: 'delete_item',
@@ -1428,6 +1527,20 @@ const tools = [
 			'here — they are data, created automatically from item `ingredients`.',
 		schema: v.object({}),
 		handler: () => getAllTags()
+	}),
+	defineTool({
+		name: 'search_tags',
+		annotations: READ_ONLY,
+		description:
+			'Search the WHOLE tag vocabulary — the curated dietary/course tags AND the ingredient tags ' +
+			'created from item data — by name substring (case-insensitive), best-match first. Use this ' +
+			'BEFORE authoring `ingredients` so you REUSE the established tag instead of minting a ' +
+			'near-duplicate (find "tomato" before writing "tomatoes"). Variant spellings are resolved ' +
+			'through the alias map, so searching "tomatoes", "garbanzo" or "jalapeño" returns the canonical ' +
+			'tag. An empty query lists just the curated dietary/course tags. Unlike list_tags (curated only), ' +
+			'this exposes the thousands of ingredient tags. Read-only.',
+		schema: searchTagsArgs,
+		handler: ({ query, limit }) => searchTagVocabulary(getDb(), query ?? '', limit)
 	})
 ] as const;
 
@@ -1603,7 +1716,13 @@ const chainTools = [
 						}))
 					)
 				: [];
-			return { created: ids.length, item_ids: ids, skipped_existing_ids: skippedExistingIds };
+			const warnings = collectIngredientWarnings(toInsert);
+			return {
+				created: ids.length,
+				item_ids: ids,
+				skipped_existing_ids: skippedExistingIds,
+				...(warnings.length ? { warnings } : {})
+			};
 		}
 	}),
 	defineTool({
