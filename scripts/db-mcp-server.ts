@@ -207,7 +207,10 @@ function normalizeAddressParts(args: {
 	if (!region) {
 		throw new Error(
 			`region "${args.region}" is not a recognized province/state for ${country}. ` +
-				'Pass a 2-letter code or full name.'
+				'Pass a 2-letter code or full name' +
+				(args.country === null || args.country === undefined
+					? ` (country defaulted to ${country}; if this venue is elsewhere, pass its country too).`
+					: '.')
 		);
 	}
 	let postcode: string | null = null;
@@ -561,7 +564,8 @@ const listLocationsArgs = v.object({
 const findLocationsArgs = v.object({
 	query: v.pipe(
 		v.string(),
-		v.minLength(1),
+		v.trim(),
+		v.minLength(1, 'query must be a non-empty, non-blank substring.'),
 		v.description('Case-insensitive substring matched against the location name.')
 	),
 	near: v.optional(
@@ -936,16 +940,11 @@ function defineTool<S extends AnySchema>(def: ToolDef<S>): ToolDef<S> {
 // operates on our own database or the local OSM store, never an open/external world.
 //   READ_ONLY  — pure reads (auto-approvable by clients).
 //   CREATE     — additive inserts (not destructive); idempotent only on explicit ids.
-//   UPSERT     — additive write that re-applies cleanly (idempotent, non-destructive).
-//   DESTRUCTIVE— updates/deletes that replace or remove data; safe to re-run (idempotent).
+//   DESTRUCTIVE— writes that replace or remove existing data; safe to re-run (idempotent).
+//     Includes set_location_item_override: it replaces the whole override row, so an
+//     {available}-only call clears a previously-set price — a destructive overwrite.
 const READ_ONLY = { readOnlyHint: true, openWorldHint: false } as const;
 const CREATE = { readOnlyHint: false, destructiveHint: false, openWorldHint: false } as const;
-const UPSERT = {
-	readOnlyHint: false,
-	destructiveHint: false,
-	idempotentHint: true,
-	openWorldHint: false
-} as const;
 const DESTRUCTIVE = {
 	readOnlyHint: false,
 	destructiveHint: true,
@@ -1023,6 +1022,9 @@ function resolveLocationInsertCore(it: CreateLocationItem): ResolvedLocationCore
 					'or omit osm_id and pass latitude/longitude + address for a venue not in OSM.'
 			);
 		}
+		// Caller-supplied parts override the POI's own addr:* tags; absent parts fall
+		// back to the POI. (`??` means a caller can't blank a POI-derived part — there's
+		// no reason to import a venue and then strip its address, so that's intended.)
 		const own = osmOwnAddressParts(poi.tags_json) ?? {};
 		const street = it.street ?? own.street;
 		const city = it.city ?? own.city;
@@ -1205,7 +1207,9 @@ const tools = [
 			'optionally pass `menu_items` to create its own menu in the SAME batch (else add it later with ' +
 			'create_foods). Ideal for bulk imports like backfilling a chain across a region. Idempotent on ' +
 			'explicit ids: items whose `id` already exists are skipped (reported in `skipped_existing_ids`), ' +
-			'so a retried batch is safe. If any remaining item is invalid, nothing is written. Returns ' +
+			'so a retried batch is safe (for a location with inline `menu_items`, give it an explicit `id` ' +
+			'too, so its items are skipped with it). If any remaining item is invalid, nothing is written. ' +
+			'Returns ' +
 			'{ created, location_ids, items_created, item_ids, skipped_existing_ids } — fetch details with ' +
 			'get_location if needed.',
 		schema: createLocationsArgs,
@@ -1604,7 +1608,7 @@ const chainTools = [
 	}),
 	defineTool({
 		name: 'set_location_item_override',
-		annotations: UPSERT,
+		annotations: DESTRUCTIVE,
 		description:
 			'Record how ONE branch differs from its shared menu for ONE item: available=false hides the item ' +
 			'at that branch; price overrides it there. Pass null for either to inherit the menu default. ' +
