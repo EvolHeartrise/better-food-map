@@ -36,7 +36,7 @@ import {
 	getAllTags,
 	insertLocations,
 	insertFoods,
-	updateLocation,
+	updateLocations,
 	deleteLocation,
 	getBrands,
 	getBrandById,
@@ -54,7 +54,8 @@ import {
 	setLocationItemOverride,
 	deleteLocationItemOverride,
 	TAGS,
-	type D1Like
+	type D1Like,
+	type LocationWithTags
 } from '../src/lib/server/db';
 import { createHttpD1 } from '../src/lib/server/d1-http';
 import { normalizeRegion, normalizePostcode, normalizeCountry } from '../src/lib/address';
@@ -62,7 +63,7 @@ import { searchPoi } from './osm/search-poi';
 import { findCoordinateDrift } from './osm/find-coordinate-drift';
 import { findMissingAddress } from './osm/find-missing-address';
 import { OsmPoiStore } from './osm/poi-store';
-import { haversineMeters } from './osm/geo';
+import { bboxAround, haversineMeters } from './osm/geo';
 
 // The D1 client is created lazily so the server can start and advertise its
 // tools even before credentials are configured; the first tool call that needs
@@ -104,6 +105,15 @@ const TAG_POLICY =
 	`the dish; when unsure, omit it. Course tags (${courseTagIds.join(', ')}) describe what kind of ` +
 	`item it is and are applied factually (a dessert gets "dessert", a beverage gets "drink").`;
 
+// A one-line pointer to {@link TAG_POLICY} for the many per-field tag descriptions.
+// The full policy is advertised once in the server instructions and the item-tool
+// descriptions; repeating its ~600 chars on every tag field only bloats the
+// advertised JSON Schema, so the fields just restate the load-bearing rule.
+const TAG_POLICY_SHORT =
+	'Dietary tags are SOURCE-ASSERTED — apply only when the source explicitly designates the item ' +
+	'(name or marker), never inferred from ingredients; course tags (dessert/drink) are factual. ' +
+	'See the server tag policy.';
+
 // How the two ways of storing a menu relate. Kept terse and advertised to
 // clients so an agent picks the right create_* tool for the situation.
 const MODEL_OVERVIEW =
@@ -113,7 +123,7 @@ const MODEL_OVERVIEW =
 	"• CHAIN (McDonald's, Subway, …): create a `brand`, then one `menu` per region " +
 	'(e.g. "Subway UK"), then the menu\'s shared items once with create_menu_items (browse them via ' +
 	'get_menu). Point each branch at that menu by setting its `menu_id` (and `brand_id`) via ' +
-	"create_locations/update_location — every such location then serves the menu's " +
+	"create_locations/update_locations — every such location then serves the menu's " +
 	'items automatically, with no per-location copies. Where one branch differs ' +
 	'(item sold out, regional price), record just that delta with set_location_item_override.\n' +
 	'Once created, read/edit/remove any item by id with get_item / update_item / delete_item ' +
@@ -156,7 +166,7 @@ const regionSchema = v.pipe(v.string(), v.trim(), v.minLength(1, 'region is requ
 const postcodeSchema = v.pipe(v.string(), v.trim(), v.minLength(1));
 const countryPartSchema = v.pipe(v.string(), v.trim(), v.minLength(1));
 
-/** Field descriptions reused on create_locations and update_location. */
+/** Field descriptions reused on create_locations and update_locations. */
 const STREET_DESC =
 	'House number + street (+ unit), e.g. "1909 W 4th Ave". Take the street line from the candidate\'s ' +
 	'OSM/Overture address; never geocode or invent one.';
@@ -171,7 +181,7 @@ const COUNTRY_DESC =
 /**
  * Normalizes raw structured address args into the stored parts, throwing a clear
  * MCP error when a required part cannot be resolved. Reused by create_locations
- * and update_location so storage stays uniform regardless of how a source spelled
+ * and update_locations so storage stays uniform regardless of how a source spelled
  * a province / postcode / country.
  */
 function normalizeAddressParts(args: {
@@ -319,13 +329,30 @@ const optionalTagsSchema = v.optional(
 		v.description(
 			'Tags this item can OPTIONALLY satisfy on request (e.g. a dish that can be made vegan). ' +
 				'Same id set as `tags`. ' +
-				TAG_POLICY
+				TAG_POLICY_SHORT
 		)
 	)
 );
 
 const idArgs = v.object({
 	id: v.pipe(v.string(), v.minLength(1), v.description('The record id (UUID).'))
+});
+
+// One menu item belonging to a single venue's own menu. Shared by create_foods
+// (location_id given once for the batch) and the inline `menu_items` of an
+// independent venue created via create_locations.
+const foodItemSchema = v.object({
+	item_name: v.pipe(v.string(), v.minLength(1), v.description('Name of the menu item.')),
+	description: v.optional(v.nullable(v.string())),
+	ingredients: ingredientsSchema,
+	optional_ingredients: optionalIngredientsSchema,
+	price: v.optional(v.nullable(v.pipe(priceSchema, v.description('Price in CAD.')))),
+	tags: v.optional(
+		v.pipe(v.array(tagIdSchema), v.description('Tags to apply to this item. ' + TAG_POLICY_SHORT))
+	),
+	optional_tags: optionalTagsSchema,
+	sources: createSourcesSchema,
+	id: v.optional(v.pipe(v.string(), v.minLength(1)))
 });
 
 const createLocationArgs = v.object({
@@ -360,8 +387,21 @@ const createLocationArgs = v.object({
 				v.minLength(1),
 				v.description(
 					'Shared brand menu this branch serves; its items then appear here automatically. ' +
-						'Leave unset for an independent venue (use create_foods for its own menu).'
+						'Leave unset for an independent venue (use create_foods, or inline `menu_items`, ' +
+						'for its own menu).'
 				)
+			)
+		)
+	),
+	menu_items: v.optional(
+		v.pipe(
+			v.array(foodItemSchema),
+			v.maxLength(200),
+			v.description(
+				"This INDEPENDENT venue's own menu items, created on its private menu in the SAME atomic " +
+					'batch as the location — saving a separate create_foods call. Same item shape as ' +
+					'create_foods. Omit for a chain branch (which sets menu_id/brand_id and shares a menu); ' +
+					'passing both is rejected.'
 			)
 		)
 	),
@@ -389,7 +429,9 @@ const createLocationsArgs = v.object({
 	)
 });
 
-const updateLocationArgs = v.object({
+// One location patch within an update_locations batch. Every field but `id` is
+// optional; only the fields present are changed.
+const updateLocationItemArgs = v.object({
 	id: v.pipe(v.string(), v.minLength(1), v.description('Id of the location to update.')),
 	name: v.optional(v.pipe(v.string(), v.minLength(1))),
 	category: v.optional(v.nullable(categorySchema)),
@@ -421,20 +463,18 @@ const updateLocationArgs = v.object({
 	sources: updateSourcesSchema
 });
 
-// One menu item within a create_foods batch. location_id is given once for the
-// whole batch, so it isn't repeated per item.
-const foodItemSchema = v.object({
-	item_name: v.pipe(v.string(), v.minLength(1), v.description('Name of the menu item.')),
-	description: v.optional(v.nullable(v.string())),
-	ingredients: ingredientsSchema,
-	optional_ingredients: optionalIngredientsSchema,
-	price: v.optional(v.nullable(v.pipe(priceSchema, v.description('Price in CAD.')))),
-	tags: v.optional(
-		v.pipe(v.array(tagIdSchema), v.description('Tags to apply to this item. ' + TAG_POLICY))
-	),
-	optional_tags: optionalTagsSchema,
-	sources: createSourcesSchema,
-	id: v.optional(v.pipe(v.string(), v.minLength(1)))
+const updateLocationsArgs = v.object({
+	items: v.pipe(
+		v.array(updateLocationItemArgs),
+		v.minLength(1),
+		v.maxLength(100),
+		v.description(
+			'Location patches to apply in one atomic batch — pass a single item to edit one place. ' +
+				'Each carries an `id` plus only the fields to change. Ideal for mass backfills from ' +
+				'find_missing_address / find_coordinate_drift. Ids that do not exist are reported in ' +
+				'`not_found_ids` rather than failing the batch.'
+		)
+	)
 });
 
 const createFoodsArgs = v.object({
@@ -720,7 +760,7 @@ const menuItemSchema = v.object({
 		)
 	),
 	tags: v.optional(
-		v.pipe(v.array(tagIdSchema), v.description('Tags to apply to this item. ' + TAG_POLICY))
+		v.pipe(v.array(tagIdSchema), v.description('Tags to apply to this item. ' + TAG_POLICY_SHORT))
 	),
 	optional_tags: optionalTagsSchema,
 	sources: createSourcesSchema,
@@ -764,7 +804,8 @@ const updateItemArgs = v.object({
 		v.pipe(
 			v.array(tagIdSchema),
 			v.description(
-				'Replaces the full dietary/course tag set for this item (pass [] to clear). ' + TAG_POLICY
+				'Replaces the full dietary/course tag set for this item (pass [] to clear). ' +
+					TAG_POLICY_SHORT
 			)
 		)
 	),
@@ -866,21 +907,7 @@ const tools = [
 			'a single place with its menu and sources.',
 		schema: listLocationsArgs,
 		handler: async ({ near, category, limit, offset }) => {
-			let rows = await getLocationsWithTags(getDb());
-			if (category) rows = rows.filter((r) => r.category === category);
-			if (near) {
-				rows = rows
-					.map((r) => ({
-						r,
-						d: haversineMeters(near.latitude, near.longitude, r.latitude, r.longitude) / 1000
-					}))
-					.filter((x) => x.d <= near.radius_km)
-					.toSorted((a, b) => a.d - b.d)
-					.map((x) => x.r);
-			}
-			const start = offset ?? 0;
-			const page = rows.slice(start, limit === undefined ? undefined : start + limit);
-			return page.map((loc) => ({
+			const project = (loc: LocationWithTags) => ({
 				id: loc.id,
 				name: loc.name,
 				category: loc.category,
@@ -892,7 +919,29 @@ const tools = [
 				brand_id: loc.brand_id,
 				menu_id: loc.menu_id,
 				tags: loc.tags.map((t) => t.id)
-			}));
+			});
+			if (near) {
+				// Push the covering bbox (+ category) into SQL, then refine to the exact
+				// circle, sort nearest-first and page in memory (the geo math the DB lacks).
+				const box = bboxAround(near.latitude, near.longitude, near.radius_km);
+				const rows = await getLocationsWithTags(getDb(), {
+					bbox: { minLat: box.minLat, maxLat: box.maxLat, minLng: box.minLon, maxLng: box.maxLon },
+					category
+				});
+				const withinCircle = rows
+					.map((r) => ({
+						r,
+						d: haversineMeters(near.latitude, near.longitude, r.latitude, r.longitude) / 1000
+					}))
+					.filter((x) => x.d <= near.radius_km)
+					.toSorted((a, b) => a.d - b.d);
+				const start = offset ?? 0;
+				const page = withinCircle.slice(start, limit === undefined ? undefined : start + limit);
+				return page.map((x) => project(x.r));
+			}
+			// No spatial filter: category + paging push straight into SQL.
+			const rows = await getLocationsWithTags(getDb(), { category, limit, offset });
+			return rows.map(project);
 		}
 	}),
 	defineTool({
@@ -919,15 +968,16 @@ const tools = [
 			'Create one or more locations in a single atomic batch (all-or-nothing) — the only way to add ' +
 			'locations; pass a one-item `items` array to add a single place. Every location REQUIRES a ' +
 			"structured address — split the candidate's OSM/Overture address into `street`, `city`, `region`, " +
-			'`country` (all required) and `postcode` (optional); never geocode or invent parts. region/postcode/' +
-			'country are normalized for you (e.g. "Ontario" → "ON"). For a chain branch, set ' +
-			'`menu_id` (and `brand_id`) on the item so it serves that shared menu; for an independent venue ' +
-			'omit them and add its menu with create_foods. Cite each source (encouraged), e.g. the osm_url ' +
-			'from search_poi. Ideal for bulk imports like backfilling a chain across a region. Use each ' +
-			"candidate's OSM coordinates verbatim — never geocode, hand-place, or round latitude/longitude, " +
-			'so de-duplication stays coordinate-exact. If any item ' +
-			'is invalid, nothing is written. Returns { created, location_ids } — fetch details with ' +
-			'get_location if needed.',
+			'`country` (all required) and `postcode` (optional); never geocode or invent parts (pass a ' +
+			"search_poi candidate's `address_parts` straight through). region/postcode/country are normalized " +
+			'for you (e.g. "Ontario" → "ON"). For a chain branch, set `menu_id` (and `brand_id`) on the item so ' +
+			'it serves that shared menu; for an INDEPENDENT venue omit them and optionally pass `menu_items` to ' +
+			'create its own menu in the SAME batch (else add it later with create_foods). Cite each source ' +
+			'(encouraged), e.g. the osm_url from search_poi. Ideal for bulk imports like backfilling a chain ' +
+			"across a region. Use each candidate's OSM coordinates verbatim — never geocode, hand-place, or " +
+			'round latitude/longitude, so de-duplication stays coordinate-exact. If any item is invalid, ' +
+			'nothing is written. Returns { created, location_ids, items_created, item_ids } — fetch details ' +
+			'with get_location if needed.',
 		schema: createLocationsArgs,
 		handler: async ({ items }) => {
 			// Validate each DISTINCT brand/menu pair once — a chain backfill reuses a
@@ -939,9 +989,33 @@ const tools = [
 				checkedPairs.add(key);
 				await assertBrandMenuRefs(it.brand_id, it.menu_id);
 			}
-			const ids = await insertLocations(
-				getDb(),
-				items.map((it) => ({
+			// Pre-assign ids to any inline menu_items so we can return them; the location,
+			// its private menu and these items all land in the one atomic batch.
+			const itemIds: string[] = [];
+			const inserts = items.map((it) => {
+				if (it.menu_items?.length && (it.brand_id || it.menu_id)) {
+					throw new Error(
+						`"${it.name}" has \`menu_items\` but is linked to a chain (brand_id/menu_id). Inline items ` +
+							`are for an independent venue's own menu; a chain branch shares its menu — use ` +
+							`create_menu_items, or set_location_item_override for a per-branch delta.`
+					);
+				}
+				const menuItems = (it.menu_items ?? []).map((mi) => {
+					const id = mi.id ?? crypto.randomUUID();
+					itemIds.push(id);
+					return {
+						id,
+						item_name: mi.item_name,
+						description: mi.description ?? null,
+						ingredients: mi.ingredients ?? null,
+						optionalIngredients: mi.optional_ingredients ?? null,
+						price: mi.price ?? null,
+						tags: mi.tags,
+						optionalTags: mi.optional_tags,
+						sources: normalizeSources(mi.sources)
+					};
+				});
+				return {
 					id: it.id,
 					name: it.name,
 					category: it.category ?? null,
@@ -952,23 +1026,49 @@ const tools = [
 					website: it.website ?? null,
 					brand_id: it.brand_id ?? null,
 					menu_id: it.menu_id ?? null,
-					sources: normalizeSources(it.sources)
-				}))
-			);
-			return { created: ids.length, location_ids: ids };
+					sources: normalizeSources(it.sources),
+					...(menuItems.length ? { items: menuItems } : {})
+				};
+			});
+			const ids = await insertLocations(getDb(), inserts);
+			return {
+				created: ids.length,
+				location_ids: ids,
+				items_created: itemIds.length,
+				item_ids: itemIds
+			};
 		}
 	}),
 	defineTool({
-		name: 'update_location',
+		name: 'update_locations',
 		description:
-			'Update one or more fields of an existing location. Only provided fields change; if `sources` is ' +
-			'given it replaces the whole source set (pass [] to clear). Set `menu_id`/`brand_id` to attach the ' +
-			'branch to a chain menu, or null to detach it. Returns the updated row, or null if the id does not exist.',
-		schema: updateLocationArgs,
-		handler: async ({ id, sources, street, city, region, postcode, country, ...patch }) => {
-			await assertBrandMenuRefs(patch.brand_id, patch.menu_id);
-			const addr = normalizeAddressPatch({ street, city, region, postcode, country });
-			return updateLocation(getDb(), id, { ...patch, ...addr, sources: normalizeSources(sources) });
+			'Update one or more existing locations in a single atomic batch — pass a one-item `items` array to ' +
+			'edit one place. Each patch carries an `id` plus only the fields to change; a given `sources` array ' +
+			"replaces that location's whole source set (pass [] to clear). Set `menu_id`/`brand_id` to attach a " +
+			'branch to a chain menu, or null to detach it. region/postcode/country are normalized for you. ' +
+			'Ideal for mass backfills from find_missing_address / find_coordinate_drift. Ids that do not exist ' +
+			'are skipped and listed in `not_found_ids`. Returns { updated, updated_ids, not_found_ids }.',
+		schema: updateLocationsArgs,
+		handler: async ({ items }) => {
+			// Validate only the DISTINCT brand/menu pairs a patch actually SETS.
+			const checkedPairs = new Set<string>();
+			for (const it of items) {
+				if (it.brand_id === undefined && it.menu_id === undefined) continue;
+				const key = `${it.brand_id ?? ''}|${it.menu_id ?? ''}`;
+				if (checkedPairs.has(key)) continue;
+				checkedPairs.add(key);
+				await assertBrandMenuRefs(it.brand_id, it.menu_id);
+			}
+			const patches = items.map(
+				({ id, sources, street, city, region, postcode, country, ...patch }) => ({
+					id,
+					...patch,
+					...normalizeAddressPatch({ street, city, region, postcode, country }),
+					sources: normalizeSources(sources)
+				})
+			);
+			const { updatedIds, notFoundIds } = await updateLocations(getDb(), patches);
+			return { updated: updatedIds.length, updated_ids: updatedIds, not_found_ids: notFoundIds };
 		}
 	}),
 	defineTool({
@@ -984,7 +1084,9 @@ const tools = [
 			'Create one or more menu items for ONE independent venue, on its own private menu (created ' +
 			'automatically the first time), in a single transaction (all-or-nothing): ' +
 			"if any item is invalid, none are written. Use this for a venue's own menu; for a chain whose branches share a menu, use create_menu_items instead (calling it on a chain branch errors). Pass a " +
-			'one-element `items` array to add a single item. Returns the created items (each with tags and sources).',
+			'one-element `items` array to add a single item. Tip: when creating the venue too, pass these as ' +
+			'`menu_items` on create_locations to do it in one call. Returns { created, item_ids } — read full ' +
+			'items with get_item / get_location if needed.',
 		schema: createFoodsArgs,
 		handler: async (input) => {
 			if (!(await getLocationById(getDb(), input.location_id))) {
@@ -1005,7 +1107,7 @@ const tools = [
 					sources: normalizeSources(it.sources)
 				}))
 			);
-			return Promise.all(ids.map((id) => getItemById(getDb(), id)));
+			return { created: ids.length, item_ids: ids };
 		}
 	}),
 	defineTool({
@@ -1061,7 +1163,7 @@ const chainTools = [
 		name: 'create_brand',
 		description:
 			"Create a chain/brand (e.g. McDonald's). A brand owns one or more regional menus (create_menu); " +
-			'a location joins the chain by setting its brand_id/menu_id. Returns the created brand.',
+			'a location joins the chain by setting its brand_id/menu_id. Returns { id } — read it back with get_brand.',
 		schema: createBrandArgs,
 		handler: async (input) => {
 			const id = await insertBrand(getDb(), {
@@ -1070,7 +1172,7 @@ const chainTools = [
 				website: input.website ?? null,
 				logo_url: input.logo_url ?? null
 			});
-			return getBrandById(getDb(), id);
+			return { id };
 		}
 	}),
 	defineTool({
@@ -1112,7 +1214,7 @@ const chainTools = [
 		description:
 			'Create a regional menu under a brand (e.g. name "Subway UK", region "GB"). Add its shared items ' +
 			'with create_menu_items, then point each branch at it via location.menu_id. Optionally cite the ' +
-			'official menu once via `sources`. Returns the created menu.',
+			'official menu once via `sources`. Returns { id } — read it back with get_menu.',
 		schema: createMenuArgs,
 		handler: async (input) => {
 			if (!(await getBrandById(getDb(), input.brand_id))) {
@@ -1126,7 +1228,7 @@ const chainTools = [
 				last_verified: input.last_verified ?? null,
 				sources: normalizeSources(input.sources)
 			});
-			return getMenuById(getDb(), id);
+			return { id };
 		}
 	}),
 	defineTool({
@@ -1171,7 +1273,8 @@ const chainTools = [
 		description:
 			'Create one or more SHARED items on a brand menu in one transaction (all-or-nothing). Defined once ' +
 			'here, they appear at every branch serving this menu — never copy them per location. For an ' +
-			"independent venue's own menu use create_foods instead. Returns the created items.",
+			"independent venue's own menu use create_foods instead. Returns { created, item_ids } — read full " +
+			'items with get_item / get_menu if needed.',
 		schema: createMenuItemsArgs,
 		handler: async (input) => {
 			if (!(await getMenuById(getDb(), input.menu_id))) {
@@ -1192,7 +1295,7 @@ const chainTools = [
 					sources: normalizeSources(it.sources)
 				}))
 			);
-			return Promise.all(ids.map((id) => getItemById(getDb(), id)));
+			return { created: ids.length, item_ids: ids };
 		}
 	}),
 	defineTool({
@@ -1232,7 +1335,10 @@ const osmTools = [
 			'missing — ordered nearest-first for centre+radius queries. Each candidate includes an ' +
 			'`osm_url` to cite as the source, a `suggested_category` (cafe/fast_food/restaurant/bakery, ' +
 			'or null for bars/pubs/ice_cream/food_court — pick the best fit), and OSM ' +
-			'address/phone/website/cuisine/opening_hours where tagged. `diet_markers` are venue-level ' +
+			'phone/website/cuisine/opening_hours where tagged. For the address it gives both a single-line ' +
+			'`address` and structured `address_parts` (street/city/region/postcode/country, absent parts ' +
+			'dropped) — pass `address_parts` straight to create_locations (it normalizes them); split the ' +
+			'single line yourself only when `address_parts` is absent. `diet_markers` are venue-level ' +
 			'OSM diet:* markers (informational only — still apply per-item dietary tags per the ' +
 			'source-asserted policy). Workflow: call this, then create_locations, passing each ' +
 			'osm_url in `sources`.',
@@ -1267,7 +1373,7 @@ const osmTools = [
 			'must be OSM-sourced (see create_locations), so a healthy location sits ~0 m from its OSM POI; ' +
 			'this finds the exceptions so they can be snapped back. Each `drifted` entry carries the matched ' +
 			'OSM POI (`osm_url`, `osm_latitude`, `osm_longitude`, `distance_m`, `matched_osm_name`) — pass ' +
-			'`osm_latitude`/`osm_longitude` straight to update_location to fix it, and cite `osm_url`. ' +
+			'`osm_latitude`/`osm_longitude` straight to update_locations to fix it, and cite `osm_url`. ' +
 			'Locations with no name-matching OSM POI nearby are reported as `no_osm_match` (these have no ' +
 			'OSM counterpart to align to; set include_unmatched=false to omit them). Results are ' +
 			'worst-drift-first; `limit` caps how many are returned and `additional` is how many more ' +
@@ -1291,7 +1397,7 @@ const osmTools = [
 			'unless include_incomplete=false — a streetless fragment like a bare house number/postcode ' +
 			'(`reason: "incomplete"`). Each entry is classified by what can be done: `osm_fix_available` ' +
 			'(a name-matching OSM POI nearby HAS an address — pass its structured `osm_address_parts` to ' +
-			'update_location, or split the `osm_address` preview into parts when `osm_address_parts` is ' +
+			'update_locations, or split the `osm_address` preview into parts when `osm_address_parts` is ' +
 			'absent, and cite `osm_url`), `osm_has_no_address` (matched a POI, but it too lacks one ' +
 			'— needs another source), or `no_osm_match` (no name-matching POI within search_radius_m). ' +
 			'Results are actionable-first; set include_unfixable=false for just the OSM-fixable work list. ' +
