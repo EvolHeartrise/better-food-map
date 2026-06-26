@@ -445,7 +445,11 @@ export async function searchTagVocabulary(
 	rawQuery: string,
 	limit = TAG_SEARCH_LIMIT
 ): Promise<Tag[]> {
-	const q = rawQuery.trim().toLowerCase();
+	// Fold the query the same way ingredient names are folded on write, so an
+	// accented query ("jalapeño") matches the accent-folded canonical tag
+	// ("jalapeno") directly — diacritics need no alias rows on either side. Then
+	// strip LIKE wildcards (rare in tag names) so a typed %/_ can't act as one.
+	const q = foldIngredientName(rawQuery);
 	if (q === '') return getAllTags();
 	const safe = q.replace(/[%_]/g, '');
 	if (safe === '') return getAllTags();
