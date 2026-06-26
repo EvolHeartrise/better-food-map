@@ -120,6 +120,27 @@ test('diet_markers survive the JSON round-trip', () => {
 	store.close();
 });
 
+test('getByOsmId returns a single POI verbatim (for the create_locations import path), or null', () => {
+	const store = freshStore();
+	store.insertMany('test', [
+		row({
+			osm_id: 'n1',
+			latitude: 49.2812,
+			longitude: -123.1201,
+			name: 'Corner Cafe',
+			tags_json: '{"addr:housenumber":"1","addr:street":"Main St"}'
+		})
+	]);
+	const hit = store.getByOsmId('n1');
+	expect(hit?.name).toBe('Corner Cafe');
+	// Coordinates come back exactly as stored — this is what keeps the import coordinate-exact.
+	expect(hit?.latitude).toBe(49.2812);
+	expect(hit?.longitude).toBe(-123.1201);
+	expect(hit?.tags_json).toBe('{"addr:housenumber":"1","addr:street":"Main St"}');
+	expect(store.getByOsmId('does-not-exist')).toBeNull();
+	store.close();
+});
+
 test('openReadonly throws a helpful error when the file is missing', () => {
 	expect(() => OsmPoiStore.openReadonly('/tmp/does-not-exist-osm-poi.sqlite')).toThrow(
 		/osm:extract/
