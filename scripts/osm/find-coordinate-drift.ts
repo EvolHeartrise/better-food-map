@@ -6,7 +6,7 @@
 // Coordinates must be OSM-sourced and passed through verbatim (see CLAUDE.md
 // "Location coordinates must be OSM-based"), so a healthy location sits ~0 m from
 // its staging POI. Anything farther has DRIFTED and can be snapped back with
-// update_location using the returned osm_* fields. Locations with no name-matching
+// update_locations using the returned osm_* fields. Locations with no name-matching
 // OSM POI nearby have no counterpart to align to and are reported separately.
 //
 // Like search_poi, the only non-deterministic input is the single D1 read; the
@@ -43,7 +43,7 @@ export interface DriftLocation {
 	classification: 'drifted' | 'no_osm_match';
 	/** Metres from the stored point to the matched OSM POI (drifted only). */
 	distance_m?: number;
-	/** The matched OSM POI, ready to snap to via update_location (drifted only). */
+	/** The matched OSM POI, ready to snap to via update_locations (drifted only). */
 	osm_url?: string;
 	osm_latitude?: number;
 	osm_longitude?: number;

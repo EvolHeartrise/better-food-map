@@ -226,3 +226,51 @@ test('exclude_existing default true requires a db handle', async () => {
 	expect(msg).toMatch(/exclude_existing requires/);
 	store.close();
 });
+
+test('candidates expose structured address_parts from the POI addr:* tags', async () => {
+	const tags = {
+		amenity: 'cafe',
+		name: 'Tagged Cafe',
+		'addr:housenumber': '1909',
+		'addr:street': 'W 4th Ave',
+		'addr:city': 'Vancouver',
+		'addr:state': 'BC',
+		'addr:postcode': 'V6J 1M5',
+		'addr:country': 'CA'
+	};
+	const store = storeWith([
+		row({
+			osm_id: 'n10',
+			latitude: 49.2827,
+			longitude: -123.1207,
+			name: 'Tagged Cafe',
+			tags_json: JSON.stringify(tags)
+		})
+	]);
+	const res = await searchPoi(store, null, {
+		latitude: CENTRE.lat,
+		longitude: CENTRE.lon,
+		radius_km: 1,
+		exclude_existing: false
+	});
+	expect(res.candidates[0].address_parts).toEqual({
+		street: '1909 W 4th Ave',
+		city: 'Vancouver',
+		region: 'BC',
+		postcode: 'V6J 1M5',
+		country: 'CA'
+	});
+	store.close();
+});
+
+test('address_parts is omitted when the POI carries no addr:* tags', async () => {
+	const store = storeWith([row({ osm_id: 'n11', latitude: 49.2827, longitude: -123.1207 })]);
+	const res = await searchPoi(store, null, {
+		latitude: CENTRE.lat,
+		longitude: CENTRE.lon,
+		radius_km: 1,
+		exclude_existing: false
+	});
+	expect(res.candidates[0].address_parts).toBeUndefined();
+	store.close();
+});
