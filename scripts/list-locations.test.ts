@@ -129,4 +129,6 @@ test('existingIds returns only the ids already present (for idempotent retries)'
 	const found = await existingIds(db, 'locations', ['van1', 'ghost', 'tor1']);
 	expect([...found].toSorted()).toEqual(['tor1', 'van1']);
 	expect(await existingIds(db, 'locations', [])).toEqual(new Set());
+	// The interpolated table name is guarded against anything outside the allowlist.
+	expect(existingIds(db, 'sqlite_master' as never, ['x'])).rejects.toThrow(/invalid table/);
 });

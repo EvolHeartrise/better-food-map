@@ -574,11 +574,16 @@ export async function getLocationsWithTags(
  * the same ids (e.g. after a dropped response) can skip the rows already written
  * instead of failing the whole batch on a primary-key collision.
  */
+const EXISTING_IDS_TABLES = new Set(['locations', 'items', 'brands', 'menus']);
+
 export async function existingIds(
 	db: D1Like,
 	table: 'locations' | 'items' | 'brands' | 'menus',
 	ids: string[]
 ): Promise<Set<string>> {
+	// `table` is interpolated into the SQL, so guard it against an allowlist at
+	// runtime (the TS union is erased and can't stop a future dynamic caller).
+	if (!EXISTING_IDS_TABLES.has(table)) throw new Error(`existingIds: invalid table "${table}".`);
 	if (ids.length === 0) return new Set();
 	const placeholders = ids.map(() => '?').join(', ');
 	const { results } = await db
