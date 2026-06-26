@@ -1,0 +1,1941 @@
+{
+	"total": 322,
+	"folds": [
+		{
+			"name": "fried onion",
+			"action": "fold",
+			"base": "onion",
+			"reason": "'fried' is a cooking method; the ingredient is still onion"
+		},
+		{
+			"name": "grilled chicken",
+			"action": "fold",
+			"base": "chicken",
+			"reason": "'grilled' is a cooking method qualifier"
+		},
+		{
+			"name": "steamed milk",
+			"action": "fold",
+			"base": "milk",
+			"reason": "dairy-milk prep qualifier folds to milk"
+		},
+		{
+			"name": "minced chicken",
+			"action": "fold",
+			"base": "chicken",
+			"reason": "'minced' is a cut/form qualifier"
+		},
+		{
+			"name": "ground beef",
+			"action": "fold",
+			"base": "beef",
+			"reason": "'ground' is a cut/form qualifier"
+		},
+		{
+			"name": "diced tomato",
+			"action": "fold",
+			"base": "tomato",
+			"reason": "'diced' is a cut/form qualifier"
+		},
+		{
+			"name": "house-made dairy-free mayo",
+			"action": "fold",
+			"base": "dairy-free mayo",
+			"reason": "'house-made' is trivial sourcing; remove it, keep remaining 'dairy-free mayo' descriptor"
+		},
+		{
+			"name": "flame-grilled chicken",
+			"action": "fold",
+			"base": "chicken",
+			"reason": "'flame-grilled' is a cooking method qualifier"
+		},
+		{
+			"name": "fresh herbs",
+			"action": "fold",
+			"base": "herbs",
+			"reason": "fresh is trivial freshness qualifier"
+		},
+		{
+			"name": "roasted eggplant",
+			"action": "fold",
+			"base": "eggplant",
+			"reason": "roasted is a cooking method"
+		},
+		{
+			"name": "crispy fries",
+			"action": "fold",
+			"base": "fries",
+			"reason": "crispy is a texture from cooking (cf. crispy chicken->chicken)"
+		},
+		{
+			"name": "roasted yam",
+			"action": "fold",
+			"base": "yam",
+			"reason": "roasted is a cooking method"
+		},
+		{
+			"name": "mashed potato",
+			"action": "fold",
+			"base": "potato",
+			"reason": "mashed is a cut/form qualifier"
+		},
+		{
+			"name": "fresh mozzarella",
+			"action": "fold",
+			"base": "mozzarella",
+			"reason": "fresh is trivial freshness qualifier (explicit example)"
+		},
+		{
+			"name": "crispy onion rings",
+			"action": "fold",
+			"base": "onion rings",
+			"reason": "crispy is a texture from cooking; onion rings stays intact"
+		},
+		{
+			"name": "roasted peanuts & seeds",
+			"action": "fold",
+			"base": "peanuts & seeds",
+			"reason": "roasted is a cooking method"
+		},
+		{
+			"name": "crispy onions",
+			"action": "fold",
+			"base": "onions",
+			"reason": "crispy is a texture from cooking"
+		},
+		{
+			"name": "toasted sesame bun",
+			"action": "fold",
+			"base": "sesame bun",
+			"reason": "toasted is a cooking method; sesame bun descriptor retained"
+		},
+		{
+			"name": "shredded iceberg lettuce",
+			"action": "fold",
+			"base": "iceberg lettuce",
+			"reason": "'shredded' is a cut/form qualifier; same ingredient (iceberg lettuce)."
+		},
+		{
+			"name": "caramelized red onions",
+			"action": "fold",
+			"base": "red onion",
+			"reason": "'caramelized' is a cooking method; same ingredient (red onion)."
+		},
+		{
+			"name": "roasted vegetables",
+			"action": "fold",
+			"base": "vegetables",
+			"reason": "'roasted' is a cooking method; same ingredient (vegetables)."
+		},
+		{
+			"name": "shredded lettuce",
+			"action": "fold",
+			"base": "lettuce",
+			"reason": "'shredded' is a cut/form qualifier; same ingredient (lettuce)."
+		},
+		{
+			"name": "charred corn",
+			"action": "fold",
+			"base": "corn",
+			"reason": "'charred' is a cooking method; same ingredient (corn)."
+		},
+		{
+			"name": "crispy chicken",
+			"action": "fold",
+			"base": "chicken",
+			"reason": "'crispy' folds per example; same ingredient (chicken)."
+		},
+		{
+			"name": "crispy chik'n",
+			"action": "fold",
+			"base": "chik'n",
+			"reason": "'crispy' folds; same ingredient (chik'n)."
+		},
+		{
+			"name": "shredded carrots",
+			"action": "fold",
+			"base": "carrot",
+			"reason": "'shredded' is a cut/form qualifier; same ingredient (carrot)."
+		},
+		{
+			"name": "shredded chicken",
+			"action": "fold",
+			"base": "chicken",
+			"reason": "'shredded' is a cut/form qualifier; same ingredient (chicken)."
+		},
+		{
+			"name": "minced beef",
+			"action": "fold",
+			"base": "beef",
+			"reason": "'minced' is a cut/form qualifier; same ingredient (beef)."
+		},
+		{
+			"name": "minced lamb",
+			"action": "fold",
+			"base": "lamb",
+			"reason": "'minced' is a cut/form qualifier; same ingredient (lamb)."
+		},
+		{
+			"name": "organic blueberries",
+			"action": "fold",
+			"base": "blueberry",
+			"reason": "'organic' is trivial sourcing; same ingredient (blueberry)."
+		},
+		{
+			"name": "fresh mango",
+			"action": "fold",
+			"base": "mango",
+			"reason": "'fresh' is a trivial freshness qualifier; same ingredient (mango)."
+		},
+		{
+			"name": "crispy plant-based chickun fillet",
+			"action": "fold",
+			"base": "plant-based chickun fillet",
+			"reason": "'crispy' is a texture/cooking qualifier (like 'crispy chicken'->'chicken'); remaining descriptor 'plant-based chickun fillet' is the same ingredient identity"
+		},
+		{
+			"name": "roasted corn",
+			"action": "fold",
+			"base": "corn",
+			"reason": "'roasted' is a cooking method; same ingredient is corn"
+		},
+		{
+			"name": "caramelized onion",
+			"action": "fold",
+			"base": "onion",
+			"reason": "'caramelized' is a listed folding cooking method; same ingredient is onion"
+		},
+		{
+			"name": "grilled tomato",
+			"action": "fold",
+			"base": "tomato",
+			"reason": "'grilled' is a cooking method; same ingredient is tomato"
+		},
+		{
+			"name": "caramelized carrots",
+			"action": "fold",
+			"base": "carrot",
+			"reason": "'caramelized' is a folding cooking method; same ingredient, singularized to carrot"
+		},
+		{
+			"name": "hot water",
+			"action": "fold",
+			"base": "water",
+			"reason": "'hot' is a temperature/state qualifier; same ingredient is water (not an idiomatic distinct product)"
+		},
+		{
+			"name": "fried egg",
+			"action": "fold",
+			"base": "egg",
+			"reason": "'fried' is a cooking method; for allergen purposes it is the same egg ingredient"
+		},
+		{
+			"name": "caramelized onion jam",
+			"action": "fold",
+			"base": "onion jam",
+			"reason": "leading 'caramelized' is a cooking-method qualifier; remaining 'onion jam' is the same distinct product"
+		},
+		{
+			"name": "steamed vegetables",
+			"action": "fold",
+			"base": "vegetables",
+			"reason": "'steamed' is a cooking method; same ingredient category vegetables"
+		},
+		{
+			"name": "crispy chickpeas",
+			"action": "fold",
+			"base": "chickpea",
+			"reason": "'crispy' is a texture/cooking qualifier; same ingredient, singularized to chickpea"
+		},
+		{
+			"name": "roasted chickpeas",
+			"action": "fold",
+			"base": "chickpea",
+			"reason": "'roasted' is a cooking method; same ingredient, singularized to chickpea"
+		},
+		{
+			"name": "fresh vegetables",
+			"action": "fold",
+			"base": "vegetable",
+			"reason": "fresh is trivial freshness; same ingredient"
+		},
+		{
+			"name": "roasted pepper",
+			"action": "fold",
+			"base": "pepper",
+			"reason": "roasted is a cooking method; same ingredient"
+		},
+		{
+			"name": "fresh strawberries",
+			"action": "fold",
+			"base": "strawberry",
+			"reason": "fresh is trivial freshness; same ingredient"
+		},
+		{
+			"name": "fresh coriander",
+			"action": "fold",
+			"base": "coriander",
+			"reason": "fresh is trivial freshness; same ingredient"
+		},
+		{
+			"name": "roasted peanuts",
+			"action": "fold",
+			"base": "peanut",
+			"reason": "roasted is a cooking method; same ingredient"
+		},
+		{
+			"name": "sliced tomatoes",
+			"action": "fold",
+			"base": "tomato",
+			"reason": "sliced is a cut/form; same ingredient"
+		},
+		{
+			"name": "diced white onions",
+			"action": "fold",
+			"base": "white onion",
+			"reason": "diced is a cut/form; keep remaining descriptor 'white'"
+		},
+		{
+			"name": "grilled greek pita",
+			"action": "fold",
+			"base": "greek pita",
+			"reason": "grilled is a cooking method; removing it leaves the same ingredient with descriptor 'greek' intact"
+		},
+		{
+			"name": "organic greens",
+			"action": "fold",
+			"base": "greens",
+			"reason": "organic is trivial sourcing; same ingredient"
+		},
+		{
+			"name": "braised pork",
+			"action": "fold",
+			"base": "pork",
+			"reason": "braised is a cooking method; same ingredient"
+		},
+		{
+			"name": "grilled beef",
+			"action": "fold",
+			"base": "beef",
+			"reason": "grilled is a cooking method; same ingredient"
+		},
+		{
+			"name": "seared salmon",
+			"action": "fold",
+			"base": "salmon",
+			"reason": "seared is a cooking method; same ingredient"
+		},
+		{
+			"name": "fried tofu",
+			"action": "fold",
+			"base": "tofu",
+			"reason": "fried is a cooking method; same ingredient"
+		},
+		{
+			"name": "crispy cauliflower",
+			"action": "fold",
+			"base": "cauliflower",
+			"reason": "crispy folds per example 'crispy chicken'->'chicken'; same ingredient"
+		},
+		{
+			"name": "crispy flour papdi",
+			"action": "fold",
+			"base": "flour papdi",
+			"reason": "crispy folds; descriptor 'flour' remains on the same ingredient"
+		},
+		{
+			"name": "pan-fried spiced potato patties",
+			"action": "fold",
+			"base": "spiced potato patties",
+			"reason": "pan-fried is a cooking method; removing only that leaves the same ingredient with remaining descriptors"
+		},
+		{
+			"name": "fried mixed-vegetable balls",
+			"action": "fold",
+			"base": "mixed-vegetable balls",
+			"reason": "fried is a cooking method; same ingredient with descriptor retained"
+		},
+		{
+			"name": "steamed basmati rice",
+			"action": "fold",
+			"base": "basmati rice",
+			"reason": "'steamed' is a cooking method; removing it leaves the same ingredient, basmati rice."
+		},
+		{
+			"name": "stir-fried wheat noodles",
+			"action": "fold",
+			"base": "wheat noodles",
+			"reason": "'stir-fried' is a cooking method (not a fixed idiom name); ingredient is still wheat noodles."
+		},
+		{
+			"name": "steamed long-grain basmati rice",
+			"action": "fold",
+			"base": "long-grain basmati rice",
+			"reason": "'steamed' cooking method folds; keep remaining descriptor long-grain basmati rice."
+		},
+		{
+			"name": "steamed rice and lentil cakes",
+			"action": "fold",
+			"base": "rice and lentil cakes",
+			"reason": "'steamed' is a cooking method; the food item rice and lentil cakes remains."
+		},
+		{
+			"name": "fresh coconut",
+			"action": "fold",
+			"base": "coconut",
+			"reason": "'fresh' is trivial freshness/sourcing; folds to coconut."
+		},
+		{
+			"name": "fried chicken fillet",
+			"action": "fold",
+			"base": "chicken fillet",
+			"reason": "'fried' is a cooking method; ingredient is still chicken fillet."
+		},
+		{
+			"name": "fried paneer",
+			"action": "fold",
+			"base": "paneer",
+			"reason": "'fried' cooking method folds to paneer."
+		},
+		{
+			"name": "fried wheat puri",
+			"action": "fold",
+			"base": "wheat puri",
+			"reason": "'fried' cooking method folds; wheat puri remains."
+		},
+		{
+			"name": "steamed wheat dumplings",
+			"action": "fold",
+			"base": "wheat dumplings",
+			"reason": "'steamed' cooking method folds; wheat dumplings remains."
+		},
+		{
+			"name": "fried bread",
+			"action": "fold",
+			"base": "bread",
+			"reason": "'fried' is a cooking method; the ingredient is plainly bread (not a fixed idiom like fried rice)."
+		},
+		{
+			"name": "ground chickpeas",
+			"action": "fold",
+			"base": "chickpeas",
+			"reason": "'ground' is a cut/form qualifier; ingredient is still chickpeas."
+		},
+		{
+			"name": "shredded donair chicken",
+			"action": "fold",
+			"base": "donair chicken",
+			"reason": "'shredded' is a CUT/FORM qualifier; same ingredient"
+		},
+		{
+			"name": "grilled paneer",
+			"action": "fold",
+			"base": "paneer",
+			"reason": "'grilled' is a cooking method; same ingredient"
+		},
+		{
+			"name": "baked wheat-flour baati",
+			"action": "fold",
+			"base": "wheat-flour baati",
+			"reason": "'baked' is a cooking method; same ingredient, remaining descriptor kept"
+		},
+		{
+			"name": "sliced turkey",
+			"action": "fold",
+			"base": "turkey",
+			"reason": "'sliced' is a CUT/FORM qualifier; same ingredient"
+		},
+		{
+			"name": "crispy potato tikki patties",
+			"action": "fold",
+			"base": "potato tikki patties",
+			"reason": "'crispy' folds per example (crispy chicken->chicken); same ingredient"
+		},
+		{
+			"name": "crispy potato tikki",
+			"action": "fold",
+			"base": "potato tikki",
+			"reason": "'crispy' folds per example; same ingredient"
+		},
+		{
+			"name": "ground cashews",
+			"action": "fold",
+			"base": "cashews",
+			"reason": "'ground' is a CUT/FORM qualifier; same ingredient"
+		},
+		{
+			"name": "roasted gram flour",
+			"action": "fold",
+			"base": "gram flour",
+			"reason": "'roasted' is a cooking method; same ingredient"
+		},
+		{
+			"name": "chilled milk",
+			"action": "fold",
+			"base": "milk",
+			"reason": "'chilled' temperature qualifier on dairy milk folds to milk"
+		},
+		{
+			"name": "toasted bread",
+			"action": "fold",
+			"base": "bread",
+			"reason": "'toasted' is a cooking method that folds; same ingredient, just prepared."
+		},
+		{
+			"name": "organic sourdough toast",
+			"action": "fold",
+			"base": "sourdough toast",
+			"reason": "'organic' is a trivial sourcing qualifier that folds; keep remaining descriptor 'sourdough toast'."
+		},
+		{
+			"name": "house-made black bean patty",
+			"action": "fold",
+			"base": "black bean patty",
+			"reason": "'house-made' is a trivial sourcing qualifier that folds; same ingredient."
+		},
+		{
+			"name": "crispy soy curls",
+			"action": "fold",
+			"base": "soy curls",
+			"reason": "'crispy' folds like 'crispy chicken'->'chicken'; same ingredient."
+		},
+		{
+			"name": "fresh lemon",
+			"action": "fold",
+			"base": "lemon",
+			"reason": "'fresh' is a trivial freshness qualifier that folds."
+		},
+		{
+			"name": "toasted coconut noodles",
+			"action": "fold",
+			"base": "coconut noodles",
+			"reason": "'toasted' is a cooking method that folds; base 'coconut noodles' is the same dietary ingredient."
+		},
+		{
+			"name": "crispy roll",
+			"action": "fold",
+			"base": "roll",
+			"reason": "'crispy' folds like 'crispy chicken'->'chicken'; a roll is still a roll."
+		},
+		{
+			"name": "flame-grilled chicken wings",
+			"action": "fold",
+			"base": "chicken wings",
+			"reason": "'flame-grilled' is a listed cooking method that folds; same ingredient."
+		},
+		{
+			"name": "flame-grilled boneless chicken breast",
+			"action": "fold",
+			"base": "boneless chicken breast",
+			"reason": "'flame-grilled' folds; keep remaining descriptor 'boneless chicken breast'."
+		},
+		{
+			"name": "grilled chicken breast",
+			"action": "fold",
+			"base": "chicken breast",
+			"reason": "'grilled' is a cooking method that folds; matches the given example exactly."
+		},
+		{
+			"name": "raw salmon",
+			"action": "fold",
+			"base": "salmon",
+			"reason": "'raw' is a trivial state/freshness qualifier; same ingredient (salmon)."
+		},
+		{
+			"name": "grilled chicken breast strips",
+			"action": "fold",
+			"base": "chicken breast strips",
+			"reason": "'grilled' is a cooking method; remove it, same ingredient (chicken breast strips)."
+		},
+		{
+			"name": "crispy chicken fillet",
+			"action": "fold",
+			"base": "chicken fillet",
+			"reason": "'crispy' folds per example (crispy chicken->chicken); same ingredient (chicken fillet)."
+		},
+		{
+			"name": "grilled vegetables",
+			"action": "fold",
+			"base": "vegetables",
+			"reason": "'grilled' is a cooking method; same ingredient (vegetables)."
+		},
+		{
+			"name": "grilled porcini",
+			"action": "fold",
+			"base": "porcini",
+			"reason": "'grilled' is a cooking method; same ingredient (porcini)."
+		},
+		{
+			"name": "fried chicken wings",
+			"action": "fold",
+			"base": "chicken wings",
+			"reason": "'fried' is a cooking method; same ingredient (chicken wings)."
+		},
+		{
+			"name": "crispy fingerling potato",
+			"action": "fold",
+			"base": "fingerling potato",
+			"reason": "'crispy' folds per example; same ingredient (fingerling potato)."
+		},
+		{
+			"name": "fresh pasta",
+			"action": "fold",
+			"base": "pasta",
+			"reason": "'fresh' is a trivial freshness qualifier (per example fresh mozzarella->mozzarella); same ingredient (pasta)."
+		},
+		{
+			"name": "fresh cucumber juice",
+			"action": "fold",
+			"base": "cucumber juice",
+			"reason": "'fresh' is a trivial freshness qualifier; removing it leaves the same ingredient cucumber juice"
+		},
+		{
+			"name": "homemade tortilla chips",
+			"action": "fold",
+			"base": "tortilla chips",
+			"reason": "'homemade' is trivial sourcing; same ingredient tortilla chips"
+		},
+		{
+			"name": "grilled corn",
+			"action": "fold",
+			"base": "corn",
+			"reason": "'grilled' is a cooking method; same ingredient corn"
+		},
+		{
+			"name": "smoked paprika grilled chicken",
+			"action": "fold",
+			"base": "smoked paprika chicken",
+			"reason": "'grilled' is a cooking method; remove only it, keeping the smoked-paprika descriptor on chicken"
+		},
+		{
+			"name": "char-grilled pineapple",
+			"action": "fold",
+			"base": "pineapple",
+			"reason": "'char-grilled' is a cooking method (charred/flame-grilled family); same ingredient pineapple"
+		},
+		{
+			"name": "fresh herb butter",
+			"action": "fold",
+			"base": "herb butter",
+			"reason": "'fresh' is a trivial freshness qualifier; leaves the compound ingredient herb butter"
+		},
+		{
+			"name": "crispy breaded chicken",
+			"action": "fold",
+			"base": "breaded chicken",
+			"reason": "'crispy' folds (per 'crispy chicken'->'chicken'); remove only it, keeping the breaded descriptor"
+		},
+		{
+			"name": "house-made gnocchi",
+			"action": "fold",
+			"base": "gnocchi",
+			"reason": "'house-made' is trivial sourcing; same ingredient gnocchi"
+		},
+		{
+			"name": "house-made seitan breakfast sausage",
+			"action": "fold",
+			"base": "seitan breakfast sausage",
+			"reason": "'house-made' is trivial sourcing; remove only it, keeping seitan breakfast sausage"
+		},
+		{
+			"name": "organic evaporated cane juice",
+			"action": "fold",
+			"base": "evaporated cane juice",
+			"reason": "'organic' is trivial sourcing; remove only it, keeping evaporated cane juice"
+		},
+		{
+			"name": "charred scallion",
+			"action": "fold",
+			"base": "scallion",
+			"reason": "'charred' is a cooking method; same ingredient scallion"
+		},
+		{
+			"name": "roasted pork",
+			"action": "fold",
+			"base": "pork",
+			"reason": "'roasted' is a cooking method; same ingredient pork"
+		},
+		{
+			"name": "caramelized aji amarillo",
+			"action": "fold",
+			"base": "aji amarillo",
+			"reason": "'caramelized' is a cooking method; same ingredient aji amarillo"
+		},
+		{
+			"name": "fried oysters",
+			"action": "fold",
+			"base": "oysters",
+			"reason": "'fried' is a cooking method; same ingredient (oysters) regardless of prep"
+		},
+		{
+			"name": "roasted seasoned cauliflower florets",
+			"action": "fold",
+			"base": "seasoned cauliflower florets",
+			"reason": "'roasted' is a cooking method; remove only it, keep remaining descriptor"
+		},
+		{
+			"name": "grilled prawn mousse",
+			"action": "fold",
+			"base": "prawn mousse",
+			"reason": "'grilled' is a cooking method; same ingredient (prawn mousse)"
+		},
+		{
+			"name": "house-made pork sausage",
+			"action": "fold",
+			"base": "pork sausage",
+			"reason": "'house-made' is trivial sourcing; same ingredient (pork sausage)"
+		},
+		{
+			"name": "warm milk",
+			"action": "fold",
+			"base": "milk",
+			"reason": "'warm' is temperature/state on dairy milk; folds to milk"
+		},
+		{
+			"name": "braised short ribs",
+			"action": "fold",
+			"base": "short ribs",
+			"reason": "'braised' is a cooking method; same ingredient (short ribs)"
+		},
+		{
+			"name": "grated radish",
+			"action": "fold",
+			"base": "radish",
+			"reason": "'grated' is a cut/form qualifier; same ingredient (radish)"
+		},
+		{
+			"name": "steamed veggies",
+			"action": "fold",
+			"base": "veggies",
+			"reason": "'steamed' is a cooking method; same ingredient (veggies)"
+		},
+		{
+			"name": "minced lamb and chicken",
+			"action": "fold",
+			"base": "lamb and chicken",
+			"reason": "'minced' is a cut/form qualifier; remove it, same ingredients"
+		},
+		{
+			"name": "boiled potato",
+			"action": "fold",
+			"base": "potato",
+			"reason": "'boiled' is a cooking method; same ingredient (potato)"
+		},
+		{
+			"name": "fresh spinach",
+			"action": "fold",
+			"base": "spinach",
+			"reason": "'fresh' is trivial freshness; same ingredient (spinach)"
+		},
+		{
+			"name": "spiced grilled paneer",
+			"action": "fold",
+			"base": "spiced paneer",
+			"reason": "'grilled' is a cooking method; remove only it, keep 'spiced' descriptor"
+		},
+		{
+			"name": "grated paneer",
+			"action": "fold",
+			"base": "paneer",
+			"reason": "'grated' is a CUT/FORM qualifier; same ingredient (paneer)."
+		},
+		{
+			"name": "roasted chicken",
+			"action": "fold",
+			"base": "chicken",
+			"reason": "'roasted' is a COOKING METHOD; same ingredient (chicken)."
+		},
+		{
+			"name": "roasted goat meat",
+			"action": "fold",
+			"base": "goat meat",
+			"reason": "'roasted' is a COOKING METHOD; same ingredient (goat meat)."
+		},
+		{
+			"name": "braised lamb shank",
+			"action": "fold",
+			"base": "lamb shank",
+			"reason": "'braised' is a COOKING METHOD; same ingredient (lamb shank)."
+		},
+		{
+			"name": "toasted pita bread",
+			"action": "fold",
+			"base": "pita bread",
+			"reason": "'toasted' is a COOKING METHOD; same ingredient (pita bread)."
+		},
+		{
+			"name": "crispy noodle patty",
+			"action": "fold",
+			"base": "noodle patty",
+			"reason": "'crispy' folds per examples (crispy chicken->chicken); same ingredient (noodle patty)."
+		},
+		{
+			"name": "warm spiced cheese fondue dip",
+			"action": "fold",
+			"base": "spiced cheese fondue dip",
+			"reason": "'warm' is a temperature/state qualifier; removing it leaves the same dip identity"
+		},
+		{
+			"name": "roasted beets",
+			"action": "fold",
+			"base": "beet",
+			"reason": "'roasted' is a cooking method; same ingredient (beet) once removed"
+		},
+		{
+			"name": "crispy battered oyster mushrooms",
+			"action": "fold",
+			"base": "battered oyster mushroom",
+			"reason": "'crispy' is a cooking-method/texture qualifier; keep remaining 'battered' descriptor which is identity-defining"
+		},
+		{
+			"name": "blanched kale",
+			"action": "fold",
+			"base": "kale",
+			"reason": "'blanched' is a cooking method; same ingredient (kale)"
+		},
+		{
+			"name": "organic tofu",
+			"action": "fold",
+			"base": "tofu",
+			"reason": "'organic' is trivial sourcing; same ingredient (tofu)"
+		},
+		{
+			"name": "grilled halloumi",
+			"action": "fold",
+			"base": "halloumi",
+			"reason": "'grilled' is a cooking method; same ingredient (halloumi)"
+		},
+		{
+			"name": "chilled egg custard",
+			"action": "fold",
+			"base": "egg custard",
+			"reason": "'chilled' is a temperature/state qualifier; same ingredient (egg custard)"
+		},
+		{
+			"name": "hot queso",
+			"action": "fold",
+			"base": "queso",
+			"reason": "'hot' is a temperature qualifier (not idiomatic like 'hot sauce'); same ingredient (queso)"
+		},
+		{
+			"name": "grilled cheese buns",
+			"action": "fold",
+			"base": "cheese buns",
+			"reason": "'grilled' is a cooking method applied to cheese buns; same ingredient once removed"
+		},
+		{
+			"name": "roasted tomato",
+			"action": "fold",
+			"base": "tomato",
+			"reason": "'roasted' is a cooking method; same ingredient (tomato)"
+		},
+		{
+			"name": "caramelized pearl onions",
+			"action": "fold",
+			"base": "pearl onion",
+			"reason": "'caramelized' is a listed cooking-method qualifier; removing it leaves the same ingredient. Singularized to pearl onion."
+		},
+		{
+			"name": "ground coriander",
+			"action": "fold",
+			"base": "coriander",
+			"reason": "'ground' is a listed CUT/FORM qualifier (cf. 'ground beef'->'beef'); removing it leaves the same ingredient coriander."
+		},
+		{
+			"name": "fried organic tofu",
+			"action": "fold",
+			"base": "tofu",
+			"reason": "'fried' (cooking method) and 'organic' (trivial sourcing) both fold; removing both leaves tofu."
+		},
+		{
+			"name": "poached egg",
+			"action": "fold",
+			"base": "egg",
+			"reason": "'poached' is a listed cooking-method qualifier; removing it leaves the same ingredient egg."
+		},
+		{
+			"name": "fried shallots",
+			"action": "fold",
+			"base": "shallot",
+			"reason": "'fried' is a cooking-method qualifier; removing it leaves shallots. Singularized to shallot."
+		},
+		{
+			"name": "chopped onion",
+			"action": "fold",
+			"base": "onion",
+			"reason": "'chopped' is a listed CUT/FORM qualifier; removing it leaves the same ingredient onion."
+		},
+		{
+			"name": "spiced minced beef",
+			"action": "fold",
+			"base": "spiced beef",
+			"reason": "'minced' is a cut/form qualifier that folds; remaining descriptor 'spiced' (a seasoning, not a fold qualifier) is kept -> 'spiced beef'"
+		},
+		{
+			"name": "warm brown rice",
+			"action": "fold",
+			"base": "brown rice",
+			"reason": "'warm' is a temperature/state qualifier that folds; 'brown' descriptor kept"
+		},
+		{
+			"name": "fresh greens",
+			"action": "fold",
+			"base": "greens",
+			"reason": "'fresh' is trivial freshness, folds"
+		},
+		{
+			"name": "roasted pecans",
+			"action": "fold",
+			"base": "pecans",
+			"reason": "'roasted' is a cooking method, folds to the same ingredient"
+		},
+		{
+			"name": "grilled avocado",
+			"action": "fold",
+			"base": "avocado",
+			"reason": "'grilled' is a cooking method, folds"
+		},
+		{
+			"name": "fried capers",
+			"action": "fold",
+			"base": "capers",
+			"reason": "'fried' is a cooking method, folds"
+		},
+		{
+			"name": "crispy quinoa",
+			"action": "fold",
+			"base": "quinoa",
+			"reason": "'crispy' folds (per example crispy chicken->chicken)"
+		},
+		{
+			"name": "grilled broccolini",
+			"action": "fold",
+			"base": "broccolini",
+			"reason": "'grilled' is a cooking method, folds"
+		},
+		{
+			"name": "fresh lime",
+			"action": "fold",
+			"base": "lime",
+			"reason": "'fresh' is trivial freshness, folds"
+		},
+		{
+			"name": "char-grilled pineapple salsa",
+			"action": "fold",
+			"base": "pineapple salsa",
+			"reason": "'char-grilled' is a cooking method (like charred/flame-grilled); same ingredient minus method"
+		},
+		{
+			"name": "house-made croutons",
+			"action": "fold",
+			"base": "croutons",
+			"reason": "house-made is trivial sourcing qualifier; same ingredient (croutons)"
+		},
+		{
+			"name": "roasted garlic dip",
+			"action": "fold",
+			"base": "garlic dip",
+			"reason": "roasted is a cooking method that folds; remaining descriptor 'garlic dip' kept"
+		},
+		{
+			"name": "shaved callebaut chocolate",
+			"action": "fold",
+			"base": "callebaut chocolate",
+			"reason": "shaved is a CUT/FORM qualifier; same ingredient (callebaut chocolate)"
+		},
+		{
+			"name": "roasted cumin",
+			"action": "fold",
+			"base": "cumin",
+			"reason": "roasted is a cooking method that folds to the same ingredient"
+		},
+		{
+			"name": "fresh garlic",
+			"action": "fold",
+			"base": "garlic",
+			"reason": "fresh is trivial freshness qualifier; same ingredient (garlic)"
+		},
+		{
+			"name": "melted cheese",
+			"action": "fold",
+			"base": "cheese",
+			"reason": "melted is a TEMPERATURE/STATE qualifier; same ingredient (cheese)"
+		},
+		{
+			"name": "fresh basil",
+			"action": "fold",
+			"base": "basil",
+			"reason": "fresh is trivial freshness qualifier; same ingredient (basil)"
+		},
+		{
+			"name": "house-made buttery spread",
+			"action": "fold",
+			"base": "buttery spread",
+			"reason": "house-made is trivial sourcing qualifier; remaining descriptor 'buttery spread' kept"
+		},
+		{
+			"name": "fresh ginger",
+			"action": "fold",
+			"base": "ginger",
+			"reason": "fresh is trivial freshness qualifier; same ingredient (ginger)"
+		},
+		{
+			"name": "crispy noodles",
+			"action": "fold",
+			"base": "noodles",
+			"reason": "'crispy' is a texture/cooking-method qualifier (cf. crispy chicken->chicken); still the same noodles"
+		},
+		{
+			"name": "house-made dressing",
+			"action": "fold",
+			"base": "dressing",
+			"reason": "'house-made' is a trivial sourcing qualifier; same dressing"
+		},
+		{
+			"name": "fresh arugula",
+			"action": "fold",
+			"base": "arugula",
+			"reason": "'fresh' is a trivial freshness qualifier; same arugula"
+		},
+		{
+			"name": "toasted golden bun",
+			"action": "fold",
+			"base": "golden bun",
+			"reason": "'toasted' is a cooking method; remove it, keep remaining descriptor 'golden bun'"
+		},
+		{
+			"name": "housemade furikake",
+			"action": "fold",
+			"base": "furikake",
+			"reason": "'housemade' is a trivial sourcing qualifier; same furikake"
+		},
+		{
+			"name": "crunchy chickpeas",
+			"action": "fold",
+			"base": "chickpeas",
+			"reason": "'crunchy' is a texture qualifier akin to crispy; still the same chickpeas"
+		},
+		{
+			"name": "fried spring roll",
+			"action": "fold",
+			"base": "spring roll",
+			"reason": "'fried' is a cooking method; same spring roll"
+		},
+		{
+			"name": "minced pork",
+			"action": "fold",
+			"base": "pork",
+			"reason": "'minced' is a cut/form qualifier; still pork"
+		},
+		{
+			"name": "fried cabbage",
+			"action": "fold",
+			"base": "cabbage",
+			"reason": "'Fried' is a cooking method; same ingredient (cabbage)."
+		},
+		{
+			"name": "fried pita chips",
+			"action": "fold",
+			"base": "pita chips",
+			"reason": "'Fried' is a cooking method; same ingredient (pita chips)."
+		},
+		{
+			"name": "fresh banana",
+			"action": "fold",
+			"base": "banana",
+			"reason": "'Fresh' is a trivial freshness qualifier; same ingredient (banana)."
+		},
+		{
+			"name": "roasted garlic",
+			"action": "fold",
+			"base": "garlic",
+			"reason": "'Roasted' is a cooking method; same ingredient (garlic)."
+		},
+		{
+			"name": "chopped kale",
+			"action": "fold",
+			"base": "kale",
+			"reason": "'Chopped' is a cut/form qualifier; same ingredient (kale)."
+		},
+		{
+			"name": "crispy leek",
+			"action": "fold",
+			"base": "leek",
+			"reason": "'Crispy' is a preparation/texture qualifier that folds (cf. crispy chicken->chicken); same ingredient (leek)."
+		},
+		{
+			"name": "fresh local basil",
+			"action": "fold",
+			"base": "basil",
+			"reason": "'Fresh' and 'local' are trivial freshness/sourcing qualifiers; same ingredient (basil)."
+		},
+		{
+			"name": "fresh mixed herbs",
+			"action": "fold",
+			"base": "mixed herbs",
+			"reason": "'Fresh' is a trivial freshness qualifier; remaining descriptor 'mixed' kept."
+		},
+		{
+			"name": "grilled prawn",
+			"action": "fold",
+			"base": "prawn",
+			"reason": "'Grilled' is a cooking method; same ingredient (prawn)."
+		},
+		{
+			"name": "toasted pita",
+			"action": "fold",
+			"base": "pita",
+			"reason": "toasted = cooking method; same ingredient (pita)"
+		},
+		{
+			"name": "chopped nuts",
+			"action": "fold",
+			"base": "nuts",
+			"reason": "chopped = cut/form; same ingredient (nuts)"
+		},
+		{
+			"name": "fried wheat-flour pastry",
+			"action": "fold",
+			"base": "wheat-flour pastry",
+			"reason": "fried = cooking method; remaining descriptor kept"
+		},
+		{
+			"name": "charred steak curls",
+			"action": "fold",
+			"base": "steak curls",
+			"reason": "charred = cooking method; same ingredient"
+		},
+		{
+			"name": "roasted salsa",
+			"action": "fold",
+			"base": "salsa",
+			"reason": "roasted = cooking method; same ingredient (salsa)"
+		},
+		{
+			"name": "spiced toasted pumpkin seeds",
+			"action": "fold",
+			"base": "spiced pumpkin seeds",
+			"reason": "toasted = cooking method removed; remaining descriptor spiced kept"
+		},
+		{
+			"name": "crispy rice",
+			"action": "fold",
+			"base": "rice",
+			"reason": "crispy = cooking method (cf. crispy chicken->chicken)"
+		},
+		{
+			"name": "house-made marinara",
+			"action": "fold",
+			"base": "marinara",
+			"reason": "house-made = trivial sourcing; same ingredient"
+		},
+		{
+			"name": "shredded coconut",
+			"action": "fold",
+			"base": "coconut",
+			"reason": "shredded = cut/form; same ingredient (coconut)"
+		},
+		{
+			"name": "shaved radish",
+			"action": "fold",
+			"base": "radish",
+			"reason": "shaved = cut/form; same ingredient (radish)"
+		},
+		{
+			"name": "crispy fried onions",
+			"action": "fold",
+			"base": "onions",
+			"reason": "crispy/fried = cooking method; same ingredient (onions)"
+		},
+		{
+			"name": "toasted cashews",
+			"action": "fold",
+			"base": "cashews",
+			"reason": "toasted = cooking method; same ingredient (cashews)"
+		},
+		{
+			"name": "fried brussels sprouts",
+			"action": "fold",
+			"base": "brussels sprouts",
+			"reason": "fried = cooking method; same ingredient"
+		},
+		{
+			"name": "toasted triple sesame bun",
+			"action": "fold",
+			"base": "triple sesame bun",
+			"reason": "toasted = cooking method; remaining descriptor kept"
+		},
+		{
+			"name": "crispy tempura",
+			"action": "fold",
+			"base": "tempura",
+			"reason": "crispy is a texture/cooking qualifier; tempura is the same ingredient"
+		},
+		{
+			"name": "roasted pepitas",
+			"action": "fold",
+			"base": "pepitas",
+			"reason": "roasted is a cooking method; same ingredient"
+		},
+		{
+			"name": "toasted gluten-free bun",
+			"action": "fold",
+			"base": "gluten-free bun",
+			"reason": "toasted is a cooking method; keep gluten-free descriptor"
+		},
+		{
+			"name": "sauteed mushrooms",
+			"action": "fold",
+			"base": "mushrooms",
+			"reason": "sauteed is a cooking method; same ingredient"
+		},
+		{
+			"name": "house-made seitan bacun",
+			"action": "fold",
+			"base": "seitan bacun",
+			"reason": "house-made is trivial sourcing; same ingredient"
+		},
+		{
+			"name": "sauteed spinach",
+			"action": "fold",
+			"base": "spinach",
+			"reason": "sauteed is a cooking method; same ingredient"
+		},
+		{
+			"name": "house-made ranch",
+			"action": "fold",
+			"base": "ranch",
+			"reason": "house-made is trivial sourcing; same ingredient"
+		},
+		{
+			"name": "ground chuck",
+			"action": "fold",
+			"base": "chuck",
+			"reason": "ground is a cut/form qualifier; chuck is the beef cut"
+		},
+		{
+			"name": "crispy sage",
+			"action": "fold",
+			"base": "sage",
+			"reason": "crispy is a texture/cooking qualifier; same ingredient"
+		},
+		{
+			"name": "organic corn chips",
+			"action": "fold",
+			"base": "corn chips",
+			"reason": "organic is trivial sourcing; same ingredient"
+		},
+		{
+			"name": "homemade salsa",
+			"action": "fold",
+			"base": "salsa",
+			"reason": "homemade is trivial sourcing; same ingredient"
+		},
+		{
+			"name": "raw flax crackers",
+			"action": "fold",
+			"base": "flax crackers",
+			"reason": "raw is a trivial freshness qualifier; same ingredient"
+		},
+		{
+			"name": "house-made dairy-free cheese sauce",
+			"action": "fold",
+			"base": "dairy-free cheese sauce",
+			"reason": "house-made is trivial sourcing; keep dairy-free descriptor"
+		},
+		{
+			"name": "ground vanilla beans",
+			"action": "fold",
+			"base": "vanilla beans",
+			"reason": "ground is a cut/form qualifier; same ingredient"
+		},
+		{
+			"name": "fried chicken breast",
+			"action": "fold",
+			"base": "chicken breast",
+			"reason": "'fried' is a cooking method; removing it leaves the same ingredient, chicken breast."
+		},
+		{
+			"name": "sweetened milk",
+			"action": "fold",
+			"base": "milk",
+			"reason": "'sweetened' is a dairy-milk prep qualifier, which folds to 'milk'."
+		},
+		{
+			"name": "plain oat milk",
+			"action": "fold",
+			"base": "oat milk",
+			"reason": "'plain' is a trivial qualifier; removing only it leaves the dietary-distinct non-dairy 'oat milk' identity intact."
+		},
+		{
+			"name": "house-made famous sauce",
+			"action": "fold",
+			"base": "famous sauce",
+			"reason": "'house-made' is a trivial sourcing qualifier; removing only it leaves the same sauce."
+		},
+		{
+			"name": "organic soy milk",
+			"action": "fold",
+			"base": "soy milk",
+			"reason": "'organic' is a trivial qualifier; removing only it preserves the non-dairy 'soy milk' identity."
+		},
+		{
+			"name": "raw cacao",
+			"action": "fold",
+			"base": "cacao",
+			"reason": "'raw' is a trivial state qualifier; removing it leaves the same ingredient, cacao."
+		}
+	],
+	"keeps": [
+		{
+			"name": "spiced potato",
+			"action": "keep",
+			"base": "",
+			"reason": "'spiced' is a seasoning/preparation, not a cooking method/cut/freshness; not in fold list, keep when unsure"
+		},
+		{
+			"name": "whipped cream",
+			"action": "keep",
+			"base": "",
+			"reason": "idiomatic compound, distinct product"
+		},
+		{
+			"name": "pickled onion",
+			"action": "keep",
+			"base": "",
+			"reason": "pickling is transformation-defining, yields distinct product"
+		},
+		{
+			"name": "pickled red onion",
+			"action": "keep",
+			"base": "",
+			"reason": "pickling is transformation-defining"
+		},
+		{
+			"name": "pickled cabbage",
+			"action": "keep",
+			"base": "",
+			"reason": "pickling is transformation-defining"
+		},
+		{
+			"name": "smoked tofu",
+			"action": "keep",
+			"base": "",
+			"reason": "smoking is transformation-defining (like smoked salmon), distinct product"
+		},
+		{
+			"name": "pickled daikon & carrot",
+			"action": "keep",
+			"base": "",
+			"reason": "pickled is a transformation-defining preparation that yields a distinct product"
+		},
+		{
+			"name": "hot sauce",
+			"action": "keep",
+			"base": "",
+			"reason": "idiomatic compound; hot sauce is a distinct ingredient, not heated sauce"
+		},
+		{
+			"name": "fermented rice and lentil batter",
+			"action": "keep",
+			"base": "",
+			"reason": "fermented is a transformation-defining preparation"
+		},
+		{
+			"name": "whipped feta",
+			"action": "keep",
+			"base": "",
+			"reason": "whipped is not in the fold form list; treated like whipped cream, kept when unsure"
+		},
+		{
+			"name": "hot honey",
+			"action": "keep",
+			"base": "",
+			"reason": "idiomatic compound; a distinct sweet-spicy product, not heated honey"
+		},
+		{
+			"name": "fermented rice and urad lentil batter",
+			"action": "keep",
+			"base": "",
+			"reason": "'fermented' is a transformation-defining preparation yielding a distinct product; keep."
+		},
+		{
+			"name": "spiced rice",
+			"action": "keep",
+			"base": "",
+			"reason": "'spiced' is a flavoring preparation, not a cooking/cut/temp/freshness qualifier; keep when unsure."
+		},
+		{
+			"name": "smoked bacon",
+			"action": "keep",
+			"base": "",
+			"reason": "'smoked' is a transformation-defining preparation (like smoked salmon) yielding a distinct product"
+		},
+		{
+			"name": "dried mint",
+			"action": "keep",
+			"base": "",
+			"reason": "'dried X' is an explicitly listed keep case (dried mint) — distinct from fresh mint"
+		},
+		{
+			"name": "marinated chickpeas",
+			"action": "keep",
+			"base": "",
+			"reason": "marinated is a transformation-defining preparation that yields a distinct product"
+		},
+		{
+			"name": "cold brew",
+			"action": "keep",
+			"base": "",
+			"reason": "idiomatic compound, a distinct product"
+		},
+		{
+			"name": "smoked provolone",
+			"action": "keep",
+			"base": "",
+			"reason": "smoked is transformation-defining (distinct smoked cheese)"
+		},
+		{
+			"name": "pickled shallot",
+			"action": "keep",
+			"base": "",
+			"reason": "pickled is a transformation-defining preparation"
+		},
+		{
+			"name": "dried lime",
+			"action": "keep",
+			"base": "",
+			"reason": "dried X is identity-defining (distinct ingredient)"
+		},
+		{
+			"name": "pickled red cabbage",
+			"action": "keep",
+			"base": "",
+			"reason": "pickled is a transformation-defining preparation"
+		},
+		{
+			"name": "pickled jalapenos",
+			"action": "keep",
+			"base": "",
+			"reason": "pickled is a transformation-defining preparation"
+		},
+		{
+			"name": "seasoned tots",
+			"action": "keep",
+			"base": "",
+			"reason": "seasoned is a flavoring prep, not a listed cooking-method/cut/temp/freshness qualifier; keep when unsure"
+		},
+		{
+			"name": "battered soy patty",
+			"action": "keep",
+			"base": "",
+			"reason": "battered is a coating prep, not a listed fold qualifier; keep when unsure"
+		},
+		{
+			"name": "battered oyster mushrooms",
+			"action": "keep",
+			"base": "",
+			"reason": "battered is a coating prep, not a listed fold qualifier; keep when unsure"
+		},
+		{
+			"name": "battered fish fillet",
+			"action": "keep",
+			"base": "",
+			"reason": "battered is a coating prep, not a listed fold qualifier; keep when unsure"
+		},
+		{
+			"name": "spiced chickpea curry",
+			"action": "keep",
+			"base": "",
+			"reason": "spiced is a flavoring qualifier, not a listed cooking-method/cut/temp/freshness qualifier; keep when unsure"
+		},
+		{
+			"name": "spiced mashed-potato patties",
+			"action": "keep",
+			"base": "",
+			"reason": "Leading qualifier 'spiced' is a seasoning, not a fold-type qualifier; it names a real food item."
+		},
+		{
+			"name": "seasoned basmati rice",
+			"action": "keep",
+			"base": "",
+			"reason": "Leading qualifier 'seasoned' is a flavoring, not a fold-type qualifier."
+		},
+		{
+			"name": "spiced ground beef meatballs",
+			"action": "keep",
+			"base": "",
+			"reason": "Leading qualifier 'spiced' is a seasoning, not a fold-type qualifier; names a real food item."
+		},
+		{
+			"name": "spiced beef/lentil patty",
+			"action": "keep",
+			"base": "",
+			"reason": "Leading qualifier 'spiced' is not a fold-type qualifier; slash compound names a patty item."
+		},
+		{
+			"name": "breaded fried chicken breast",
+			"action": "keep",
+			"base": "",
+			"reason": "leading 'breaded' is a coating that adds breading/gluten — transformation-defining, identity-relevant"
+		},
+		{
+			"name": "fermented wheat-flour batter",
+			"action": "keep",
+			"base": "",
+			"reason": "'fermented' is a transformation-defining preparation yielding a distinct product"
+		},
+		{
+			"name": "frozen yogurt",
+			"action": "keep",
+			"base": "",
+			"reason": "idiomatic distinct product (froyo), not plain yogurt that was frozen"
+		},
+		{
+			"name": "spiced chai concentrate",
+			"action": "keep",
+			"base": "",
+			"reason": "'spiced' is a seasoning descriptor, not a foldable prep qualifier"
+		},
+		{
+			"name": "spiced potato vada",
+			"action": "keep",
+			"base": "",
+			"reason": "'spiced' is a seasoning descriptor, not a foldable prep qualifier"
+		},
+		{
+			"name": "spiced vegetable and lentil kebab patty",
+			"action": "keep",
+			"base": "",
+			"reason": "'spiced' is a seasoning descriptor, not foldable; names one composite patty"
+		},
+		{
+			"name": "seasoned potato wedges",
+			"action": "keep",
+			"base": "",
+			"reason": "'seasoned' is a flavoring descriptor, not in the fold list (not a cooking method/temp/cut/freshness); leading qualifier is non-foldable, so keep."
+		},
+		{
+			"name": "spiced roasted potatoes",
+			"action": "keep",
+			"base": "",
+			"reason": "Leading qualifier 'spiced' is a flavoring, not a foldable qualifier; cannot fold a non-leading word."
+		},
+		{
+			"name": "dried apricots",
+			"action": "keep",
+			"base": "",
+			"reason": "'dried X' is a transformation-defining preparation yielding a distinct product per KEEP rule."
+		},
+		{
+			"name": "candied walnuts",
+			"action": "keep",
+			"base": "",
+			"reason": "'candied X' is a transformation-defining preparation yielding a distinct product per KEEP rule."
+		},
+		{
+			"name": "spiced rice/grains",
+			"action": "keep",
+			"base": "",
+			"reason": "'spiced' is a seasoning/preparation, not a folding cooking-method/cut/freshness qualifier; keep."
+		},
+		{
+			"name": "breaded chicken fillet",
+			"action": "keep",
+			"base": "",
+			"reason": "'breaded' is a coating/transformation, not in the fold list; keep."
+		},
+		{
+			"name": "breaded chicken strips",
+			"action": "keep",
+			"base": "",
+			"reason": "'breaded' is a coating/transformation, not in the fold list; keep."
+		},
+		{
+			"name": "spiced mercado fries",
+			"action": "keep",
+			"base": "",
+			"reason": "'spiced' is a seasoning, not a folding qualifier; keep."
+		},
+		{
+			"name": "pickled elderflower compote",
+			"action": "keep",
+			"base": "",
+			"reason": "'pickled' is a transformation-defining preparation that yields a distinct product; keep."
+		},
+		{
+			"name": "pickled wild rose stuffed squab breast",
+			"action": "keep",
+			"base": "",
+			"reason": "'pickled' is transformation-defining; keep."
+		},
+		{
+			"name": "fried egg salad",
+			"action": "keep",
+			"base": "",
+			"reason": "Removing 'fried' yields 'egg salad', a distinct mayo-based dish; folding would merge different ingredients; keep."
+		},
+		{
+			"name": "roasted red pepper cream",
+			"action": "keep",
+			"base": "",
+			"reason": "'roasted red pepper' is an idiomatic distinct product (like sun-dried tomato); folding 'roasted' would change the ingredient"
+		},
+		{
+			"name": "seasoned rice",
+			"action": "keep",
+			"base": "",
+			"reason": "'seasoned' is not a fold-listed cooking method/cut/freshness qualifier; keep when unsure"
+		},
+		{
+			"name": "spiced potato and pea filling",
+			"action": "keep",
+			"base": "",
+			"reason": "'spiced' is not a foldable qualifier; names a distinct composite filling"
+		},
+		{
+			"name": "spiced potato-chickpea filling",
+			"action": "keep",
+			"base": "",
+			"reason": "'spiced' is not a foldable qualifier; names a distinct composite filling"
+		},
+		{
+			"name": "spiced potato masala",
+			"action": "keep",
+			"base": "",
+			"reason": "'spiced' is not foldable; names a distinct masala dish/component"
+		},
+		{
+			"name": "spiced potato tikki patty",
+			"action": "keep",
+			"base": "",
+			"reason": "'spiced' is not a folding qualifier; part of a distinct prepared item identity."
+		},
+		{
+			"name": "seasoned flour breading",
+			"action": "keep",
+			"base": "",
+			"reason": "'seasoned' is not a folding qualifier; names a distinct ingredient (flour breading)."
+		},
+		{
+			"name": "seasoned flour batter",
+			"action": "keep",
+			"base": "",
+			"reason": "'seasoned' is not a folding qualifier; distinct ingredient (flour batter)."
+		},
+		{
+			"name": "seasoned ground beef",
+			"action": "keep",
+			"base": "",
+			"reason": "Leading qualifier 'seasoned' is not a folding qualifier; keep."
+		},
+		{
+			"name": "whipped yogurt",
+			"action": "keep",
+			"base": "",
+			"reason": "'whipped' is not a folding cut/form qualifier (cf. 'whipped cream'); treat as distinct."
+		},
+		{
+			"name": "breaded fried chicken",
+			"action": "keep",
+			"base": "",
+			"reason": "Leading qualifier 'breaded' is a coating, not a folding qualifier; identity-defining."
+		},
+		{
+			"name": "spiced mushrooms",
+			"action": "keep",
+			"base": "",
+			"reason": "'spiced' is not a folding qualifier; keep."
+		},
+		{
+			"name": "spiced tamarind and mint water",
+			"action": "keep",
+			"base": "",
+			"reason": "'spiced' not foldable; names a distinct beverage."
+		},
+		{
+			"name": "seasoned beef",
+			"action": "keep",
+			"base": "",
+			"reason": "'seasoned' is not a listed fold qualifier (not a cooking method/temp/cut/freshness); when unsure, keep"
+		},
+		{
+			"name": "crunchy vegetables",
+			"action": "keep",
+			"base": "",
+			"reason": "'crunchy' is a texture, not a listed fold qualifier; coherent phrase, not prose"
+		},
+		{
+			"name": "spiced mint water",
+			"action": "keep",
+			"base": "",
+			"reason": "'spiced' is not a listed fold qualifier; mint water is a distinct product"
+		},
+		{
+			"name": "smoked paprika aioli",
+			"action": "keep",
+			"base": "",
+			"reason": "Aioli flavored with smoked paprika; 'smoked paprika' is an idiomatic compound and the whole tag is a distinct condiment, not a simple prep qualifier on one ingredient."
+		},
+		{
+			"name": "smoked paprika",
+			"action": "keep",
+			"base": "",
+			"reason": "Explicitly an idiomatic compound; smoked paprika is a distinct spice from plain paprika and must not fold."
+		},
+		{
+			"name": "smoked ham",
+			"action": "keep",
+			"base": "",
+			"reason": "'smoked' is a transformation-defining preparation (like smoked salmon) yielding a distinct product."
+		},
+		{
+			"name": "seasoned flour",
+			"action": "keep",
+			"base": "",
+			"reason": "'seasoned' is not a fold qualifier (not cooking/temp/cut/freshness); seasoned flour is a distinct preparation. When unsure, keep."
+		},
+		{
+			"name": "spiced yogurt",
+			"action": "keep",
+			"base": "",
+			"reason": "'spiced' is not a fold qualifier; spiced yogurt is a distinct preparation, not a trivial prep of plain yogurt."
+		},
+		{
+			"name": "spiced tomato",
+			"action": "keep",
+			"base": "",
+			"reason": "'spiced' is not a fold qualifier; keep as a distinct preparation."
+		},
+		{
+			"name": "dried scallop",
+			"action": "keep",
+			"base": "",
+			"reason": "'dried' is a transformation-defining preparation (like dried lime/mint) yielding a distinct product (dried scallop/conpoy)."
+		},
+		{
+			"name": "stir-fried noodles",
+			"action": "keep",
+			"base": "",
+			"reason": "Analogous to the idiomatic 'fried rice' KEEP example; reads as a distinct prepared dish rather than a trivial prep of plain noodles. When unsure, keep."
+		},
+		{
+			"name": "seasoned flour coating",
+			"action": "keep",
+			"base": "",
+			"reason": "'seasoned' is not a fold qualifier and 'flour coating' is itself a compound product; keep as a distinct preparation."
+		},
+		{
+			"name": "pickled slaw",
+			"action": "keep",
+			"base": "",
+			"reason": "'pickled' is a transformation-defining preparation yielding a distinct product (like pickled onion)"
+		},
+		{
+			"name": "cold brew coffee",
+			"action": "keep",
+			"base": "",
+			"reason": "'cold brew' is an idiomatic compound naming a distinct product"
+		},
+		{
+			"name": "smoked & glazed chicken drumsticks",
+			"action": "keep",
+			"base": "",
+			"reason": "'smoked' is a transformation-defining prep (like smoked salmon); identity-defining, keep"
+		},
+		{
+			"name": "dried cranberries",
+			"action": "keep",
+			"base": "",
+			"reason": "'dried' is a transformation-defining prep yielding a distinct product (like dried lime)"
+		},
+		{
+			"name": "spiced mixed beans",
+			"action": "keep",
+			"base": "",
+			"reason": "neither 'spiced' (seasoning) nor 'mixed' is a folding cooking-method/cut/temp/freshness qualifier"
+		},
+		{
+			"name": "spiced chocolate sauce",
+			"action": "keep",
+			"base": "",
+			"reason": "chocolate sauce is an idiomatic compound and 'spiced' is a flavor descriptor, not a folding cooking/cut/freshness qualifier"
+		},
+		{
+			"name": "dried shrimp",
+			"action": "keep",
+			"base": "",
+			"reason": "dried is a transformation-defining preparation yielding a distinct product"
+		},
+		{
+			"name": "dried meat floss",
+			"action": "keep",
+			"base": "",
+			"reason": "dried is a transformation-defining preparation; distinct product"
+		},
+		{
+			"name": "pickled turnips",
+			"action": "keep",
+			"base": "",
+			"reason": "pickled is a transformation-defining preparation yielding a distinct product"
+		},
+		{
+			"name": "pickled garlic",
+			"action": "keep",
+			"base": "",
+			"reason": "pickling is a transformation-defining preparation yielding a distinct product"
+		},
+		{
+			"name": "pickled cucumber",
+			"action": "keep",
+			"base": "",
+			"reason": "pickled is transformation-defining (pickle), distinct from fresh cucumber"
+		},
+		{
+			"name": "pickled shimeji",
+			"action": "keep",
+			"base": "",
+			"reason": "pickling is a transformation-defining preparation"
+		},
+		{
+			"name": "pickled vegetables",
+			"action": "keep",
+			"base": "",
+			"reason": "pickling is a transformation-defining preparation"
+		},
+		{
+			"name": "candied pumpkin seeds",
+			"action": "keep",
+			"base": "",
+			"reason": "candied is a transformation-defining preparation yielding a distinct product"
+		},
+		{
+			"name": "pickled burdock root",
+			"action": "keep",
+			"base": "",
+			"reason": "pickling is a transformation-defining preparation"
+		},
+		{
+			"name": "candied hazelnuts",
+			"action": "keep",
+			"base": "",
+			"reason": "candied is a transformation-defining preparation yielding a distinct product"
+		},
+		{
+			"name": "hot mustard",
+			"action": "keep",
+			"base": "",
+			"reason": "Idiomatic compound condiment (spicy Chinese-style mustard); 'hot' denotes a distinct product, not temperature."
+		},
+		{
+			"name": "smoked seaweed",
+			"action": "keep",
+			"base": "",
+			"reason": "'Smoked' is transformation-defining, yielding a distinct product."
+		},
+		{
+			"name": "smoked salt",
+			"action": "keep",
+			"base": "",
+			"reason": "Smoked salt is a distinct product; 'smoked' is transformation-defining."
+		},
+		{
+			"name": "smoked aioli",
+			"action": "keep",
+			"base": "",
+			"reason": "'Smoked' is transformation-defining flavor preparation yielding a distinct product."
+		},
+		{
+			"name": "fermented ramp",
+			"action": "keep",
+			"base": "",
+			"reason": "'Fermented' is transformation-defining, yielding a distinct product."
+		},
+		{
+			"name": "hot buffalo sauce",
+			"action": "keep",
+			"base": "",
+			"reason": "'hot' denotes heat/spice level on the distinct compound 'buffalo sauce'; identity-defining and ambiguous, so keep."
+		}
+	],
+	"skips": [
+		{
+			"name": "baked in tandoor",
+			"action": "skip",
+			"base": "",
+			"reason": "prose fragment containing 'in tandoor', not a single ingredient"
+		},
+		{
+			"name": "spiced potato and chickpea filling",
+			"action": "skip",
+			"base": "",
+			"reason": "prose/compound naming multiple ingredients (potato and chickpea filling); not one qualified ingredient"
+		},
+		{
+			"name": "baked in the tandoor",
+			"action": "skip",
+			"base": "",
+			"reason": "contains 'in the' clause; leftover prose, names no single ingredient"
+		},
+		{
+			"name": "smoked charcoal aroma",
+			"action": "skip",
+			"base": "",
+			"reason": "describes an aroma, not a single named ingredient"
+		},
+		{
+			"name": "battered cauliflower in tamarind chili glaze",
+			"action": "skip",
+			"base": "",
+			"reason": "Contains an 'in ... glaze' clause; prose fragment, not a single qualified ingredient."
+		},
+		{
+			"name": "grilled in the tandoor",
+			"action": "skip",
+			"base": "",
+			"reason": "Contains 'in the' clause; prose fragment, not a single named ingredient."
+		},
+		{
+			"name": "fried onions and herbs",
+			"action": "skip",
+			"base": "",
+			"reason": "names two ingredients joined by 'and' (onions + herbs), not one qualified ingredient"
+		},
+		{
+			"name": "grilled sour cherry & rose jus",
+			"action": "skip",
+			"base": "",
+			"reason": "names two components joined by '&' (sour cherry + rose jus), not one qualified ingredient"
+		},
+		{
+			"name": "ground cashews and almonds",
+			"action": "skip",
+			"base": "",
+			"reason": "names two ingredients joined by 'and', not one ingredient"
+		},
+		{
+			"name": "baked in a tandoor",
+			"action": "skip",
+			"base": "",
+			"reason": "prose fragment containing 'in a'; does not name a single ingredient"
+		},
+		{
+			"name": "chopped almonds and pistachios",
+			"action": "skip",
+			"base": "",
+			"reason": "Names two ingredients joined by 'and'; not a single qualified ingredient."
+		},
+		{
+			"name": "steamed then fried",
+			"action": "skip",
+			"base": "",
+			"reason": "prose fragment, names no single ingredient"
+		},
+		{
+			"name": "fresh tracks breakfast",
+			"action": "skip",
+			"base": "",
+			"reason": "proper dish name (Fresh Tracks Breakfast), not a single qualified ingredient"
+		}
+	]
+}

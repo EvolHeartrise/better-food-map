@@ -25,6 +25,10 @@ import type { Category } from '../category';
 // Value import (tiny, pure, client-safe): the canonical display-address formatter,
 // so the single-line `address` is composed identically wherever a location is read.
 import { formatAddress } from '../address';
+// Value import (tiny, pure, client-safe): the deterministic half of ingredient
+// canonicalization — accent-folding + whitespace/case normalization — so the write
+// path folds an ingredient name to the same identity the alias seed script uses.
+import { foldIngredientName } from '../tags';
 
 // ---------------------------------------------------------------------------
 // Minimal D1 interface (the real `D1Database` binding and the HTTP shim in
@@ -355,15 +359,20 @@ function mergeSources(primary: Source[], secondary: Source[]): Source[] {
 
 /**
  * Splits a free-text ingredient string into normalized, de-duplicated ingredient
- * names (trim + lower-case), matching how migration 0004 derived ingredient tags.
- * Each name maps to a tag id of `ing:<name>`.
+ * names. Each part is canonicalized by {@link foldIngredientName} (trim, lower-case,
+ * accent-fold, collapse whitespace) — so "Jalapeño" and "jalapeno" yield the same
+ * name — then mapped to a tag id of `ing:<name>`. Plurals and synonyms are NOT
+ * folded here (they aren't rule-derivable); they are redirected to a canonical tag
+ * at link time via the `ingredient_aliases` map (see {@link ingredientLinkStmts}).
+ * Migration 0004 derived the original tags with a bare trim+lower-case; the accent
+ * fold is an additive refinement applied to every write from here on.
  */
 function parseIngredients(raw: string | null | undefined): string[] {
 	if (!raw) return [];
 	const seen = new Set<string>();
 	const out: string[] = [];
 	for (const part of raw.split(',')) {
-		const name = part.trim().toLowerCase();
+		const name = foldIngredientName(part);
 		if (name === '' || seen.has(name)) continue;
 		seen.add(name);
 		out.push(name);
@@ -436,31 +445,48 @@ export async function searchTagVocabulary(
 	rawQuery: string,
 	limit = TAG_SEARCH_LIMIT
 ): Promise<Tag[]> {
-	const q = rawQuery.trim().toLowerCase();
+	// Fold the query the same way ingredient names are folded on write, so an
+	// accented query ("jalapeño") matches the accent-folded canonical tag
+	// ("jalapeno") directly — diacritics need no alias rows on either side. Then
+	// strip LIKE wildcards (rare in tag names) so a typed %/_ can't act as one.
+	const q = foldIngredientName(rawQuery);
 	if (q === '') return getAllTags();
 	const safe = q.replace(/[%_]/g, '');
 	if (safe === '') return getAllTags();
-	// `LIMIT` is a trusted integer constant, so it is interpolated rather than
-	// bound (matching MAP_RESULT_LIMIT above); every user value is bound. The
-	// ranking's LOWER()/LENGTH() expressions run only over the matched rows.
+	// Two match sources, UNIONed (which de-duplicates a tag matched both ways):
+	//   1. tag NAMES via the `tags_fts` trigram index (must stay ESCAPE-free, see
+	//      migration 0006), so a typed canonical name matches.
+	//   2. ALIAS spellings via `ingredient_aliases`, mapped back to their CANONICAL
+	//      tag — so typing a variant ("tomatoes", "garbanzo", "jalapeño") still
+	//      surfaces the canonical tag (and, post-merge, all of its items). The
+	//      alias table is small and curated, so a plain LIKE scan over it is cheap
+	//      (no FTS needed); `safe` already stripped %/_ so no ESCAPE is required.
+	// `LIMIT` is a trusted integer constant, so it is interpolated rather than bound
+	// (matching MAP_RESULT_LIMIT above); every user value is bound. The ranking's
+	// LOWER()/LENGTH() expressions run only over the matched rows.
 	const { results } = await db
 		.prepare(
-			`SELECT t.id, t.name, t.tag_type
-			 FROM tags_fts f
-			 JOIN tags t ON t.rowid = f.rowid
-			 WHERE f.name LIKE ?
+			`SELECT id, name, tag_type FROM (
+				SELECT t.id AS id, t.name AS name, t.tag_type AS tag_type
+				FROM tags_fts f JOIN tags t ON t.rowid = f.rowid
+				WHERE f.name LIKE ?
+				UNION
+				SELECT t.id AS id, t.name AS name, t.tag_type AS tag_type
+				FROM ingredient_aliases a JOIN tags t ON t.id = a.canonical_id
+				WHERE a.alias LIKE ?
+			 )
 			 ORDER BY
 				CASE
-					WHEN LOWER(t.name) = ? THEN 0
-					WHEN LOWER(t.name) LIKE ? THEN 1
+					WHEN LOWER(name) = ? THEN 0
+					WHEN LOWER(name) LIKE ? THEN 1
 					ELSE 2
 				END,
-				CASE t.tag_type WHEN 'dietary' THEN 0 WHEN 'course' THEN 1 ELSE 2 END,
-				LENGTH(t.name),
-				t.name
+				CASE tag_type WHEN 'dietary' THEN 0 WHEN 'course' THEN 1 ELSE 2 END,
+				LENGTH(name),
+				name
 			 LIMIT ${limit}`
 		)
-		.bind(`%${safe}%`, safe, `${safe}%`)
+		.bind(`%${safe}%`, `%${safe}%`, safe, `${safe}%`)
 		.all<Tag>();
 	return results;
 }
@@ -890,30 +916,58 @@ function linkTagStmt(db: D1Like, itemId: string, tagId: string, optional: 0 | 1)
 		.bind(itemId, tagId, optional);
 }
 
-/** Ensures an ingredient tag row exists (id `ing:<name>`, tag_type 'ingredient'). */
-function ensureIngredientTagStmt(db: D1Like, name: string): D1PreparedLike {
-	return db
-		.prepare(`INSERT OR IGNORE INTO tags (id, name, tag_type) VALUES (?, ?, 'ingredient')`)
-		.bind(ingredientTagId(name), name);
+/**
+ * Statements linking an item to ONE ingredient, resolving it through the
+ * `ingredient_aliases` canonicalization map: a variant spelling (a known plural
+ * like "tomatoes", or a synonym like "garbanzo") is redirected to its canonical
+ * tag (`ing:tomato`, `ing:chickpea`) instead of minting a near-duplicate. Accents
+ * are already folded by {@link parseIngredients}, so only the non-rule-derivable
+ * variants need the table.
+ *
+ * Both the canonical-tag ensure and the link resolve the alias IN SQL (via a
+ * COALESCE subquery), so these statements stay batchable with no extra round-trip.
+ * When `name` is not a known variant, COALESCE falls back to `ing:<name>`. The
+ * ensured tag's display name is `SUBSTR(id, 5)` — everything after the `ing:`
+ * prefix — which equals the stored lower-cased ingredient name in both branches.
+ */
+function ingredientLinkStmts(
+	db: D1Like,
+	itemId: string,
+	name: string,
+	optional: 0 | 1
+): D1PreparedLike[] {
+	const tagId = ingredientTagId(name);
+	return [
+		db
+			.prepare(
+				`INSERT OR IGNORE INTO tags (id, name, tag_type)
+				 SELECT cid, SUBSTR(cid, 5), 'ingredient'
+				 FROM (SELECT COALESCE((SELECT canonical_id FROM ingredient_aliases WHERE alias = ?), ?) AS cid)`
+			)
+			.bind(name, tagId),
+		db
+			.prepare(
+				`INSERT OR IGNORE INTO item_tags (item_id, tag_id, optional)
+				 VALUES (?, COALESCE((SELECT canonical_id FROM ingredient_aliases WHERE alias = ?), ?), ?)`
+			)
+			.bind(itemId, name, tagId, optional)
+	];
 }
 
 /**
  * Statements that link an item to its tags: curated dietary/course tags (from
  * `tags`/`optionalTags`) plus ingredient tags parsed from `ingredients`/
- * `optionalIngredients` (creating the ingredient tag rows on the fly).
+ * `optionalIngredients` (creating the canonical ingredient rows on the fly, see
+ * {@link ingredientLinkStmts}).
  */
 function tagLinkStmts(db: D1Like, itemId: string, content: ItemContent): D1PreparedLike[] {
 	const stmts: D1PreparedLike[] = [];
 	for (const tagId of content.tags ?? []) stmts.push(linkTagStmt(db, itemId, tagId, 0));
 	for (const tagId of content.optionalTags ?? []) stmts.push(linkTagStmt(db, itemId, tagId, 1));
-	for (const name of parseIngredients(content.ingredients)) {
-		stmts.push(ensureIngredientTagStmt(db, name));
-		stmts.push(linkTagStmt(db, itemId, ingredientTagId(name), 0));
-	}
-	for (const name of parseIngredients(content.optionalIngredients)) {
-		stmts.push(ensureIngredientTagStmt(db, name));
-		stmts.push(linkTagStmt(db, itemId, ingredientTagId(name), 1));
-	}
+	for (const name of parseIngredients(content.ingredients))
+		stmts.push(...ingredientLinkStmts(db, itemId, name, 0));
+	for (const name of parseIngredients(content.optionalIngredients))
+		stmts.push(...ingredientLinkStmts(db, itemId, name, 1));
 	return stmts;
 }
 
@@ -1315,12 +1369,10 @@ async function applyItemUpdate(
 				)
 				.bind(id)
 		);
-		for (const name of parseIngredients(patch.ingredients)) {
-			stmts.push(ensureIngredientTagStmt(db, name), linkTagStmt(db, id, ingredientTagId(name), 0));
-		}
-		for (const name of parseIngredients(patch.optionalIngredients)) {
-			stmts.push(ensureIngredientTagStmt(db, name), linkTagStmt(db, id, ingredientTagId(name), 1));
-		}
+		for (const name of parseIngredients(patch.ingredients))
+			stmts.push(...ingredientLinkStmts(db, id, name, 0));
+		for (const name of parseIngredients(patch.optionalIngredients))
+			stmts.push(...ingredientLinkStmts(db, id, name, 1));
 	}
 
 	if (patch.sources !== undefined) {
