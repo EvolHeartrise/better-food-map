@@ -119,7 +119,7 @@
 			</fieldset>
 
 			<p class="dialog__caveat" role="note">
-				Filtering is best-effort and based on the data we have — a missing ingredient isn’t proof an
+				Filtering is best-effort and based on the data we have. A missing ingredient isn’t proof an
 				item is free of an allergen. Always confirm with the venue if you have a severe allergy.
 			</p>
 		</div>
