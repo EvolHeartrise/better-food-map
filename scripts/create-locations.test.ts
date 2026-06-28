@@ -224,7 +224,7 @@ test('insertLocations creates an independent venue and its own menu in one batch
 			phone: null,
 			website: null,
 			items: [
-				{ item_name: 'Oat Latte', price: 5, tags: ['vegan'], ingredients: 'oat milk, espresso' },
+				{ item_name: 'Oat Latte', price: 5, tags: ['vegan'], optionalTags: ['vegetarian'] },
 				{ item_name: 'Croissant', price: 3 }
 			]
 		}
@@ -239,8 +239,8 @@ test('insertLocations creates an independent venue and its own menu in one batch
 	const latte = menu.find((i) => i.item_name === 'Oat Latte');
 	expect(latte?.price).toBe(5);
 	expect(latte?.tags.some((t) => t.id === 'vegan')).toBe(true);
-	// Ingredients become ingredient tags on the same item.
-	expect(latte?.tags.some((t) => t.id === 'ing:oat milk')).toBe(true);
+	// An optional dietary tag is stored with optional = true ("can be made vegetarian").
+	expect(latte?.tags.find((t) => t.id === 'vegetarian')?.optional).toBe(true);
 });
 
 test('insertLocations rejects inline items on a chain branch and writes nothing', async () => {

@@ -248,12 +248,12 @@ test('updateItems applies a batch atomically and reports not_found_ids', async (
 	const [locId] = await insertLocations(db, [indieLocation()]);
 	const [a, b] = await insertFoods(db, [
 		{ location_id: locId, item_name: 'A', price: 1 },
-		{ location_id: locId, item_name: 'B', price: 2, ingredients: 'tomato' }
+		{ location_id: locId, item_name: 'B', price: 2, tags: ['vegan'] }
 	]);
 
 	const { updatedIds, notFoundIds } = await updateItems(db, [
 		{ id: a, price: 9, item_name: 'A2' },
-		{ id: b, ingredients: 'basil, garlic' },
+		{ id: b, tags: ['vegetarian', 'halal'] },
 		{ id: 'missing-id', price: 5 }
 	]);
 
@@ -264,14 +264,9 @@ test('updateItems applies a batch atomically and reports not_found_ids', async (
 	expect(itemA?.item_name).toBe('A2');
 	expect(itemA?.price).toBe(9);
 
-	// `ingredients` replaces the whole ingredient set for that item.
+	// `tags` replaces the whole dietary/course set for that item.
 	const itemB = await getItemById(db, b);
-	expect(
-		itemB?.tags
-			.filter((t) => t.tag_type === 'ingredient')
-			.map((t) => t.name)
-			.toSorted()
-	).toEqual(['basil', 'garlic']);
+	expect(itemB?.tags.map((t) => t.id).toSorted()).toEqual(['halal', 'vegetarian']);
 });
 
 test('updateMenu and updateLocations add_sources append', async () => {

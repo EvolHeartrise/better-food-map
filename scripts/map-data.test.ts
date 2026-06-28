@@ -38,8 +38,8 @@ test('getMapData sends each menu once, with per-branch overrides and a private m
 		region: 'CA'
 	});
 	const [bucketId, friesId] = await insertMenuItems(db, [
-		{ menu_id: menuId, item_name: 'Bucket', ingredients: null, price: 20, tags: ['halal'] },
-		{ menu_id: menuId, item_name: 'Fries', ingredients: 'Potato', price: 4 }
+		{ menu_id: menuId, item_name: 'Bucket', price: 20, tags: ['halal'] },
+		{ menu_id: menuId, item_name: 'Fries', price: 4 }
 	]);
 
 	// Two branches share the menu; one independent cafe carries its own items.
@@ -95,12 +95,11 @@ test('getMapData sends each menu once, with per-branch overrides and a private m
 		{
 			location_id: cafeId,
 			item_name: 'Veggie Bowl',
-			ingredients: 'Tomato, Onion, tomato',
-			optionalIngredients: 'Cheese',
 			tags: ['vegan'],
+			optionalTags: ['vegetarian'],
 			price: 12
 		},
-		{ location_id: cafeId, item_name: 'Latte', ingredients: null, price: 5 }
+		{ location_id: cafeId, item_name: 'Latte', price: 5 }
 	]);
 	const cafeMenuId = `pm-${cafeId}`;
 
@@ -133,16 +132,14 @@ test('getMapData sends each menu once, with per-branch overrides and a private m
 	expect(cafe?.overrides).toEqual([]);
 	expect(menus[cafeMenuId].map((i) => i.item_name)).toEqual(['Latte', 'Veggie Bowl']);
 
-	// Ingredients are recorded as tags: deduped + lower-cased, with `optional`.
+	// Dietary tags are recorded with their per-item `optional` flag (vegan asserted,
+	// vegetarian optional — "can be made vegetarian").
 	const bowl = menus[cafeMenuId].find((i) => i.item_name === 'Veggie Bowl');
 	expect(bowl).toBeDefined();
-	expect(
-		bowl?.tags.filter((t) => t.tag_type === 'ingredient').map((t) => `${t.name}:${t.optional}`)
-	).toEqual(['tomato:false', 'onion:false', 'cheese:true']);
-	expect(bowl?.tags.find((t) => t.id === 'vegan')).toMatchObject({
-		tag_type: 'dietary',
-		optional: false
-	});
+	expect(bowl?.tags.map((t) => `${t.id}:${t.optional}`).toSorted()).toEqual([
+		'vegan:false',
+		'vegetarian:true'
+	]);
 
 	// A viewport around the Toronto branches excludes the Vancouver cafe, yet still
 	// carries the shared menu those branches reference (so the client can rebuild it).

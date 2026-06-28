@@ -6,15 +6,16 @@
 //   bun run db:pull
 //
 // Why this isn't just `wrangler d1 export --remote`:
-//   D1's exporter REFUSES any database that contains an FTS5 virtual table —
-//   it errors with "cannot export databases with Virtual Tables (fts5)". Our
-//   schema has one (`tags_fts`, migration 0006), so a whole-DB export is
-//   impossible. A per-`--table` export works around that, but D1 only emits the
-//   bare CREATE TABLE + rows for each listed table — every index, every trigger,
-//   and the virtual table itself are dropped. So we split schema from data:
+//   D1's exporter REFUSES any database that contains an FTS5 virtual table — it
+//   errors with "cannot export databases with Virtual Tables (fts5)". The schema
+//   has none today (the old `tags_fts` index was dropped in migration 0014), but
+//   even a plain per-`--table` export only emits the bare CREATE TABLE + rows for
+//   each listed table — every index and trigger is dropped. So we split schema
+//   from data regardless, and the virtual-table handling below stays in place so a
+//   reintroduced FTS table would still export cleanly:
 //
 //   1. schema  — read every CREATE verbatim from prod's `sqlite_master`
-//                (tables, indexes, triggers, and the FTS5 virtual table). This
+//                (tables, indexes, triggers, and any FTS5 virtual table). This
 //                isn't subject to the exporter's virtual-table refusal.
 //   2. data    — `wrangler d1 export --remote --no-schema --table …` (one flag
 //                per real table) dumps just the INSERTs. Listing tables
@@ -27,9 +28,7 @@
 //   4. rebuild — replay schema then data into a fresh SQLite via bun:sqlite. We
 //                build the file directly with foreign_keys OFF so the dump's
 //                forward references (locations -> brands/menus, declared later)
-//                replay cleanly. Inserting `tags` rows fires the tags_fts
-//                trigger, which repopulates the FTS index automatically — no
-//                separate backfill.
+//                replay cleanly.
 //
 // Local-only side effects: it REPLACES the local D1 file. Prod is never written.
 // ---------------------------------------------------------------------------
@@ -81,10 +80,9 @@ try {
 	const keepObject = (o: SchemaObject) =>
 		!INTERNAL_TABLES.has(o.name) && !(o.type === 'table' && isShadowTable(o.name));
 
-	// Replay order: tables (incl. the virtual table) → indexes → triggers, so each
-	// object's dependencies already exist when it's created. Triggers reference
-	// both their table and tags_fts; indexes reference their table. FKs are off, so
-	// ordering among tables themselves is free.
+	// Replay order: tables (incl. any virtual table) → indexes → triggers, so each
+	// object's dependencies already exist when it's created. Triggers and indexes
+	// reference their own table. FKs are off, so ordering among tables is free.
 	const rank: Record<SchemaObject['type'], number> = { table: 0, index: 1, trigger: 2 };
 	const ddl = schema
 		.filter(keepObject)
@@ -123,7 +121,7 @@ try {
 	db.exec(ddl);
 	db.exec(await Bun.file(dataPath).text());
 
-	for (const table of ['locations', 'items', 'menus', 'brands', 'tags', 'item_tags', 'tags_fts']) {
+	for (const table of ['locations', 'items', 'menus', 'brands', 'tags', 'item_tags']) {
 		const { n } = db.query(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number };
 		console.error(`  ${table.padEnd(11)} ${n}`);
 	}

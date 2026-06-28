@@ -5,11 +5,9 @@ import {
 	getUserLikes,
 	setLocationLike,
 	setItemLike,
-	logSearch as logSearchToDb,
 	type User,
 	type UserLikes
 } from '$lib/server/db';
-import { getTagSuggestions } from '$lib/data.remote';
 import { SESSION_COOKIE, clearSessionCookie, invalidateSessionToken } from '$lib/server/auth';
 
 /**
@@ -46,47 +44,6 @@ export const setItemLiked = command(
 		await setItemLike(requireDb(), user.id, itemId, liked, Date.now());
 	}
 );
-
-// A tag as carried by the client filters. The full {id, name, tag_type} is stored
-// so a re-applied search rehydrates the pickers without a lookup.
-const TagSchema = v.object({
-	id: v.string(),
-	name: v.string(),
-	tag_type: v.picklist(['dietary', 'course', 'ingredient'])
-});
-
-const SearchSchema = v.object({
-	place: v.string(),
-	item: v.string(),
-	included: v.array(TagSchema),
-	excluded: v.array(TagSchema)
-});
-
-/**
- * Auto-logs a search to the signed-in user's history (uncapped — see migration
- * 0007). A no-op when signed out, so the client can fire it without first checking
- * auth. The history is what feeds the tag pickers' suggestions, so after a
- * successful log we refresh both pickers' suggestion queries on the server and
- * ship the updated lists back in this same response (a single-flight mutation —
- * the args are fixed, so the matching client instances are known). That surfaces
- * the user's just-used tags without a second round trip; the framework awaits the
- * refreshes before responding, so the returned promises are safe to discard.
- */
-export const logSearch = command(SearchSchema, async (entry) => {
-	const user = currentUser();
-	if (!user) return;
-	await logSearchToDb(requireDb(), {
-		id: crypto.randomUUID(),
-		userId: user.id,
-		place: entry.place,
-		item: entry.item,
-		included: entry.included,
-		excluded: entry.excluded,
-		createdAt: Date.now()
-	});
-	void getTagSuggestions('include').refresh();
-	void getTagSuggestions('exclude').refresh();
-});
 
 /** Signs out: invalidates the session row and clears the cookie. */
 export const signOut = command(async () => {
