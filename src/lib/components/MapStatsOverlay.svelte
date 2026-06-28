@@ -43,10 +43,6 @@
 	<section class="intro" aria-label="About BetterFoodMaps">
 		<p class="intro__brand">🍴 BetterFoodMaps</p>
 		<h1 class="intro__title">Find food that fits your diet, anywhere on the map.</h1>
-		<p class="intro__tagline">
-			Search restaurants, cafes and fast food by what's actually on the menu — vegan, gluten-free,
-			halal and more.
-		</p>
 	</section>
 
 	<section class="actions" aria-label="Coverage and getting started">
@@ -103,7 +99,6 @@
 	   stay legible whatever it sits over (land, ocean, the globe's dark edge). */
 	.intro__brand,
 	.intro__title,
-	.intro__tagline,
 	.stat__value,
 	.stat__label {
 		text-shadow:
@@ -126,13 +121,7 @@
 		color: var(--color-text);
 	}
 
-	.intro__tagline {
-		margin: 0;
-		font-size: 1rem;
-		color: var(--color-text);
-	}
-
-	/* The four coverage figures, laid out as an even grid so the numbers line up. */
+	/* The coverage figures, laid out as an even grid so the numbers line up. */
 	.stats {
 		list-style: none;
 		display: grid;
