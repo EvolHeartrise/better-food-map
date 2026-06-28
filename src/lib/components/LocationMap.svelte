@@ -1,33 +1,32 @@
 <script lang="ts">
 	import 'maplibre-gl/dist/maplibre-gl.css';
 	import { onMount } from 'svelte';
-	import type { Map as MapLibreMap, Marker, Popup, StyleSpecification } from 'maplibre-gl';
-	import { categoryLabel, type Category } from '$lib/category';
+	import type { Map as MapLibreMap, StyleSpecification } from 'maplibre-gl';
+	import { LabelEngine, type Projector, type RenderItem, type SimConfig } from '$lib/label-layout';
 
 	// A geographic bounding box reported to the parent as the visible area. Kept
 	// structural (rather than imported from the server module) so this component
 	// stays free of any server-only import.
 	type Bounds = { minLat: number; maxLat: number; minLng: number; maxLng: number };
 
-	// Only the fields the map actually needs. Kept structural (rather than derived
-	// from a remote's return type) so any location-shaped object can be passed in.
+	// Only the fields the map actually needs (the labels show just the name, so no
+	// category/address). Kept structural (rather than derived from a remote's return
+	// type) so any location-shaped object can be passed in.
 	type Location = {
 		id: string;
 		name: string;
-		category: Category | null;
 		latitude: number;
 		longitude: number;
-		address: string | null;
 	};
 
 	let {
 		locations,
 		// The currently selected location, shown zoomed-in with its detail panel
-		// open on the page. When set, the map flies to it once and keeps its marker
+		// open on the page. When set, the map flies to it once and keeps its label
 		// visible even if it isn't among the in-view `locations`.
 		selected = null,
-		// Called with a location id when the user clicks a marker, so the parent can
-		// open that location (the same action as clicking a result card).
+		// Called with a location id when the user clicks a name label, so the parent
+		// can open that location (the same action as clicking a result card).
 		onselect,
 		// Where the map opens, as `[lat, lng]`. Falls back to DEFAULT_CENTER when absent.
 		// The camera otherwise only moves when the user pans/zooms or selects a place —
@@ -81,33 +80,90 @@
 	// OpenStreetMap's raster tiles stop at z19; cap the camera there so the user
 	// can't zoom past real tile data into blurry overzoomed scaling.
 	const MAX_ZOOM = 19;
-	// Marker fill, matching the app's accent (--color-accent) so pins read as part
-	// of the brand rather than MapLibre's default blue.
-	const MARKER_COLOR = '#2f6f4f';
 	// Grow the reported box beyond the strictly-visible bounds by this fraction of
-	// each span, so markers just off screen are already loaded when the user nudges
+	// each span, so labels just off screen are already loaded when the user nudges
 	// the map, and small pans don't trigger a refetch. 0.2 = 20% on every side.
 	const BOUNDS_PADDING = 0.2;
 	// Debounce (ms) before reporting a new viewport, so a drag or pinch settles into
 	// a single fetch rather than firing on every intermediate `moveend`.
 	const VIEW_DEBOUNCE_MS = 250;
 
+	// --- Label overlay tuning -------------------------------------------------
+	// Below this zoom the map is curved enough (and the world dense enough) that
+	// names aren't worth drawing — the overlay renders nothing and the globe stays
+	// clean. Above it the declutter gap does the progressive reveal.
+	const MIN_OVERLAY_ZOOM = 6;
+	// Minimum on-screen spacing (px) between two surviving anchors. Anything packed
+	// tighter than this loses to its higher-priority neighbour and is hidden until
+	// zoom spreads the anchors apart. Larger = sparser map.
+	const DECLUTTER_GAP = 42;
+	// Hard ceiling on simultaneously-drawn pills, a backstop against a pathological
+	// frame; the declutter gap is the real limiter well before this bites.
+	const MAX_VISIBLE = 160;
+	// How often (ms) to re-pick the visible set. Positions update every frame, but
+	// which labels are shown only needs refreshing a few times a second.
+	const DECLUTTER_INTERVAL_MS = 120;
+	// Off-screen margin (px) within which anchors still count, so a pill entering
+	// from the edge is already simulated before it scrolls fully into view.
+	const OVERLAY_MARGIN = 80;
+	// Force-model constants (see SimConfig). Tuned for a calm, quick settle.
+	const SIM_CONFIG: SimConfig = {
+		spring: 0.08,
+		damping: 0.75,
+		separation: 0.6,
+		padding: 6,
+		maxLeader: 64
+	};
+	// Don't draw a leader line until the pill has been displaced at least this far
+	// (px) from its origin — an on-origin pill needs no line.
+	const LEADER_MIN_DISTANCE = 4;
+	// Leader-line stroke.
+	const LEADER_COLOR = 'rgba(0, 0, 0, 0.35)';
+	// Inflate each pill's clickable/hover box by this many px so a small pill stays a
+	// comfortable tap target (the pills themselves are pointer-transparent; this is
+	// the slop used by the map-level hit-test).
+	const HIT_SLOP = 6;
+	// The rAF loop parks itself once the camera is still and every pill's kinetic
+	// energy (vx²+vy²) falls below this, then a map gesture or data change wakes it —
+	// so an idle map does no per-frame work. ~0.04 px/frame: visually at rest.
+	const SETTLE_KE_EPS = 0.0016;
+
 	let mapEl: HTMLDivElement;
+	let canvasEl: HTMLCanvasElement;
 
 	// MapLibre's JS is imported dynamically inside onMount (client-only) because it
 	// touches `window` at module load; the types are erased at compile time so
 	// importing them is fine. `lib` holds the module namespace once loaded.
 	let lib: typeof import('maplibre-gl') | null = null;
 	let map: MapLibreMap | null = null;
-	// Markers (with their hover popups) keyed by location id, so we can open the
-	// selected one's popup and clear them all on re-render. A plain (non-reactive)
-	// dictionary on purpose: it's an imperative cache written and read within the
-	// same $effect, so reactivity would self-invalidate it.
-	let markersById: Record<string, { marker: Marker; popup: Popup }> = {};
+
+	// Owns the persistent per-pill simulation state across frames (positions survive
+	// a re-render and brief visibility toggles). Plain — and deliberately
+	// non-reactive — Map/Set state lives inside the engine, not this component.
+	const engine = new LabelEngine();
+
+	// The pills currently mounted in the DOM. Reactive so the {#each} tracks it, but
+	// reassigned only when the visible set/selection actually changes (guarded by
+	// `renderSig`), so panning that keeps the same labels does no DOM work.
+	let render = $state<RenderItem[]>([]);
+	let renderSig = '';
 
 	// Becomes true once the map's first render is done; effects below gate on it so
 	// they don't fire against a half-built map (the import + style load are async).
 	let ready = $state(false);
+
+	// rAF + canvas bookkeeping.
+	let rafId = 0;
+	// Whether the rAF loop is currently scheduled. It parks when idle+settled and is
+	// restarted by `wake()` on any camera move/resize or data/selection change.
+	let running = false;
+	let lastDeclutter = 0;
+	let canvasCtx: CanvasRenderingContext2D | null = null;
+	let canvasCssWidth = 0;
+	let canvasCssHeight = 0;
+	// Last device-pixel-ratio the canvas backing store was sized for, so a move to a
+	// different-DPR display (even at the same CSS size) re-sharpens the leader lines.
+	let lastDpr = 0;
 
 	// Pending debounced viewport report (see scheduleViewReport).
 	let viewTimer: ReturnType<typeof setTimeout> | null = null;
@@ -115,8 +171,29 @@
 	// re-fly to an already-open location — only a genuine change of selection does.
 	let lastSelectedId: string | null = null;
 	// The last focus key we flew to, so the focus effect fires once per new target
-	// (a marker re-render or the parent re-passing the same focus won't re-fly).
+	// (a data re-sync or the parent re-passing the same focus won't re-fly).
 	let lastFocusKey: string | null = null;
+
+	// The label candidates: every in-view location, plus the selected one even when
+	// it falls outside the viewport (e.g. opened from a shared link). Flattened to
+	// just what the overlay needs.
+	const candidates = $derived.by(() => {
+		const list = locations.map((l) => ({
+			id: l.id,
+			name: l.name,
+			lat: l.latitude,
+			lng: l.longitude
+		}));
+		if (selected && !list.some((c) => c.id === selected.id)) {
+			list.push({
+				id: selected.id,
+				name: selected.name,
+				lat: selected.latitude,
+				lng: selected.longitude
+			});
+		}
+		return list;
+	});
 
 	// The prop contract carries centres as `[lat, lng]` (Leaflet's order, and how
 	// the page supplies the IP-detected centre); MapLibre wants `[lng, lat]`.
@@ -124,30 +201,13 @@
 		return [lng, lat];
 	}
 
-	function escapeHtml(value: string): string {
-		return value
-			.replace(/&/g, '&amp;')
-			.replace(/</g, '&lt;')
-			.replace(/>/g, '&gt;')
-			.replace(/"/g, '&quot;')
-			.replace(/'/g, '&#39;');
-	}
-
-	// Hover label for a marker. Clicking the marker opens the location's detail
-	// panel (via `onselect`), so this is just a quick at-a-glance preview.
-	function tooltipHtml(loc: Location): string {
-		const parts: string[] = [`<strong>${escapeHtml(loc.name)}</strong>`];
-		const label = categoryLabel(loc.category);
-		if (label) parts.push(`<span>${escapeHtml(label)}</span>`);
-		if (loc.address) parts.push(`<span>${escapeHtml(loc.address)}</span>`);
-		return `<div class="map-tip">${parts.join('<br />')}</div>`;
-	}
-
 	// The map style: OpenStreetMap raster tiles on a 3D globe projection. MapLibre
 	// renders this flat (Web Mercator) when zoomed in and smoothly curves it into a
 	// globe as the user zooms out, with no work on our part. The `sky` atmosphere
 	// gives the zoomed-out globe its halo and fades out by the time the map has
-	// flattened (≈ zoom 7), so it never intrudes on the street-level view.
+	// flattened (≈ zoom 7), so it never intrudes on the street-level view. No
+	// `glyphs`: the name labels are HTML pills drawn in the overlay below, not GL
+	// text, so the raster style needs no fonts.
 	function mapStyle(): StyleSpecification {
 		return {
 			version: 8,
@@ -176,56 +236,149 @@
 		};
 	}
 
-	function renderMarkers() {
-		if (!lib || !map) return;
+	// Svelte attachment: bind a pill's DOM element to its engine node, measure it
+	// once, and place it at its current position to avoid a flash at (0,0) before
+	// the first frame. Cleanup detaches the element on unmount.
+	function pill(id: string) {
+		return (el: HTMLElement) => {
+			engine.attach(id, el, el.offsetWidth / 2 || 1, el.offsetHeight / 2 || 1);
+			const node = engine.get(id);
+			if (node) {
+				el.style.transform = `translate(${node.ax + node.ox}px, ${node.ay + node.oy}px) translate(-50%, -50%)`;
+			}
+			return () => engine.detach(id, el);
+		};
+	}
 
-		for (const { marker, popup } of Object.values(markersById)) {
-			marker.remove();
-			popup.remove();
-		}
-		markersById = {};
-
-		// Show every in-view location, plus the selected location even when it falls
-		// outside the current viewport (e.g. opened from a shared link).
-		const toRender = [...locations];
-		if (selected && !toRender.some((loc) => loc.id === selected.id)) {
-			toRender.push(selected);
-		}
-
-		for (const loc of toRender) {
-			const lngLat: [number, number] = [loc.longitude, loc.latitude];
-			// The popup is managed by hand (rather than `marker.setPopup`) so its
-			// open/close is driven purely by hover and the selection effect — a click
-			// on the marker selects the place instead of toggling the popup.
-			const popup = new lib.Popup({
-				closeButton: false,
-				closeOnClick: false,
-				anchor: 'bottom',
-				offset: 36
-			})
-				.setLngLat(lngLat)
-				.setHTML(tooltipHtml(loc));
-
-			const marker = new lib.Marker({ color: MARKER_COLOR }).setLngLat(lngLat).addTo(map);
-
-			const el = marker.getElement();
-			el.style.cursor = 'pointer';
-			el.addEventListener('mouseenter', () => {
-				if (map) popup.addTo(map);
-			});
-			el.addEventListener('mouseleave', () => popup.remove());
-			el.addEventListener('click', (event) => {
-				// Keep the click from reaching the map (which would otherwise treat it
-				// as a background click) and open the location's detail panel.
-				event.stopPropagation();
-				onselect?.(loc.id);
-			});
-
-			markersById[loc.id] = { marker, popup };
+	// Re-pick the visible labels for the current camera and reassign `render` — and
+	// thus touch the DOM — only when the set or selection actually changed, so a
+	// steady pan doesn't remount the same pills every interval.
+	function recomputeVisible(project: Projector) {
+		const next = engine.recompute({
+			candidates,
+			project,
+			width: canvasCssWidth,
+			height: canvasCssHeight,
+			margin: OVERLAY_MARGIN,
+			selectedId: selected?.id ?? null,
+			gap: DECLUTTER_GAP,
+			max: MAX_VISIBLE
+		});
+		const sig = next.map((i) => (i.selected ? '*' : '') + i.id).join(',');
+		if (sig !== renderSig) {
+			renderSig = sig;
+			render = next;
 		}
 	}
 
-	// Smoothly zoom in on the selected location.
+	// Match the leader canvas's backing store to its CSS size and the device pixel
+	// ratio, so lines stay crisp. Cheap no-op when the size is unchanged.
+	function resizeCanvasIfNeeded() {
+		const w = mapEl.clientWidth;
+		const h = mapEl.clientHeight;
+		const dpr = window.devicePixelRatio || 1;
+		if (w === canvasCssWidth && h === canvasCssHeight && dpr === lastDpr) return;
+		canvasCssWidth = w;
+		canvasCssHeight = h;
+		lastDpr = dpr;
+		canvasEl.width = Math.round(w * dpr);
+		canvasEl.height = Math.round(h * dpr);
+		canvasEl.style.width = `${w}px`;
+		canvasEl.style.height = `${h}px`;
+		const ctx = canvasEl.getContext('2d');
+		if (ctx) {
+			ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+			canvasCtx = ctx;
+		}
+	}
+
+	// Start (or restart) the rAF loop if it isn't already running. Called on load and
+	// whenever something that needs re-laying-out happens — a camera move/resize or a
+	// data/selection change — so the loop only spins while there's work to do.
+	function wake() {
+		if (running || !ready || !map) return;
+		running = true;
+		rafId = requestAnimationFrame(frame);
+	}
+
+	// One animation frame: refresh anchors from the live projection, advance the
+	// force model, write each pill's transform, and redraw the leader lines. The loop
+	// keeps going only while the camera is moving or the pills are still settling;
+	// once everything is at rest it parks itself (see `wake`), so an idle map costs
+	// nothing per frame rather than redrawing 60×/s forever.
+	function frame(time: number) {
+		const m = map;
+		if (!m) {
+			running = false;
+			return;
+		}
+
+		resizeCanvasIfNeeded();
+
+		// Keep animating while the camera itself is in motion (pan/zoom/fly), even if
+		// the pills are at rest — they must track their anchors every frame.
+		let busy = m.isMoving();
+
+		if (m.getZoom() < MIN_OVERLAY_ZOOM) {
+			// Below the overlay floor, show nothing and keep the canvas clear.
+			if (render.length) {
+				render = [];
+				renderSig = '';
+				engine.clear();
+			}
+			canvasCtx?.clearRect(0, 0, canvasCssWidth, canvasCssHeight);
+		} else {
+			// A projector bound to the live camera (`m` is the narrowed, non-null map).
+			const project: Projector = (lng, lat) => m.project([lng, lat]);
+
+			if (time - lastDeclutter > DECLUTTER_INTERVAL_MS) {
+				lastDeclutter = time;
+				recomputeVisible(project);
+			}
+
+			// Re-project and advance the visible pills, then draw them and their leaders.
+			const active = engine.tick(project, SIM_CONFIG);
+
+			const ctx = canvasCtx;
+			if (ctx) {
+				ctx.clearRect(0, 0, canvasCssWidth, canvasCssHeight);
+				ctx.strokeStyle = LEADER_COLOR;
+				ctx.lineWidth = 1;
+				ctx.beginPath();
+				let maxKineticEnergy = 0;
+				for (const node of active) {
+					const x = node.ax + node.ox;
+					const y = node.ay + node.oy;
+					if (node.ox * node.ox + node.oy * node.oy > LEADER_MIN_DISTANCE * LEADER_MIN_DISTANCE) {
+						// Draw to the pill centre; the opaque pill (above the canvas) hides
+						// the inner stub, so the line reads as meeting the pill's edge.
+						ctx.moveTo(node.ax, node.ay);
+						ctx.lineTo(x, y);
+					}
+					if (node.el) {
+						node.el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%)`;
+					}
+					const ke = node.vx * node.vx + node.vy * node.vy;
+					if (ke > maxKineticEnergy) maxKineticEnergy = ke;
+				}
+				ctx.stroke();
+				// Keep going while any pill is still moving enough to see.
+				if (maxKineticEnergy > SETTLE_KE_EPS) busy = true;
+			} else {
+				// Canvas not ready yet — try again next frame.
+				busy = true;
+			}
+		}
+
+		if (busy) {
+			rafId = requestAnimationFrame(frame);
+		} else {
+			running = false;
+		}
+	}
+
+	// Smoothly zoom in on the selected location. Its pill is force-kept visible
+	// (Infinity priority) and highlighted via the render flag.
 	function flyToSelected() {
 		if (!map || !selected) return;
 		map.flyTo({
@@ -233,8 +386,6 @@
 			zoom: SELECTED_ZOOM,
 			duration: FLY_DURATION_MS
 		});
-		const entry = markersById[selected.id];
-		if (entry) entry.popup.addTo(map);
 	}
 
 	// The current visible box, grown by BOUNDS_PADDING. Latitude is clamped to the
@@ -292,6 +443,28 @@
 			// compass: rotation isn't part of the interaction, matching the old map.
 			map.addControl(new lib.NavigationControl({ showCompass: false }), 'bottom-left');
 
+			// The name pills are pointer-transparent so wheel-zoom, drag-pan and pinch
+			// pass straight through to the map even when the cursor is over one. That
+			// means selection and the hover cursor can't come from DOM events on the
+			// pills, so we resolve them here by hit-testing the click/hover point
+			// against the pill boxes the engine is laying out.
+			map.on('click', (e) => {
+				const id = engine.hitTest(e.point.x, e.point.y, HIT_SLOP);
+				if (id) onselect?.(id);
+			});
+			map.on('mousemove', (e) => {
+				const m = map;
+				if (!m) return;
+				m.getCanvas().style.cursor = engine.hitTest(e.point.x, e.point.y, HIT_SLOP)
+					? 'pointer'
+					: '';
+			});
+
+			// Any camera motion or container resize wakes the (possibly parked) layout
+			// loop so the pills re-project and re-settle, then it parks itself again.
+			map.on('move', wake);
+			map.on('resize', wake);
+
 			// Report the viewport as it changes so the parent can load data for it.
 			// `moveend` fires after both pans and zooms (and programmatic flights) settle.
 			map.on('moveend', scheduleViewReport);
@@ -304,11 +477,12 @@
 			});
 
 			// `load` fires once the style is parsed and the first frame is painted —
-			// only then are markers safe to add and the opening view worth reporting.
+			// only then are the projection and the opening view worth using.
 			map.on('load', () => {
 				if (!active || !map) return;
 				ready = true;
-				renderMarkers();
+				resizeCanvasIfNeeded();
+				wake();
 				// Kick off the first load immediately (no debounce) for the opening view.
 				reportView();
 				onzoom?.(map.getZoom());
@@ -318,37 +492,43 @@
 		return () => {
 			active = false;
 			ready = false;
+			running = false;
+			if (rafId) cancelAnimationFrame(rafId);
 			if (viewTimer) clearTimeout(viewTimer);
+			engine.clear();
 			if (map) {
 				map.remove();
 				map = null;
-				markersById = {};
 			}
 		};
 	});
 
-	// Re-render markers when the in-view locations (or the selection) change. This
-	// only repaints markers; it never moves the camera, so searching/filtering or a
-	// viewport refetch leaves the view exactly where the user put it.
+	// Refresh the visible set promptly whenever the candidates change (a viewport
+	// refetch, a filter, or a new selection), rather than waiting up to one declutter
+	// interval. Resets the throttle and wakes the loop in case it had parked.
 	$effect(() => {
+		void candidates;
 		if (!ready) return;
-		renderMarkers();
+		lastDeclutter = 0;
+		wake();
 	});
 
-	// Centre on a newly-selected location. Guarded by `lastSelectedId` so a marker
-	// re-render (e.g. data refetched after the fly's own move) doesn't re-trigger
-	// it — only an actual change of selection flies the camera.
+	// Centre on a newly-selected location. Guarded by `lastSelectedId` so a data
+	// re-sync (e.g. data refetched after the fly's own move) doesn't re-trigger it —
+	// only an actual change of selection flies the camera. Wakes the loop so the new
+	// pill's highlight repaints even if the camera doesn't move.
 	$effect(() => {
 		if (!ready) return;
 		const id = selected?.id ?? null;
 		if (id && id !== lastSelectedId) flyToSelected();
 		lastSelectedId = id;
+		wake();
 	});
 
 	// Fly to a search focus target (the nearest match) when its key changes. Keeps
 	// the user's zoom if they're already closer than FOCUS_MIN_ZOOM, so a fly from a
-	// street-level view doesn't jump back out. Unlike selection, this never opens a
-	// popup or detail — it only moves the camera so the nearest result is on screen.
+	// street-level view doesn't jump back out. Unlike selection, this never selects
+	// or highlights — it only moves the camera so the nearest result is on screen.
 	$effect(() => {
 		if (!ready) return;
 		const f = focus;
@@ -366,17 +546,77 @@
 	});
 </script>
 
-<div class="map" bind:this={mapEl} role="application" aria-label="Map of food locations"></div>
+<div class="map-wrap">
+	<div class="map" bind:this={mapEl} role="application" aria-label="Map of food locations"></div>
+	<canvas class="leaders" bind:this={canvasEl} aria-hidden="true"></canvas>
+	<!-- Pills are presentational: pointer-transparent so map gestures pass through,
+	     with click-to-select handled by the map's hit-test (see onMount). The venue
+	     names are also reachable in the results list, the accessible selection path. -->
+	<div class="labels" aria-hidden="true">
+		{#each render as item (item.id)}
+			<div class="pill" class:pill--selected={item.selected} {@attach pill(item.id)}>
+				{item.name}
+			</div>
+		{/each}
+	</div>
+</div>
 
 <style>
-	.map {
+	.map-wrap {
+		position: relative;
 		height: 100%;
 		width: 100%;
 	}
 
-	.map :global(.map-tip) {
-		text-align: center;
-		line-height: 1.35;
+	.map {
+		position: absolute;
+		inset: 0;
+	}
+
+	/* The leader lines and pills overlay the map. The canvas and the pill container
+	   never intercept pointer events (so panning works everywhere); only the pills
+	   themselves opt back in, so a click on a name selects without blocking a drag
+	   on the surrounding map. */
+	.leaders {
+		position: absolute;
+		inset: 0;
+		pointer-events: none;
+	}
+
+	.labels {
+		position: absolute;
+		inset: 0;
+		overflow: hidden;
+		pointer-events: none;
+	}
+
+	.pill {
+		position: absolute;
+		top: 0;
+		left: 0;
+		/* Transparent to pointer events so wheel-zoom, drag-pan and pinch reach the
+		   map even with the cursor over a pill; selection is hit-tested on the map. */
+		pointer-events: none;
+		white-space: nowrap;
+		margin: 0;
+		padding: 2px 8px;
+		border: 1px solid rgba(0, 0, 0, 0.12);
+		border-radius: 999px;
+		background: #ffffff;
+		color: #000000;
+		font-size: 12px;
+		line-height: 1.3;
+		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+		user-select: none;
+		will-change: transform;
+	}
+
+	/* Mark the selected venue's pill in the app accent (--color-accent). */
+	.pill--selected {
+		background: #2f6f4f;
+		border-color: #2f6f4f;
+		color: #ffffff;
+		font-weight: 600;
 	}
 
 	/* Keep the zoom control and attribution clear of notches and the home indicator
