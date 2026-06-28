@@ -7,8 +7,10 @@ import {
 	createGoogleClient,
 	GOOGLE_SCOPES,
 	STATE_COOKIE,
-	CODE_VERIFIER_COOKIE
+	CODE_VERIFIER_COOKIE,
+	REDIRECT_COOKIE
 } from '$lib/server/oauth';
+import { safeInternalPath } from '$lib/redirect';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = (event) => {
@@ -27,6 +29,14 @@ export const GET: RequestHandler = (event) => {
 	};
 	event.cookies.set(STATE_COOKIE, state, cookieOptions);
 	event.cookies.set(CODE_VERIFIER_COOKIE, codeVerifier, cookieOptions);
+	// Remember where to return after sign-in (validated to a same-origin path); the
+	// callback reads this back. Always set so a stale value from a prior attempt can't
+	// linger and hijack a later, plain sign-in.
+	event.cookies.set(
+		REDIRECT_COOKIE,
+		safeInternalPath(event.url.searchParams.get('redirectTo')),
+		cookieOptions
+	);
 
 	return new Response(null, { status: 302, headers: { location: url.toString() } });
 };

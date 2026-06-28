@@ -3,7 +3,9 @@
 	import LogOut from '@lucide/svelte/icons/log-out';
 	import Utensils from '@lucide/svelte/icons/utensils';
 	import { resolve } from '$app/paths';
+	import { page } from '$app/state';
 	import { signOut } from '$lib/user.remote';
+	import { safeInternalPath } from '$lib/redirect';
 	import DietProfileModal from '$lib/components/DietProfileModal.svelte';
 	import type { User } from '$lib/server/db';
 
@@ -24,6 +26,16 @@
 	const displayName = $derived(user?.name ?? user?.email ?? 'Account');
 	const initial = $derived(
 		(user?.name ?? user?.email ?? '?').trim().charAt(0).toUpperCase() || '?'
+	);
+
+	// The signed-out fallback (the app is normally reached only when signed in, but a
+	// session can expire while the map is open) sends the user through Google sign-in
+	// and back to wherever they were, rather than the default landing target. Validated
+	// to a same-origin path, mirroring the landing page's own sign-in link.
+	const loginHref = $derived(
+		`${resolve('/auth/login/google')}?redirectTo=${encodeURIComponent(
+			safeInternalPath(page.url.pathname + page.url.search)
+		)}`
 	);
 
 	// Close the popover when a pointer goes down outside the control. The handler is
@@ -88,7 +100,8 @@
 			</div>
 		{/if}
 	{:else}
-		<a class="account__signin" href={resolve('/auth/login/google')}>
+		<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- resolved login path with the redirectTo query the login route reads -->
+		<a class="account__signin" href={loginHref}>
 			<LogIn size={16} aria-hidden="true" />
 			Sign in
 		</a>
