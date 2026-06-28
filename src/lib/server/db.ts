@@ -1458,6 +1458,34 @@ export async function getBrands(db: D1Like): Promise<Brand[]> {
 	return results;
 }
 
+/** Aggregate coverage totals for the public landing overlay (see {@link getStats}). */
+export interface MapStats {
+	/** Total food locations on the map. */
+	locations: number;
+	/** Total menu items captured (a shared chain menu's items counted once). */
+	items: number;
+	/** Distinct cities covered, keyed by city + region + country so same-named
+	 *  cities in different provinces/countries aren't merged. */
+	cities: number;
+}
+
+/**
+ * Coverage totals shown on the zoomed-out landing overlay: how much data we've
+ * collected. One round-trip via correlated scalar subqueries. Safe to expose
+ * without auth — it returns only counts, never any row data.
+ */
+export async function getStats(db: D1Like): Promise<MapStats> {
+	const row = await db
+		.prepare(
+			`SELECT
+				(SELECT COUNT(*) FROM locations) AS locations,
+				(SELECT COUNT(*) FROM items) AS items,
+				(SELECT COUNT(DISTINCT city || '|' || region || '|' || country) FROM locations) AS cities`
+		)
+		.first<MapStats>();
+	return row ?? { locations: 0, items: 0, cities: 0 };
+}
+
 export async function getBrandById(db: D1Like, id: string): Promise<Brand | null> {
 	return db
 		.prepare(`SELECT id, name, website, logo_url FROM brands WHERE id = ?`)
