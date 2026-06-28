@@ -22,5 +22,11 @@ export function safeInternalPath(
 	// Must be an absolute path, but not one that browsers read as protocol-relative
 	// (`//evil.com`, `/\evil.com`) and so resolve to another origin.
 	if (value[0] !== '/' || value[1] === '/' || value[1] === '\\') return fallback;
+	// Reject control characters (CR/LF, tab, etc.) defensively — a CRLF would otherwise
+	// be a header-splitting attempt once this lands in a `Location` header or cookie.
+	for (let i = 0; i < value.length; i++) {
+		const code = value.charCodeAt(i);
+		if (code <= 0x1f || code === 0x7f) return fallback;
+	}
 	return value;
 }
