@@ -40,6 +40,10 @@
 		// plus once on load. The landing uses this to drive itself: it shows while the
 		// map is zoomed out and hides once the user zooms in (and returns on zoom-out).
 		onzoom,
+		// When true (the zoomed-out landing), bias the globe DOWNWARD on screen — via top
+		// camera padding — so the landing's intro text up top has room; a centred view
+		// otherwise. The parent sets this from the same condition as the landing.
+		biasDown = false,
 		// A point to fly the camera to (without selecting it) — used by global search
 		// to bring the nearest match into view. The camera flies whenever `key`
 		// changes, so the parent controls exactly when a fly happens (it omits it when
@@ -56,6 +60,7 @@
 		initialCenter?: [number, number] | null;
 		initialZoom?: number | null;
 		onzoom?: (zoom: number) => void;
+		biasDown?: boolean;
 		focus?: { latitude: number; longitude: number; key: string } | null;
 		onviewchange?: (bounds: Bounds) => void;
 	} = $props();
@@ -91,6 +96,10 @@
 	// Debounce (ms) before reporting a new viewport, so a drag or pinch settles into
 	// a single fetch rather than firing on every intermediate `moveend`.
 	const VIEW_DEBOUNCE_MS = 250;
+	// When `biasDown` is set, push the camera's focal point down by this fraction of the
+	// map height (as top padding), so the zoomed-out globe sits below centre and the
+	// landing's top text has room. The globe shifts down by about half this fraction.
+	const GLOBE_BIAS_TOP_FRACTION = 0.22;
 
 	let mapEl: HTMLDivElement;
 
@@ -122,6 +131,14 @@
 	// the page supplies the IP-detected centre); MapLibre wants `[lng, lat]`.
 	function toLngLat([lat, lng]: [number, number]): [number, number] {
 		return [lng, lat];
+	}
+
+	// Camera padding for the current `biasDown`: top padding (a fraction of the map
+	// height) when biased so the globe sits below centre, otherwise none. Applied
+	// instantly (never via easeTo) so it can't cancel an in-flight flyTo.
+	function biasPadding(on: boolean) {
+		const top = on ? mapEl.clientHeight * GLOBE_BIAS_TOP_FRACTION : 0;
+		return { top, right: 0, bottom: 0, left: 0 };
 	}
 
 	function escapeHtml(value: string): string {
@@ -287,6 +304,11 @@
 				attributionControl: { compact: false }
 			});
 
+			// Apply the opening downward bias synchronously (no constructor `padding`
+			// option exists), so a landing that opens zoomed out starts biased without a
+			// post-load jump. The effect below keeps it in sync as `biasDown` changes.
+			map.setPadding(biasPadding(biasDown));
+
 			// Zoom control sits bottom-left, clear of the floating search (top-left)
 			// and results (top-right) panels that overlay the full-screen map. No
 			// compass: rotation isn't part of the interaction, matching the old map.
@@ -325,6 +347,14 @@
 				markersById = {};
 			}
 		};
+	});
+
+	// Keep the downward bias in step with `biasDown` (set instantly so it never cancels
+	// an in-flight flyTo, e.g. "Start using"). Crossing into/out of the zoomed-out
+	// landing nudges the globe down / back to centre.
+	$effect(() => {
+		if (!ready || !map) return;
+		map.setPadding(biasPadding(biasDown));
 	});
 
 	// Re-render markers when the in-view locations (or the selection) change. This

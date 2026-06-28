@@ -722,6 +722,7 @@
 			initialCenter={WORLD_CENTER}
 			initialZoom={WORLD_ZOOM}
 			onzoom={(z) => (zoomLevel = z)}
+			biasDown={landing}
 			focus={focusTarget}
 			onviewchange={(bounds) => (viewport = bounds)}
 		/>
