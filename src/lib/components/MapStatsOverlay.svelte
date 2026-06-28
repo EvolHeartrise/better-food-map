@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { fade } from 'svelte/transition';
+	import { Spring, prefersReducedMotion } from 'svelte/motion';
 	import MapPin from '@lucide/svelte/icons/map-pin';
 
 	// Coverage totals shown on the zoomed-out landing. Structural (not imported from
@@ -15,22 +16,36 @@
 		stats,
 		onstart
 	}: {
-		// Null until the counts resolve; each figure shows a placeholder until then.
+		// Null until the counts resolve; the figures hold at "—" until then.
 		stats: Stats | null;
 		// "Start using": fly the map to the visitor's location. The parent owns the fly.
 		onstart: () => void;
 	} = $props();
 
 	const numberFormat = new Intl.NumberFormat('en-CA');
-	function fmt(value: number | undefined): string {
-		return value === undefined ? '—' : numberFormat.format(value);
+	function fmt(value: number): string {
+		return numberFormat.format(Math.round(value));
 	}
 
-	// The figures, in display order.
+	// Count the figures up from zero. The overlay is mounted afresh whenever the landing
+	// appears (the parent's `{#if landing}`), so the spring starts at 0 every time and
+	// springs up to the totals — re-running the count-up on each appearance. `damping: 1`
+	// keeps it from overshooting (a count that flies past then settles reads as a glitch);
+	// reduced-motion users get the final numbers instantly.
+	const counts = new Spring({ locations: 0, items: 0, cities: 0 }, { stiffness: 0.08, damping: 1 });
+	$effect(() => {
+		if (!stats) return;
+		counts.set(
+			{ locations: stats.locations, items: stats.items, cities: stats.cities },
+			{ instant: prefersReducedMotion.current }
+		);
+	});
+
+	// The figures, in display order, reading the live (animating) spring values.
 	const figures = $derived([
-		{ value: stats?.locations, label: 'venues' },
-		{ value: stats?.items, label: 'menu items' },
-		{ value: stats?.cities, label: 'cities' }
+		{ value: counts.current.locations, label: 'venues' },
+		{ value: counts.current.items, label: 'menu items' },
+		{ value: counts.current.cities, label: 'cities' }
 	]);
 </script>
 
@@ -49,7 +64,7 @@
 		<ul class="stats">
 			{#each figures as figure (figure.label)}
 				<li class="stat">
-					<span class="stat__value">{fmt(figure.value)}</span>
+					<span class="stat__value">{stats ? fmt(figure.value) : '—'}</span>
 					<span class="stat__label">{figure.label}</span>
 				</li>
 			{/each}
