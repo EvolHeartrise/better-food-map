@@ -41,22 +41,26 @@
 	]);
 </script>
 
-<!-- The backdrop spans the map but is transparent to pointers, so a drag on the map
-     behind it still pans (and dismisses, via the map's oninteract). Only the card
-     itself captures clicks. -->
+<!-- Split into two pieces — an intro card pinned to the top and an actions card
+     pinned to the bottom — so the zoomed-out globe stays visible in the gap between
+     them. The backdrop spans the map but is transparent to pointers, so a drag on the
+     globe still pans (and dismisses, via the map's oninteract); only the cards take
+     clicks. -->
 <div class="overlay" transition:fade={{ duration: 200 }}>
-	<section class="card" aria-label="About BetterFoodMaps">
-		<button type="button" class="card__close" aria-label="Dismiss" onclick={onclose}>
+	<section class="card intro" aria-label="About BetterFoodMaps">
+		<button type="button" class="intro__close" aria-label="Dismiss" onclick={onclose}>
 			<X size={18} aria-hidden="true" />
 		</button>
 
-		<p class="card__brand">🍴 BetterFoodMaps</p>
-		<h1 class="card__title">Find food that fits your diet, anywhere on the map.</h1>
-		<p class="card__tagline">
+		<p class="intro__brand">🍴 BetterFoodMaps</p>
+		<h1 class="intro__title">Find food that fits your diet, anywhere on the map.</h1>
+		<p class="intro__tagline">
 			Search restaurants, cafes and fast food by what's actually on the menu — vegan, gluten-free,
 			halal and more.
 		</p>
+	</section>
 
+	<section class="card actions" aria-label="Coverage and getting started">
 		<ul class="stats">
 			{#each figures as figure (figure.label)}
 				<li class="stat">
@@ -66,25 +70,32 @@
 			{/each}
 		</ul>
 
-		<button type="button" class="cta" onclick={onstart}>
-			<MapPin size={18} aria-hidden="true" />
-			Start using the map
-		</button>
-		<button type="button" class="card__browse" onclick={onclose}> or browse the whole map </button>
+		<div class="actions__start">
+			<button type="button" class="cta" onclick={onstart}>
+				<MapPin size={18} aria-hidden="true" />
+				Start using the map
+			</button>
+			<button type="button" class="browse" onclick={onclose}>or browse the whole map</button>
+		</div>
 	</section>
 </div>
 
 <style>
-	/* Sits above the floating search/results panels (z-index 10) but below the menu
-	   popup (z-index 20). Centres the card; the backdrop passes pointers through. */
+	/* Spans the map above the floating search/results panels (z-index 10) but below
+	   the menu popup (z-index 20). A top/bottom column with space-between pins the
+	   intro card to the top and the actions card to the bottom, leaving the zoomed-out
+	   globe visible in the gap between them. The backdrop passes pointers through. */
 	.overlay {
 		position: absolute;
 		inset: 0;
 		z-index: 15;
-		display: grid;
-		place-items: center;
-		padding: 1rem calc(1rem + env(safe-area-inset-right)) calc(1rem + env(safe-area-inset-bottom))
-			calc(1rem + env(safe-area-inset-left));
+		display: flex;
+		flex-direction: column;
+		justify-content: space-between;
+		align-items: center;
+		gap: 1rem;
+		padding: calc(1rem + env(safe-area-inset-top)) calc(1rem + env(safe-area-inset-right))
+			calc(1rem + env(safe-area-inset-bottom)) calc(1rem + env(safe-area-inset-left));
 		pointer-events: none;
 	}
 
@@ -96,9 +107,7 @@
 		align-items: center;
 		gap: 0.85rem;
 		width: min(32rem, 100%);
-		max-height: calc(100dvh - 2rem);
-		overflow-y: auto;
-		padding: 2rem 1.75rem;
+		padding: 1.5rem 1.75rem;
 		text-align: center;
 		border-radius: 1.25rem;
 		background: rgba(255, 255, 255, 0.82);
@@ -108,7 +117,12 @@
 		box-shadow: 0 16px 48px rgba(0, 0, 0, 0.2);
 	}
 
-	.card__close {
+	/* The top card carries the close button and extra padding for it. */
+	.intro {
+		padding-top: 1.75rem;
+	}
+
+	.intro__close {
 		position: absolute;
 		top: 0.6rem;
 		right: 0.6rem;
@@ -128,17 +142,17 @@
 			color 0.12s;
 	}
 
-	.card__close:hover {
+	.intro__close:hover {
 		color: var(--color-text);
 		background: rgba(255, 255, 255, 0.95);
 	}
 
-	.card__close:focus-visible {
+	.intro__close:focus-visible {
 		outline: 2px solid var(--color-accent);
 		outline-offset: 2px;
 	}
 
-	.card__brand {
+	.intro__brand {
 		margin: 0;
 		font-size: 0.95rem;
 		font-weight: 650;
@@ -146,14 +160,14 @@
 		color: var(--color-accent);
 	}
 
-	.card__title {
+	.intro__title {
 		margin: 0;
 		font-size: clamp(1.5rem, 3.5vw, 2.2rem);
 		line-height: 1.15;
 		color: var(--color-text);
 	}
 
-	.card__tagline {
+	.intro__tagline {
 		margin: 0;
 		font-size: 1rem;
 		color: var(--color-text-muted);
@@ -164,11 +178,10 @@
 		list-style: none;
 		display: grid;
 		grid-template-columns: repeat(4, 1fr);
-		gap: 0.5rem 1rem;
+		gap: 0.5rem 1.5rem;
 		width: 100%;
-		margin: 0.5rem 0;
-		padding: 1rem 0;
-		border-top: 1px solid rgba(0, 0, 0, 0.08);
+		margin: 0;
+		padding: 0 0 1rem;
 		border-bottom: 1px solid rgba(0, 0, 0, 0.08);
 	}
 
@@ -194,12 +207,19 @@
 		color: var(--color-text-muted);
 	}
 
+	/* The start/browse pair, stacked and centred under the figures. */
+	.actions__start {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 0.5rem;
+	}
+
 	/* The primary action — accent-filled so "Start using the map" is unmistakable. */
 	.cta {
 		display: inline-flex;
 		align-items: center;
 		gap: 0.5rem;
-		margin-top: 0.25rem;
 		padding: 0.75rem 1.4rem;
 		border: none;
 		border-radius: 0.8rem;
@@ -228,7 +248,7 @@
 		outline-offset: 2px;
 	}
 
-	.card__browse {
+	.browse {
 		padding: 0.2rem 0.4rem;
 		border: none;
 		background: none;
@@ -239,11 +259,11 @@
 		cursor: pointer;
 	}
 
-	.card__browse:hover {
+	.browse:hover {
 		color: var(--color-text);
 	}
 
-	.card__browse:focus-visible {
+	.browse:focus-visible {
 		outline: 2px solid var(--color-accent);
 		outline-offset: 2px;
 		border-radius: 0.3rem;
