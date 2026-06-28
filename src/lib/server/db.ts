@@ -29,6 +29,10 @@ import { formatAddress } from '../address';
 // canonicalization — accent-folding + whitespace/case normalization — so the write
 // path folds an ingredient name to the same identity the alias seed script uses.
 import { foldIngredientName } from '../tags';
+// The dietary-profile selections persisted per user (see migration 0013). The
+// key→filter-tag vocabulary that resolveDietProfileFilters reads lives there too;
+// this module only stores/loads the raw selections and resolves them to tags.
+import type { DietProfile } from '../diet-profile';
 
 // ---------------------------------------------------------------------------
 // Minimal D1 interface (the real `D1Database` binding and the HTTP shim in
@@ -2495,4 +2499,132 @@ export async function getTagSuggestions(
 		if (merged.length >= safeLimit) break;
 	}
 	return merged;
+}
+
+// ---------------------------------------------------------------------------
+// Dietary profile (migration 0013)
+// ---------------------------------------------------------------------------
+
+/** Parses a stored JSON array column to a string[], tolerating malformed data. */
+function parseJsonStringArray(raw: string | null | undefined): string[] {
+	if (!raw) return [];
+	try {
+		const parsed = JSON.parse(raw);
+		return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [];
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * A signed-in user's saved dietary profile, or an empty profile when none is
+ * stored. The selections are stable catalog keys (see $lib/diet-profile); this read
+ * does not validate them against the current catalog — {@link resolveDietProfileFilters}
+ * and the catalog's own lookups simply ignore any key that no longer maps.
+ */
+export async function getDietProfile(db: D1Like, userId: string): Promise<DietProfile> {
+	const row = await db
+		.prepare(`SELECT restrictions, allergies FROM user_dietary_profile WHERE user_id = ?`)
+		.bind(userId)
+		.first<{ restrictions: string; allergies: string }>();
+	if (!row) return { restrictions: [], allergies: [] };
+	return {
+		restrictions: parseJsonStringArray(row.restrictions),
+		allergies: parseJsonStringArray(row.allergies)
+	};
+}
+
+/**
+ * Saves (upserts) a user's dietary profile. The selections are stored verbatim as
+ * JSON arrays — the caller is responsible for sanitizing them to known catalog keys
+ * (see `sanitizeProfile`). One row per user, keyed by user_id.
+ */
+export async function setDietProfile(
+	db: D1Like,
+	userId: string,
+	profile: DietProfile,
+	now: number
+): Promise<void> {
+	await db
+		.prepare(
+			`INSERT INTO user_dietary_profile (user_id, restrictions, allergies, updated_at)
+			 VALUES (?, ?, ?, ?)
+			 ON CONFLICT(user_id) DO UPDATE SET
+				restrictions = excluded.restrictions,
+				allergies = excluded.allergies,
+				updated_at = excluded.updated_at`
+		)
+		.bind(userId, JSON.stringify(profile.restrictions), JSON.stringify(profile.allergies), now)
+		.run();
+}
+
+/** The include/exclude tag sets a dietary profile resolves to, ready for the pickers. */
+export interface DietProfileFilters {
+	/** Curated dietary tags to require (source-asserted positive designations). */
+	included: Tag[];
+	/** Ingredient tags to forbid (resolved from selected allergens' ingredients). */
+	excluded: Tag[];
+}
+
+/**
+ * Resolves a profile's pre-computed filter pieces (see `profileIncludeTagIds` /
+ * `profileExcludeIngredientNames` in $lib/diet-profile) into concrete {@link Tag}
+ * objects the map's include/exclude pickers consume:
+ *   • `included` — the curated dietary tags named by `includeTagIds`, taken from the
+ *     in-code {@link TAGS} vocabulary (no DB hit; unknown ids are dropped).
+ *   • `excluded` — the ingredient tags named by `excludeIngredientNames`, resolved
+ *     against the live tag vocabulary the SAME way the write path and tag search do:
+ *     each name is accent-/case-folded ({@link foldIngredientName}) to its `ing:<name>`
+ *     id, and ALSO looked up through `ingredient_aliases` so a plural/synonym in the
+ *     catalog (e.g. "soybean") still finds the canonical tag. A name with no matching
+ *     tag in the data simply contributes nothing — excluding a tag no item carries is
+ *     a harmless no-op, but we only surface tags that actually exist so the pickers
+ *     show meaningful, removable chips.
+ */
+export async function resolveDietProfileFilters(
+	db: D1Like,
+	includeTagIds: string[],
+	excludeIngredientNames: string[]
+): Promise<DietProfileFilters> {
+	// included: curated dietary/course tags only, looked up in the in-code vocabulary.
+	const tagById = new Map(TAGS.map((t) => [t.id, t]));
+	const included: Tag[] = [];
+	const seenInclude = new Set<string>();
+	for (const id of includeTagIds) {
+		const tag = tagById.get(id);
+		if (tag && !seenInclude.has(id)) {
+			seenInclude.add(id);
+			included.push({ ...tag });
+		}
+	}
+
+	// excluded: fold each ingredient name to its canonical identity, then resolve to
+	// existing ingredient tags by id and via the alias map (mirrors searchTagVocabulary).
+	const names = [
+		...new Set(excludeIngredientNames.map(foldIngredientName).filter((n) => n !== ''))
+	];
+	const excluded: Tag[] = [];
+	if (names.length > 0) {
+		const ids = names.map(ingredientTagId);
+		const idPlaceholders = ids.map(() => '?').join(', ');
+		const namePlaceholders = names.map(() => '?').join(', ');
+		const { results } = await db
+			.prepare(
+				`SELECT id, name, tag_type FROM tags WHERE id IN (${idPlaceholders})
+				 UNION
+				 SELECT t.id AS id, t.name AS name, t.tag_type AS tag_type
+				 FROM ingredient_aliases a JOIN tags t ON t.id = a.canonical_id
+				 WHERE a.alias IN (${namePlaceholders})`
+			)
+			.bind(...ids, ...names)
+			.all<Tag>();
+		const seenExclude = new Set<string>();
+		for (const row of results) {
+			if (seenExclude.has(row.id)) continue;
+			seenExclude.add(row.id);
+			excluded.push({ id: row.id, name: row.name, tag_type: row.tag_type });
+		}
+	}
+
+	return { included, excluded };
 }
