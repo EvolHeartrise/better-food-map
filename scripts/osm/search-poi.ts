@@ -11,7 +11,12 @@
 import type { D1Like } from '../../src/lib/server/db';
 import { stripDiacritics } from '../../src/lib/text';
 import { bboxAround, haversineMeters, type Bbox } from './geo';
-import { osmOwnAddressParts, osmUrl, type PoiAddressParts } from './map-feature';
+import {
+	addressPartsFromLine,
+	osmOwnAddressParts,
+	osmUrl,
+	type PoiAddressParts
+} from './map-feature';
 import type { OsmPoiStore, StoredPoi } from './poi-store';
 
 export interface SearchPoiParams {
@@ -41,19 +46,21 @@ export interface PoiCandidate {
 	cuisine: string | null;
 	latitude: number;
 	longitude: number;
-	/** Single-line OSM address preview (null when the POI has none). */
-	address: string | null;
 	/**
-	 * The POI's OWN structured address parts (street/city/region/postcode/country),
-	 * absent parts dropped — pass straight to create_locations (it normalizes
-	 * region/postcode/country). Omitted when the POI carries no `addr:*` tags of its
-	 * own; then split the single-line `address` into parts yourself.
+	 * Structured address parts (street/city/region/postcode/country, absent parts
+	 * dropped) — pass straight to create_locations, which normalizes region/postcode/
+	 * country. Taken from the POI's OWN `addr:*` tags when it has them, else recovered
+	 * from the address an enrichment feed (a containing OSM building, or Overture)
+	 * supplied. Omitted only when the POI has no address at all; then supply street/
+	 * city/region from the POI's admin context (never geocode). `country` is often
+	 * absent — create_locations defaults it to CA.
 	 */
 	address_parts?: PoiAddressParts;
 	/**
-	 * Where `address` came from when it wasn't the POI's own OSM tags: null = the
-	 * POI's own `addr:*` (cite `osm_url`); a non-null label (e.g.
-	 * "overture:<id> (2026-06-17.0)") = an external feed to cite as an extra source.
+	 * Provenance of `address_parts`: null = the POI's own OSM data, cite `osm_url`
+	 * (which create_locations auto-cites when given `osm_id`); a non-null label (e.g.
+	 * "overture:<id> (2026-06-17.0)") = an external feed supplied the address — cite it
+	 * as an extra source on the created location.
 	 */
 	address_source: string | null;
 	phone: string | null;
@@ -168,7 +175,10 @@ async function existingInBbox(db: D1Like, bbox: Bbox): Promise<ExistingLocation[
 }
 
 function toCandidate(poi: StoredPoi, distance_m?: number): PoiCandidate {
-	const addressParts = osmOwnAddressParts(poi.tags_json);
+	// Prefer the POI's own addr:* tags; otherwise recover parts from the single-line
+	// address an enrichment feed (containing building / Overture) gave it, so dropping
+	// the raw single line from the output costs no address coverage.
+	const addressParts = osmOwnAddressParts(poi.tags_json) ?? addressPartsFromLine(poi.address);
 	return {
 		osm_id: poi.osm_id,
 		osm_type: poi.osm_type,
@@ -179,7 +189,6 @@ function toCandidate(poi: StoredPoi, distance_m?: number): PoiCandidate {
 		cuisine: poi.cuisine,
 		latitude: poi.latitude,
 		longitude: poi.longitude,
-		address: poi.address,
 		...(addressParts ? { address_parts: addressParts } : {}),
 		address_source: poi.address_source,
 		phone: poi.phone,

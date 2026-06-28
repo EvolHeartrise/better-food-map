@@ -1,5 +1,6 @@
 import { test, expect } from 'bun:test';
 import {
+	addressPartsFromLine,
 	classOf,
 	composeAddress,
 	dietMarkers,
@@ -51,6 +52,48 @@ test('composeAddress joins present addr:* parts (region/postcode space-joined), 
 	).toBe('123 Main St, Vancouver, BC V6A 1A1');
 	expect(composeAddress({ 'addr:city': 'Vancouver' })).toBe('Vancouver');
 	expect(composeAddress({})).toBeNull();
+});
+
+test('addressPartsFromLine inverts composeAddressLine (region/postcode space-joined)', () => {
+	// Round-trips the canonical form composeAddress emits.
+	expect(addressPartsFromLine('123 Main St, Vancouver, BC V6A 1A1')).toEqual({
+		street: '123 Main St',
+		city: 'Vancouver',
+		region: 'BC',
+		postcode: 'V6A 1A1'
+	});
+	// Multi-word region full name, US ZIP.
+	expect(addressPartsFromLine('30 Farnham Gate Road, Halifax, Nova Scotia, B3M 3W8')).toEqual({
+		street: '30 Farnham Gate Road',
+		city: 'Halifax',
+		region: 'Nova Scotia',
+		postcode: 'B3M 3W8'
+	});
+	expect(addressPartsFromLine('500 Oak Ave, Seattle, WA 98101')).toEqual({
+		street: '500 Oak Ave',
+		city: 'Seattle',
+		region: 'WA',
+		postcode: '98101'
+	});
+});
+
+test('addressPartsFromLine validates the tail and degrades gracefully', () => {
+	// A non-region trailing segment is kept as city, never mislabelled region.
+	expect(addressPartsFromLine('123 Main St, Vancouver')).toEqual({
+		street: '123 Main St',
+		city: 'Vancouver'
+	});
+	// Region with no postcode.
+	expect(addressPartsFromLine('123 Main St, Vancouver, BC')).toEqual({
+		street: '123 Main St',
+		city: 'Vancouver',
+		region: 'BC'
+	});
+	// A lone segment becomes the (required) street.
+	expect(addressPartsFromLine('12 Main St')).toEqual({ street: '12 Main St' });
+	expect(addressPartsFromLine(null)).toBeUndefined();
+	expect(addressPartsFromLine('')).toBeUndefined();
+	expect(addressPartsFromLine('   ')).toBeUndefined();
 });
 
 test('composeAddress includes addr:unit in the street (Canadian hyphen style)', () => {
