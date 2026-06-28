@@ -35,8 +35,7 @@ test('getMapData sends each menu once, with per-branch overrides and a private m
 	const menuId = await insertMenu(db, {
 		brand_id: brandId,
 		name: 'KFC Canada',
-		region: 'CA',
-		last_verified: null
+		region: 'CA'
 	});
 	const [bucketId, friesId] = await insertMenuItems(db, [
 		{ menu_id: menuId, item_name: 'Bucket', ingredients: null, price: 20, tags: ['halal'] },

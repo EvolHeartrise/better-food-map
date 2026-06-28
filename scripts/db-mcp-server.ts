@@ -915,17 +915,7 @@ const createMenuArgs = v.object({
 		)
 	),
 	currency: v.optional(currencySchema),
-	last_verified: v.optional(
-		v.nullable(
-			v.pipe(
-				v.string(),
-				v.description(
-					'ISO date this menu was last checked, e.g. "2026-06-22". Required on every ' +
-						'menu — defaults to today when omitted.'
-				)
-			)
-		)
-	),
+	// last_verified is not accepted: it is auto-stamped to today on every write.
 	sources: createSourcesSchema,
 	id: v.optional(
 		v.pipe(
@@ -942,7 +932,7 @@ const updateMenuArgs = v.object({
 	name: v.optional(v.pipe(v.string(), v.minLength(1))),
 	region: v.optional(v.nullable(v.string())),
 	currency: v.optional(currencySchema),
-	last_verified: v.optional(v.nullable(v.string())),
+	// last_verified is not accepted: any update re-stamps it to today automatically.
 	sources: updateSourcesSchema,
 	add_sources: addSourcesSchema
 });
@@ -1818,7 +1808,9 @@ const chainTools = [
 			'shared items with create_items (using this menu_id), then point each branch at it via ' +
 			'location.menu_id. Set ' +
 			`\`currency\` so item prices are unambiguous (defaults to ${DEFAULT_CURRENCY}). Optionally cite the ` +
-			'official menu once via `sources`. Returns { id } — read it back with get_menu.',
+			"official menu once via `sources`. The menu's freshness date (last_verified) is set " +
+			'automatically to today here and on every later write — never pass it. Returns { id } — read ' +
+			'it back with get_menu.',
 		schema: createMenuArgs,
 		handler: async (input) => {
 			if (!(await getBrandById(getDb(), input.brand_id))) {
@@ -1836,7 +1828,6 @@ const chainTools = [
 				name: input.name,
 				region: input.region ?? null,
 				currency: input.currency,
-				last_verified: input.last_verified ?? null,
 				sources: normalizeSources(input.sources)
 			});
 			const warnings = dupIds.length
@@ -1877,8 +1868,9 @@ const chainTools = [
 		annotations: DESTRUCTIVE,
 		description:
 			'Update a menu (including its `currency`). Only provided fields change; if `sources` is given it ' +
-			'replaces the whole source set (pass [] to clear), or use `add_sources` to append one. Returns the ' +
-			'updated menu, or null if the id does not exist.',
+			'replaces the whole source set (pass [] to clear), or use `add_sources` to append one. Any update ' +
+			"also refreshes the menu's `last_verified` date to today automatically. Returns the updated menu, " +
+			'or null if the id does not exist.',
 		schema: updateMenuArgs,
 		handler: async ({ id, sources, add_sources, ...patch }) => {
 			assertSourcesNotBoth(sources, add_sources, id);
