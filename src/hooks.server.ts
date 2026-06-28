@@ -50,4 +50,31 @@ const authenticate: Handle = async ({ event, resolve }) => {
 	return resolve(event);
 };
 
-export const handle = sequence(canonicalHost, authenticate);
+// The app itself lives under `/map` (the map page) and is reached only by signed-in
+// users. `/map/locations/*` and legacy `/locations/*` are rerouted to the map page
+// (see hooks.ts) but keep their real pathname here, so guarding these prefixes covers
+// shared deep links too. Everything else — the landing page `/`, the `/auth/*` OAuth
+// routes, static assets — stays public.
+function isProtectedPath(pathname: string): boolean {
+	return pathname === '/map' || pathname.startsWith('/map/') || pathname.startsWith('/locations/');
+}
+
+// Gate the app behind sign-in: an unauthenticated request for a protected path is
+// redirected to the landing page, carrying the originally requested path+query in
+// `redirectTo` so the OAuth flow can return the user there. This runs after
+// `authenticate`, so `locals.user` is already resolved. It is only the navigation
+// guard — the actual data is protected independently by `requireUser()` in the
+// remote functions (per the SvelteKit docs, `event.url` is unreliable for authorizing
+// remote-function requests, so page-path checks must not be the only line of defence).
+const requireAuth: Handle = async ({ event, resolve }) => {
+	if (isProtectedPath(event.url.pathname) && !event.locals.user) {
+		const redirectTo = event.url.pathname + event.url.search;
+		return new Response(null, {
+			status: 302,
+			headers: { location: `/?redirectTo=${encodeURIComponent(redirectTo)}` }
+		});
+	}
+	return resolve(event);
+};
+
+export const handle = sequence(canonicalHost, authenticate, requireAuth);

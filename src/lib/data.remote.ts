@@ -1,6 +1,6 @@
 import * as v from 'valibot';
 import { query, getRequestEvent } from '$app/server';
-import { requireDb as db, currentUser } from '$lib/server/context';
+import { requireDb as db, requireUser } from '$lib/server/context';
 import {
 	getMapData,
 	getLocationMapData,
@@ -36,6 +36,7 @@ const BoundsSchema = v.object({
  * and, under each result, the menu items matching the active search/filter query.
  */
 export const getLocations = query(BoundsSchema, async (bounds): Promise<MapData> => {
+	requireUser();
 	return getMapData(db(), bounds);
 });
 
@@ -46,6 +47,7 @@ export const getLocations = query(BoundsSchema, async (bounds): Promise<MapData>
  * so it always resolves. Yields an empty payload if no location has that id.
  */
 export const getLocationData = query(v.string(), async (id): Promise<MapData> => {
+	requireUser();
 	return getLocationMapData(db(), id);
 });
 
@@ -68,6 +70,7 @@ const SearchQuerySchema = v.object({
 });
 
 export const searchLocations = query(SearchQuerySchema, async (q): Promise<MapData> => {
+	requireUser();
 	return getSearchMapData(db(), q);
 });
 
@@ -77,6 +80,7 @@ export const searchLocations = query(SearchQuerySchema, async (q): Promise<MapDa
  * name rather than relying on each branch's own `name`.
  */
 export const getBrands = query(async (): Promise<Brand[]> => {
+	requireUser();
 	return getBrandsFromDb(db());
 });
 
@@ -89,6 +93,7 @@ export const getBrands = query(async (): Promise<Brand[]> => {
  * the curated tags.
  */
 export const searchTags = query(v.string(), async (q): Promise<Tag[]> => {
+	requireUser();
 	return searchTagVocabulary(db(), q);
 });
 
@@ -103,8 +108,8 @@ export const searchTags = query(v.string(), async (q): Promise<Tag[]> => {
 export const getTagSuggestions = query(
 	v.picklist(['include', 'exclude']),
 	async (mode): Promise<Tag[]> => {
-		const user = currentUser();
-		return getTagSuggestionsFromDb(db(), user?.id ?? null, mode);
+		const user = requireUser();
+		return getTagSuggestionsFromDb(db(), user.id, mode);
 	}
 );
 
@@ -120,6 +125,7 @@ export const getTagSuggestions = query(
  * absent); the map falls back to its built-in default view in that case.
  */
 export const getUserLocation = query(async (): Promise<{ lat: number; lng: number } | null> => {
+	requireUser();
 	const { platform } = getRequestEvent();
 	const cf = platform?.cf;
 	// `latitude`/`longitude` arrive as strings; empty/absent values are falsy and
