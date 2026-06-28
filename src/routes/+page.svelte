@@ -17,6 +17,7 @@
 		setItemLiked,
 		logSearch
 	} from '$lib/user.remote';
+	import { getProfileFilters } from '$lib/profile.remote';
 	import LocationMap from '$lib/components/LocationMap.svelte';
 	import TagPicker from '$lib/components/TagPicker.svelte';
 	import FoodTag from '$lib/components/FoodTag.svelte';
@@ -51,6 +52,35 @@
 	let item = $state('');
 	let included = $state<Tag[]>([]);
 	let excluded = $state<Tag[]>([]);
+
+	// --- Personal dietary profile (default filters) ----------------------------
+	// A signed-in user's saved dietary profile is resolved server-side to concrete
+	// include/exclude tags (empty when signed out / no profile) and PRE-APPLIED here
+	// as the starting filters — they show up as ordinary, removable chips in the two
+	// pickers, so the user can drop one for a one-off search; a reload re-applies the
+	// profile. Read via `.current` (non-suspending) so the map renders immediately.
+	const profileFiltersResource = getProfileFilters();
+	$effect(() => {
+		// Kick the fetch on mount rather than waiting for the apply effect to read it.
+		void profileFiltersResource.current;
+	});
+	// Signature of the profile we last applied, so we apply each distinct profile
+	// ONCE: the user's later edits to the chips don't get clobbered (the resource is
+	// unchanged), but saving the profile refreshes the resource and re-applies it.
+	// A plain (non-reactive) let, mirroring `lastLoggedSearch` below.
+	let appliedProfileSignature: string | null = null;
+	$effect(() => {
+		const filters = profileFiltersResource.current;
+		if (!filters) return;
+		const signature = JSON.stringify({
+			included: filters.included.map((tag) => tag.id).toSorted(),
+			excluded: filters.excluded.map((tag) => tag.id).toSorted()
+		});
+		if (signature === appliedProfileSignature) return;
+		appliedProfileSignature = signature;
+		included = filters.included.map((tag) => ({ ...tag }));
+		excluded = filters.excluded.map((tag) => ({ ...tag }));
+	});
 
 	// The filters, normalised once and shared by the results list, the selected-
 	// location menu and the global-search effect so they all agree on what
@@ -523,6 +553,18 @@
 	let lastLoggedSearch = '';
 	$effect(() => {
 		if (!user || !hasQuery) return;
+		// Skip a "search" that is ONLY the auto-applied dietary profile — same tags,
+		// no place/item added. That state is set on every page load, so logging it
+		// would flood the (uncapped) history with the user's own defaults; once they
+		// type a filter or change a tag, the query no longer matches and logs normally.
+		const onlyProfile =
+			place.trim() === '' &&
+			item.trim() === '' &&
+			JSON.stringify({
+				included: [...includedIds].toSorted(),
+				excluded: [...excludedIds].toSorted()
+			}) === appliedProfileSignature;
+		if (onlyProfile) return;
 		const payload = {
 			place: place.trim(),
 			item: item.trim(),
