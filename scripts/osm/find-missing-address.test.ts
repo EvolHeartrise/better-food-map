@@ -195,7 +195,8 @@ test('classifies missing/incomplete addresses by what OSM can supply', async () 
 	expect(b.reason).toBe('missing');
 	expect(b.current_address).toBeNull();
 	expect(b.osm_address).toBe('12 Main St');
-	expect(b.osm_address_parts).toBeUndefined(); // POI carries no addr:* tags → no structured parts
+	// No own addr:* tags, so parts are recovered from the single-line address instead.
+	expect(b.osm_address_parts).toEqual({ street: '12 Main St' });
 	expect(b.osm_url).toBe('https://www.openstreetmap.org/node/10');
 	expect(b.matched_osm_name).toBe('Joe Coffee');
 

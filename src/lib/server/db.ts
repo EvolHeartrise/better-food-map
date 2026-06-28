@@ -1132,7 +1132,7 @@ export async function insertLocations(db: D1Like, locs: LocationInsert[]): Promi
 			throw new Error(
 				`Location "${loc.name}" has inline \`items\` but is linked to a chain ` +
 					`(brand_id/menu_id). Inline items are for an independent venue's own menu; a chain ` +
-					`branch shares its menu — use create_menu_items, or set_location_item_override for a delta.`
+					`branch shares its menu — use create_items with a menu_id, or set_location_item_override for a delta.`
 			);
 		}
 		// An independent venue with inline items gets a private menu created in the
@@ -1298,7 +1298,7 @@ export async function deleteLocation(db: D1Like, id: string): Promise<boolean> {
 }
 
 // ---------------------------------------------------------------------------
-// Writes — items on a venue's own (private) menu  [the create_foods family]
+// Writes — items on a venue's own (private) menu  [create_items, location_id path]
 // ---------------------------------------------------------------------------
 
 /** Arguments accepted by {@link insertFoods}. */
@@ -1349,7 +1349,7 @@ async function resolvePrivateMenus(
 			if (owner.brand_id !== null) {
 				throw new Error(
 					`Location "${locationId}" serves a shared chain menu; its menu items are shared across ` +
-						`the chain. Edit them with update_item, or record a per-branch difference with ` +
+						`the chain. Edit them with update_items, or record a per-branch difference with ` +
 						`set_location_item_override.`
 				);
 			}
@@ -1403,27 +1403,14 @@ export async function insertFoods(
 }
 
 /**
- * Applies a partial update to an item (a row in `items`). Scalar fields present
- * in `patch` are written. The dietary/course tag set is replaced when `tags` or
- * `optionalTags` is provided; the ingredient set is replaced when `ingredients`
- * or `optionalIngredients` is provided; the source set is replaced when `sources`
- * is provided (pass `[]`/`''` to clear). Returns the updated item, or `null` if
- * no item has that id. All sub-statements run as one atomic batch.
+ * Statements that apply one item patch: the scalar SET (only the columns present
+ * in `patch`), plus full-set replacements for the dietary/course tags, the
+ * ingredient tags and the sources when those are provided (`tags: []`/
+ * `ingredients: ''`/`sources: []` clear; `addSources` appends instead of replacing).
+ * No existence check — callers ({@link updateItem}, {@link updateItems}) resolve which
+ * ids exist up front so a whole batch stays a single round trip.
  */
-async function applyItemUpdate(
-	db: D1Like,
-	id: string,
-	patch: {
-		menu_id?: string;
-		item_name?: string;
-		description?: string | null;
-		price?: number | null;
-		/** Append these sources (dedupe by url), keeping existing ones — vs `sources` which replaces. */
-		addSources?: Source[];
-	} & ItemContent
-): Promise<Item | null> {
-	if (!(await getItemById(db, id))) return null;
-
+function itemUpdateStmts(db: D1Like, id: string, patch: ItemUpdate): D1PreparedLike[] {
 	const stmts: D1PreparedLike[] = [];
 
 	const assignments: string[] = [];
@@ -1479,6 +1466,17 @@ async function applyItemUpdate(
 		stmts.push(...sourceLinkStmts(db, id, patch.addSources));
 	}
 
+	return stmts;
+}
+
+/**
+ * Applies a partial update to an item (a row in `items`), returning the updated
+ * item or `null` if no item has that id. See {@link itemUpdateStmts} for the
+ * replace-set semantics; all sub-statements run as one atomic batch.
+ */
+async function applyItemUpdate(db: D1Like, id: string, patch: ItemUpdate): Promise<Item | null> {
+	if (!(await getItemById(db, id))) return null;
+	const stmts = itemUpdateStmts(db, id, patch);
 	if (stmts.length > 0) await db.batch(stmts);
 	return getItemById(db, id);
 }
@@ -1707,7 +1705,7 @@ export async function deleteMenu(db: D1Like, id: string): Promise<boolean> {
 }
 
 // ---------------------------------------------------------------------------
-// Shared menu items (belong to a menu — cf. the create_foods family, which adds
+// Shared menu items (belong to a menu — cf. the create_items location_id path, which adds
 // to a venue's own private menu). Both write to the same `items` table. Reading,
 // updating and deleting a single item are id-keyed and menu-agnostic, so they use
 // the generic getItemById / updateItem / deleteItem rather than a per-kind variant.
@@ -1746,7 +1744,7 @@ export async function insertMenuItems(db: D1Like, items: MenuItemInsert[]): Prom
 
 /**
  * Of the given item names, those that ALREADY exist on `menuId` (case-insensitive),
- * each with the existing item ids. Lets create_foods / create_menu_items warn that a
+ * each with the existing item ids. Lets create_items warn that a
  * re-run or extend would duplicate an item the menu already lists, so an agent can
  * update the existing item instead. Returns `[]` when nothing collides.
  */
@@ -1797,6 +1795,45 @@ export type ItemUpdate = {
  */
 export async function updateItem(db: D1Like, id: string, patch: ItemUpdate): Promise<Item | null> {
 	return applyItemUpdate(db, id, patch);
+}
+
+/** A partial update to one item, keyed by id (for {@link updateItems}). */
+export type ItemPatch = ItemUpdate & { id: string };
+
+/**
+ * Applies many partial item updates in one atomic batch — the multi-item sibling of
+ * {@link updateItem}, mirroring {@link updateLocations}. Each patch touches only the
+ * fields it carries (same replace-set semantics; see {@link itemUpdateStmts}). Ids that
+ * don't exist are skipped and reported in `notFoundIds` rather than aborting the batch.
+ * Returns which ids were updated and which were not found — one round trip instead of a
+ * call per item, for menu-wide corrections.
+ */
+export async function updateItems(
+	db: D1Like,
+	patches: ItemPatch[]
+): Promise<{ updatedIds: string[]; notFoundIds: string[] }> {
+	if (patches.length === 0) return { updatedIds: [], notFoundIds: [] };
+	const ids = patches.map((p) => p.id);
+	const placeholders = ids.map(() => '?').join(', ');
+	const { results } = await db
+		.prepare(`SELECT id FROM items WHERE id IN (${placeholders})`)
+		.bind(...ids)
+		.all<{ id: string }>();
+	const existing = new Set(results.map((r) => r.id));
+
+	const updatedIds: string[] = [];
+	const notFoundIds: string[] = [];
+	const stmts: D1PreparedLike[] = [];
+	for (const { id, ...patch } of patches) {
+		if (!existing.has(id)) {
+			notFoundIds.push(id);
+			continue;
+		}
+		updatedIds.push(id);
+		stmts.push(...itemUpdateStmts(db, id, patch));
+	}
+	if (stmts.length > 0) await db.batch(stmts);
+	return { updatedIds, notFoundIds };
 }
 
 /** Deletes an item and its tag/source links (and any per-location overrides). Returns `true` if removed. */
