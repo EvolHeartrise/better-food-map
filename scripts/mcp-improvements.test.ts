@@ -22,6 +22,7 @@ import {
 	setLocationItemOverride,
 	getLocationItemOverrides,
 	updateItem,
+	updateItems,
 	updateMenu,
 	updateLocations,
 	existingLocationsAtCoords,
@@ -143,6 +144,37 @@ test('updateItem add_sources appends and de-dupes; sources replaces', async () =
 	// `sources` replaces the whole set.
 	await updateItem(db, itemId, { sources: [{ url: 'https://c', label: null }] });
 	expect((await getItemById(db, itemId))?.sources.map((s) => s.url)).toEqual(['https://c']);
+});
+
+test('updateItems applies a batch atomically and reports not_found_ids', async () => {
+	const db = freshDb();
+	const [locId] = await insertLocations(db, [indieLocation()]);
+	const [a, b] = await insertFoods(db, [
+		{ location_id: locId, item_name: 'A', price: 1 },
+		{ location_id: locId, item_name: 'B', price: 2, ingredients: 'tomato' }
+	]);
+
+	const { updatedIds, notFoundIds } = await updateItems(db, [
+		{ id: a, price: 9, item_name: 'A2' },
+		{ id: b, ingredients: 'basil, garlic' },
+		{ id: 'missing-id', price: 5 }
+	]);
+
+	expect(updatedIds.toSorted()).toEqual([a, b].toSorted());
+	expect(notFoundIds).toEqual(['missing-id']);
+
+	const itemA = await getItemById(db, a);
+	expect(itemA?.item_name).toBe('A2');
+	expect(itemA?.price).toBe(9);
+
+	// `ingredients` replaces the whole ingredient set for that item.
+	const itemB = await getItemById(db, b);
+	expect(
+		itemB?.tags
+			.filter((t) => t.tag_type === 'ingredient')
+			.map((t) => t.name)
+			.toSorted()
+	).toEqual(['basil', 'garlic']);
 });
 
 test('updateMenu and updateLocations add_sources append', async () => {
