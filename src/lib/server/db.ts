@@ -14,8 +14,8 @@
 //     menu. Either way a location's effective menu is "the items of
 //     locations.menu_id, with this location's overrides applied".
 //   * One `tags` vocabulary (id, name, tag_type) with tag_type 'dietary' |
-//     'course' | 'ingredient'. Items link to tags through `item_tags`, whose
-//     `optional` flag marks a tag/ingredient that can be added or left out.
+//     'course'. Items link to tags through `item_tags`, whose `optional` flag
+//     marks a tag that can be added or left out (e.g. "can be made vegan").
 // ---------------------------------------------------------------------------
 
 // Type-only import (erased at build time, so it adds no runtime dependency and
@@ -25,14 +25,6 @@ import type { Category } from '../category';
 // Value import (tiny, pure, client-safe): the canonical display-address formatter,
 // so the single-line `address` is composed identically wherever a location is read.
 import { formatAddress } from '../address';
-// Value import (tiny, pure, client-safe): the deterministic half of ingredient
-// canonicalization — accent-folding + whitespace/case normalization — so the write
-// path folds an ingredient name to the same identity the alias seed script uses.
-import { foldIngredientName } from '../tags';
-// The dietary-profile selections persisted per user (see migration 0013). The
-// key→filter-tag vocabulary that resolveDietProfileFilters reads lives there too;
-// this module only stores/loads the raw selections and resolves them to tags.
-import type { DietProfile } from '../diet-profile';
 
 // ---------------------------------------------------------------------------
 // Minimal D1 interface (the real `D1Database` binding and the HTTP shim in
@@ -60,8 +52,7 @@ export type { Category };
 
 // Canonical, app-defined tag identifiers (dietary + course). These are part of
 // the app contract and fixed — they are NOT user-authored, so this union is the
-// single source of truth. Ingredient tags are DATA (ids like `ing:tomato`),
-// created from item ingredients, and are deliberately not part of this union.
+// single source of truth.
 export type TagId =
 	| 'vegan'
 	| 'vegetarian'
@@ -76,10 +67,8 @@ export type TagId =
  * What a tag describes. `dietary` tags (vegan, halal, …) are source-asserted —
  * only applied when a source explicitly designates the item. `course` tags
  * (dessert, drink) describe what kind of item it is and are applied factually.
- * `ingredient` tags name an ingredient of the item; they are data, not part of
- * the curated {@link TagId} set.
  */
-export type TagType = 'dietary' | 'course' | 'ingredient';
+export type TagType = 'dietary' | 'course';
 
 export interface Tag {
 	id: string;
@@ -89,7 +78,7 @@ export interface Tag {
 
 /** A tag as applied to a specific item, carrying the per-edge `optional` flag. */
 export interface ItemTag extends Tag {
-	/** True if this tag/ingredient is optional for the item (can be added/omitted). */
+	/** True if this tag is optional for the item (e.g. "can be made vegan"). */
 	optional: boolean;
 }
 
@@ -140,8 +129,7 @@ export interface Location {
 
 /**
  * A menu item. Belongs to a {@link Menu} — private to one venue, or shared
- * across a chain's branches. Ingredients are represented as `ingredient`-typed
- * entries in {@link tags}, not as a free-text field.
+ * across a chain's branches.
  */
 export interface Item {
 	id: string;
@@ -156,7 +144,7 @@ export interface Item {
 	 * self-describing. Defaults to "CAD".
 	 */
 	currency: string;
-	/** Tags applied to this item (dietary, course, and ingredient), with `optional`. */
+	/** Tags applied to this item (dietary and course), with `optional`. */
 	tags: ItemTag[];
 	/** Citations for where this item's data came from (may be empty). */
 	sources: Source[];
@@ -306,8 +294,8 @@ export interface LocationItemOverride {
 
 // The canonical tag list (dietary first, then course) — the display/filter order
 // on the frontend. These are app-defined, never created from the UI, and seeded
-// into D1 by migrations/0001_init.sql (renamed to (name, tag_type) by 0004).
-// Ingredient tags are NOT listed here; they are data created from item ingredients.
+// into D1 by migrations/0001_init.sql (renamed to (name, tag_type) by 0004). This
+// is the WHOLE tag vocabulary: there are no data-created tags.
 export const TAGS: readonly Tag[] = [
 	{ id: 'vegan', name: 'Vegan', tag_type: 'dietary' },
 	{ id: 'vegetarian', name: 'Vegetarian', tag_type: 'dietary' },
@@ -418,34 +406,6 @@ function mergeSources(primary: Source[], secondary: Source[]): Source[] {
 	return merged;
 }
 
-/**
- * Splits a free-text ingredient string into normalized, de-duplicated ingredient
- * names. Each part is canonicalized by {@link foldIngredientName} (trim, lower-case,
- * accent-fold, collapse whitespace) — so "Jalapeño" and "jalapeno" yield the same
- * name — then mapped to a tag id of `ing:<name>`. Plurals and synonyms are NOT
- * folded here (they aren't rule-derivable); they are redirected to a canonical tag
- * at link time via the `ingredient_aliases` map (see {@link ingredientLinkStmts}).
- * Migration 0004 derived the original tags with a bare trim+lower-case; the accent
- * fold is an additive refinement applied to every write from here on.
- */
-function parseIngredients(raw: string | null | undefined): string[] {
-	if (!raw) return [];
-	const seen = new Set<string>();
-	const out: string[] = [];
-	for (const part of raw.split(',')) {
-		const name = foldIngredientName(part);
-		if (name === '' || seen.has(name)) continue;
-		seen.add(name);
-		out.push(name);
-	}
-	return out;
-}
-
-/** Tag id for an ingredient name (matches migration 0004). */
-function ingredientTagId(name: string): string {
-	return `ing:${name}`;
-}
-
 // ---------------------------------------------------------------------------
 // SQL (D1 enforces foreign keys; schema lives in migrations/)
 // ---------------------------------------------------------------------------
@@ -471,85 +431,6 @@ export const MAP_RESULT_LIMIT = 200;
 
 export function getAllTags(): Tag[] {
 	return TAGS.map((tag) => ({ ...tag }));
-}
-
-/**
- * Hard cap on how many tag matches {@link searchTagVocabulary} returns for one
- * query. The tag filter's picker only needs the top matches, and the ingredient
- * vocabulary runs to thousands of rows. Mirrored on the client only to label a
- * capped result set; this module stays the source of truth for the value.
- */
-export const TAG_SEARCH_LIMIT = 50;
-
-/**
- * Searches the whole tag vocabulary — the curated dietary/course tags AND the
- * `ingredient` tags created from item data — by name substring, for the tag
- * filter's searchable picker. An empty query returns just the curated tags (the
- * common default the picker shows before the user types). Otherwise matches are
- * ranked exact → prefix → substring, then curated (dietary, course) before
- * ingredient, then SHORTEST name first so clean ingredient names ("aioli") sort
- * above the long free-text phrases some menus produced ("a side of maple syrup
- * and fresh fruit slices…"), then alphabetical. Capped at {@link TAG_SEARCH_LIMIT}.
- *
- * The substring match runs against `tags_fts`, an FTS5 trigram index over tag
- * names (see migrations/0006), so a `LIKE '%q%'` scan over thousands of
- * ingredient rows becomes an index lookup. Two constraints follow from the
- * trigram LIKE optimisation and are load-bearing:
- *   • No `ESCAPE` clause — it disables the trigram index (forces a full scan).
- *     Any `%`/`_` the user typed is simply dropped (both are vanishingly rare in
- *     tag names); if nothing is left, the query is treated as empty.
- *   • Patterns shorter than 3 characters fall back to a scan of the (small) FTS
- *     table — still correct, just unindexed.
- */
-export async function searchTagVocabulary(
-	db: D1Like,
-	rawQuery: string,
-	limit = TAG_SEARCH_LIMIT
-): Promise<Tag[]> {
-	// Fold the query the same way ingredient names are folded on write, so an
-	// accented query ("jalapeño") matches the accent-folded canonical tag
-	// ("jalapeno") directly — diacritics need no alias rows on either side. Then
-	// strip LIKE wildcards (rare in tag names) so a typed %/_ can't act as one.
-	const q = foldIngredientName(rawQuery);
-	if (q === '') return getAllTags();
-	const safe = q.replace(/[%_]/g, '');
-	if (safe === '') return getAllTags();
-	// Two match sources, UNIONed (which de-duplicates a tag matched both ways):
-	//   1. tag NAMES via the `tags_fts` trigram index (must stay ESCAPE-free, see
-	//      migration 0006), so a typed canonical name matches.
-	//   2. ALIAS spellings via `ingredient_aliases`, mapped back to their CANONICAL
-	//      tag — so typing a variant ("tomatoes", "garbanzo", "jalapeño") still
-	//      surfaces the canonical tag (and, post-merge, all of its items). The
-	//      alias table is small and curated, so a plain LIKE scan over it is cheap
-	//      (no FTS needed); `safe` already stripped %/_ so no ESCAPE is required.
-	// `LIMIT` is a trusted integer constant, so it is interpolated rather than bound
-	// (matching MAP_RESULT_LIMIT above); every user value is bound. The ranking's
-	// LOWER()/LENGTH() expressions run only over the matched rows.
-	const { results } = await db
-		.prepare(
-			`SELECT id, name, tag_type FROM (
-				SELECT t.id AS id, t.name AS name, t.tag_type AS tag_type
-				FROM tags_fts f JOIN tags t ON t.rowid = f.rowid
-				WHERE f.name LIKE ?
-				UNION
-				SELECT t.id AS id, t.name AS name, t.tag_type AS tag_type
-				FROM ingredient_aliases a JOIN tags t ON t.id = a.canonical_id
-				WHERE a.alias LIKE ?
-			 )
-			 ORDER BY
-				CASE
-					WHEN LOWER(name) = ? THEN 0
-					WHEN LOWER(name) LIKE ? THEN 1
-					ELSE 2
-				END,
-				CASE tag_type WHEN 'dietary' THEN 0 WHEN 'course' THEN 1 ELSE 2 END,
-				LENGTH(name),
-				name
-			 LIMIT ${limit}`
-		)
-		.bind(`%${safe}%`, `%${safe}%`, safe, `${safe}%`)
-		.all<Tag>();
-	return results;
 }
 
 /**
@@ -613,8 +494,7 @@ export async function getLocationsWithTags(
 				.bind(...params)
 				.all<LocationRow>(),
 			// Distinct dietary/course tags offered across a location's menu, excluding
-			// items it has overridden to unavailable. Ingredient tags are omitted — the
-			// location overview is about dietary options, not every ingredient.
+			// items it has overridden to unavailable.
 			db
 				.prepare(
 					`SELECT DISTINCT l.id AS owner_id, t.id AS id, t.name AS name, t.tag_type AS tag_type
@@ -753,10 +633,10 @@ export function getLocationMapData(db: D1Like, id: string): Promise<MapData> {
  * optional and AND together:
  *   • `place` — case-insensitive substring of the location name.
  *   • `item`  — the location's menu must hold an item whose name matches,
- *   • `includedTagIds` / `excludedTagIds` — …that ALSO carries every included tag
- *     and none of the excluded ones (the SAME item must satisfy all three, so a
- *     menu with a vegan soup and a separate gluten-free cake doesn't match
- *     "vegan AND gluten-free"). This mirrors the client's per-item `itemMatches`.
+ *   • `dietTagId` — …that ALSO carries that one curated dietary tag (the SAME item
+ *     must satisfy both, so a menu with a vegan soup and a separate plain cake
+ *     doesn't match a "vegan" item search). This mirrors the client's per-item
+ *     `itemMatches`.
  * Per-location overrides are not applied here (the shared menu is what's
  * searched); the client re-filters the resolved menu, so an item made unavailable
  * at one branch simply drops from that card.
@@ -764,8 +644,8 @@ export function getLocationMapData(db: D1Like, id: string): Promise<MapData> {
 export interface SearchMapQuery {
 	place: string;
 	item: string;
-	includedTagIds: string[];
-	excludedTagIds: string[];
+	/** A single curated dietary tag id the item must carry, or `null` for no diet filter. */
+	dietTagId: string | null;
 	/** Anchor the "nearest" ranking is measured from (the map centre). */
 	lat: number;
 	lng: number;
@@ -782,11 +662,11 @@ export function getSearchMapData(db: D1Like, q: SearchMapQuery): Promise<MapData
 	}
 
 	// The item-level predicate: a single correlated EXISTS over the location's menu
-	// items, so a venue matches only when ONE item satisfies the name, every
-	// included tag and no excluded tag. The outer table is referenced as
-	// `locations.menu_id` (it is always the unaliased `locations` wherever
-	// `locFilter` is spliced in — see queryMapData), since `items` also has a
-	// `menu_id` column and a bare name would be ambiguous.
+	// items, so a venue matches only when ONE item satisfies both the name and the
+	// selected diet. The outer table is referenced as `locations.menu_id` (it is
+	// always the unaliased `locations` wherever `locFilter` is spliced in — see
+	// queryMapData), since `items` also has a `menu_id` column and a bare name would
+	// be ambiguous.
 	const item = q.item.trim();
 	const itemConds: string[] = [];
 	const itemParams: (string | number)[] = [];
@@ -794,20 +674,9 @@ export function getSearchMapData(db: D1Like, q: SearchMapQuery): Promise<MapData
 		itemConds.push("i.item_name LIKE ? ESCAPE '\\'");
 		itemParams.push(`%${escapeLikePattern(item)}%`);
 	}
-	if (q.includedTagIds.length > 0) {
-		const ph = q.includedTagIds.map(() => '?').join(', ');
-		// COUNT(DISTINCT) over the included set = its size ⇒ the item carries them all.
-		itemConds.push(
-			`(SELECT COUNT(DISTINCT it.tag_id) FROM item_tags it WHERE it.item_id = i.id AND it.tag_id IN (${ph})) = ${q.includedTagIds.length}`
-		);
-		itemParams.push(...q.includedTagIds);
-	}
-	if (q.excludedTagIds.length > 0) {
-		const ph = q.excludedTagIds.map(() => '?').join(', ');
-		itemConds.push(
-			`NOT EXISTS (SELECT 1 FROM item_tags x WHERE x.item_id = i.id AND x.tag_id IN (${ph}))`
-		);
-		itemParams.push(...q.excludedTagIds);
+	if (q.dietTagId !== null) {
+		itemConds.push(`EXISTS (SELECT 1 FROM item_tags it WHERE it.item_id = i.id AND it.tag_id = ?)`);
+		itemParams.push(q.dietTagId);
 	}
 	if (itemConds.length > 0) {
 		conds.push(
@@ -1119,12 +988,10 @@ export async function getItemById(db: D1Like, id: string): Promise<Item | null> 
 // Writes — shared item-write helpers
 // ---------------------------------------------------------------------------
 
-/** Tag/ingredient/source content for one item write (insert or update). */
+/** Tag/source content for one item write (insert or update). */
 interface ItemContent {
 	tags?: TagId[];
 	optionalTags?: TagId[];
-	ingredients?: string | null;
-	optionalIngredients?: string | null;
 	sources?: Source[];
 }
 
@@ -1136,57 +1003,14 @@ function linkTagStmt(db: D1Like, itemId: string, tagId: string, optional: 0 | 1)
 }
 
 /**
- * Statements linking an item to ONE ingredient, resolving it through the
- * `ingredient_aliases` canonicalization map: a variant spelling (a known plural
- * like "tomatoes", or a synonym like "garbanzo") is redirected to its canonical
- * tag (`ing:tomato`, `ing:chickpea`) instead of minting a near-duplicate. Accents
- * are already folded by {@link parseIngredients}, so only the non-rule-derivable
- * variants need the table.
- *
- * Both the canonical-tag ensure and the link resolve the alias IN SQL (via a
- * COALESCE subquery), so these statements stay batchable with no extra round-trip.
- * When `name` is not a known variant, COALESCE falls back to `ing:<name>`. The
- * ensured tag's display name is `SUBSTR(id, 5)` — everything after the `ing:`
- * prefix — which equals the stored lower-cased ingredient name in both branches.
- */
-function ingredientLinkStmts(
-	db: D1Like,
-	itemId: string,
-	name: string,
-	optional: 0 | 1
-): D1PreparedLike[] {
-	const tagId = ingredientTagId(name);
-	return [
-		db
-			.prepare(
-				`INSERT OR IGNORE INTO tags (id, name, tag_type)
-				 SELECT cid, SUBSTR(cid, 5), 'ingredient'
-				 FROM (SELECT COALESCE((SELECT canonical_id FROM ingredient_aliases WHERE alias = ?), ?) AS cid)`
-			)
-			.bind(name, tagId),
-		db
-			.prepare(
-				`INSERT OR IGNORE INTO item_tags (item_id, tag_id, optional)
-				 VALUES (?, COALESCE((SELECT canonical_id FROM ingredient_aliases WHERE alias = ?), ?), ?)`
-			)
-			.bind(itemId, name, tagId, optional)
-	];
-}
-
-/**
- * Statements that link an item to its tags: curated dietary/course tags (from
- * `tags`/`optionalTags`) plus ingredient tags parsed from `ingredients`/
- * `optionalIngredients` (creating the canonical ingredient rows on the fly, see
- * {@link ingredientLinkStmts}).
+ * Statements that link an item to its curated dietary/course tags, from `tags`
+ * (required) and `optionalTags` (the per-edge `optional` flag — e.g. a dish that
+ * can be made vegan on request).
  */
 function tagLinkStmts(db: D1Like, itemId: string, content: ItemContent): D1PreparedLike[] {
 	const stmts: D1PreparedLike[] = [];
 	for (const tagId of content.tags ?? []) stmts.push(linkTagStmt(db, itemId, tagId, 0));
 	for (const tagId of content.optionalTags ?? []) stmts.push(linkTagStmt(db, itemId, tagId, 1));
-	for (const name of parseIngredients(content.ingredients))
-		stmts.push(...ingredientLinkStmts(db, itemId, name, 0));
-	for (const name of parseIngredients(content.optionalIngredients))
-		stmts.push(...ingredientLinkStmts(db, itemId, name, 1));
 	return stmts;
 }
 
@@ -1460,8 +1284,6 @@ export type FoodInsert = {
 	price?: number | null;
 	tags?: TagId[];
 	optionalTags?: TagId[];
-	ingredients?: string | null;
-	optionalIngredients?: string | null;
 	sources?: Source[];
 };
 
@@ -1524,8 +1346,7 @@ async function resolvePrivateMenus(
 
 /**
  * Inserts many items belonging to independent venues (their own private menus),
- * in one atomic batch, returning their ids in input order. Each item's
- * `ingredients` string is stored as ingredient tags. A venue with no menu yet
+ * in one atomic batch, returning their ids in input order. A venue with no menu yet
  * gets a private menu created for it automatically; `currency` (default CAD) sets
  * that new menu's currency (ignored for a venue whose private menu already exists).
  */
@@ -1558,11 +1379,11 @@ export async function insertFoods(
 
 /**
  * Statements that apply one item patch: the scalar SET (only the columns present
- * in `patch`), plus full-set replacements for the dietary/course tags, the
- * ingredient tags and the sources when those are provided (`tags: []`/
- * `ingredients: ''`/`sources: []` clear; `addSources` appends instead of replacing).
- * No existence check — callers ({@link updateItem}, {@link updateItems}) resolve which
- * ids exist up front so a whole batch stays a single round trip.
+ * in `patch`), plus full-set replacements for the dietary/course tags and the
+ * sources when those are provided (`tags: []`/`sources: []` clear; `addSources`
+ * appends instead of replacing). No existence check — callers ({@link updateItem},
+ * {@link updateItems}) resolve which ids exist up front so a whole batch stays a
+ * single round trip.
  */
 function itemUpdateStmts(db: D1Like, id: string, patch: ItemUpdate): D1PreparedLike[] {
 	const stmts: D1PreparedLike[] = [];
@@ -1582,7 +1403,8 @@ function itemUpdateStmts(db: D1Like, id: string, patch: ItemUpdate): D1PreparedL
 		);
 	}
 
-	// Replace the dietary/course tag set (leaving ingredient tags untouched).
+	// Replace the dietary/course tag set (every tag is dietary/course now, so this
+	// clears all of an item's tag links before re-linking the new set).
 	if (patch.tags !== undefined || patch.optionalTags !== undefined) {
 		stmts.push(
 			db
@@ -1594,22 +1416,6 @@ function itemUpdateStmts(db: D1Like, id: string, patch: ItemUpdate): D1PreparedL
 		);
 		for (const tagId of patch.tags ?? []) stmts.push(linkTagStmt(db, id, tagId, 0));
 		for (const tagId of patch.optionalTags ?? []) stmts.push(linkTagStmt(db, id, tagId, 1));
-	}
-
-	// Replace the ingredient tag set (leaving dietary/course tags untouched).
-	if (patch.ingredients !== undefined || patch.optionalIngredients !== undefined) {
-		stmts.push(
-			db
-				.prepare(
-					`DELETE FROM item_tags WHERE item_id = ? AND tag_id IN
-					 (SELECT id FROM tags WHERE tag_type = 'ingredient')`
-				)
-				.bind(id)
-		);
-		for (const name of parseIngredients(patch.ingredients))
-			stmts.push(...ingredientLinkStmts(db, id, name, 0));
-		for (const name of parseIngredients(patch.optionalIngredients))
-			stmts.push(...ingredientLinkStmts(db, id, name, 1));
 	}
 
 	if (patch.sources !== undefined) {
@@ -1885,8 +1691,6 @@ export type MenuItemInsert = {
 	price?: number | null;
 	tags?: TagId[];
 	optionalTags?: TagId[];
-	ingredients?: string | null;
-	optionalIngredients?: string | null;
 	sources?: Source[];
 };
 
@@ -1963,7 +1767,7 @@ export type ItemUpdate = {
 /**
  * Partial update of an item by id. For a shared chain item the change applies to
  * EVERY branch serving its menu; for a venue's own item it applies to that venue.
- * See {@link applyItemUpdate} for the replace-set semantics of tags/ingredients/sources.
+ * See {@link applyItemUpdate} for the replace-set semantics of tags/sources.
  */
 export async function updateItem(db: D1Like, id: string, patch: ItemUpdate): Promise<Item | null> {
 	return applyItemUpdate(db, id, patch);
@@ -2130,8 +1934,8 @@ export async function deleteLocationItemOverride(
 }
 
 // ---------------------------------------------------------------------------
-// Users, sessions, likes and search history (the user-owned data added by
-// migration 0007). Unlike everything above — curated map data written by the MCP
+// Users, sessions and likes (the user-owned data added by migration 0007; the
+// dietary profile added by 0013). Unlike everything above — curated map data written by the MCP
 // tooling — these rows are written by the deployed app at runtime. The functions
 // stay runtime-agnostic (a `D1Like` handle in, async out) like the rest of this
 // module; the crypto/cookie glue lives in src/lib/server/auth.ts. Timestamps are
@@ -2379,252 +2183,44 @@ export async function setItemLike(
 	}
 }
 
-/** One search to log. Tag lists are stored verbatim as JSON for rehydration. */
-export interface SearchLogEntry {
-	id: string;
-	userId: string;
-	place: string;
-	item: string;
-	included: Tag[];
-	excluded: Tag[];
-	createdAt: number;
-}
-
-/** Appends a search to the user's history. Uncapped — see migration 0007. */
-export async function logSearch(db: D1Like, entry: SearchLogEntry): Promise<void> {
-	await db
-		.prepare(
-			`INSERT INTO search_history
-				(id, user_id, place, item, included_tags, excluded_tags, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?)`
-		)
-		.bind(
-			entry.id,
-			entry.userId,
-			entry.place,
-			entry.item,
-			JSON.stringify(entry.included),
-			JSON.stringify(entry.excluded),
-			entry.createdAt
-		)
-		.run();
-}
-
-/**
- * Hard cap on how many tag suggestions {@link getTagSuggestions} returns for one
- * picker — bounding both the default (empty-query) list and the popularity
- * re-rank of typed results. Mirrored on the client only to size the rank map;
- * this module stays the source of truth for the value.
- */
-export const TAG_SUGGESTION_LIMIT = 30;
-
-/** Which half of the tag filter a suggestion is for: the include set or the exclude set. */
-export type TagFilterMode = 'include' | 'exclude';
-
-/**
- * Suggests tags for one tag-filter picker, mined from the searches users have run
- * ({@link logSearch}). For `mode` it reads that column of `search_history`
- * (`included_tags` for 'include', `excluded_tags` for 'exclude'), so the two
- * pickers draw on SEPARATE popularity pools — a tag people frequently EXCLUDE
- * doesn't bubble up in the INCLUDE picker.
- *
- * Ordering: the signed-in user's own tags in this mode first, most-recently-used
- * first; then the globally most-searched tags in this mode by frequency; then
- * alphabetical as a stable tiebreak. De-duplicated across the two tiers and
- * capped at {@link TAG_SUGGESTION_LIMIT}. A null `userId` (signed out) drops the
- * personal tier, leaving just the global popularity ranking.
- *
- * Each stored tag is JSON ({id,name,tag_type}); `json_each` expands the array and
- * each element is JOINed to the live `tags` row by id — so a tag since deleted is
- * dropped, and a since-renamed one shows its current name. The tag pickers are the
- * only consumer; an empty result (a fresh database with no matching history) is
- * expected and simply surfaces nothing until searches accrue.
- */
-export async function getTagSuggestions(
-	db: D1Like,
-	userId: string | null,
-	mode: TagFilterMode,
-	limit = TAG_SUGGESTION_LIMIT
-): Promise<Tag[]> {
-	// The column is a trusted literal chosen by `mode`, never user input, so it is
-	// interpolated (matching the LIMIT convention in this module); the user id and
-	// every other user value below is bound.
-	const column = mode === 'include' ? 'included_tags' : 'excluded_tags';
-	const safeLimit = Math.max(0, Math.trunc(limit));
-	if (safeLimit === 0) return [];
-
-	// Global popularity in this mode: expand each logged search's JSON tag array,
-	// tally rows by tag id, and resolve each to its live tag row.
-	const popularStmt = db.prepare(
-		`SELECT t.id AS id, t.name AS name, t.tag_type AS tag_type, COUNT(*) AS n
-		 FROM search_history sh, json_each(sh.${column}) j
-		 JOIN tags t ON t.id = json_extract(j.value, '$.id')
-		 GROUP BY t.id
-		 ORDER BY n DESC, t.name
-		 LIMIT ${safeLimit}`
-	);
-
-	// The signed-in user's own tags in this mode, most-recently-used first.
-	const recentStmt =
-		userId === null
-			? null
-			: db
-					.prepare(
-						`SELECT t.id AS id, t.name AS name, t.tag_type AS tag_type,
-						        MAX(sh.created_at) AS last_used
-						 FROM search_history sh, json_each(sh.${column}) j
-						 JOIN tags t ON t.id = json_extract(j.value, '$.id')
-						 WHERE sh.user_id = ?
-						 GROUP BY t.id
-						 ORDER BY last_used DESC
-						 LIMIT ${safeLimit}`
-					)
-					.bind(userId);
-
-	const [{ results: popular }, recent] = await Promise.all([
-		popularStmt.all<Tag & { n: number }>(),
-		recentStmt
-			? recentStmt.all<Tag & { last_used: number }>().then((r) => r.results)
-			: Promise.resolve<Tag[]>([])
-	]);
-
-	// Personal-recent first, then global-popular, de-duplicated, capped. Strip the
-	// ranking columns (n / last_used) back to a bare Tag.
-	const merged: Tag[] = [];
-	const seen = new Set<string>();
-	for (const tag of [...recent, ...popular]) {
-		if (seen.has(tag.id)) continue;
-		seen.add(tag.id);
-		merged.push({ id: tag.id, name: tag.name, tag_type: tag.tag_type });
-		if (merged.length >= safeLimit) break;
-	}
-	return merged;
-}
-
 // ---------------------------------------------------------------------------
-// Dietary profile (migration 0013)
+// Dietary profile (migration 0013, reshaped by 0014)
 // ---------------------------------------------------------------------------
 
-/** Parses a stored JSON array column to a string[], tolerating malformed data. */
-function parseJsonStringArray(raw: string | null | undefined): string[] {
-	if (!raw) return [];
-	try {
-		const parsed = JSON.parse(raw);
-		return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [];
-	} catch {
-		return [];
-	}
-}
-
 /**
- * A signed-in user's saved dietary profile, or an empty profile when none is
- * stored. The selections are stable catalog keys (see $lib/diet-profile); this read
- * does not validate them against the current catalog — {@link resolveDietProfileFilters}
- * and the catalog's own lookups simply ignore any key that no longer maps.
+ * A signed-in user's saved diet: a single curated dietary tag id to pre-apply as
+ * the map's filter, or `null` when none is set (or no row exists). The caller
+ * sanitizes the value to a known dietary tag id before it is used as a filter
+ * (see `sanitizeDiet` in $lib/diet-profile), so an id no longer in the catalog is
+ * simply treated as "no filter".
  */
-export async function getDietProfile(db: D1Like, userId: string): Promise<DietProfile> {
+export async function getUserDiet(db: D1Like, userId: string): Promise<string | null> {
 	const row = await db
-		.prepare(`SELECT restrictions, allergies FROM user_dietary_profile WHERE user_id = ?`)
+		.prepare(`SELECT diet FROM user_dietary_profile WHERE user_id = ?`)
 		.bind(userId)
-		.first<{ restrictions: string; allergies: string }>();
-	if (!row) return { restrictions: [], allergies: [] };
-	return {
-		restrictions: parseJsonStringArray(row.restrictions),
-		allergies: parseJsonStringArray(row.allergies)
-	};
+		.first<{ diet: string | null }>();
+	return row?.diet ?? null;
 }
 
 /**
- * Saves (upserts) a user's dietary profile. The selections are stored verbatim as
- * JSON arrays — the caller is responsible for sanitizing them to known catalog keys
- * (see `sanitizeProfile`). One row per user, keyed by user_id.
+ * Saves (upserts) a user's selected diet — a single curated dietary tag id, or
+ * `null` to clear it. The caller is responsible for sanitizing the id to a known
+ * dietary tag (see `sanitizeDiet`). One row per user, keyed by user_id.
  */
-export async function setDietProfile(
+export async function setUserDiet(
 	db: D1Like,
 	userId: string,
-	profile: DietProfile,
+	diet: string | null,
 	now: number
 ): Promise<void> {
 	await db
 		.prepare(
-			`INSERT INTO user_dietary_profile (user_id, restrictions, allergies, updated_at)
-			 VALUES (?, ?, ?, ?)
+			`INSERT INTO user_dietary_profile (user_id, diet, updated_at)
+			 VALUES (?, ?, ?)
 			 ON CONFLICT(user_id) DO UPDATE SET
-				restrictions = excluded.restrictions,
-				allergies = excluded.allergies,
+				diet = excluded.diet,
 				updated_at = excluded.updated_at`
 		)
-		.bind(userId, JSON.stringify(profile.restrictions), JSON.stringify(profile.allergies), now)
+		.bind(userId, diet, now)
 		.run();
-}
-
-/** The include/exclude tag sets a dietary profile resolves to, ready for the pickers. */
-export interface DietProfileFilters {
-	/** Curated dietary tags to require (source-asserted positive designations). */
-	included: Tag[];
-	/** Ingredient tags to forbid (resolved from selected allergens' ingredients). */
-	excluded: Tag[];
-}
-
-/**
- * Resolves a profile's pre-computed filter pieces (see `profileIncludeTagIds` /
- * `profileExcludeIngredientNames` in $lib/diet-profile) into concrete {@link Tag}
- * objects the map's include/exclude pickers consume:
- *   • `included` — the curated dietary tags named by `includeTagIds`, taken from the
- *     in-code {@link TAGS} vocabulary (no DB hit; unknown ids are dropped).
- *   • `excluded` — the ingredient tags named by `excludeIngredientNames`, resolved
- *     against the live tag vocabulary the SAME way the write path and tag search do:
- *     each name is accent-/case-folded ({@link foldIngredientName}) to its `ing:<name>`
- *     id, and ALSO looked up through `ingredient_aliases` so a plural/synonym in the
- *     catalog (e.g. "soybean") still finds the canonical tag. A name with no matching
- *     tag in the data simply contributes nothing — excluding a tag no item carries is
- *     a harmless no-op, but we only surface tags that actually exist so the pickers
- *     show meaningful, removable chips.
- */
-export async function resolveDietProfileFilters(
-	db: D1Like,
-	includeTagIds: string[],
-	excludeIngredientNames: string[]
-): Promise<DietProfileFilters> {
-	// included: curated dietary/course tags only, looked up in the in-code vocabulary.
-	const tagById = new Map(TAGS.map((t) => [t.id, t]));
-	const included: Tag[] = [];
-	const seenInclude = new Set<string>();
-	for (const id of includeTagIds) {
-		const tag = tagById.get(id);
-		if (tag && !seenInclude.has(id)) {
-			seenInclude.add(id);
-			included.push({ ...tag });
-		}
-	}
-
-	// excluded: fold each ingredient name to its canonical identity, then resolve to
-	// existing ingredient tags by id and via the alias map (mirrors searchTagVocabulary).
-	const names = [
-		...new Set(excludeIngredientNames.map(foldIngredientName).filter((n) => n !== ''))
-	];
-	const excluded: Tag[] = [];
-	if (names.length > 0) {
-		const ids = names.map(ingredientTagId);
-		const idPlaceholders = ids.map(() => '?').join(', ');
-		const namePlaceholders = names.map(() => '?').join(', ');
-		const { results } = await db
-			.prepare(
-				`SELECT id, name, tag_type FROM tags WHERE id IN (${idPlaceholders})
-				 UNION
-				 SELECT t.id AS id, t.name AS name, t.tag_type AS tag_type
-				 FROM ingredient_aliases a JOIN tags t ON t.id = a.canonical_id
-				 WHERE a.alias IN (${namePlaceholders})`
-			)
-			.bind(...ids, ...names)
-			.all<Tag>();
-		const seenExclude = new Set<string>();
-		for (const row of results) {
-			if (seenExclude.has(row.id)) continue;
-			seenExclude.add(row.id);
-			excluded.push({ id: row.id, name: row.name, tag_type: row.tag_type });
-		}
-	}
-
-	return { included, excluded };
 }

@@ -10,22 +10,16 @@
 		getBrands,
 		getUserLocation
 	} from '$lib/data.remote';
-	import {
-		getCurrentUser,
-		getLikes,
-		setLocationLiked,
-		setItemLiked,
-		logSearch
-	} from '$lib/user.remote';
-	import { getProfileFilters } from '$lib/profile.remote';
+	import { getCurrentUser, getLikes, setLocationLiked, setItemLiked } from '$lib/user.remote';
+	import { getDiet, setDiet } from '$lib/profile.remote';
 	import LocationMap from '$lib/components/LocationMap.svelte';
-	import TagPicker from '$lib/components/TagPicker.svelte';
+	import DietSelector from '$lib/components/DietSelector.svelte';
 	import FoodTag from '$lib/components/FoodTag.svelte';
 	import AccountMenu from '$lib/components/AccountMenu.svelte';
 	import LikeButton from '$lib/components/LikeButton.svelte';
 	import Search from '@lucide/svelte/icons/search';
 	import { categoryLabel, type Category } from '$lib/category';
-	import type { MapData, MapLocation, Item, Bounds, Tag } from '$lib/server/db';
+	import type { MapData, MapLocation, Item, Bounds } from '$lib/server/db';
 
 	// The visible map area, reported by <LocationMap> (debounced) as the user pans
 	// and zooms, plus once on load. This is the ONLY thing that decides which data
@@ -41,55 +35,45 @@
 	const MAX_RESULTS = 200;
 
 	// --- Search filters --------------------------------------------------------
-	// Independent inputs. `place` filters venues by name; `item` and the tag
-	// include/exclude lists filter menu items; they combine with AND. With ANY of
-	// them set the search goes GLOBAL — the whole index, nearest first (see the
-	// search effect below) — rather than narrowing only what's on screen; cleared,
-	// the map returns to browsing the current viewport. Tags (dietary, course and
-	// ingredient) come from two <TagPicker>s — one include, one exclude: an item
-	// must carry every `included` tag and none of the `excluded`.
+	// Independent inputs. `place` filters venues by name; `item` (free text) and the
+	// dietary selector filter menu items; they combine with AND. With ANY of them set
+	// the search goes GLOBAL — the whole index, nearest first (see the search effect
+	// below) — rather than narrowing only what's on screen; cleared, the map returns
+	// to browsing the current viewport. The dietary selector is single-select: an
+	// item must carry the chosen dietary tag (vegan, gluten_free, …).
 	let place = $state('');
 	let item = $state('');
-	let included = $state<Tag[]>([]);
-	let excluded = $state<Tag[]>([]);
+	// The chosen dietary tag id, or null for "any diet" (no diet filter).
+	let diet = $state<string | null>(null);
 
-	// --- Personal dietary profile (default filters) ----------------------------
-	// A signed-in user's saved dietary profile is resolved server-side to concrete
-	// include/exclude tags (empty when signed out / no profile) and PRE-APPLIED here
-	// as the starting filters — they show up as ordinary, removable chips in the two
-	// pickers, so the user can drop one for a one-off search; a reload re-applies the
-	// profile. Read via `.current` (non-suspending) so the map renders immediately.
-	const profileFiltersResource = getProfileFilters();
+	// --- Saved diet (the selector IS the profile) ------------------------------
+	// A signed-in user's saved diet is loaded once and PRE-APPLIED as the starting
+	// filter; changing the selector both applies it and persists it (see selectDiet).
+	// Read via `.current` (non-suspending) so the map renders immediately, and seeded
+	// only ONCE so a later in-session change isn't clobbered by the resolved resource.
+	const savedDietResource = getDiet();
+	let dietSeeded = false;
 	$effect(() => {
-		// Kick the fetch on mount rather than waiting for the apply effect to read it.
-		void profileFiltersResource.current;
+		if (dietSeeded) return;
+		const saved = savedDietResource.current;
+		if (saved === undefined) return; // still loading
+		diet = saved;
+		dietSeeded = true;
 	});
-	// Signature of the profile we last applied, so we apply each distinct profile
-	// ONCE: the user's later edits to the chips don't get clobbered (the resource is
-	// unchanged), but saving the profile refreshes the resource and re-applies it.
-	// A plain (non-reactive) let, mirroring `lastLoggedSearch` below.
-	let appliedProfileSignature: string | null = null;
-	$effect(() => {
-		const filters = profileFiltersResource.current;
-		if (!filters) return;
-		const signature = JSON.stringify({
-			included: filters.included.map((tag) => tag.id).toSorted(),
-			excluded: filters.excluded.map((tag) => tag.id).toSorted()
-		});
-		if (signature === appliedProfileSignature) return;
-		appliedProfileSignature = signature;
-		included = filters.included.map((tag) => ({ ...tag }));
-		excluded = filters.excluded.map((tag) => ({ ...tag }));
-	});
+
+	// Applies a diet selection and persists it for the signed-in user. Called only on
+	// a user action (not the initial seed), so it never echoes the loaded value back.
+	function selectDiet(id: string | null): void {
+		diet = id;
+		setDiet(id).catch(() => {});
+	}
 
 	// The filters, normalised once and shared by the results list, the selected-
 	// location menu and the global-search effect so they all agree on what
-	// "matches". `hasItemFilter` is true when any item/tag filter is active;
+	// "matches". `hasItemFilter` is true when any item/diet filter is active;
 	// `hasQuery` also counts the place filter and is what flips browse → search.
 	const itemTerm = $derived(item.trim().toLowerCase());
-	const includedIds = $derived(new Set(included.map((tag) => tag.id)));
-	const excludedIds = $derived(new Set(excluded.map((tag) => tag.id)));
-	const hasItemFilter = $derived(itemTerm !== '' || includedIds.size > 0 || excludedIds.size > 0);
+	const hasItemFilter = $derived(itemTerm !== '' || diet !== null);
 	const hasQuery = $derived(place.trim() !== '' || hasItemFilter);
 
 	// --- Map data --------------------------------------------------------------
@@ -156,14 +140,7 @@
 	// search effect, so the map centre (read inside the timer) can change with a pan
 	// without re-running the search. Each distinct query runs (and flies) once; an
 	// unchanged query never re-fires the effect.
-	const querySignature = $derived(
-		JSON.stringify({
-			place: place.trim(),
-			item: itemTerm,
-			included: [...includedIds].toSorted(),
-			excluded: [...excludedIds].toSorted()
-		})
-	);
+	const querySignature = $derived(JSON.stringify({ place: place.trim(), item: itemTerm, diet }));
 
 	// Search mode: run a global, nearest-first search whenever the QUERY changes. On
 	// each query's result, fly to the nearest match unless it's already on screen.
@@ -182,8 +159,7 @@
 			searchLocations({
 				place: place.trim(),
 				item: itemTerm,
-				includedTagIds: [...includedIds],
-				excludedTagIds: [...excludedIds],
+				dietTagId: diet,
 				lat: center.lat,
 				lng: center.lng
 			}).then((data) => {
@@ -281,22 +257,11 @@
 		}));
 	}
 
-	// Every tag claimed by either picker. Fed to both <TagPicker>s so a tag already
-	// chosen on one side drops out of both dropdowns — the include and exclude lists
-	// stay mutually exclusive (a tag can't be required and forbidden at once) without
-	// either picker reaching into the other's state.
-	const reservedIds = $derived(new Set([...included, ...excluded].map((tag) => tag.id)));
-
 	function itemMatches(menuItem: Item): boolean {
 		if (itemTerm !== '' && !menuItem.item_name.toLowerCase().includes(itemTerm)) return false;
-		// Tag filters: the item must carry every included tag and none of the
-		// excluded ones. Dietary, course and ingredient tags all live in the same
-		// `tags` list, so one id-set test covers all three.
-		if (includedIds.size > 0 || excludedIds.size > 0) {
-			const ids = new Set<string>(menuItem.tags.map((tag) => tag.id));
-			for (const id of includedIds) if (!ids.has(id)) return false;
-			for (const id of excludedIds) if (ids.has(id)) return false;
-		}
+		// Diet filter: the item must carry the chosen dietary tag. Mirrors the
+		// server's per-item predicate in getSearchMapData.
+		if (diet !== null && !menuItem.tags.some((tag) => tag.id === diet)) return false;
 		return true;
 	}
 
@@ -451,7 +416,7 @@
 	});
 
 	// The menu shown in the detail panel for the selected location. The same
-	// item/ingredient/dietary filters that narrow the results list apply here too;
+	// item/dietary filters that narrow the results list apply here too;
 	// with none active (`hasItemFilter` false) the full menu is shown.
 	const detailMenu = $derived.by<Item[]>(() => {
 		if (!selectedLocation) return [];
@@ -545,41 +510,6 @@
 		setItemLiked({ itemId: id, liked: !liked }).catch(() => pendingItemLikes.set(id, liked));
 	}
 
-	// Auto-log each search a signed-in user runs. Debounced so a burst of keystrokes
-	// logs once it settles, and de-duplicated so an unchanged query isn't re-logged.
-	// The history feeds the tag pickers' suggestions; `logSearch` refreshes those
-	// queries server-side (single-flight), so there's nothing to do here on success.
-	// It's a no-op server-side when signed out.
-	let lastLoggedSearch = '';
-	$effect(() => {
-		if (!user || !hasQuery) return;
-		// Skip a "search" that is ONLY the auto-applied dietary profile — same tags,
-		// no place/item added. That state is set on every page load, so logging it
-		// would flood the (uncapped) history with the user's own defaults; once they
-		// type a filter or change a tag, the query no longer matches and logs normally.
-		const onlyProfile =
-			place.trim() === '' &&
-			item.trim() === '' &&
-			JSON.stringify({
-				included: [...includedIds].toSorted(),
-				excluded: [...excludedIds].toSorted()
-			}) === appliedProfileSignature;
-		if (onlyProfile) return;
-		const payload = {
-			place: place.trim(),
-			item: item.trim(),
-			included: included.map((t) => ({ id: t.id, name: t.name, tag_type: t.tag_type })),
-			excluded: excluded.map((t) => ({ id: t.id, name: t.name, tag_type: t.tag_type }))
-		};
-		const signature = JSON.stringify(payload);
-		if (signature === lastLoggedSearch) return;
-		const timer = setTimeout(() => {
-			lastLoggedSearch = signature;
-			logSearch(payload).catch(() => {});
-		}, 1000);
-		return () => clearTimeout(timer);
-	});
-
 	function formatPrice(price: number | null, code: string): string {
 		return price === null ? '—' : moneyFormatter(code).format(price);
 	}
@@ -622,8 +552,8 @@
 
 	// --- Menu item details popup ----------------------------------------------
 	// The menu list shows only name, price and description; hovering a row (or,
-	// on touch, tapping it) reveals the full details — dietary tags, ingredients
-	// and data sources included — in a popup that floats to the left of the row,
+	// on touch, tapping it) reveals the full details — dietary/course tags and data
+	// sources included — in a popup that floats to the left of the row,
 	// over the map. It's rendered once at the page root and positioned `fixed` so
 	// it escapes the results panel's `overflow: hidden`.
 	const POPUP_GAP = 12;
@@ -826,11 +756,9 @@
 				<Search class="searchpill__icon" size={16} aria-hidden="true" />
 			</label>
 
-			<!-- Two searchable tag pickers — one for tags an item must carry, one for
-			     tags it must not. Each owns its own floating pill and dropdown; sharing
-			     `reservedIds` keeps the two lists mutually exclusive. -->
-			<TagPicker mode="include" bind:selected={included} {reservedIds} />
-			<TagPicker mode="exclude" bind:selected={excluded} {reservedIds} />
+			<!-- The dietary selector: single-select. Filters items to the chosen diet,
+			     and persists the choice for the signed-in user (see selectDiet). -->
+			<DietSelector value={diet} onSelect={selectDiet} />
 		</div>
 	</div>
 
@@ -967,7 +895,7 @@
 										</button>
 										<!-- The item's dietary tags, surfaced inline (not hidden behind the
 										     hover/tap popup) — the diet markers are what most people scan a
-										     menu for. Course and ingredient tags stay in the popup. -->
+										     menu for. Course tags stay in the popup. -->
 										{@render dietaryBadges(menuItem)}
 										{#if user}
 											<span class="menu__like">
@@ -1125,8 +1053,8 @@
 		{/if}
 	</aside>
 
-	<!-- The matched-menu-item list shown under a result card (when an item/
-	     ingredient/dietary filter is active). Shared by plain and chain-group cards. -->
+	<!-- The matched-menu-item list shown under a result card (when an item/dietary
+	     filter is active). Shared by plain and chain-group cards. -->
 	{#snippet matchedItems(items: Item[])}
 		{#if items.length > 0}
 			<ul class="card__items">
@@ -1149,8 +1077,8 @@
 
 	<!-- An item's DIETARY tags (vegan, gluten-free, halal, …) only, rendered inline
 	     wherever the item appears so the diet markers are visible at a glance rather
-	     than hidden behind the hover/tap popup. Course and ingredient tags stay in
-	     itemExtras. `optional` (e.g. "can be made vegan") keeps its dashed marker. -->
+	     than hidden behind the hover/tap popup. Course tags stay in itemExtras.
+	     `optional` (e.g. "can be made vegan") keeps its dashed marker. -->
 	{#snippet dietaryBadges(menuItem: Item)}
 		{@const dietaryTags = menuItem.tags.filter((tag) => tag.tag_type === 'dietary')}
 		{#if dietaryTags.length > 0}
@@ -1163,22 +1091,14 @@
 	{/snippet}
 
 	<!-- Shared by the wide-screen floating popup and the narrow inline expansion:
-	     the item's course tag, its ingredients and its data sources. Dietary tags are
-	     shown inline on the row itself (see dietaryBadges), so they're omitted here to
-	     avoid repeating them. An `optional` tag/ingredient keeps its dashed marker. -->
+	     the item's course tag and its data sources. Dietary tags are shown inline on
+	     the row itself (see dietaryBadges), so they're omitted here to avoid repeating
+	     them. An `optional` tag keeps its dashed marker. -->
 	{#snippet itemExtras(menuItem: Item)}
 		{@const courseTags = menuItem.tags.filter((tag) => tag.tag_type === 'course')}
-		{@const ingredientTags = menuItem.tags.filter((tag) => tag.tag_type === 'ingredient')}
 		{#if courseTags.length > 0}
 			<ul class="taglist">
 				{#each courseTags as tag (tag.id)}
-					<li><FoodTag {tag} optional={tag.optional} /></li>
-				{/each}
-			</ul>
-		{/if}
-		{#if ingredientTags.length > 0}
-			<ul class="taglist">
-				{#each ingredientTags as tag (tag.id)}
 					<li><FoodTag {tag} optional={tag.optional} /></li>
 				{/each}
 			</ul>
@@ -1256,8 +1176,8 @@
 	}
 
 	/* The search controls, free-floating over the map: a horizontal, wrapping row of
-	   independent pills (brand "logo", Place, Item, Include, Exclude) anchored
-	   top-left. No shared surface — each child carries its own glass. The width is
+	   independent pills (account, Place, Item, Diet) anchored top-left. No shared
+	   surface — each child carries its own glass. The width is
 	   capped so the row keeps clear of the results panel on the right; it wraps to a
 	   new line before it would run underneath it. */
 	.searchbar {
@@ -1818,8 +1738,8 @@
 		border-bottom: none;
 	}
 
-	/* Narrow-screen inline expansion of a tapped item's details (tags, ingredients,
-	   sources), shown in place of the wide-screen floating popup. Collapses to
+	/* Narrow-screen inline expansion of a tapped item's details (tags, sources),
+	   shown in place of the wide-screen floating popup. Collapses to
 	   nothing when the item has no extra details to show. */
 	.menu__details {
 		margin: 0.15rem 0 0.1rem;
@@ -1885,8 +1805,8 @@
 		font-style: italic;
 	}
 
-	/* Two pill rows under an item's details — course tag, then ingredient tags. The
-	   pills themselves are <FoodTag>; this only lays them out. */
+	/* The course-tag pill row under an item's details. The pills themselves are
+	   <FoodTag>; this only lays them out. */
 	.taglist {
 		list-style: none;
 		display: flex;

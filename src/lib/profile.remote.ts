@@ -1,65 +1,30 @@
 import * as v from 'valibot';
 import { query, command } from '$app/server';
 import { requireDb, currentUser, requireUser } from '$lib/server/context';
-import {
-	getDietProfile as getDietProfileFromDb,
-	setDietProfile as setDietProfileToDb,
-	resolveDietProfileFilters,
-	type DietProfileFilters
-} from '$lib/server/db';
-import {
-	EMPTY_DIET_PROFILE,
-	sanitizeProfile,
-	profileIncludeTagIds,
-	profileExcludeIngredientNames,
-	type DietProfile
-} from '$lib/diet-profile';
+import { getUserDiet, setUserDiet } from '$lib/server/db';
+import { sanitizeDiet } from '$lib/diet-profile';
 
 /**
- * The signed-in user's saved dietary profile (restriction/allergen KEYS), or an
- * empty profile when signed out. Backs the profile editor so it can show the
- * current selections; the page reads {@link getProfileFilters} instead to pre-apply.
+ * The signed-in user's saved diet — a single curated dietary tag id, or `null`
+ * when none is set (or signed out). The dietary selector IS this profile: the map
+ * pre-applies it as the active filter on load, and {@link setDiet} persists a
+ * change. Sanitized on read so a stored id no longer in the catalog reads as "no
+ * filter" rather than a broken selection.
  */
-export const getDietProfile = query(async (): Promise<DietProfile> => {
+export const getDiet = query(async (): Promise<string | null> => {
 	const user = currentUser();
-	if (!user) return EMPTY_DIET_PROFILE;
-	return getDietProfileFromDb(requireDb(), user.id);
-});
-
-const EMPTY_FILTERS: DietProfileFilters = { included: [], excluded: [] };
-
-/**
- * The signed-in user's profile RESOLVED to concrete include/exclude tags, ready to
- * seed the map's two tag pickers as default filters (empty when signed out / no
- * profile). Kept separate from {@link getDietProfile} so the page can pre-apply the
- * filters without re-implementing the key→tag mapping, and so a saved profile change
- * refreshes both the editor's view and the applied filters in one round trip.
- */
-export const getProfileFilters = query(async (): Promise<DietProfileFilters> => {
-	const user = currentUser();
-	if (!user) return EMPTY_FILTERS;
-	const profile = await getDietProfileFromDb(requireDb(), user.id);
-	return resolveDietProfileFilters(
-		requireDb(),
-		profileIncludeTagIds(profile),
-		profileExcludeIngredientNames(profile)
-	);
-});
-
-const ProfileSchema = v.object({
-	restrictions: v.array(v.string()),
-	allergies: v.array(v.string())
+	if (!user) return null;
+	return sanitizeDiet(await getUserDiet(requireDb(), user.id));
 });
 
 /**
- * Saves the signed-in user's dietary profile, then refreshes both profile queries
- * server-side (single-flight) so the editor and the map's applied filters update in
- * this same response. Unknown keys are dropped before storing (only catalog keys are
- * ever persisted).
+ * Saves the signed-in user's selected diet (a curated dietary tag id, or `null` to
+ * clear it), then refreshes {@link getDiet} server-side so the map's applied filter
+ * updates in this same response. The id is sanitized to a known dietary tag before
+ * storing — an unknown value is stored as `null` (no filter).
  */
-export const setDietProfile = command(ProfileSchema, async (input) => {
+export const setDiet = command(v.nullable(v.string()), async (dietId) => {
 	const user = requireUser();
-	await setDietProfileToDb(requireDb(), user.id, sanitizeProfile(input), Date.now());
-	void getDietProfile().refresh();
-	void getProfileFilters().refresh();
+	await setUserDiet(requireDb(), user.id, sanitizeDiet(dietId), Date.now());
+	void getDiet().refresh();
 });
