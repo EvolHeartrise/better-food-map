@@ -874,28 +874,17 @@
 					<section class="menu">
 						<div class="menu__head">
 							<h3 class="menu__heading">Menu</h3>
-							<!-- Freshness signal, shown for every location that has a menu: the
-							     dated pill when the menu has been verified against its source (goes
-							     muted+amber once stale), or an explicit "Not yet verified" pill when
-							     it hasn't. We never invent a date — an unverified menu (most
-							     independents) says so rather than showing a fabricated one. -->
-							{#if selectedLocation.menu.length > 0}
-								{#if selectedLocation.lastVerified}
-									<span
-										class="menu__verified"
-										class:menu__verified--stale={verifiedIsStale(selectedLocation.lastVerified)}
-										title={`Menu last verified on ${selectedLocation.lastVerified}`}
-									>
-										{formatVerified(selectedLocation.lastVerified)}
-									</span>
-								{:else}
-									<span
-										class="menu__verified menu__verified--unverified"
-										title="This menu hasn't been verified against the venue's own source yet."
-									>
-										Not yet verified
-									</span>
-								{/if}
+							<!-- Freshness signal, shown for every location that has a menu. Every
+							     menu carries a verification date (enforced by migration 0012), so
+							     there is always a date to show; the pill goes muted+amber once stale. -->
+							{#if selectedLocation.menu.length > 0 && selectedLocation.lastVerified}
+								<span
+									class="menu__verified"
+									class:menu__verified--stale={verifiedIsStale(selectedLocation.lastVerified)}
+									title={`Menu last verified on ${selectedLocation.lastVerified}`}
+								>
+									{formatVerified(selectedLocation.lastVerified)}
+								</span>
 							{/if}
 						</div>
 						{#if selectedLocation.menu.length === 0}
@@ -1756,14 +1745,6 @@
 		color: #9a6a00;
 		background-color: #fff6e5;
 		border-color: #f0d28a;
-	}
-
-	/* Unverified menu (most independents have no verification date): a neutral, quiet
-	   grey — distinct from the amber "stale" state, which means verified-but-old. */
-	.menu__verified--unverified {
-		color: var(--color-text-muted);
-		background-color: rgba(0, 0, 0, 0.04);
-		border-color: var(--color-border);
 	}
 
 	.menu__empty {

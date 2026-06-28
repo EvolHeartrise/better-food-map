@@ -917,7 +917,13 @@ const createMenuArgs = v.object({
 	currency: v.optional(currencySchema),
 	last_verified: v.optional(
 		v.nullable(
-			v.pipe(v.string(), v.description('ISO date this menu was last checked, e.g. "2026-06-22".'))
+			v.pipe(
+				v.string(),
+				v.description(
+					'ISO date this menu was last checked, e.g. "2026-06-22". Required on every ' +
+						'menu — defaults to today when omitted.'
+				)
+			)
 		)
 	),
 	sources: createSourcesSchema,

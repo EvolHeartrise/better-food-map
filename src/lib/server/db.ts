@@ -187,10 +187,11 @@ export interface MapData {
 	menus: Record<string, Item[]>;
 	/**
 	 * Per-menu metadata for the referenced menus, keyed by menu_id — currently just
-	 * `last_verified` (the ISO date a menu was last checked against its source, or
-	 * null). Sent once per menu alongside {@link menus} so the detail view can show a
-	 * freshness signal without a second read. A chain branch and a private venue menu
-	 * both appear here; private menus are typically `last_verified: null`.
+	 * `last_verified` (the ISO date a menu was last checked against its source). Sent
+	 * once per menu alongside {@link menus} so the detail view can show a freshness
+	 * signal without a second read. Every menu carries a date (enforced by the
+	 * triggers in migration 0012), so this is non-null for any menu present here; it
+	 * is typed nullable only because the read column is.
 	 */
 	menuMeta: Record<string, { last_verified: string | null }>;
 }
@@ -261,6 +262,18 @@ export interface MenuSummary {
 
 /** Default currency for a menu when none is specified (the Canada-first dataset). */
 export const DEFAULT_CURRENCY = 'CAD';
+
+/**
+ * Today's date as an ISO `YYYY-MM-DD` string (UTC). Used as the default
+ * {@link Menu.last_verified} when a menu is created without one — every menu must
+ * carry a verification date (enforced by the triggers in migration 0012), and a
+ * just-created menu is "verified as of now". The app supplies this rather than a
+ * SQLite `DEFAULT (date('now'))`, matching the convention of keeping time out of
+ * the schema (see migration 0007).
+ */
+export function currentVerificationDate(): string {
+	return new Date().toISOString().slice(0, 10);
+}
 
 /** A single location's deviation from its menu, stored only where it differs. */
 export interface LocationItemOverride {
@@ -1255,9 +1268,16 @@ export async function insertLocations(db: D1Like, locs: LocationInsert[]): Promi
 			stmts.push(
 				db
 					.prepare(
-						`INSERT INTO menus (id, brand_id, name, region, currency, last_verified) VALUES (?, NULL, ?, NULL, ?, NULL)`
+						`INSERT INTO menus (id, brand_id, name, region, currency, last_verified) VALUES (?, NULL, ?, NULL, ?, ?)`
 					)
-					.bind(privateMenuId, loc.name, loc.currency ?? DEFAULT_CURRENCY)
+					// last_verified is required (migration 0012); a new private menu is
+					// verified as of its creation date.
+					.bind(
+						privateMenuId,
+						loc.name,
+						loc.currency ?? DEFAULT_CURRENCY,
+						currentVerificationDate()
+					)
 			);
 		}
 		stmts.push(
@@ -1473,9 +1493,10 @@ async function resolvePrivateMenus(
 		stmts.push(
 			db
 				.prepare(
-					`INSERT INTO menus (id, brand_id, name, region, currency, last_verified) VALUES (?, NULL, ?, NULL, ?, NULL)`
+					`INSERT INTO menus (id, brand_id, name, region, currency, last_verified) VALUES (?, NULL, ?, NULL, ?, ?)`
 				)
-				.bind(menuId, owner.name, currency),
+				// last_verified is required (migration 0012); default a new menu to today.
+				.bind(menuId, owner.name, currency, currentVerificationDate()),
 			db.prepare(`UPDATE locations SET menu_id = ? WHERE id = ?`).bind(menuId, locationId)
 		);
 	});
@@ -1744,7 +1765,9 @@ export async function insertMenu(
 				menu.name,
 				menu.region ?? null,
 				menu.currency ?? DEFAULT_CURRENCY,
-				menu.last_verified ?? null
+				// Every menu must carry a verification date (migration 0012); default a
+				// dateless one to today so the insert can't violate the requirement.
+				menu.last_verified ?? currentVerificationDate()
 			)
 	];
 	for (const source of menu.sources ?? []) {
