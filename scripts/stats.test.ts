@@ -1,11 +1,11 @@
 /// <reference types="bun-types" />
 // Exercises getStats — the aggregate coverage totals behind the PUBLIC landing
-// overlay (locations, menu items, cities, countries). Two things the counts must get
-// right: cities are distinct by the (city, region, country) triple (so same-named
-// cities in different provinces/countries stay separate, and extra branches in an
-// already-counted city don't inflate it), and chain menu items are counted ONCE —
-// they live in the `items` table regardless of how many branches serve that menu.
-// Runs against the real migration schema via the in-memory D1Like adapter.
+// overlay (locations, menu items, cities). Two things the counts must get right:
+// cities are distinct by the (city, region, country) triple (so same-named cities in
+// different provinces/countries stay separate, and extra branches in an already-counted
+// city don't inflate it), and chain menu items are counted ONCE — they live in the
+// `items` table regardless of how many branches serve that menu. Runs against the real
+// migration schema via the in-memory D1Like adapter.
 
 import { test, expect } from 'bun:test';
 import {
@@ -35,7 +35,7 @@ function venue(
 	};
 }
 
-test('getStats counts locations, items, cities and countries (chain items once)', async () => {
+test('getStats counts locations, items and cities (chain items once)', async () => {
 	const db = freshDb();
 
 	// Three independent venues across three distinct cities / two countries, each with
@@ -100,14 +100,13 @@ test('getStats counts locations, items, cities and countries (chain items once)'
 	expect(stats).toEqual({
 		locations: 5, // 3 independent + 2 chain branches
 		items: 6, // 2 + 1 + 1 independent, plus the 2 shared chain items counted once
-		cities: 3, // Vancouver/BC/CA, Toronto/ON/CA, Seattle/WA/US
-		countries: 2 // CA, US
+		cities: 3 // Vancouver/BC/CA, Toronto/ON/CA, Seattle/WA/US
 	});
 });
 
 test('getStats returns zeros for an empty database', async () => {
 	const db = freshDb();
-	expect(await getStats(db)).toEqual({ locations: 0, items: 0, cities: 0, countries: 0 });
+	expect(await getStats(db)).toEqual({ locations: 0, items: 0, cities: 0 });
 });
 
 test('getStats keeps same-named cities in different regions distinct', async () => {
@@ -117,7 +116,5 @@ test('getStats keeps same-named cities in different regions distinct', async () 
 		venue({ name: 'B', city: 'London', region: 'ENG', country: 'GB' })
 	]);
 
-	const stats = await getStats(db);
-	expect(stats.cities).toBe(2);
-	expect(stats.countries).toBe(2);
+	expect((await getStats(db)).cities).toBe(2);
 });
