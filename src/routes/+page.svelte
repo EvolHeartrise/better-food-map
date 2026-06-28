@@ -3,7 +3,13 @@
 	import { pushState, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import { MediaQuery, SvelteSet, SvelteMap } from 'svelte/reactivity';
-	import { getLocations, getLocationData, getBrands, getUserLocation } from '$lib/data.remote';
+	import {
+		getLocations,
+		getLocationData,
+		searchLocations,
+		getBrands,
+		getUserLocation
+	} from '$lib/data.remote';
 	import {
 		getCurrentUser,
 		getLikes,
@@ -33,54 +39,182 @@
 	// label a capped result set in the UI; the server stays the source of truth.
 	const MAX_RESULTS = 200;
 
-	// Raw payload for the current viewport. Updated imperatively (rather than via an
-	// awaited $derived) so the markers already on screen stay put while the next box
-	// loads — panning/zooming never blanks the map.
-	const EMPTY_MAP_DATA: MapData = { locations: [], menus: {} };
-	let mapData = $state<MapData>(EMPTY_MAP_DATA);
+	// --- Search filters --------------------------------------------------------
+	// Independent inputs. `place` filters venues by name; `item` and the tag
+	// include/exclude lists filter menu items; they combine with AND. With ANY of
+	// them set the search goes GLOBAL — the whole index, nearest first (see the
+	// search effect below) — rather than narrowing only what's on screen; cleared,
+	// the map returns to browsing the current viewport. Tags (dietary, course and
+	// ingredient) come from two <TagPicker>s — one include, one exclude: an item
+	// must carry every `included` tag and none of the `excluded`.
+	let place = $state('');
+	let item = $state('');
+	let included = $state<Tag[]>([]);
+	let excluded = $state<Tag[]>([]);
 
+	// The filters, normalised once and shared by the results list, the selected-
+	// location menu and the global-search effect so they all agree on what
+	// "matches". `hasItemFilter` is true when any item/tag filter is active;
+	// `hasQuery` also counts the place filter and is what flips browse → search.
+	const itemTerm = $derived(item.trim().toLowerCase());
+	const includedIds = $derived(new Set(included.map((tag) => tag.id)));
+	const excludedIds = $derived(new Set(excluded.map((tag) => tag.id)));
+	const hasItemFilter = $derived(itemTerm !== '' || includedIds.size > 0 || excludedIds.size > 0);
+	const hasQuery = $derived(place.trim() !== '' || hasItemFilter);
+
+	// --- Map data --------------------------------------------------------------
+	// Two payloads, each updated imperatively (rather than via an awaited $derived)
+	// so the markers already on screen stay put while the next set loads — the map
+	// never blanks. `viewportData` is what's in the current box (browse mode);
+	// `searchData` is the global nearest-first result set (search mode, null until
+	// the first search for a query returns). `activeData` picks between them.
+	const EMPTY_MAP_DATA: MapData = { locations: [], menus: {}, menuMeta: {} };
+	let viewportData = $state<MapData>(EMPTY_MAP_DATA);
+	let searchData = $state<MapData | null>(null);
+
+	// Browse mode only: load the visible box. Skipped while a query is active — the
+	// search effect below owns the data then — and resumed (against wherever the map
+	// now sits) the moment the query is cleared.
 	$effect(() => {
-		if (!viewport) return;
+		if (hasQuery || !viewport) return;
 		const bounds = viewport;
 		let cancelled = false;
 		getLocations(bounds).then((data) => {
-			if (!cancelled) mapData = data;
+			if (!cancelled) viewportData = data;
 		});
 		return () => {
 			cancelled = true;
 		};
 	});
 
-	// True when the server returned a full page of locations, i.e. the box held
-	// more than the cap and only the first MAX_RESULTS came back. Drives the "zoom
-	// in to see the rest" hint so the cap isn't silent.
-	const capped = $derived(mapData.locations.length >= MAX_RESULTS);
+	// The map centre — the anchor "nearest" is measured from — as its midpoint, with
+	// a default before the first viewport is reported. Read non-reactively inside the
+	// search effect's timer, so panning alone never re-runs a search; only changing
+	// the query does.
+	const DEFAULT_CENTER: [number, number] = [49.2827, -123.1207];
+	function mapCenter(): { lat: number; lng: number } {
+		if (!viewport) return { lat: DEFAULT_CENTER[0], lng: DEFAULT_CENTER[1] };
+		return {
+			lat: (viewport.minLat + viewport.maxLat) / 2,
+			lng: (viewport.minLng + viewport.maxLng) / 2
+		};
+	}
+
+	// Whether a point already falls within the (padded) reported viewport — used to
+	// decide if a search's nearest match needs the camera flown to it at all.
+	function withinViewport(loc: { latitude: number; longitude: number }): boolean {
+		if (!viewport) return false;
+		return (
+			loc.latitude >= viewport.minLat &&
+			loc.latitude <= viewport.maxLat &&
+			loc.longitude >= viewport.minLng &&
+			loc.longitude <= viewport.maxLng
+		);
+	}
+
+	// A point to fly the map to (the nearest match); null leaves the camera alone.
+	// Set by the search effect only when the nearest result is off screen, so a
+	// search whose matches are already in view doesn't yank the camera. `key` is a
+	// monotonic nonce so <LocationMap> flies exactly once per assignment — even when
+	// two consecutive searches happen to target the same coordinates.
+	let focusTarget = $state<{ latitude: number; longitude: number; key: string } | null>(null);
+	let focusNonce = 0;
+	// Debounce before a global search hits the server, so a burst of keystrokes
+	// settles into one request.
+	const SEARCH_DEBOUNCE_MS = 250;
+	// The query, reduced to a stable string — the ONLY reactive trigger for the
+	// search effect, so the map centre (read inside the timer) can change with a pan
+	// without re-running the search. Each distinct query runs (and flies) once; an
+	// unchanged query never re-fires the effect.
+	const querySignature = $derived(
+		JSON.stringify({
+			place: place.trim(),
+			item: itemTerm,
+			included: [...includedIds].toSorted(),
+			excluded: [...excludedIds].toSorted()
+		})
+	);
+
+	// Search mode: run a global, nearest-first search whenever the QUERY changes. On
+	// each query's result, fly to the nearest match unless it's already on screen.
+	// Clearing the query drops back to browse mode.
+	$effect(() => {
+		if (!hasQuery) {
+			searchData = null;
+			return;
+		}
+		// Read the signature so the effect re-runs when (and only when) the query
+		// changes; the value itself isn't otherwise needed.
+		void querySignature;
+		let cancelled = false;
+		const timer = setTimeout(() => {
+			const center = mapCenter();
+			searchLocations({
+				place: place.trim(),
+				item: itemTerm,
+				includedTagIds: [...includedIds],
+				excludedTagIds: [...excludedIds],
+				lat: center.lat,
+				lng: center.lng
+			}).then((data) => {
+				if (cancelled) return;
+				searchData = data;
+				// The server returns nearest-first, so [0] is the closest match.
+				const nearest = data.locations[0];
+				if (nearest && !withinViewport(nearest)) {
+					focusNonce += 1;
+					focusTarget = {
+						latitude: nearest.latitude,
+						longitude: nearest.longitude,
+						key: String(focusNonce)
+					};
+				}
+			});
+		}, SEARCH_DEBOUNCE_MS);
+		return () => {
+			cancelled = true;
+			clearTimeout(timer);
+		};
+	});
+
+	// The data the page renders from: the global search set while a query is active
+	// (falling back to the viewport set until the first search returns, so the list
+	// filters what's on screen instantly rather than blanking), otherwise the
+	// viewport set.
+	const activeData = $derived(hasQuery ? (searchData ?? viewportData) : viewportData);
+
+	// True when the active set hit the server's result cap (MAX_RESULTS): the box
+	// (browse) or the index (search) held more matches than one read returns. Drives
+	// the "zoom in" / "refine" hint so the cap isn't silent.
+	const capped = $derived(activeData.locations.length >= MAX_RESULTS);
 
 	// The map page works against each location's fully-resolved `menu`, but the wire
 	// payload sends each menu only once (keyed by menu_id) instead of copying it onto
 	// every branch that serves it. Rebuild the effective menu here: the items of the
 	// location's menu (its own private menu, or a shared brand menu) with this
 	// location's per-item overrides applied — items marked unavailable dropped,
-	// overridden prices used. Shared by the in-view set below and the by-id detail fetch.
-	function resolveLocation(loc: MapLocation, menus: MapData['menus']): LocationData {
+	// overridden prices used — and attach the menu's `last_verified` freshness date.
+	// Shared by the in-view set below and the by-id detail fetch.
+	function resolveLocation(loc: MapLocation, data: MapData): LocationData {
 		const menu: Item[] = [];
 		if (loc.menu_id) {
 			const overrideByItem = new Map(loc.overrides.map((o) => [o.item_id, o]));
-			for (const item of menus[loc.menu_id] ?? []) {
-				const override = overrideByItem.get(item.id);
+			for (const menuItem of data.menus[loc.menu_id] ?? []) {
+				const override = overrideByItem.get(menuItem.id);
 				if (override?.available === false) continue; // not served at this branch
 				// Reuse the shared item object unless this branch overrides its price.
 				if (override !== undefined && override.price !== null) {
-					menu.push({ ...item, price: override.price });
+					menu.push({ ...menuItem, price: override.price });
 				} else {
-					menu.push(item);
+					menu.push(menuItem);
 				}
 			}
 		}
-		return { ...loc, menu };
+		const lastVerified = loc.menu_id ? (data.menuMeta[loc.menu_id]?.last_verified ?? null) : null;
+		return { ...loc, menu, lastVerified };
 	}
 
-	const locations = $derived(mapData.locations.map((loc) => resolveLocation(loc, mapData.menus)));
+	const locations = $derived(activeData.locations.map((loc) => resolveLocation(loc, activeData)));
 
 	// Chain/brand records, used only to label deduped result groups with the brand
 	// name ("KFC") rather than a single branch's `name`. Keyed by id for lookup.
@@ -94,18 +228,9 @@
 		userLocation ? [userLocation.lat, userLocation.lng] : null
 	);
 
-	// A location with its effective menu resolved (see resolveLocation).
-	type LocationData = MapLocation & { menu: Item[] };
-
-	// Independent inputs. `place` filters venues by name; `item` and the tag
-	// include/exclude lists filter menu items. They combine with AND, and narrow
-	// within the locations currently visible on the map. Tags (dietary, course and
-	// ingredient) are picked through two <TagPicker>s — one for include, one for
-	// exclude: an item must carry every `included` tag and none of the `excluded`.
-	let place = $state('');
-	let item = $state('');
-	let included = $state<Tag[]>([]);
-	let excluded = $state<Tag[]>([]);
+	// A location with its effective menu resolved (see resolveLocation), plus its
+	// menu's `last_verified` freshness date (null for unverified/private menus).
+	type LocationData = MapLocation & { menu: Item[]; lastVerified: string | null };
 
 	// On narrow (mobile) screens the row of floating search items collapses behind a
 	// "Filters" toggle so the map isn't crowded. Open by default so the filters stay
@@ -126,20 +251,11 @@
 		}));
 	}
 
-	// The item-level filters, normalised once. `hasItemFilter` is true when any of
-	// them is active; with none active they don't narrow a venue's menu at all.
-	// Shared by both the results list and the selected-location menu so the two
-	// always agree on what "matches". The tag lists are reduced to id sets for the
-	// membership tests below.
-	const itemTerm = $derived(item.trim().toLowerCase());
-	const includedIds = $derived(new Set(included.map((tag) => tag.id)));
-	const excludedIds = $derived(new Set(excluded.map((tag) => tag.id)));
 	// Every tag claimed by either picker. Fed to both <TagPicker>s so a tag already
 	// chosen on one side drops out of both dropdowns — the include and exclude lists
 	// stay mutually exclusive (a tag can't be required and forbidden at once) without
 	// either picker reaching into the other's state.
 	const reservedIds = $derived(new Set([...included, ...excluded].map((tag) => tag.id)));
-	const hasItemFilter = $derived(itemTerm !== '' || includedIds.size > 0 || excludedIds.size > 0);
 
 	function itemMatches(menuItem: Item): boolean {
 		if (itemTerm !== '' && !menuItem.item_name.toLowerCase().includes(itemTerm)) return false;
@@ -297,7 +413,7 @@
 		getLocationData(id).then((data) => {
 			if (cancelled) return;
 			const loc = data.locations[0];
-			selectedLocation = loc ? resolveLocation(loc, data.menus) : null;
+			selectedLocation = loc ? resolveLocation(loc, data) : null;
 		});
 		return () => {
 			cancelled = true;
@@ -356,10 +472,6 @@
 		// stays intuitive.
 		replaceState(resolve('/'), {});
 	}
-
-	const hasQuery = $derived(
-		place.trim() !== '' || item.trim() !== '' || included.length > 0 || excluded.length > 0
-	);
 
 	// --- Account & likes -------------------------------------------------------
 	// The signed-in user (null when signed out) drives the account control and gates
@@ -438,6 +550,32 @@
 		} catch {
 			return source.url;
 		}
+	}
+
+	// --- Menu freshness --------------------------------------------------------
+	// A menu carries a `last_verified` ISO date (the day it was last checked against
+	// its source). We surface it as a relative phrase so a stale chain menu reads as
+	// such; past this many days it's flagged as possibly out of date.
+	const VERIFIED_STALE_DAYS = 180;
+	function verifiedDaysAgo(iso: string): number | null {
+		const then = new Date(iso).getTime();
+		if (Number.isNaN(then)) return null;
+		return Math.floor((Date.now() - then) / 86_400_000);
+	}
+	function formatVerified(iso: string): string {
+		const days = verifiedDaysAgo(iso);
+		if (days === null) return `Verified ${iso}`;
+		if (days <= 0) return 'Verified today';
+		if (days === 1) return 'Verified yesterday';
+		if (days < 30) return `Verified ${days} days ago`;
+		const months = Math.round(days / 30);
+		if (months < 12) return `Verified ${months} month${months === 1 ? '' : 's'} ago`;
+		const years = Math.round(days / 365);
+		return `Verified ${years} year${years === 1 ? '' : 's'} ago`;
+	}
+	function verifiedIsStale(iso: string): boolean {
+		const days = verifiedDaysAgo(iso);
+		return days !== null && days > VERIFIED_STALE_DAYS;
 	}
 
 	// --- Menu item details popup ----------------------------------------------
@@ -568,6 +706,7 @@
 			selected={selectedLocation}
 			onselect={selectLocation}
 			{initialCenter}
+			focus={focusTarget}
 			onviewchange={(bounds) => (viewport = bounds)}
 		/>
 	</div>
@@ -733,7 +872,21 @@
 					{/if}
 
 					<section class="menu">
-						<h3 class="menu__heading">Menu</h3>
+						<div class="menu__head">
+							<h3 class="menu__heading">Menu</h3>
+							<!-- Freshness signal, shown for every location that has a menu. Every
+							     menu carries a verification date (enforced by migration 0012), so
+							     there is always a date to show; the pill goes muted+amber once stale. -->
+							{#if selectedLocation.menu.length > 0 && selectedLocation.lastVerified}
+								<span
+									class="menu__verified"
+									class:menu__verified--stale={verifiedIsStale(selectedLocation.lastVerified)}
+									title={`Menu last verified on ${selectedLocation.lastVerified}`}
+								>
+									{formatVerified(selectedLocation.lastVerified)}
+								</span>
+							{/if}
+						</div>
 						{#if selectedLocation.menu.length === 0}
 							<p class="menu__empty">Menu information isn't available for this place yet.</p>
 						{:else if detailMenu.length === 0}
@@ -770,6 +923,10 @@
 												>
 											{/if}
 										</button>
+										<!-- The item's dietary tags, surfaced inline (not hidden behind the
+										     hover/tap popup) — the diet markers are what most people scan a
+										     menu for. Course and ingredient tags stay in the popup. -->
+										{@render dietaryBadges(menuItem)}
 										{#if user}
 											<span class="menu__like">
 												<LikeButton
@@ -799,22 +956,29 @@
 				<p class="results__count">
 					{results.length}
 					{results.length === 1 ? 'place' : 'places'}
+					{#if hasQuery}<span class="results__scope">· nearest first</span>{/if}
 				</p>
 
 				{#if capped}
 					<p class="results__note">
-						Only the first {MAX_RESULTS} places in view are loaded — zoom in to see the rest.
+						{#if hasQuery}
+							Showing the {MAX_RESULTS} nearest matches — refine your search to narrow it.
+						{:else}
+							Only the first {MAX_RESULTS} places in view are loaded — zoom in to see the rest.
+						{/if}
 					</p>
 				{/if}
 
 				{#if results.length === 0}
 					<p class="results__empty">
-						{#if viewport === null}
+						{#if hasQuery && searchData === null}
+							Searching the whole map…
+						{:else if hasQuery}
+							No matches anywhere. Try removing a filter.
+						{:else if viewport === null}
 							Loading the map…
-						{:else if locations.length === 0}
-							No places in this area.
 						{:else}
-							No places match your search.
+							No places in this area.
 						{/if}
 					</p>
 				{:else}
@@ -926,28 +1090,46 @@
 			<ul class="card__items">
 				{#each items as menuItem (menuItem.id)}
 					<li class="card__item">
-						<span class="card__item-name">{menuItem.item_name}</span>
-						{#if menuItem.price !== null}
-							<span class="card__item-price"
-								>{moneyFormatter(menuItem.currency).format(menuItem.price)}</span
-							>
-						{/if}
+						<span class="card__item-line">
+							<span class="card__item-name">{menuItem.item_name}</span>
+							{#if menuItem.price !== null}
+								<span class="card__item-price"
+									>{moneyFormatter(menuItem.currency).format(menuItem.price)}</span
+								>
+							{/if}
+						</span>
+						{@render dietaryBadges(menuItem)}
 					</li>
 				{/each}
 			</ul>
 		{/if}
 	{/snippet}
 
-	<!-- Shared by the wide-screen floating popup and the narrow inline expansion:
-	     the item's dietary/course tags, its ingredients and its data sources. Both
-	     come from the unified tag list, split by tag_type; an `optional` tag (e.g.
-	     "can be made vegan", or an ingredient added on request) is marked as such. -->
-	{#snippet itemExtras(menuItem: Item)}
-		{@const dietaryTags = menuItem.tags.filter((tag) => tag.tag_type !== 'ingredient')}
-		{@const ingredientTags = menuItem.tags.filter((tag) => tag.tag_type === 'ingredient')}
+	<!-- An item's DIETARY tags (vegan, gluten-free, halal, …) only, rendered inline
+	     wherever the item appears so the diet markers are visible at a glance rather
+	     than hidden behind the hover/tap popup. Course and ingredient tags stay in
+	     itemExtras. `optional` (e.g. "can be made vegan") keeps its dashed marker. -->
+	{#snippet dietaryBadges(menuItem: Item)}
+		{@const dietaryTags = menuItem.tags.filter((tag) => tag.tag_type === 'dietary')}
 		{#if dietaryTags.length > 0}
-			<ul class="taglist">
+			<ul class="taglist taglist--inline">
 				{#each dietaryTags as tag (tag.id)}
+					<li><FoodTag {tag} optional={tag.optional} /></li>
+				{/each}
+			</ul>
+		{/if}
+	{/snippet}
+
+	<!-- Shared by the wide-screen floating popup and the narrow inline expansion:
+	     the item's course tag, its ingredients and its data sources. Dietary tags are
+	     shown inline on the row itself (see dietaryBadges), so they're omitted here to
+	     avoid repeating them. An `optional` tag/ingredient keeps its dashed marker. -->
+	{#snippet itemExtras(menuItem: Item)}
+		{@const courseTags = menuItem.tags.filter((tag) => tag.tag_type === 'course')}
+		{@const ingredientTags = menuItem.tags.filter((tag) => tag.tag_type === 'ingredient')}
+		{#if courseTags.length > 0}
+			<ul class="taglist">
+				{#each courseTags as tag (tag.id)}
 					<li><FoodTag {tag} optional={tag.optional} /></li>
 				{/each}
 			</ul>
@@ -1217,6 +1399,13 @@
 		color: var(--color-text-muted);
 	}
 
+	/* "· nearest first" qualifier on the count, shown while a global search is active
+	   so the list's ordering reads as deliberate. */
+	.results__scope {
+		font-weight: 500;
+		color: var(--color-accent);
+	}
+
 	/* Cap notice: shown when the viewport held more places than the server returns
 	   in one read (MAX_RESULTS). Accent-tinted so it reads as an actionable hint. */
 	.results__note {
@@ -1306,10 +1495,17 @@
 
 	.card__item {
 		display: flex;
+		flex-direction: column;
+		gap: 0.2rem;
+		font-size: 0.8rem;
+	}
+
+	/* The name/price row of a matched item; the dietary badges sit on the line below. */
+	.card__item-line {
+		display: flex;
 		justify-content: space-between;
 		align-items: baseline;
 		gap: 0.75rem;
-		font-size: 0.8rem;
 	}
 
 	.card__item-name {
@@ -1518,9 +1714,37 @@
 		gap: 0.25rem;
 	}
 
-	.menu__heading {
+	/* The "Menu" title and its freshness badge sit on one baseline-aligned row. */
+	.menu__head {
+		display: flex;
+		align-items: baseline;
+		flex-wrap: wrap;
+		gap: 0.5rem;
 		margin: 0 0 0.25rem;
+	}
+
+	.menu__heading {
+		margin: 0;
 		font-size: 0.95rem;
+	}
+
+	/* Menu freshness ("Verified 3 months ago"): a quiet accent pill, turning amber
+	   and muted once the menu is past VERIFIED_STALE_DAYS. */
+	.menu__verified {
+		font-size: 0.68rem;
+		font-weight: 600;
+		color: var(--color-accent);
+		background-color: color-mix(in srgb, var(--color-accent) 10%, #fff);
+		border: 1px solid color-mix(in srgb, var(--color-accent) 30%, #fff);
+		border-radius: 999px;
+		padding: 0.05rem 0.45rem;
+		white-space: nowrap;
+	}
+
+	.menu__verified--stale {
+		color: #9a6a00;
+		background-color: #fff6e5;
+		border-color: #f0d28a;
 	}
 
 	.menu__empty {
@@ -1619,8 +1843,8 @@
 		font-style: italic;
 	}
 
-	/* Two pill rows under an item's details — dietary/course tags, then ingredient
-	   tags. The pills themselves are <FoodTag>; this only lays them out. */
+	/* Two pill rows under an item's details — course tag, then ingredient tags. The
+	   pills themselves are <FoodTag>; this only lays them out. */
 	.taglist {
 		list-style: none;
 		display: flex;
@@ -1628,6 +1852,12 @@
 		gap: 0.3rem;
 		margin: 0.4rem 0 0;
 		padding: 0;
+	}
+
+	/* Inline variant: the dietary badges shown directly on a menu/result row (see the
+	   dietaryBadges snippet), with a tighter top margin so they hug the row above. */
+	.taglist--inline {
+		margin-top: 0.3rem;
 	}
 
 	/* Provenance for the item. The popup is non-interactive (pointer-events: none),
