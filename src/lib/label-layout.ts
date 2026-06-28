@@ -299,15 +299,19 @@ export class LabelEngine {
 	 * The id of the topmost visible pill whose box contains the given screen point
 	 * (CSS px, the map's `project` space), or null. Pills are pointer-transparent so
 	 * map gestures pass through them, so click-to-select and the hover cursor are
-	 * resolved against their boxes here instead of via DOM events. Later pills in
-	 * paint order win, matching what the user sees on top.
+	 * resolved against their boxes here instead of via DOM events. `slop` inflates
+	 * the box by a few px so a small pill stays a comfortable tap target. Later pills
+	 * in paint order win, matching what the user sees on top.
 	 */
-	hitTest(x: number, y: number): string | null {
+	hitTest(x: number, y: number, slop = 0): string | null {
 		let hit: string | null = null;
 		for (const id of this.visibleIds) {
 			const n = this.nodes.get(id);
 			if (!n) continue;
-			if (Math.abs(x - (n.ax + n.ox)) <= n.hw && Math.abs(y - (n.ay + n.oy)) <= n.hh) {
+			if (
+				Math.abs(x - (n.ax + n.ox)) <= n.hw + slop &&
+				Math.abs(y - (n.ay + n.oy)) <= n.hh + slop
+			) {
 				hit = id;
 			}
 		}

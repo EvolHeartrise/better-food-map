@@ -2,7 +2,6 @@
 	import 'maplibre-gl/dist/maplibre-gl.css';
 	import { onMount } from 'svelte';
 	import type { Map as MapLibreMap, StyleSpecification } from 'maplibre-gl';
-	import type { Category } from '$lib/category';
 	import { LabelEngine, type Projector, type RenderItem, type SimConfig } from '$lib/label-layout';
 
 	// A geographic bounding box reported to the parent as the visible area. Kept
@@ -10,15 +9,14 @@
 	// stays free of any server-only import.
 	type Bounds = { minLat: number; maxLat: number; minLng: number; maxLng: number };
 
-	// Only the fields the map actually needs. Kept structural (rather than derived
-	// from a remote's return type) so any location-shaped object can be passed in.
+	// Only the fields the map actually needs (the labels show just the name, so no
+	// category/address). Kept structural (rather than derived from a remote's return
+	// type) so any location-shaped object can be passed in.
 	type Location = {
 		id: string;
 		name: string;
-		category: Category | null;
 		latitude: number;
 		longitude: number;
-		address: string | null;
 	};
 
 	let {
@@ -82,8 +80,6 @@
 	// OpenStreetMap's raster tiles stop at z19; cap the camera there so the user
 	// can't zoom past real tile data into blurry overzoomed scaling.
 	const MAX_ZOOM = 19;
-	// Accent (--color-accent) used to mark the selected location's pill.
-	const ACCENT = '#2f6f4f';
 	// Grow the reported box beyond the strictly-visible bounds by this fraction of
 	// each span, so labels just off screen are already loaded when the user nudges
 	// the map, and small pans don't trigger a refetch. 0.2 = 20% on every side.
@@ -123,6 +119,14 @@
 	const LEADER_MIN_DISTANCE = 4;
 	// Leader-line stroke.
 	const LEADER_COLOR = 'rgba(0, 0, 0, 0.35)';
+	// Inflate each pill's clickable/hover box by this many px so a small pill stays a
+	// comfortable tap target (the pills themselves are pointer-transparent; this is
+	// the slop used by the map-level hit-test).
+	const HIT_SLOP = 6;
+	// The rAF loop parks itself once the camera is still and every pill's kinetic
+	// energy (vx²+vy²) falls below this, then a map gesture or data change wakes it —
+	// so an idle map does no per-frame work. ~0.04 px/frame: visually at rest.
+	const SETTLE_KE_EPS = 0.0016;
 
 	let mapEl: HTMLDivElement;
 	let canvasEl: HTMLCanvasElement;
@@ -150,10 +154,16 @@
 
 	// rAF + canvas bookkeeping.
 	let rafId = 0;
+	// Whether the rAF loop is currently scheduled. It parks when idle+settled and is
+	// restarted by `wake()` on any camera move/resize or data/selection change.
+	let running = false;
 	let lastDeclutter = 0;
 	let canvasCtx: CanvasRenderingContext2D | null = null;
 	let canvasCssWidth = 0;
 	let canvasCssHeight = 0;
+	// Last device-pixel-ratio the canvas backing store was sized for, so a move to a
+	// different-DPR display (even at the same CSS size) re-sharpens the leader lines.
+	let lastDpr = 0;
 
 	// Pending debounced viewport report (see scheduleViewReport).
 	let viewTimer: ReturnType<typeof setTimeout> | null = null;
@@ -266,10 +276,11 @@
 	function resizeCanvasIfNeeded() {
 		const w = mapEl.clientWidth;
 		const h = mapEl.clientHeight;
-		if (w === canvasCssWidth && h === canvasCssHeight) return;
+		const dpr = window.devicePixelRatio || 1;
+		if (w === canvasCssWidth && h === canvasCssHeight && dpr === lastDpr) return;
 		canvasCssWidth = w;
 		canvasCssHeight = h;
-		const dpr = window.devicePixelRatio || 1;
+		lastDpr = dpr;
 		canvasEl.width = Math.round(w * dpr);
 		canvasEl.height = Math.round(h * dpr);
 		canvasEl.style.width = `${w}px`;
@@ -281,58 +292,88 @@
 		}
 	}
 
-	// One animation frame: refresh anchors from the live projection, advance the
-	// force model, write each pill's transform, and redraw the leader lines. Runs
-	// continuously (the user chose a live simulation) until teardown.
-	function frame(time: number) {
+	// Start (or restart) the rAF loop if it isn't already running. Called on load and
+	// whenever something that needs re-laying-out happens — a camera move/resize or a
+	// data/selection change — so the loop only spins while there's work to do.
+	function wake() {
+		if (running || !ready || !map) return;
+		running = true;
 		rafId = requestAnimationFrame(frame);
+	}
+
+	// One animation frame: refresh anchors from the live projection, advance the
+	// force model, write each pill's transform, and redraw the leader lines. The loop
+	// keeps going only while the camera is moving or the pills are still settling;
+	// once everything is at rest it parks itself (see `wake`), so an idle map costs
+	// nothing per frame rather than redrawing 60×/s forever.
+	function frame(time: number) {
 		const m = map;
-		if (!m) return;
+		if (!m) {
+			running = false;
+			return;
+		}
 
 		resizeCanvasIfNeeded();
 
-		// Below the overlay floor, show nothing and keep the canvas clear.
+		// Keep animating while the camera itself is in motion (pan/zoom/fly), even if
+		// the pills are at rest — they must track their anchors every frame.
+		let busy = m.isMoving();
+
 		if (m.getZoom() < MIN_OVERLAY_ZOOM) {
+			// Below the overlay floor, show nothing and keep the canvas clear.
 			if (render.length) {
 				render = [];
 				renderSig = '';
 				engine.clear();
 			}
 			canvasCtx?.clearRect(0, 0, canvasCssWidth, canvasCssHeight);
-			return;
-		}
+		} else {
+			// A projector bound to the live camera (`m` is the narrowed, non-null map).
+			const project: Projector = (lng, lat) => m.project([lng, lat]);
 
-		// A projector bound to the live camera (`m` is the narrowed, non-null map).
-		const project: Projector = (lng, lat) => m.project([lng, lat]);
-
-		if (time - lastDeclutter > DECLUTTER_INTERVAL_MS) {
-			lastDeclutter = time;
-			recomputeVisible(project);
-		}
-
-		// Re-project and advance the visible pills, then draw them and their leaders.
-		const active = engine.tick(project, SIM_CONFIG);
-
-		const ctx = canvasCtx;
-		if (ctx) {
-			ctx.clearRect(0, 0, canvasCssWidth, canvasCssHeight);
-			ctx.strokeStyle = LEADER_COLOR;
-			ctx.lineWidth = 1;
-			ctx.beginPath();
-			for (const node of active) {
-				const x = node.ax + node.ox;
-				const y = node.ay + node.oy;
-				if (node.ox * node.ox + node.oy * node.oy > LEADER_MIN_DISTANCE * LEADER_MIN_DISTANCE) {
-					// Draw to the pill centre; the opaque pill (above the canvas) hides
-					// the inner stub, so the line reads as meeting the pill's edge.
-					ctx.moveTo(node.ax, node.ay);
-					ctx.lineTo(x, y);
-				}
-				if (node.el) {
-					node.el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%)`;
-				}
+			if (time - lastDeclutter > DECLUTTER_INTERVAL_MS) {
+				lastDeclutter = time;
+				recomputeVisible(project);
 			}
-			ctx.stroke();
+
+			// Re-project and advance the visible pills, then draw them and their leaders.
+			const active = engine.tick(project, SIM_CONFIG);
+
+			const ctx = canvasCtx;
+			if (ctx) {
+				ctx.clearRect(0, 0, canvasCssWidth, canvasCssHeight);
+				ctx.strokeStyle = LEADER_COLOR;
+				ctx.lineWidth = 1;
+				ctx.beginPath();
+				let maxKineticEnergy = 0;
+				for (const node of active) {
+					const x = node.ax + node.ox;
+					const y = node.ay + node.oy;
+					if (node.ox * node.ox + node.oy * node.oy > LEADER_MIN_DISTANCE * LEADER_MIN_DISTANCE) {
+						// Draw to the pill centre; the opaque pill (above the canvas) hides
+						// the inner stub, so the line reads as meeting the pill's edge.
+						ctx.moveTo(node.ax, node.ay);
+						ctx.lineTo(x, y);
+					}
+					if (node.el) {
+						node.el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%)`;
+					}
+					const ke = node.vx * node.vx + node.vy * node.vy;
+					if (ke > maxKineticEnergy) maxKineticEnergy = ke;
+				}
+				ctx.stroke();
+				// Keep going while any pill is still moving enough to see.
+				if (maxKineticEnergy > SETTLE_KE_EPS) busy = true;
+			} else {
+				// Canvas not ready yet — try again next frame.
+				busy = true;
+			}
+		}
+
+		if (busy) {
+			rafId = requestAnimationFrame(frame);
+		} else {
+			running = false;
 		}
 	}
 
@@ -408,14 +449,21 @@
 			// pills, so we resolve them here by hit-testing the click/hover point
 			// against the pill boxes the engine is laying out.
 			map.on('click', (e) => {
-				const id = engine.hitTest(e.point.x, e.point.y);
+				const id = engine.hitTest(e.point.x, e.point.y, HIT_SLOP);
 				if (id) onselect?.(id);
 			});
 			map.on('mousemove', (e) => {
 				const m = map;
 				if (!m) return;
-				m.getCanvas().style.cursor = engine.hitTest(e.point.x, e.point.y) ? 'pointer' : '';
+				m.getCanvas().style.cursor = engine.hitTest(e.point.x, e.point.y, HIT_SLOP)
+					? 'pointer'
+					: '';
 			});
+
+			// Any camera motion or container resize wakes the (possibly parked) layout
+			// loop so the pills re-project and re-settle, then it parks itself again.
+			map.on('move', wake);
+			map.on('resize', wake);
 
 			// Report the viewport as it changes so the parent can load data for it.
 			// `moveend` fires after both pans and zooms (and programmatic flights) settle.
@@ -434,7 +482,7 @@
 				if (!active || !map) return;
 				ready = true;
 				resizeCanvasIfNeeded();
-				rafId = requestAnimationFrame(frame);
+				wake();
 				// Kick off the first load immediately (no debounce) for the opening view.
 				reportView();
 				onzoom?.(map.getZoom());
@@ -444,6 +492,7 @@
 		return () => {
 			active = false;
 			ready = false;
+			running = false;
 			if (rafId) cancelAnimationFrame(rafId);
 			if (viewTimer) clearTimeout(viewTimer);
 			engine.clear();
@@ -455,22 +504,25 @@
 	});
 
 	// Refresh the visible set promptly whenever the candidates change (a viewport
-	// refetch, a filter, or a new selection), rather than waiting up to one
-	// declutter interval. The rAF loop does the actual recompute next frame.
+	// refetch, a filter, or a new selection), rather than waiting up to one declutter
+	// interval. Resets the throttle and wakes the loop in case it had parked.
 	$effect(() => {
 		void candidates;
 		if (!ready) return;
 		lastDeclutter = 0;
+		wake();
 	});
 
 	// Centre on a newly-selected location. Guarded by `lastSelectedId` so a data
 	// re-sync (e.g. data refetched after the fly's own move) doesn't re-trigger it —
-	// only an actual change of selection flies the camera.
+	// only an actual change of selection flies the camera. Wakes the loop so the new
+	// pill's highlight repaints even if the camera doesn't move.
 	$effect(() => {
 		if (!ready) return;
 		const id = selected?.id ?? null;
 		if (id && id !== lastSelectedId) flyToSelected();
 		lastSelectedId = id;
+		wake();
 	});
 
 	// Fly to a search focus target (the nearest match) when its key changes. Keeps
@@ -502,12 +554,7 @@
 	     names are also reachable in the results list, the accessible selection path. -->
 	<div class="labels" aria-hidden="true">
 		{#each render as item (item.id)}
-			<div
-				class="pill"
-				class:pill--selected={item.selected}
-				style:--accent={ACCENT}
-				{@attach pill(item.id)}
-			>
+			<div class="pill" class:pill--selected={item.selected} {@attach pill(item.id)}>
 				{item.name}
 			</div>
 		{/each}
@@ -564,9 +611,10 @@
 		will-change: transform;
 	}
 
+	/* Mark the selected venue's pill in the app accent (--color-accent). */
 	.pill--selected {
-		background: var(--accent);
-		border-color: var(--accent);
+		background: #2f6f4f;
+		border-color: #2f6f4f;
 		color: #ffffff;
 		font-weight: 600;
 	}
