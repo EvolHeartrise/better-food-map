@@ -29,11 +29,17 @@
 		// Called with a location id when the user clicks a marker, so the parent can
 		// open that location (the same action as clicking a result card).
 		onselect,
-		// Where the map opens, as `[lat, lng]` — typically the visitor's IP-detected
-		// location. Falls back to DEFAULT_CENTER when absent (e.g. geolocation
-		// unavailable). The camera otherwise only moves when the user pans/zooms or
-		// selects a place — search/filter changes never move it.
+		// Where the map opens, as `[lat, lng]`. Falls back to DEFAULT_CENTER when absent.
+		// The camera otherwise only moves when the user pans/zooms or selects a place —
+		// search/filter changes never move it.
 		initialCenter = null,
+		// Zoom the map opens at. Defaults to a city view (DEFAULT_ZOOM); the landing
+		// passes a low value so the map opens on the fully zoomed-out globe.
+		initialZoom = null,
+		// Called with the current zoom whenever it changes (live, during the gesture),
+		// plus once on load. The landing uses this to drive itself: it shows while the
+		// map is zoomed out and hides once the user zooms in (and returns on zoom-out).
+		onzoom,
 		// A point to fly the camera to (without selecting it) — used by global search
 		// to bring the nearest match into view. The camera flies whenever `key`
 		// changes, so the parent controls exactly when a fly happens (it omits it when
@@ -48,6 +54,8 @@
 		selected?: Location | null;
 		onselect?: (id: string) => void;
 		initialCenter?: [number, number] | null;
+		initialZoom?: number | null;
+		onzoom?: (zoom: number) => void;
 		focus?: { latitude: number; longitude: number; key: string } | null;
 		onviewchange?: (bounds: Bounds) => void;
 	} = $props();
@@ -273,7 +281,7 @@
 				container: mapEl,
 				style: mapStyle(),
 				center: toLngLat(initialCenter ?? DEFAULT_CENTER),
-				zoom: DEFAULT_ZOOM,
+				zoom: initialZoom ?? DEFAULT_ZOOM,
 				maxZoom: MAX_ZOOM,
 				// The OSM credit is shown; MapLibre adds no self-attribution of its own.
 				attributionControl: { compact: false }
@@ -288,14 +296,22 @@
 			// `moveend` fires after both pans and zooms (and programmatic flights) settle.
 			map.on('moveend', scheduleViewReport);
 
+			// Report the zoom live (every frame of a gesture or flight) so the landing can
+			// track it: it shows while zoomed out and hides as the user zooms in, then
+			// returns on zoom-out — whether the zoom is a user gesture or a programmatic fly.
+			map.on('zoom', () => {
+				if (map) onzoom?.(map.getZoom());
+			});
+
 			// `load` fires once the style is parsed and the first frame is painted —
 			// only then are markers safe to add and the opening view worth reporting.
 			map.on('load', () => {
-				if (!active) return;
+				if (!active || !map) return;
 				ready = true;
 				renderMarkers();
 				// Kick off the first load immediately (no debounce) for the opening view.
 				reportView();
+				onzoom?.(map.getZoom());
 			});
 		})();
 

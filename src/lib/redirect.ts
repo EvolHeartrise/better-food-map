@@ -1,11 +1,11 @@
-// Where to send a user after they sign in. Shared by the landing page (which reads
-// `?redirectTo` and forwards it to the login route), the login route (which stashes
+// Where to send a user after they sign in. Shared by the account menu's sign-in link
+// (which forwards the current path as `?redirectTo`), the login route (which stashes
 // it for the round trip) and the OAuth callback (which redirects there). Kept in a
-// plain `$lib` module — no server-only imports — so the client landing page and the
-// server routes use the exact same validation.
+// plain `$lib` module — no server-only imports — so the client and the server routes
+// use the exact same validation.
 
-/** Where a signed-in user lands when no specific destination was requested. */
-export const DEFAULT_REDIRECT = '/map';
+/** Where a signed-in user lands when no specific destination was requested: the map. */
+export const DEFAULT_REDIRECT = '/';
 
 /**
  * Validates an untrusted post-login redirect target, returning it only when it is a
