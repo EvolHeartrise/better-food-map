@@ -263,7 +263,7 @@ test('candidates expose structured address_parts from the POI addr:* tags', asyn
 	store.close();
 });
 
-test('address_parts is omitted when the POI carries no addr:* tags', async () => {
+test('address_parts is omitted when the POI carries no addr:* tags and no address', async () => {
 	const store = storeWith([row({ osm_id: 'n11', latitude: 49.2827, longitude: -123.1207 })]);
 	const res = await searchPoi(store, null, {
 		latitude: CENTRE.lat,
@@ -272,5 +272,32 @@ test('address_parts is omitted when the POI carries no addr:* tags', async () =>
 		exclude_existing: false
 	});
 	expect(res.candidates[0].address_parts).toBeUndefined();
+	store.close();
+});
+
+test('address_parts is recovered from an enrichment-supplied single-line address', async () => {
+	// No own addr:* tags, but an enrichment feed (building containment / Overture)
+	// filled the single-line `address` — its parts must survive in address_parts.
+	const store = storeWith([
+		row({
+			osm_id: 'n12',
+			latitude: 49.2827,
+			longitude: -123.1207,
+			name: 'Enriched Diner',
+			address: '30 Farnham Gate Road, Halifax, Nova Scotia, B3M 3W8'
+		})
+	]);
+	const res = await searchPoi(store, null, {
+		latitude: CENTRE.lat,
+		longitude: CENTRE.lon,
+		radius_km: 1,
+		exclude_existing: false
+	});
+	expect(res.candidates[0].address_parts).toEqual({
+		street: '30 Farnham Gate Road',
+		city: 'Halifax',
+		region: 'Nova Scotia',
+		postcode: 'B3M 3W8'
+	});
 	store.close();
 });

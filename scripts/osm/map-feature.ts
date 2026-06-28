@@ -12,7 +12,12 @@
 // canonical category union rather than restating it. The scripts layer already
 // depends on src/lib (see search-poi.ts), so this adds no new coupling.
 import type { Category } from '../../src/lib/category';
-import { composeAddressLine, composeStreet } from '../../src/lib/address';
+import {
+	composeAddressLine,
+	composeStreet,
+	normalizePostcode,
+	normalizeRegion
+} from '../../src/lib/address';
 import { blankToNull } from '../../src/lib/text';
 
 /** A GeoJSON feature, as produced by osmium export (geometry may be any type). */
@@ -171,6 +176,69 @@ export function osmOwnAddressParts(tagsJson: string): PoiAddressParts | undefine
 export function composeAddress(props: Record<string, string>): string | null {
 	const { street, city, region, postcode } = osmAddressParts(props);
 	return composeAddressLine({ street, city, region, postcode });
+}
+
+// A trailing postal/ZIP token, as {@link composeAddressLine} renders it inside the
+// last segment: a Canadian "A1A 1A1" (optional inner space) or a US "12345"/"12345-6789".
+const TRAILING_POSTCODE = /^(.*?)[\s,]+([A-Za-z]\d[A-Za-z]\s*\d[A-Za-z]\d|\d{5}(?:-\d{4})?)$/;
+
+/**
+ * Recovers structured {@link PoiAddressParts} from a single-line address that WE
+ * composed via {@link composeAddressLine} (`street, city, REGION postcode`; an older
+ * staging vintage comma-joined region and postcode). The fallback for staging POIs
+ * whose address came from enrichment — a containing OSM building or the Overture feed
+ * — rather than their own `addr:*` tags, so the parts those feeds DID carry survive
+ * even when the single line itself isn't surfaced.
+ *
+ * Robustness comes from validating the tail with the SAME normalizers the write path
+ * uses: a trailing token becomes `postcode` only when {@link normalizePostcode} accepts
+ * it, and a segment becomes `region` only when {@link normalizeRegion} does — so a city
+ * is never mistaken for a region. Values are returned RAW (as written in the line, like
+ * {@link osmOwnAddressParts}); create_locations/update_locations normalize them. The
+ * remaining lead segments are `street, city` in composition order. `country` is never
+ * recoverable (composeAddressLine omits it). Returns undefined when nothing is usable.
+ */
+export function addressPartsFromLine(line: string | null | undefined): PoiAddressParts | undefined {
+	if (!line) return undefined;
+	const segments = line
+		.split(',')
+		.map((s) => s.trim())
+		.filter(Boolean);
+	if (segments.length === 0) return undefined;
+
+	const out: PoiAddressParts = {};
+
+	// Peel the region/postcode tail. composeAddressLine renders them as the final
+	// segment "REGION postcode" (space-joined); an older vintage emitted "REGION",
+	// "postcode" as two comma segments.
+	let last = segments[segments.length - 1];
+	if (normalizePostcode(last)) {
+		out.postcode = last;
+		segments.pop();
+		last = segments[segments.length - 1] ?? '';
+	} else {
+		const m = last.match(TRAILING_POSTCODE);
+		if (m && normalizePostcode(m[2])) {
+			out.postcode = m[2].replace(/\s+/g, ' ').trim();
+			last = m[1].trim();
+			segments[segments.length - 1] = last;
+		}
+	}
+	if (last && normalizeRegion(last)) {
+		out.region = last;
+		segments.pop();
+	}
+
+	// What's left is `street, city` (composeAddressLine order). A lone remaining
+	// segment is the street — the part create_locations requires.
+	if (segments.length >= 2) {
+		out.street = segments[0];
+		out.city = segments.slice(1).join(', ');
+	} else if (segments.length === 1) {
+		out.street = segments[0];
+	}
+
+	return Object.keys(out).length ? out : undefined;
 }
 
 /** Venue-level dietary markers OSM explicitly asserts (`diet:x=yes|only`), mapped to tag ids. */

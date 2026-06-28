@@ -18,7 +18,7 @@
 
 import type { D1Like } from '../../src/lib/server/db';
 import { composeAddressLine } from '../../src/lib/address';
-import { osmOwnAddressParts, osmUrl } from './map-feature';
+import { addressPartsFromLine, osmOwnAddressParts, osmUrl } from './map-feature';
 import type { OsmPoiStore, StoredPoi } from './poi-store';
 import { LOCATION_AUDIT, nearestNameMatch } from './poi-match';
 
@@ -65,22 +65,16 @@ export interface MissingAddressLocation {
 	 */
 	classification: 'osm_fix_available' | 'osm_has_no_address' | 'no_osm_match';
 	/**
-	 * Structured parts to pass to update_locations (osm_fix_available only, and only
-	 * when the matched POI carries its OWN `addr:*` tags — present is preferred over
-	 * splitting `osm_address` by hand). The server normalizes region/postcode/country,
-	 * so pass the parts through unchanged. May be partial (e.g. no country); supply
-	 * any still-missing required part yourself. Absent when the address came from an
-	 * external feed or a containing building rather than the POI's own tags — then
-	 * split `osm_address` into parts yourself.
+	 * Structured parts to pass to update_locations (osm_fix_available only). The server
+	 * normalizes region/postcode/country, so pass the parts through unchanged. Taken
+	 * from the matched POI's OWN `addr:*` tags when present, else recovered from the
+	 * address an enrichment feed (a containing building, or Overture) supplied. May be
+	 * partial (e.g. no country); supply any still-missing required part yourself.
 	 */
 	osm_address_parts?: Partial<
 		Record<'street' | 'city' | 'region' | 'postcode' | 'country', string>
 	>;
-	/**
-	 * A single-line preview of the matched OSM address (osm_fix_available only).
-	 * Prefer `osm_address_parts` for update_locations; fall back to splitting this
-	 * into structured parts when `osm_address_parts` is absent.
-	 */
+	/** A single-line preview of the matched OSM address (osm_fix_available only). */
 	osm_address?: string;
 	/**
 	 * Where `osm_address` came from (osm_fix_available only): null/absent = the
@@ -144,13 +138,12 @@ export function usableAddress(address: string | null | undefined): string | null
 }
 
 /**
- * The matched POI's OWN address parts (from its `addr:*` tags), as a ready-to-pass
- * update_locations patch — or undefined when the POI carries no addr:* tags (its
- * address came from an enrichment feed or a containing building, not its own tags),
- * in which case the caller exposes only the single-line `osm_address`.
+ * Structured update_locations parts for the matched POI: its OWN `addr:*` tags when
+ * present, else parts recovered from the single-line address an enrichment feed (a
+ * containing building, or Overture) gave it. Undefined only when no parts can be formed.
  */
 function osmFixParts(poi: StoredPoi): MissingAddressLocation['osm_address_parts'] {
-	return osmOwnAddressParts(poi.tags_json);
+	return osmOwnAddressParts(poi.tags_json) ?? addressPartsFromLine(poi.address);
 }
 
 /** The REQUIRED structured parts (street/city/region/country) that are absent. */

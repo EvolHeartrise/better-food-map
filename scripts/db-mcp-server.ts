@@ -31,7 +31,7 @@ import {
 	getLocationById,
 	getFoodByLocation,
 	getItemById,
-	updateItem,
+	updateItems,
 	deleteItem,
 	insertLocations,
 	insertFoods,
@@ -128,18 +128,20 @@ const TAG_POLICY_SHORT =
 // How the two ways of storing a menu relate. Kept terse and advertised to
 // clients so an agent picks the right create_* tool for the situation.
 const MODEL_OVERVIEW =
-	'Data model — every location serves a menu of items:\n' +
-	'• INDEPENDENT venue: add its items with create_foods. They live on a private menu created ' +
-	'automatically for that one location (browse them via get_location).\n' +
+	'Data model — every location serves a menu of items. Add items with create_items, ' +
+	'targeting EITHER a venue or a shared menu:\n' +
+	'• INDEPENDENT venue: call create_items with a `location_id`. Its items live on a private ' +
+	'menu created automatically for that one location (browse them via get_location). Tip: when ' +
+	'creating the venue, pass the items inline as `menu_items` on create_locations to do it in one call.\n' +
 	"• CHAIN (McDonald's, Subway, …): create a `brand`, then one `menu` per region " +
-	'(e.g. "Subway UK"), then the menu\'s shared items once with create_menu_items (browse them via ' +
-	'get_menu). Point each branch at that menu by setting its `menu_id` (and `brand_id`) via ' +
-	"create_locations/update_locations — every such location then serves the menu's " +
+	'(e.g. "Subway UK"), then the menu\'s shared items once with create_items using a `menu_id` ' +
+	'(browse them via get_menu). Point each branch at that menu by setting its `menu_id` (and ' +
+	"`brand_id`) via create_locations/update_locations — every such location then serves the menu's " +
 	'items automatically, with no per-location copies. Where one branch differs ' +
 	'(item sold out, regional price), record just that delta with set_location_item_override.\n' +
-	'Once created, read/edit/remove any item by id with get_item / update_item / delete_item ' +
+	'Rule of thumb: create_items with a menu_id for items shared across branches; with a location_id ' +
+	'for one venue. Once created, read/edit/remove items with get_item / update_items / delete_item ' +
 	'(editing a shared chain item changes it for every branch).\n' +
-	'Rule of thumb: shared across branches → create_menu_items; unique to one place → create_foods.\n' +
 	'Items carry tags and ingredients: pass `ingredients` as a comma-separated string and ' +
 	'each part is stored as an ingredient tag. Use `optional_tags` / `optional_ingredients` for ' +
 	'things that can be added or left out (e.g. an item that can be made vegan, or cheese on request).';
@@ -416,10 +418,10 @@ const idArgs = v.object({
 	id: v.pipe(v.string(), v.minLength(1), v.description('The record id (UUID).'))
 });
 
-// One menu item belonging to a single venue's own menu. Shared by create_foods
-// (location_id given once for the batch) and the inline `menu_items` of an
-// independent venue created via create_locations.
-const foodItemSchema = v.object({
+// One menu item. Shared by create_items (the batch's location_id/menu_id is given
+// once), and by the inline `menu_items` of an independent venue created via
+// create_locations.
+const itemSchema = v.object({
 	item_name: v.pipe(v.string(), v.minLength(1), v.description('Name of the menu item.')),
 	description: v.optional(v.nullable(v.string())),
 	ingredients: ingredientsSchema,
@@ -429,8 +431,9 @@ const foodItemSchema = v.object({
 			v.pipe(
 				priceSchema,
 				v.description(
-					"Price in the venue's menu currency (set via `currency`; defaults to " +
-						`${DEFAULT_CURRENCY}). A bare number — no currency symbol.`
+					"Price in the menu's currency (a bare number, no symbol; the menu's currency defaults to " +
+						`${DEFAULT_CURRENCY}). For a shared chain item this is the default a branch can override ` +
+						'per-location via set_location_item_override.'
 				)
 			)
 		)
@@ -507,7 +510,7 @@ const createLocationArgs = v.object({
 				v.minLength(1),
 				v.description(
 					'Shared brand menu this branch serves; its items then appear here automatically. ' +
-						'Leave unset for an independent venue (use create_foods, or inline `menu_items`, ' +
+						'Leave unset for an independent venue (use create_items, or inline `menu_items`, ' +
 						'for its own menu).'
 				)
 			)
@@ -524,12 +527,12 @@ const createLocationArgs = v.object({
 	),
 	menu_items: v.optional(
 		v.pipe(
-			v.array(foodItemSchema),
+			v.array(itemSchema),
 			v.maxLength(200),
 			v.description(
 				"This INDEPENDENT venue's own menu items, created on its private menu in the SAME atomic " +
-					'batch as the location — saving a separate create_foods call. Same item shape as ' +
-					'create_foods. Omit for a chain branch (which sets menu_id/brand_id and shares a menu); ' +
+					'batch as the location — saving a separate create_items call. Same item shape as ' +
+					'create_items. Omit for a chain branch (which sets menu_id/brand_id and shares a menu); ' +
 					'passing both is rejected.'
 			)
 		)
@@ -607,30 +610,51 @@ const updateLocationsArgs = v.object({
 	)
 });
 
-const createFoodsArgs = v.object({
-	location_id: v.pipe(
-		v.string(),
-		v.minLength(1),
-		v.description('Id of the location every item in this batch belongs to.')
-	),
-	currency: v.optional(
-		v.pipe(
-			currencySchema,
-			v.description(
-				`Currency for this venue's menu, applied only when its private menu is created (the first ` +
-					`create_foods call). Defaults to ${DEFAULT_CURRENCY}. To change an existing menu's currency, ` +
-					`use update_menu.`
+const createItemsArgs = v.pipe(
+	v.object({
+		location_id: v.optional(
+			v.pipe(
+				v.string(),
+				v.minLength(1),
+				v.description(
+					"Add the items to THIS independent venue's own private menu (created on first use). " +
+						'Use for an independent venue; pass `menu_id` instead for a shared chain menu. ' +
+						'Exactly one of location_id / menu_id is required.'
+				)
 			)
+		),
+		menu_id: v.optional(
+			v.pipe(
+				v.string(),
+				v.minLength(1),
+				v.description(
+					'Add the items to THIS shared brand menu — they then appear at every branch serving it. ' +
+						'Use for a chain; pass `location_id` instead for an independent venue. ' +
+						'Exactly one of location_id / menu_id is required.'
+				)
+			)
+		),
+		currency: v.optional(
+			v.pipe(
+				currencySchema,
+				v.description(
+					`Currency for an INDEPENDENT venue's menu (with \`location_id\`), applied only when its ` +
+						`private menu is first created. Defaults to ${DEFAULT_CURRENCY}. Ignored with \`menu_id\` ` +
+						`(the menu already has a currency); to change an existing menu's currency use update_menu.`
+				)
+			)
+		),
+		items: v.pipe(
+			v.array(itemSchema),
+			v.minLength(1),
+			v.description('The menu items to create, inserted atomically (all-or-nothing).')
 		)
-	),
-	items: v.pipe(
-		v.array(foodItemSchema),
-		v.minLength(1),
-		v.description(
-			'The menu items to create under the location, inserted atomically (all-or-nothing).'
-		)
+	}),
+	v.check(
+		(input) => (input.location_id !== undefined) !== (input.menu_id !== undefined),
+		'Pass exactly one of `location_id` (an independent venue) or `menu_id` (a shared chain menu).'
 	)
-});
+);
 
 const nearSchema = v.object({
 	latitude: v.pipe(latitudeSchema, v.description('Centre latitude in decimal degrees.')),
@@ -923,45 +947,8 @@ const listMenusArgs = v.object({
 	)
 });
 
-// One shared menu item within a create_menu_items batch. menu_id is given once
-// for the whole batch, so it isn't repeated per item.
-const menuItemSchema = v.object({
-	item_name: v.pipe(v.string(), v.minLength(1), v.description('Name of the menu item.')),
-	description: v.optional(v.nullable(v.string())),
-	ingredients: ingredientsSchema,
-	optional_ingredients: optionalIngredientsSchema,
-	price: v.optional(
-		v.nullable(
-			v.pipe(
-				priceSchema,
-				v.description(
-					"Default price in the menu's currency (set on the menu; a bare number, no symbol). " +
-						'A branch can override it per-location.'
-				)
-			)
-		)
-	),
-	tags: v.optional(
-		v.pipe(v.array(tagIdSchema), v.description('Tags to apply to this item. ' + TAG_POLICY_SHORT))
-	),
-	optional_tags: optionalTagsSchema,
-	sources: createSourcesSchema,
-	id: v.optional(v.pipe(v.string(), v.minLength(1)))
-});
-
-const createMenuItemsArgs = v.object({
-	menu_id: v.pipe(
-		v.string(),
-		v.minLength(1),
-		v.description('Id of the menu every item in this batch belongs to.')
-	),
-	items: v.pipe(
-		v.array(menuItemSchema),
-		v.minLength(1),
-		v.description('The shared menu items to create, inserted atomically (all-or-nothing).')
-	)
-});
-
+// One item patch within an update_items batch. Every field but `id` is optional;
+// only the fields present are changed.
 const updateItemArgs = v.object({
 	id: v.pipe(v.string(), v.minLength(1), v.description('Id of the item to update.')),
 	menu_id: v.optional(
@@ -994,6 +981,20 @@ const updateItemArgs = v.object({
 	optional_tags: optionalTagsSchema,
 	sources: updateSourcesSchema,
 	add_sources: addSourcesSchema
+});
+
+const updateItemsArgs = v.object({
+	items: v.pipe(
+		v.array(updateItemArgs),
+		v.minLength(1),
+		v.maxLength(200),
+		v.description(
+			'Item patches to apply in one atomic batch — pass a single item to edit one. Each carries ' +
+				'an `id` plus only the fields to change. Editing a shared chain item changes it for every ' +
+				'branch serving its menu — for a one-branch difference use set_location_item_override instead. ' +
+				'Ids that do not exist are reported in `not_found_ids` rather than failing the batch.'
+		)
+	)
 });
 
 const setOverrideArgs = v.object({
@@ -1383,7 +1384,7 @@ const tools = [
 			'from OSM verbatim; otherwise pass latitude/longitude + a structured address (street/city/region/' +
 			'country required, postcode optional; region/postcode/country are normalized, e.g. "Ontario" → ' +
 			'"ON"). For a chain branch set `menu_id`/`brand_id`; for an independent venue omit them and ' +
-			'optionally pass `menu_items` to create its private menu in the same batch (else use create_foods). ' +
+			'optionally pass `menu_items` to create its private menu in the same batch (else use create_items). ' +
 			'Idempotent on explicit ids (skipped → `skipped_existing_ids`; give an inline-`menu_items` location ' +
 			'an explicit id too, so its items skip with it) and coordinate-deduped against the map and earlier ' +
 			'batch items (skipped → `skipped_duplicate_locations`), so retries/re-imports are safe. If any ' +
@@ -1421,7 +1422,7 @@ const tools = [
 					throw new Error(
 						`"${it.name}" has \`menu_items\` but is linked to a chain (brand_id/menu_id). Inline items ` +
 							`are for an independent venue's own menu; a chain branch shares its menu — use ` +
-							`create_menu_items, or set_location_item_override for a per-branch delta.`
+							`create_items with the menu_id, or set_location_item_override for a per-branch delta.`
 					);
 				}
 				return { it, core: resolveLocationInsertCore(it) };
@@ -1551,24 +1552,36 @@ const tools = [
 		handler: async ({ id }) => ({ deleted: await deleteLocation(getDb(), id) })
 	}),
 	defineTool({
-		name: 'create_foods',
+		name: 'create_items',
 		annotations: CREATE,
 		description:
-			'Create one or more menu items for ONE independent venue, on its own private menu (created ' +
-			'automatically the first time), in a single transaction (all-or-nothing): ' +
-			"if any item is invalid, none are written. Use this for a venue's own menu; for a chain whose branches share a menu, use create_menu_items instead (calling it on a chain branch errors). Pass a " +
-			'one-element `items` array to add a single item. Tip: when creating the venue too, pass these as ' +
-			'`menu_items` on create_locations to do it in one call. Returns ' +
-			'{ created, item_ids, skipped_existing_ids, name_collisions } (ids already present are skipped, ' +
-			"making retries safe; `name_collisions` lists incoming names that already exist on this venue's " +
-			'menu so you can update the existing item instead of duplicating it) — read full items with ' +
-			'get_item / get_location if needed.',
-		schema: createFoodsArgs,
+			'Create one or more menu items in a single transaction (all-or-nothing): if any item is invalid, ' +
+			'none are written. Target EITHER an independent venue (pass `location_id` — items go on its own ' +
+			'private menu, created on first use) OR a shared brand menu (pass `menu_id` — items appear at every ' +
+			'branch serving it); pass exactly one. Pass a one-element `items` array to add a single item. Tip: ' +
+			'when creating the venue too, pass the items inline as `menu_items` on create_locations to do it in ' +
+			'one call. Returns { created, item_ids, skipped_existing_ids, name_collisions } — ids already present ' +
+			'are skipped (retries are safe); `name_collisions` lists incoming names that already exist on the ' +
+			'target menu so you can update the existing item instead of duplicating it. Read full items with ' +
+			'get_item / get_location / get_menu if needed.',
+		schema: createItemsArgs,
 		handler: async (input) => {
-			const location = await getLocationById(getDb(), input.location_id);
-			if (!location) {
-				throw new Error(`No location with id "${input.location_id}".`);
+			// Resolve the target menu: an independent venue's private menu (location_id), or a
+			// shared brand menu (menu_id). The schema guarantees exactly one is set.
+			let menuIdForCollisions: string | null;
+			if (input.location_id !== undefined) {
+				const location = await getLocationById(getDb(), input.location_id);
+				if (!location) throw new Error(`No location with id "${input.location_id}".`);
+				// A chain branch shares a menu and has no private item store; insertFoods rejects
+				// it. Its existing menu_id is what new items would collide against.
+				menuIdForCollisions = location.menu_id;
+			} else {
+				if (!(await getMenuById(getDb(), input.menu_id as string))) {
+					throw new Error(`No menu with id "${input.menu_id}".`);
+				}
+				menuIdForCollisions = input.menu_id as string;
 			}
+
 			const explicitIds = input.items.map((it) => it.id).filter((id): id is string => Boolean(id));
 			const already = explicitIds.length
 				? await existingIds(getDb(), 'items', explicitIds)
@@ -1581,33 +1594,51 @@ const tools = [
 				}
 				return true;
 			});
-			// Name-collision check runs BEFORE the insert (against the venue's existing
-			// private menu, if any) so the items being added don't match themselves.
-			const nameCollisions = location.menu_id
+			// Name-collision check runs BEFORE the insert (against the target menu, if any)
+			// so the items being added don't match themselves.
+			const nameCollisions = menuIdForCollisions
 				? await itemNameCollisions(
 						getDb(),
-						location.menu_id,
+						menuIdForCollisions,
 						toInsert.map((it) => it.item_name)
 					)
 				: [];
-			const ids = toInsert.length
-				? await insertFoods(
-						getDb(),
-						toInsert.map((it) => ({
-							id: it.id,
-							location_id: input.location_id,
-							item_name: it.item_name,
-							description: it.description ?? null,
-							ingredients: it.ingredients ?? null,
-							optionalIngredients: it.optional_ingredients ?? null,
-							price: it.price ?? null,
-							tags: it.tags,
-							optionalTags: it.optional_tags,
-							sources: normalizeSources(it.sources)
-						})),
-						input.currency
-					)
-				: [];
+			let ids: string[] = [];
+			if (toInsert.length) {
+				ids =
+					input.location_id !== undefined
+						? await insertFoods(
+								getDb(),
+								toInsert.map((it) => ({
+									id: it.id,
+									location_id: input.location_id as string,
+									item_name: it.item_name,
+									description: it.description ?? null,
+									ingredients: it.ingredients ?? null,
+									optionalIngredients: it.optional_ingredients ?? null,
+									price: it.price ?? null,
+									tags: it.tags,
+									optionalTags: it.optional_tags,
+									sources: normalizeSources(it.sources)
+								})),
+								input.currency
+							)
+						: await insertMenuItems(
+								getDb(),
+								toInsert.map((it) => ({
+									id: it.id,
+									menu_id: input.menu_id as string,
+									item_name: it.item_name,
+									description: it.description ?? null,
+									ingredients: it.ingredients ?? null,
+									optionalIngredients: it.optional_ingredients ?? null,
+									price: it.price ?? null,
+									tags: it.tags,
+									optionalTags: it.optional_tags,
+									sources: normalizeSources(it.sources)
+								}))
+							);
+			}
 			const warnings = collectIngredientWarnings(toInsert);
 			return {
 				created: ids.length,
@@ -1629,40 +1660,50 @@ const tools = [
 		handler: async ({ id }) => getItemById(getDb(), id)
 	}),
 	defineTool({
-		name: 'update_item',
+		name: 'update_items',
 		annotations: DESTRUCTIVE,
 		description:
-			'Update any menu item by id. For a shared chain item the change applies to EVERY branch serving ' +
-			'its menu — to change just one branch use set_location_item_override instead. Only provided fields ' +
-			'change: `tags`/`optional_tags` together replace the dietary/course set; `ingredients`/' +
-			'`optional_ingredients` replace the ingredient set; `sources` replaces sources (pass []/"" to ' +
-			'clear) while `add_sources` appends a citation without resending the rest (not both). Returns the ' +
-			'updated item, or null if the id does not exist.',
-		schema: updateItemArgs,
-		handler: async ({
-			id,
-			sources,
-			add_sources,
-			optional_tags,
-			optional_ingredients,
-			...patch
-		}) => {
-			assertSourcesNotBoth(sources, add_sources);
-			const updated = await updateItem(getDb(), id, {
-				...patch,
-				optionalTags: optional_tags,
-				optionalIngredients: optional_ingredients,
-				sources: normalizeSources(sources),
-				addSources: normalizeSources(add_sources)
-			});
-			if (!updated) return null;
-			// Only the ingredient fields actually present in this patch are checked.
-			const warnings = ingredientWarnings({
-				item_name: patch.item_name ?? updated.item_name,
-				ingredients: patch.ingredients,
-				optional_ingredients
-			});
-			return warnings.length ? { ...updated, warnings } : updated;
+			'Update one or more menu items by id in a single atomic batch — pass a one-item `items` array to ' +
+			'edit one. Each patch carries an `id` plus only the fields to change; editing a shared chain item ' +
+			'changes it for EVERY branch serving its menu — for a one-branch difference use ' +
+			'set_location_item_override instead. Replace-set semantics per item: `tags`/`optional_tags` ' +
+			'together replace the dietary/course set; `ingredients`/`optional_ingredients` replace the ' +
+			'ingredient set; `sources` replaces sources (pass []/"" to clear) while `add_sources` appends ' +
+			'without resending the rest (not both). Ideal for menu-wide corrections in one call. Ids that do ' +
+			'not exist are reported in `not_found_ids`. Returns { updated, updated_ids, not_found_ids }.',
+		schema: updateItemsArgs,
+		handler: async ({ items }) => {
+			const patches = items.map(
+				({ id, sources, add_sources, optional_tags, optional_ingredients, ...patch }) => {
+					assertSourcesNotBoth(sources, add_sources, id);
+					return {
+						id,
+						...patch,
+						optionalTags: optional_tags,
+						optionalIngredients: optional_ingredients,
+						sources: normalizeSources(sources),
+						addSources: normalizeSources(add_sources)
+					};
+				}
+			);
+			const { updatedIds, notFoundIds } = await updateItems(getDb(), patches);
+			// Advisory ingredient warnings, only for the items actually updated.
+			const updatedSet = new Set(updatedIds);
+			const warnings = items
+				.filter((it) => updatedSet.has(it.id))
+				.flatMap((it) =>
+					ingredientWarnings({
+						item_name: it.item_name ?? it.id,
+						ingredients: it.ingredients,
+						optional_ingredients: it.optional_ingredients
+					})
+				);
+			return {
+				updated: updatedIds.length,
+				updated_ids: updatedIds,
+				not_found_ids: notFoundIds,
+				...(warnings.length ? { warnings } : {})
+			};
 		}
 	}),
 	defineTool({
@@ -1768,7 +1809,8 @@ const chainTools = [
 		annotations: CREATE,
 		description:
 			'Create a regional menu under a brand (e.g. name "Subway UK", region "GB", currency "GBP"). Add its ' +
-			'shared items with create_menu_items, then point each branch at it via location.menu_id. Set ' +
+			'shared items with create_items (using this menu_id), then point each branch at it via ' +
+			'location.menu_id. Set ' +
 			`\`currency\` so item prices are unambiguous (defaults to ${DEFAULT_CURRENCY}). Optionally cite the ` +
 			'official menu once via `sources`. Returns { id } — read it back with get_menu.',
 		schema: createMenuArgs,
@@ -1854,67 +1896,6 @@ const chainTools = [
 		handler: async ({ id }) => ({ deleted: await deleteMenu(getDb(), id) })
 	}),
 	defineTool({
-		name: 'create_menu_items',
-		annotations: CREATE,
-		description:
-			'Create one or more SHARED items on a brand menu in one transaction (all-or-nothing). Defined once ' +
-			'here, they appear at every branch serving this menu — never copy them per location. For an ' +
-			"independent venue's own menu use create_foods instead. Returns " +
-			'{ created, item_ids, skipped_existing_ids, name_collisions } (ids already present are skipped, ' +
-			'making retries safe; `name_collisions` lists incoming names that already exist on this menu so ' +
-			'you can update the existing item instead of duplicating it) — read full items with get_item / ' +
-			'get_menu if needed.',
-		schema: createMenuItemsArgs,
-		handler: async (input) => {
-			if (!(await getMenuById(getDb(), input.menu_id))) {
-				throw new Error(`No menu with id "${input.menu_id}".`);
-			}
-			const explicitIds = input.items.map((it) => it.id).filter((id): id is string => Boolean(id));
-			const already = explicitIds.length
-				? await existingIds(getDb(), 'items', explicitIds)
-				: new Set<string>();
-			const skippedExistingIds: string[] = [];
-			const toInsert = input.items.filter((it) => {
-				if (it.id && already.has(it.id)) {
-					skippedExistingIds.push(it.id);
-					return false;
-				}
-				return true;
-			});
-			// Name-collision check runs BEFORE the insert so items don't match themselves.
-			const nameCollisions = await itemNameCollisions(
-				getDb(),
-				input.menu_id,
-				toInsert.map((it) => it.item_name)
-			);
-			const ids = toInsert.length
-				? await insertMenuItems(
-						getDb(),
-						toInsert.map((it) => ({
-							id: it.id,
-							menu_id: input.menu_id,
-							item_name: it.item_name,
-							description: it.description ?? null,
-							ingredients: it.ingredients ?? null,
-							optionalIngredients: it.optional_ingredients ?? null,
-							price: it.price ?? null,
-							tags: it.tags,
-							optionalTags: it.optional_tags,
-							sources: normalizeSources(it.sources)
-						}))
-					)
-				: [];
-			const warnings = collectIngredientWarnings(toInsert);
-			return {
-				created: ids.length,
-				item_ids: ids,
-				skipped_existing_ids: skippedExistingIds,
-				...(nameCollisions.length ? { name_collisions: nameCollisions } : {}),
-				...(warnings.length ? { warnings } : {})
-			};
-		}
-	}),
-	defineTool({
 		name: 'set_location_item_override',
 		annotations: DESTRUCTIVE,
 		description:
@@ -1959,9 +1940,10 @@ const osmTools = [
 			'missing — ordered nearest-first for centre+radius queries. Each candidate includes an ' +
 			'`osm_id` and `osm_url`, a `suggested_category` (cafe/fast_food/restaurant/bakery, ' +
 			'or null for bars/pubs/ice_cream/food_court — pick the best fit), OSM ' +
-			'phone/website/cuisine/opening_hours where tagged, and a single-line `address` plus ' +
-			"structured `address_parts`. Workflow: call this, then pass each candidate's `osm_id` to " +
-			'create_locations to import it (coordinates + address come from OSM verbatim, auto-cited).',
+			'phone/website/cuisine/opening_hours where tagged, and structured `address_parts` ' +
+			"(from the POI's own OSM tags or an enrichment feed). Workflow: call this, then pass each " +
+			"candidate's `osm_id` to create_locations to import it (coordinates + address come from OSM " +
+			'verbatim, auto-cited).',
 		schema: searchPoiArgs,
 		handler: async (input) => {
 			const db = input.exclude_existing === false ? null : getDb();
