@@ -275,6 +275,21 @@ export function currentVerificationDate(): string {
 	return new Date().toISOString().slice(0, 10);
 }
 
+/**
+ * Statements that stamp each given menu's `last_verified` to today. Every MCP write
+ * that adds or changes a menu or its items runs this, so a menu's freshness date
+ * always reflects the last time data flowed into it — agents never supply the date
+ * by hand (it is no longer a tool parameter). Ids are de-duplicated, and the valid
+ * date satisfies migration 0012's non-empty-`last_verified` trigger. Returns `[]`
+ * for an empty id set so callers can splice it into a batch unconditionally.
+ */
+function touchMenuStmts(db: D1Like, menuIds: Iterable<string>): D1PreparedLike[] {
+	const today = currentVerificationDate();
+	return [...new Set(menuIds)].map((menuId) =>
+		db.prepare(`UPDATE menus SET last_verified = ? WHERE id = ?`).bind(today, menuId)
+	);
+}
+
 /** A single location's deviation from its menu, stored only where it differs. */
 export interface LocationItemOverride {
 	location_id: string;
@@ -1530,6 +1545,9 @@ export async function insertFoods(
 			throw new Error(`No menu resolved for location "${item.location_id}".`);
 		stmts.push(...insertItemStmts(db, id, menuId, item));
 	}
+	// Adding items refreshes each venue's private menu (a brand-new one is created
+	// with today already; an existing one is re-stamped here).
+	stmts.push(...touchMenuStmts(db, menuByLocation.values()));
 	await db.batch(stmts);
 	return ids;
 }
@@ -1607,9 +1625,15 @@ function itemUpdateStmts(db: D1Like, id: string, patch: ItemUpdate): D1PreparedL
  * replace-set semantics; all sub-statements run as one atomic batch.
  */
 async function applyItemUpdate(db: D1Like, id: string, patch: ItemUpdate): Promise<Item | null> {
-	if (!(await getItemById(db, id))) return null;
+	const before = await getItemById(db, id);
+	if (!before) return null;
 	const stmts = itemUpdateStmts(db, id, patch);
-	if (stmts.length > 0) await db.batch(stmts);
+	// Editing an item refreshes its menu; a move (patch.menu_id) also touches the
+	// destination menu, which just gained the item.
+	const affectedMenus = new Set([before.menu_id]);
+	if (patch.menu_id) affectedMenus.add(patch.menu_id);
+	stmts.push(...touchMenuStmts(db, affectedMenus));
+	await db.batch(stmts);
 	return getItemById(db, id);
 }
 
@@ -1747,7 +1771,7 @@ export async function getMenuWithItems(db: D1Like, id: string): Promise<MenuWith
 
 export async function insertMenu(
 	db: D1Like,
-	menu: Omit<Menu, 'id' | 'sources' | 'currency'> & {
+	menu: Omit<Menu, 'id' | 'sources' | 'currency' | 'last_verified'> & {
 		id?: string;
 		currency?: string;
 		sources?: Source[];
@@ -1765,9 +1789,10 @@ export async function insertMenu(
 				menu.name,
 				menu.region ?? null,
 				menu.currency ?? DEFAULT_CURRENCY,
-				// Every menu must carry a verification date (migration 0012); default a
-				// dateless one to today so the insert can't violate the requirement.
-				menu.last_verified ?? currentVerificationDate()
+				// last_verified is always "now": a just-created menu is verified as of its
+				// creation, the date is never an agent-supplied parameter, and a real date
+				// satisfies migration 0012's non-empty requirement.
+				currentVerificationDate()
 			)
 	];
 	for (const source of menu.sources ?? []) {
@@ -1781,17 +1806,20 @@ export async function insertMenu(
 	return id;
 }
 
-const MENU_COLUMNS = ['brand_id', 'name', 'region', 'currency', 'last_verified'] as const;
+// `last_verified` is excluded: it is never set from the patch, but always stamped
+// to today on any update (the menu's data was just re-checked against its source).
+const MENU_COLUMNS = ['brand_id', 'name', 'region', 'currency'] as const;
 
 /**
  * Partial update of a menu. Scalar fields present in `patch` are written; if
  * `patch.sources` is given it replaces the whole source set (pass `[]` to clear).
- * Returns the updated menu, or `null` if no menu has that id.
+ * Any update also refreshes `last_verified` to today (it is auto-managed, not a
+ * patch field). Returns the updated menu, or `null` if no menu has that id.
  */
 export async function updateMenu(
 	db: D1Like,
 	id: string,
-	patch: Partial<Omit<Menu, 'id'>> & {
+	patch: Partial<Omit<Menu, 'id' | 'last_verified'>> & {
 		/** Append these sources (dedupe by url), keeping existing ones — vs `sources` which replaces. */
 		addSources?: Source[];
 	}
@@ -1799,19 +1827,18 @@ export async function updateMenu(
 	if (!(await getMenuById(db, id))) return null;
 
 	const stmts: D1PreparedLike[] = [];
-	const assignments: string[] = [];
-	const values: (string | null)[] = [];
+	// Always re-stamp last_verified, so even a sources-only edit marks the menu fresh.
+	const assignments: string[] = ['last_verified = ?'];
+	const values: (string | null)[] = [currentVerificationDate()];
 	for (const col of MENU_COLUMNS) {
 		if (patch[col] !== undefined) {
 			assignments.push(`${col} = ?`);
 			values.push(patch[col] ?? null);
 		}
 	}
-	if (assignments.length > 0) {
-		stmts.push(
-			db.prepare(`UPDATE menus SET ${assignments.join(', ')} WHERE id = ?`).bind(...values, id)
-		);
-	}
+	stmts.push(
+		db.prepare(`UPDATE menus SET ${assignments.join(', ')} WHERE id = ?`).bind(...values, id)
+	);
 	// `sources` replaces the whole set; `addSources` appends (dedupe via the PK).
 	const replaceSources = patch.sources !== undefined;
 	if (replaceSources) {
@@ -1872,6 +1899,13 @@ export async function insertMenuItems(db: D1Like, items: MenuItemInsert[]): Prom
 		ids.push(id);
 		stmts.push(...insertItemStmts(db, id, item.menu_id, item));
 	}
+	// Adding items is data flowing into each target menu — mark them freshly verified.
+	stmts.push(
+		...touchMenuStmts(
+			db,
+			items.map((it) => it.menu_id)
+		)
+	);
 	await db.batch(stmts);
 	return ids;
 }
@@ -1950,30 +1984,49 @@ export async function updateItems(
 	const ids = patches.map((p) => p.id);
 	const placeholders = ids.map(() => '?').join(', ');
 	const { results } = await db
-		.prepare(`SELECT id FROM items WHERE id IN (${placeholders})`)
+		.prepare(`SELECT id, menu_id FROM items WHERE id IN (${placeholders})`)
 		.bind(...ids)
-		.all<{ id: string }>();
-	const existing = new Set(results.map((r) => r.id));
+		.all<{ id: string; menu_id: string }>();
+	const menuByItem = new Map(results.map((r) => [r.id, r.menu_id]));
 
 	const updatedIds: string[] = [];
 	const notFoundIds: string[] = [];
+	const affectedMenus = new Set<string>();
 	const stmts: D1PreparedLike[] = [];
 	for (const { id, ...patch } of patches) {
-		if (!existing.has(id)) {
+		const currentMenu = menuByItem.get(id);
+		if (currentMenu === undefined) {
 			notFoundIds.push(id);
 			continue;
 		}
 		updatedIds.push(id);
+		// The item's current menu is refreshed; a move (patch.menu_id) also touches
+		// the destination menu, which just gained the item.
+		affectedMenus.add(currentMenu);
+		if (patch.menu_id) affectedMenus.add(patch.menu_id);
 		stmts.push(...itemUpdateStmts(db, id, patch));
 	}
-	if (stmts.length > 0) await db.batch(stmts);
+	if (stmts.length > 0) {
+		stmts.push(...touchMenuStmts(db, affectedMenus));
+		await db.batch(stmts);
+	}
 	return { updatedIds, notFoundIds };
 }
 
 /** Deletes an item and its tag/source links (and any per-location overrides). Returns `true` if removed. */
 export async function deleteItem(db: D1Like, id: string): Promise<boolean> {
-	const res = await db.prepare(`DELETE FROM items WHERE id = ?`).bind(id).run();
-	return res.meta.changes > 0;
+	// Resolve the parent menu before the delete so we can mark it freshly verified
+	// (removing an item is a reconciliation against the source like any other write).
+	const row = await db
+		.prepare(`SELECT menu_id FROM items WHERE id = ?`)
+		.bind(id)
+		.first<{ menu_id: string }>();
+	if (!row) return false;
+	await db.batch([
+		db.prepare(`DELETE FROM items WHERE id = ?`).bind(id),
+		...touchMenuStmts(db, [row.menu_id])
+	]);
+	return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -2030,15 +2083,23 @@ export async function setLocationItemOverride(
 					: 0
 			: (existing?.available ?? null);
 	const price = override.price !== undefined ? (override.price ?? null) : (existing?.price ?? null);
-	await db
-		.prepare(
-			`INSERT INTO location_item_overrides (location_id, item_id, available, price)
-			 VALUES (?, ?, ?, ?)
-			 ON CONFLICT(location_id, item_id)
-			 DO UPDATE SET available = excluded.available, price = excluded.price`
-		)
-		.bind(locationId, itemId, available, price)
-		.run();
+	// Resolve the item's menu so the override (a per-branch delta against it) marks
+	// that menu freshly verified, in the same atomic batch as the upsert.
+	const menuRow = await db
+		.prepare(`SELECT menu_id FROM items WHERE id = ?`)
+		.bind(itemId)
+		.first<{ menu_id: string }>();
+	await db.batch([
+		db
+			.prepare(
+				`INSERT INTO location_item_overrides (location_id, item_id, available, price)
+				 VALUES (?, ?, ?, ?)
+				 ON CONFLICT(location_id, item_id)
+				 DO UPDATE SET available = excluded.available, price = excluded.price`
+			)
+			.bind(locationId, itemId, available, price),
+		...touchMenuStmts(db, menuRow ? [menuRow.menu_id] : [])
+	]);
 	// Return the resulting (merged) override so callers can echo accurate state.
 	return { available: available === null ? null : available !== 0, price };
 }
@@ -2053,7 +2114,15 @@ export async function deleteLocationItemOverride(
 		.prepare(`DELETE FROM location_item_overrides WHERE location_id = ? AND item_id = ?`)
 		.bind(locationId, itemId)
 		.run();
-	return res.meta.changes > 0;
+	if (res.meta.changes === 0) return false;
+	// Clearing a per-branch delta re-asserts the menu default for it — mark the menu
+	// freshly verified, matching the create/update override paths.
+	const menuRow = await db
+		.prepare(`SELECT menu_id FROM items WHERE id = ?`)
+		.bind(itemId)
+		.first<{ menu_id: string }>();
+	if (menuRow) await db.batch(touchMenuStmts(db, [menuRow.menu_id]));
+	return true;
 }
 
 // ---------------------------------------------------------------------------

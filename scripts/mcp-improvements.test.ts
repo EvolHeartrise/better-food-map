@@ -20,18 +20,31 @@ import {
 	getFoodByLocation,
 	getLocationById,
 	setLocationItemOverride,
+	deleteLocationItemOverride,
 	getLocationItemOverrides,
 	updateItem,
 	updateItems,
 	updateMenu,
 	updateLocations,
+	deleteItem,
+	currentVerificationDate,
 	existingLocationsAtCoords,
 	coordinateKey,
 	findBrandIdsByName,
 	findMenuIdsByName,
-	itemNameCollisions
+	itemNameCollisions,
+	type D1Like
 } from '../src/lib/server/db';
 import { freshDb } from './test-d1';
+
+/** Force a menu's freshness date into the past so a later write's auto-stamp is observable. */
+async function staleMenu(db: D1Like, menuId: string) {
+	await db.prepare(`UPDATE menus SET last_verified = '2000-01-01' WHERE id = ?`).bind(menuId).run();
+}
+
+async function menuDate(db: D1Like, menuId: string) {
+	return (await getMenuById(db, menuId))?.last_verified;
+}
 
 /** A minimal independent-venue insert; override fields as needed per test. */
 function indieLocation(over: Record<string, unknown> = {}) {
@@ -60,8 +73,7 @@ test('menu currency is stored and attached to every item on read', async () => {
 		brand_id: brandId,
 		name: 'Subway UK',
 		region: 'GB',
-		currency: 'GBP',
-		last_verified: null
+		currency: 'GBP'
 	});
 	const [itemId] = await insertMenuItems(db, [{ menu_id: menuId, item_name: 'Sub', price: 5 }]);
 
@@ -76,7 +88,7 @@ test('menu currency is stored and attached to every item on read', async () => {
 test('menu currency defaults to CAD when not given', async () => {
 	const db = freshDb();
 	const brandId = await insertBrand(db, { name: 'Tims', website: null, logo_url: null });
-	const menuId = await insertMenu(db, { brand_id: brandId, name: 'Tims CA', last_verified: null });
+	const menuId = await insertMenu(db, { brand_id: brandId, name: 'Tims CA' });
 	expect((await getMenuById(db, menuId))?.currency).toBe('CAD');
 });
 
@@ -97,12 +109,97 @@ test('insertLocations inline items use the location currency', async () => {
 	expect(items[0]?.currency).toBe('EUR');
 });
 
+// --- last_verified auto-stamp ----------------------------------------------
+// last_verified is never an agent parameter: it is stamped to today whenever data
+// flows into a menu via any write. Each case stales the menu first, then asserts
+// the write refreshed it back to today.
+
+test('insertMenu stamps last_verified to today', async () => {
+	const db = freshDb();
+	const brandId = await insertBrand(db, { name: 'B', website: null, logo_url: null });
+	const menuId = await insertMenu(db, { brand_id: brandId, name: 'M' });
+	expect(await menuDate(db, menuId)).toBe(currentVerificationDate());
+});
+
+test('updateMenu refreshes last_verified on any edit (incl. sources-only)', async () => {
+	const db = freshDb();
+	const brandId = await insertBrand(db, { name: 'B', website: null, logo_url: null });
+	const menuId = await insertMenu(db, { brand_id: brandId, name: 'M' });
+
+	await staleMenu(db, menuId);
+	await updateMenu(db, menuId, { region: 'CA' });
+	expect(await menuDate(db, menuId)).toBe(currentVerificationDate());
+
+	// A sources-only edit (no scalar columns) still marks the menu fresh.
+	await staleMenu(db, menuId);
+	await updateMenu(db, menuId, { addSources: [{ url: 'https://m', label: null }] });
+	expect(await menuDate(db, menuId)).toBe(currentVerificationDate());
+});
+
+test('adding items refreshes the parent menu (create_items, both paths)', async () => {
+	const db = freshDb();
+	const brandId = await insertBrand(db, { name: 'B', website: null, logo_url: null });
+	const menuId = await insertMenu(db, { brand_id: brandId, name: 'M' });
+	await staleMenu(db, menuId);
+	await insertMenuItems(db, [{ menu_id: menuId, item_name: 'Sub', price: 5 }]);
+	expect(await menuDate(db, menuId)).toBe(currentVerificationDate());
+
+	// insertFoods onto an EXISTING private menu re-stamps it too.
+	const [locId] = await insertLocations(db, [
+		indieLocation({ items: [{ item_name: 'Seed', price: 1 }] })
+	]);
+	const privateMenuId = (await getLocationById(db, locId))?.menu_id as string;
+	await staleMenu(db, privateMenuId);
+	await insertFoods(db, [{ location_id: locId, item_name: 'Coffee', price: 3 }]);
+	expect(await menuDate(db, privateMenuId)).toBe(currentVerificationDate());
+});
+
+test('editing and deleting items refresh the parent menu', async () => {
+	const db = freshDb();
+	const brandId = await insertBrand(db, { name: 'B', website: null, logo_url: null });
+	const menuId = await insertMenu(db, { brand_id: brandId, name: 'M' });
+	const [a, b] = await insertMenuItems(db, [
+		{ menu_id: menuId, item_name: 'A', price: 1 },
+		{ menu_id: menuId, item_name: 'B', price: 2 }
+	]);
+
+	await staleMenu(db, menuId);
+	await updateItem(db, a, { price: 9 });
+	expect(await menuDate(db, menuId)).toBe(currentVerificationDate());
+
+	await staleMenu(db, menuId);
+	await updateItems(db, [{ id: b, price: 8 }]);
+	expect(await menuDate(db, menuId)).toBe(currentVerificationDate());
+
+	await staleMenu(db, menuId);
+	await deleteItem(db, b);
+	expect(await menuDate(db, menuId)).toBe(currentVerificationDate());
+});
+
+test('per-location overrides refresh the parent menu', async () => {
+	const db = freshDb();
+	const brandId = await insertBrand(db, { name: 'KFC', website: null, logo_url: null });
+	const menuId = await insertMenu(db, { brand_id: brandId, name: 'KFC CA' });
+	const [itemId] = await insertMenuItems(db, [{ menu_id: menuId, item_name: 'Bucket', price: 20 }]);
+	const [locId] = await insertLocations(db, [
+		indieLocation({ name: 'KFC Branch', category: 'fast_food', brand_id: brandId, menu_id: menuId })
+	]);
+
+	await staleMenu(db, menuId);
+	await setLocationItemOverride(db, locId, itemId, { price: 18 });
+	expect(await menuDate(db, menuId)).toBe(currentVerificationDate());
+
+	await staleMenu(db, menuId);
+	await deleteLocationItemOverride(db, locId, itemId);
+	expect(await menuDate(db, menuId)).toBe(currentVerificationDate());
+});
+
 // --- set_location_item_override partial patch -------------------------------
 
 test('setLocationItemOverride is a partial patch (omitted field is preserved)', async () => {
 	const db = freshDb();
 	const brandId = await insertBrand(db, { name: 'KFC', website: null, logo_url: null });
-	const menuId = await insertMenu(db, { brand_id: brandId, name: 'KFC CA', last_verified: null });
+	const menuId = await insertMenu(db, { brand_id: brandId, name: 'KFC CA' });
 	const [itemId] = await insertMenuItems(db, [{ menu_id: menuId, item_name: 'Bucket', price: 20 }]);
 	const [locId] = await insertLocations(db, [
 		indieLocation({ name: 'KFC Branch', category: 'fast_food', brand_id: brandId, menu_id: menuId })
@@ -183,7 +280,6 @@ test('updateMenu and updateLocations add_sources append', async () => {
 	const menuId = await insertMenu(db, {
 		brand_id: brandId,
 		name: 'M',
-		last_verified: null,
 		sources: [{ url: 'https://m1', label: null }]
 	});
 	await updateMenu(db, menuId, { addSources: [{ url: 'https://m2', label: null }] });
@@ -223,7 +319,7 @@ test('findBrandIdsByName / findMenuIdsByName are case-insensitive', async () => 
 	expect(await findBrandIdsByName(db, "mcdonald's")).toEqual([brandId]);
 	expect(await findBrandIdsByName(db, 'Wendys')).toEqual([]);
 
-	const menuId = await insertMenu(db, { brand_id: brandId, name: 'Canada', last_verified: null });
+	const menuId = await insertMenu(db, { brand_id: brandId, name: 'Canada' });
 	expect(await findMenuIdsByName(db, brandId, 'canada')).toEqual([menuId]);
 	expect(await findMenuIdsByName(db, brandId, 'UK')).toEqual([]);
 });
@@ -231,7 +327,7 @@ test('findBrandIdsByName / findMenuIdsByName are case-insensitive', async () => 
 test('itemNameCollisions reports existing names case-insensitively', async () => {
 	const db = freshDb();
 	const brandId = await insertBrand(db, { name: 'B', website: null, logo_url: null });
-	const menuId = await insertMenu(db, { brand_id: brandId, name: 'M', last_verified: null });
+	const menuId = await insertMenu(db, { brand_id: brandId, name: 'M' });
 	const [bucketId] = await insertMenuItems(db, [{ menu_id: menuId, item_name: 'Bucket' }]);
 
 	expect(await itemNameCollisions(db, menuId, ['bucket', 'Fries'])).toEqual([
