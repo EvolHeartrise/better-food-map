@@ -25,6 +25,24 @@ const canonicalHost: Handle = async ({ event, resolve }) => {
 	return resolve(event);
 };
 
+// The map used to live under `/map` (behind a sign-in gate); it now sits at the root
+// `/`. Permanently redirect old links so bookmarks and shared deep links keep working:
+// `/map` → `/`, and a `/map/locations/<id>` detail link → `/locations/<id>` (the
+// shallow-routing URL the root map page reads). The trailing path/query is preserved.
+const legacyMapRedirect: Handle = async ({ event, resolve }) => {
+	const { pathname, search } = event.url;
+	if (pathname === '/map') {
+		return new Response(null, { status: 301, headers: { location: `/${search}` } });
+	}
+	if (pathname.startsWith('/map/')) {
+		return new Response(null, {
+			status: 301,
+			headers: { location: `${pathname.slice('/map'.length)}${search}` }
+		});
+	}
+	return resolve(event);
+};
+
 // Resolves the session cookie into `event.locals.user` / `event.locals.session`
 // for every request, so remote functions and routes can read who is signed in.
 // An invalid/expired token clears the cookie; a still-valid one whose expiry was
@@ -50,37 +68,7 @@ const authenticate: Handle = async ({ event, resolve }) => {
 	return resolve(event);
 };
 
-// The app itself lives under `/map` (the map page) and is reached only by signed-in
-// users. `/map/locations/*` and legacy `/locations/*` are rerouted to the map page
-// (see hooks.ts) but keep their real pathname here, so guarding these prefixes covers
-// shared deep links too. Everything else — the landing page `/`, the `/auth/*` OAuth
-// routes, static assets — stays public.
-function isProtectedPath(pathname: string): boolean {
-	return pathname === '/map' || pathname.startsWith('/map/') || pathname.startsWith('/locations/');
-}
-
-// Gate the app behind sign-in: an unauthenticated request for a protected path is
-// redirected to the landing page, carrying the originally requested path+query in
-// `redirectTo` so the OAuth flow can return the user there. This runs after
-// `authenticate`, so `locals.user` is already resolved.
-//
-// This is only the navigation guard for real page loads; the actual data is protected
-// independently by `requireUser()` in the remote functions. We must skip remote-
-// function requests here: for those, `event.url` is the CALLING PAGE's URL (e.g.
-// `/map`), not the remote endpoint's, so gating them would turn the clean 401 that
-// `requireUser()` throws (say, after a session expires while the map is open) into a
-// 302 that serves landing-page HTML to a `fetch` expecting data. `requireUser()` is
-// the real defence for that case.
-const requireAuth: Handle = async ({ event, resolve }) => {
-	if (event.isRemoteRequest) return resolve(event);
-	if (isProtectedPath(event.url.pathname) && !event.locals.user) {
-		const redirectTo = event.url.pathname + event.url.search;
-		return new Response(null, {
-			status: 302,
-			headers: { location: `/?redirectTo=${encodeURIComponent(redirectTo)}` }
-		});
-	}
-	return resolve(event);
-};
-
-export const handle = sequence(canonicalHost, authenticate, requireAuth);
+// The map is public — there is no navigation gate. `authenticate` still runs so an
+// optional signed-in user (account menu, likes, saved diet) is resolved for every
+// request; the user-scoped remote functions guard themselves with `requireUser()`.
+export const handle = sequence(canonicalHost, legacyMapRedirect, authenticate);

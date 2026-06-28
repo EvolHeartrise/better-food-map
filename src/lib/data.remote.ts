@@ -1,13 +1,15 @@
 import * as v from 'valibot';
 import { query, getRequestEvent } from '$app/server';
-import { requireDb as db, requireUser } from '$lib/server/context';
+import { requireDb as db } from '$lib/server/context';
 import {
 	getMapData,
 	getLocationMapData,
 	getSearchMapData,
 	getBrands as getBrandsFromDb,
+	getStats as getStatsFromDb,
 	type Brand,
-	type MapData
+	type MapData,
+	type MapStats
 } from '$lib/server/db';
 
 /**
@@ -31,20 +33,21 @@ const BoundsSchema = v.object({
  * single time rather than copied onto every branch. Called again as the user
  * pans/zooms, so only what's on screen is ever fetched. Used to render markers
  * and, under each result, the menu items matching the active search/filter query.
+ *
+ * Public: the map is open to everyone (no sign-in gate), so this read carries no
+ * `requireUser()`. Only the user-scoped functions (likes, saved diet) require auth.
  */
 export const getLocations = query(BoundsSchema, async (bounds): Promise<MapData> => {
-	requireUser();
 	return getMapData(db(), bounds);
 });
 
 /**
  * Returns a single location (by id) in the same {@link MapData} shape as
  * {@link getLocations}. Backs the detail view when the open location isn't in the
- * current viewport — a shared `/map/locations/<id>` link, or one panned off screen —
+ * current viewport — a shared `/locations/<id>` link, or one panned off screen —
  * so it always resolves. Yields an empty payload if no location has that id.
  */
 export const getLocationData = query(v.string(), async (id): Promise<MapData> => {
-	requireUser();
 	return getLocationMapData(db(), id);
 });
 
@@ -66,7 +69,6 @@ const SearchQuerySchema = v.object({
 });
 
 export const searchLocations = query(SearchQuerySchema, async (q): Promise<MapData> => {
-	requireUser();
 	return getSearchMapData(db(), q);
 });
 
@@ -76,9 +78,15 @@ export const searchLocations = query(SearchQuerySchema, async (q): Promise<MapDa
  * name rather than relying on each branch's own `name`.
  */
 export const getBrands = query(async (): Promise<Brand[]> => {
-	requireUser();
 	return getBrandsFromDb(db());
 });
+
+/**
+ * Aggregate coverage totals (locations, items, cities, countries) for the
+ * zoomed-out landing overlay. Public — no sign-in required, and it returns only
+ * counts, never any row data.
+ */
+export const getStats = query((): Promise<MapStats> => getStatsFromDb(db()));
 
 /**
  * Best-effort opening location for the map, from Cloudflare's edge IP
@@ -92,7 +100,6 @@ export const getBrands = query(async (): Promise<Brand[]> => {
  * absent); the map falls back to its built-in default view in that case.
  */
 export const getUserLocation = query(async (): Promise<{ lat: number; lng: number } | null> => {
-	requireUser();
 	const { platform } = getRequestEvent();
 	const cf = platform?.cf;
 	// `latitude`/`longitude` arrive as strings; empty/absent values are falsy and
