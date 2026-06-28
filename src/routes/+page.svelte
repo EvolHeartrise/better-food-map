@@ -37,7 +37,7 @@
 		<p class="hero__brand">🍴 BetterFoodMaps</p>
 		<h1 class="hero__title">Find food that fits your diet, anywhere on the map.</h1>
 		<p class="hero__tagline">
-			Search restaurants, cafes and fast food by what's actually on the menu — vegan, gluten-free,
+			Search restaurants, cafes and fast food by what's actually on the menu. Vegan, gluten-free,
 			halal and more.
 		</p>
 
