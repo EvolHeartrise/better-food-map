@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { fade } from 'svelte/transition';
-	import X from '@lucide/svelte/icons/x';
 	import MapPin from '@lucide/svelte/icons/map-pin';
 
 	// Coverage totals shown on the zoomed-out landing. Structural (not imported from
@@ -41,17 +40,13 @@
 	]);
 </script>
 
-<!-- Split into two pieces — an intro card pinned to the top and an actions card
-     pinned to the bottom — so the zoomed-out globe stays visible in the gap between
-     them. The backdrop spans the map but is transparent to pointers, so a drag on the
-     globe still pans (and dismisses, via the map's oninteract); only the cards take
-     clicks. -->
+<!-- Two floating pieces over the zoomed-out globe: an intro pinned to the top and an
+     actions block pinned to the bottom, with the globe visible in the gap between them.
+     No card chrome — just text and controls floating on the map. The backdrop and the
+     non-interactive text pass pointers through (so a drag on the globe still pans and
+     dismisses); only the buttons take clicks. -->
 <div class="overlay" transition:fade={{ duration: 200 }}>
-	<section class="card intro" aria-label="About BetterFoodMaps">
-		<button type="button" class="intro__close" aria-label="Dismiss" onclick={onclose}>
-			<X size={18} aria-hidden="true" />
-		</button>
-
+	<section class="intro" aria-label="About BetterFoodMaps">
 		<p class="intro__brand">🍴 BetterFoodMaps</p>
 		<h1 class="intro__title">Find food that fits your diet, anywhere on the map.</h1>
 		<p class="intro__tagline">
@@ -60,7 +55,7 @@
 		</p>
 	</section>
 
-	<section class="card actions" aria-label="Coverage and getting started">
+	<section class="actions" aria-label="Coverage and getting started">
 		<ul class="stats">
 			{#each figures as figure (figure.label)}
 				<li class="stat">
@@ -99,57 +94,30 @@
 		pointer-events: none;
 	}
 
-	.card {
-		pointer-events: auto;
-		position: relative;
+	/* No card chrome — the two pieces float as plain text/controls on the map. They lay
+	   out their contents but pass pointers straight through, so only the interactive
+	   buttons inside (.cta / .browse) capture clicks; everywhere else the globe drags. */
+	.intro,
+	.actions {
+		pointer-events: none;
 		display: flex;
 		flex-direction: column;
 		align-items: center;
 		gap: 0.85rem;
-		width: min(32rem, 100%);
-		padding: 1.5rem 1.75rem;
+		width: min(36rem, 100%);
 		text-align: center;
-		border-radius: 1.25rem;
-		background: rgba(255, 255, 255, 0.82);
-		backdrop-filter: blur(16px) saturate(180%);
-		-webkit-backdrop-filter: blur(16px) saturate(180%);
-		border: 1px solid rgba(255, 255, 255, 0.6);
-		box-shadow: 0 16px 48px rgba(0, 0, 0, 0.2);
 	}
 
-	/* The top card carries the close button and extra padding for it. */
-	.intro {
-		padding-top: 1.75rem;
-	}
-
-	.intro__close {
-		position: absolute;
-		top: 0.6rem;
-		right: 0.6rem;
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 1.9rem;
-		height: 1.9rem;
-		padding: 0;
-		color: var(--color-text-muted);
-		background: rgba(255, 255, 255, 0.6);
-		border: 1px solid rgba(0, 0, 0, 0.08);
-		border-radius: 999px;
-		cursor: pointer;
-		transition:
-			background-color 0.12s,
-			color 0.12s;
-	}
-
-	.intro__close:hover {
-		color: var(--color-text);
-		background: rgba(255, 255, 255, 0.95);
-	}
-
-	.intro__close:focus-visible {
-		outline: 2px solid var(--color-accent);
-		outline-offset: 2px;
+	/* Floating over live map tiles, so every text element carries a soft light halo to
+	   stay legible whatever it sits over (land, ocean, the globe's dark edge). */
+	.intro__brand,
+	.intro__title,
+	.intro__tagline,
+	.stat__value,
+	.stat__label {
+		text-shadow:
+			0 1px 2px rgba(255, 255, 255, 0.9),
+			0 0 12px rgba(255, 255, 255, 0.7);
 	}
 
 	.intro__brand {
@@ -170,7 +138,7 @@
 	.intro__tagline {
 		margin: 0;
 		font-size: 1rem;
-		color: var(--color-text-muted);
+		color: var(--color-text);
 	}
 
 	/* The four coverage figures, laid out as an even grid so the numbers line up. */
@@ -181,8 +149,7 @@
 		gap: 0.5rem 1.5rem;
 		width: 100%;
 		margin: 0;
-		padding: 0 0 1rem;
-		border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+		padding: 0;
 	}
 
 	.stat {
@@ -215,8 +182,10 @@
 		gap: 0.5rem;
 	}
 
-	/* The primary action — accent-filled so "Start using the map" is unmistakable. */
+	/* The primary action — accent-filled so "Start using the map" is unmistakable.
+	   pointer-events re-enabled here (the floating containers pass them through). */
 	.cta {
+		pointer-events: auto;
 		display: inline-flex;
 		align-items: center;
 		gap: 0.5rem;
@@ -249,13 +218,17 @@
 	}
 
 	.browse {
+		pointer-events: auto;
 		padding: 0.2rem 0.4rem;
 		border: none;
 		background: none;
-		color: var(--color-text-muted);
+		color: var(--color-text);
 		font: inherit;
 		font-size: 0.85rem;
 		text-decoration: underline;
+		text-shadow:
+			0 1px 2px rgba(255, 255, 255, 0.9),
+			0 0 12px rgba(255, 255, 255, 0.7);
 		cursor: pointer;
 	}
 
