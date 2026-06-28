@@ -16,6 +16,7 @@ import { test, expect } from 'bun:test';
 import {
 	getMapData,
 	getLocationMapData,
+	getSearchMapData,
 	insertLocations,
 	insertFoods,
 	insertBrand,
@@ -167,4 +168,67 @@ test('getMapData sends each menu once, with per-branch overrides and a private m
 	const missing = await getLocationMapData(db, 'does-not-exist');
 	expect(missing.locations).toEqual([]);
 	expect(missing.menus).toEqual({});
+});
+
+// The global search behind the `searchLocations` remote. Exercises the new
+// single-diet filter (dietTagId) and its place/item companions: a venue matches
+// only when ONE of its items satisfies every active predicate, and a diet match
+// counts an `optional` tag ("can be made vegan") the same way the client's
+// per-item `itemMatches` does — so the two stay in lock-step.
+test('getSearchMapData filters by a single dietary tag, counting optional tags', async () => {
+	const db = freshDb();
+	const addr = {
+		street: '1 Test St',
+		city: 'Vancouver',
+		region: 'BC',
+		postcode: 'V6J 1M5',
+		country: 'CA',
+		phone: null,
+		website: null
+	};
+	const [veganLoc, plainLoc, optLoc] = await insertLocations(db, [
+		{ name: 'Green Spot', category: 'restaurant', latitude: 49.28, longitude: -123.12, ...addr },
+		{ name: 'Plain Diner', category: 'restaurant', latitude: 49.29, longitude: -123.13, ...addr },
+		{ name: 'Flex Kitchen', category: 'restaurant', latitude: 49.3, longitude: -123.14, ...addr }
+	]);
+	// Green Spot has a vegan item AND a plain one — only the vegan item should make it match.
+	await insertFoods(db, [
+		{ location_id: veganLoc, item_name: 'Tofu Bowl', tags: ['vegan'], price: 10 },
+		{ location_id: veganLoc, item_name: 'Beef Stew', price: 12 }
+	]);
+	// Plain Diner has nothing vegan.
+	await insertFoods(db, [{ location_id: plainLoc, item_name: 'Burger', price: 9 }]);
+	// Flex Kitchen has an item that can be MADE vegan (optional vegan tag).
+	await insertFoods(db, [
+		{ location_id: optLoc, item_name: 'Build-a-Wrap', optionalTags: ['vegan'], price: 8 }
+	]);
+
+	const anchor = { lat: 49.28, lng: -123.12 };
+
+	// vegan: the asserted-vegan venue and the can-be-made-vegan venue, not the plain one.
+	const vegan = await getSearchMapData(db, { place: '', item: '', dietTagId: 'vegan', ...anchor });
+	expect(vegan.locations.map((l) => l.id).toSorted()).toEqual([veganLoc, optLoc].toSorted());
+
+	// A diet no item carries returns nothing.
+	const halal = await getSearchMapData(db, { place: '', item: '', dietTagId: 'halal', ...anchor });
+	expect(halal.locations).toEqual([]);
+
+	// No diet filter + a place term narrows by venue name alone.
+	const byPlace = await getSearchMapData(db, {
+		place: 'Plain',
+		item: '',
+		dietTagId: null,
+		...anchor
+	});
+	expect(byPlace.locations.map((l) => l.id)).toEqual([plainLoc]);
+
+	// Diet + item name must be satisfied by the SAME item: 'Beef Stew' isn't vegan, so
+	// Green Spot drops out even though it has a (separate) vegan item.
+	const conflicting = await getSearchMapData(db, {
+		place: '',
+		item: 'Beef',
+		dietTagId: 'vegan',
+		...anchor
+	});
+	expect(conflicting.locations).toEqual([]);
 });

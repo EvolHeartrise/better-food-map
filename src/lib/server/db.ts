@@ -1934,8 +1934,8 @@ export async function deleteLocationItemOverride(
 }
 
 // ---------------------------------------------------------------------------
-// Users, sessions, likes and search history (the user-owned data added by
-// migration 0007). Unlike everything above — curated map data written by the MCP
+// Users, sessions and likes (the user-owned data added by migration 0007; the
+// dietary profile added by 0013). Unlike everything above — curated map data written by the MCP
 // tooling — these rows are written by the deployed app at runtime. The functions
 // stay runtime-agnostic (a `D1Like` handle in, async out) like the rest of this
 // module; the crypto/cookie glue lives in src/lib/server/auth.ts. Timestamps are
