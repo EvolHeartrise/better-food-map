@@ -254,6 +254,12 @@
 		statsDismissed = true;
 	}
 
+	// True while the landing overlay is up: the zoomed-out globe is just a backdrop for
+	// the two floating landing pieces, so the search controls and the results list are
+	// hidden until the visitor leaves the landing (Start using / browse / a search / a
+	// map drag / selecting a place — all of which dismiss the overlay).
+	const landing = $derived(!statsDismissed);
+
 	// "Start using the map": dismiss the overlay and fly to the visitor's IP-detected
 	// location at city zoom. getUserLocation is prompt-free edge geolocation — null
 	// under local dev or when unavailable, so we fall back to the default centre. The
@@ -462,6 +468,9 @@
 	}
 
 	function selectLocation(id: string): void {
+		// Selecting a place (e.g. tapping a marker on the landing globe) leaves the
+		// landing state so the detail panel — hidden during landing — can show.
+		dismissStats();
 		// `/locations/<id>` is a synthetic shallow-routing URL: there is no such route
 		// (the `reroute` hook serves this root map page for it), so the address bar can
 		// reflect the open location — and the link stays shareable — without a real
@@ -729,83 +738,91 @@
 	<div class="searchbar" role="search" aria-label="Search and filters">
 		<AccountMenu {user} />
 
-		<!-- Shown only on narrow screens (CSS): collapses the items to free the map. -->
-		<button
-			type="button"
-			class="searchbar__toggle"
-			aria-expanded={filtersOpen}
-			aria-controls="search-items"
-			onclick={() => (filtersOpen = !filtersOpen)}
-		>
-			<span>{filtersOpen ? 'Hide' : 'Filters'}</span>
-			{#if !filtersOpen && hasQuery}
-				<span class="searchbar__dot" aria-hidden="true"></span>
-			{/if}
-			<span class="searchbar__toggle-icon" aria-hidden="true">{filtersOpen ? '▴' : '▾'}</span>
-		</button>
+		<!-- Search and filter controls are hidden while the landing overlay is up — the
+		     globe is just a backdrop then; only the account control stays. They return
+		     the moment the visitor leaves the landing state. -->
+		{#if !landing}
+			<!-- Shown only on narrow screens (CSS): collapses the items to free the map. -->
+			<button
+				type="button"
+				class="searchbar__toggle"
+				aria-expanded={filtersOpen}
+				aria-controls="search-items"
+				onclick={() => (filtersOpen = !filtersOpen)}
+			>
+				<span>{filtersOpen ? 'Hide' : 'Filters'}</span>
+				{#if !filtersOpen && hasQuery}
+					<span class="searchbar__dot" aria-hidden="true"></span>
+				{/if}
+				<span class="searchbar__toggle-icon" aria-hidden="true">{filtersOpen ? '▴' : '▾'}</span>
+			</button>
 
-		<div
-			class="searchbar__items"
-			id="search-items"
-			class:searchbar__items--collapsed={!filtersOpen}
-		>
-			<!-- Place: a plain search pill, or — once a location is open — a tinted card
+			<div
+				class="searchbar__items"
+				id="search-items"
+				class:searchbar__items--collapsed={!filtersOpen}
+			>
+				<!-- Place: a plain search pill, or — once a location is open — a tinted card
 			     standing in for it, with a clear (✕) that closes the detail. -->
-			{#if selectedLocation}
-				{@const placeLabel = categoryLabel(selectedLocation.category)}
-				{@const placeMeta = [placeLabel, selectedLocation.address].filter(Boolean).join(' · ')}
-				<div class="place-card" aria-label="Selected place">
-					<div class="place-card__body">
-						<span class="place-card__name">{selectedLocation.name}</span>
-						{#if placeMeta}
-							<span class="place-card__meta">{placeMeta}</span>
-						{/if}
+				{#if selectedLocation}
+					{@const placeLabel = categoryLabel(selectedLocation.category)}
+					{@const placeMeta = [placeLabel, selectedLocation.address].filter(Boolean).join(' · ')}
+					<div class="place-card" aria-label="Selected place">
+						<div class="place-card__body">
+							<span class="place-card__name">{selectedLocation.name}</span>
+							{#if placeMeta}
+								<span class="place-card__meta">{placeMeta}</span>
+							{/if}
+						</div>
+						<button
+							type="button"
+							class="place-card__clear"
+							aria-label="Clear selected place"
+							onclick={closeDetail}
+						>
+							✕
+						</button>
 					</div>
-					<button
-						type="button"
-						class="place-card__clear"
-						aria-label="Clear selected place"
-						onclick={closeDetail}
-					>
-						✕
-					</button>
-				</div>
-			{:else}
-				<!-- A label so a click anywhere in the pill (the search icon included)
+				{:else}
+					<!-- A label so a click anywhere in the pill (the search icon included)
 				     focuses the input; the input is the only control inside it. -->
+					<label class="searchpill">
+						<input
+							class="searchpill__input"
+							type="search"
+							placeholder="Place name…"
+							aria-label="Search by place name"
+							bind:value={place}
+							oninput={dismissStats}
+						/>
+						<Search class="searchpill__icon" size={16} aria-hidden="true" />
+					</label>
+				{/if}
+
 				<label class="searchpill">
 					<input
 						class="searchpill__input"
 						type="search"
-						placeholder="Place name…"
-						aria-label="Search by place name"
-						bind:value={place}
+						placeholder="Item name…"
+						aria-label="Search by item name"
+						bind:value={item}
 						oninput={dismissStats}
 					/>
 					<Search class="searchpill__icon" size={16} aria-hidden="true" />
 				</label>
-			{/if}
 
-			<label class="searchpill">
-				<input
-					class="searchpill__input"
-					type="search"
-					placeholder="Item name…"
-					aria-label="Search by item name"
-					bind:value={item}
-					oninput={dismissStats}
-				/>
-				<Search class="searchpill__icon" size={16} aria-hidden="true" />
-			</label>
-
-			<!-- The dietary selector: single-select. Filters items to the chosen diet,
+				<!-- The dietary selector: single-select. Filters items to the chosen diet,
 			     and persists the choice for the signed-in user (see selectDiet). -->
-			<DietSelector value={diet} onSelect={selectDiet} />
-		</div>
+				<DietSelector value={diet} onSelect={selectDiet} />
+			</div>
+		{/if}
 	</div>
 
+	<!-- The results / detail panel is hidden during the landing state (see `landing`):
+	     the zoomed-out globe shows no list, only the floating landing pieces. -->
 	<aside
 		class="panel panel--results"
+		class:panel--hidden={landing}
 		aria-label={selectedLocation ? 'Location details' : 'Matching places'}
 	>
 		{#if selectedLocation}
@@ -1215,6 +1232,11 @@
 		width: min(22rem, calc(100vw - 2rem));
 		/* The list inside scrolls; the panel itself is clipped. */
 		overflow: hidden;
+	}
+
+	/* Hidden during the landing state, so the zoomed-out globe shows no results list. */
+	.panel--hidden {
+		display: none;
 	}
 
 	/* The search controls, free-floating over the map: a horizontal, wrapping row of
