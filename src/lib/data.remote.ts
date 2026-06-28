@@ -4,6 +4,7 @@ import { requireDb as db, currentUser } from '$lib/server/context';
 import {
 	getMapData,
 	getLocationMapData,
+	getSearchMapData,
 	searchTagVocabulary,
 	getTagSuggestions as getTagSuggestionsFromDb,
 	getBrands as getBrandsFromDb,
@@ -46,6 +47,28 @@ export const getLocations = query(BoundsSchema, async (bounds): Promise<MapData>
  */
 export const getLocationData = query(v.string(), async (id): Promise<MapData> => {
 	return getLocationMapData(db(), id);
+});
+
+/**
+ * A GLOBAL menu search, anchored to the current map centre. Whereas
+ * {@link getLocations} is bounded to the viewport, this searches the whole index
+ * and returns the matches nearest the anchor (nearest first, same {@link MapData}
+ * shape), so an active search is answered from everywhere on the map rather than
+ * only what's on screen. The free-text and tag filters mirror the client's own
+ * filtering; see {@link getSearchMapData}. Validated because, like every remote
+ * query, the argument arrives untrusted over HTTP.
+ */
+const SearchQuerySchema = v.object({
+	place: v.string(),
+	item: v.string(),
+	includedTagIds: v.array(v.string()),
+	excludedTagIds: v.array(v.string()),
+	lat: v.number(),
+	lng: v.number()
+});
+
+export const searchLocations = query(SearchQuerySchema, async (q): Promise<MapData> => {
+	return getSearchMapData(db(), q);
 });
 
 /**
