@@ -146,6 +146,12 @@ export interface Item {
 	/** Short free-text description of the item (may be null). */
 	description: string | null;
 	price: number | null;
+	/**
+	 * Upper-case ISO-4217 code the {@link price} is denominated in, taken from the
+	 * item's menu on read (see {@link Menu.currency}) so a price is always
+	 * self-describing. Defaults to "CAD".
+	 */
+	currency: string;
 	/** Tags applied to this item (dietary, course, and ingredient), with `optional`. */
 	tags: ItemTag[];
 	/** Citations for where this item's data came from (may be empty). */
@@ -217,6 +223,12 @@ export interface Menu {
 	name: string;
 	/** Free-form scope label, e.g. "GB", "US-CA", "Canada". */
 	region: string | null;
+	/**
+	 * Upper-case ISO-4217 code every item price on this menu is denominated in
+	 * (e.g. "CAD", "USD", "GBP"). One currency per menu — set it once here rather
+	 * than per item. Defaults to "CAD".
+	 */
+	currency: string;
 	/** ISO date the menu was last checked against the source (chain menus go stale). */
 	last_verified: string | null;
 	/** Citations for where this menu's data came from (may be empty). */
@@ -233,9 +245,14 @@ export interface MenuSummary {
 	brand_id: string | null;
 	name: string;
 	region: string | null;
+	/** Upper-case ISO-4217 currency code for this menu's prices (see {@link Menu.currency}). */
+	currency: string;
 	last_verified: string | null;
 	item_count: number;
 }
+
+/** Default currency for a menu when none is specified (the Canada-first dataset). */
+export const DEFAULT_CURRENCY = 'CAD';
 
 /** A single location's deviation from its menu, stored only where it differs. */
 export interface LocationItemOverride {
@@ -262,8 +279,12 @@ export const TAGS: readonly Tag[] = [
 	{ id: 'drink', name: 'Drink', tag_type: 'course' }
 ];
 
-/** Internal raw shape of an `items` row before its tags and sources are attached. */
-type ItemRow = Omit<Item, 'tags' | 'sources'>;
+/**
+ * Internal raw shape of an `items` row before its tags, sources and (menu-derived)
+ * currency are attached. `currency` is NOT a column on `items`; it is read from the
+ * item's menu and attached when the {@link Item} is assembled.
+ */
+type ItemRow = Omit<Item, 'tags' | 'sources' | 'currency'>;
 
 /** Raw `location_item_overrides` row (`available` stored as 0/1/NULL). */
 interface OverrideRow {
@@ -619,6 +640,40 @@ export async function existingIds(
 	return new Set(results.map((r) => r.id));
 }
 
+/** Canonical key for a coordinate pair, used to match a resolved point to an existing row. */
+export function coordinateKey(latitude: number, longitude: number): string {
+	return `${latitude},${longitude}`;
+}
+
+/**
+ * Maps each given coordinate that ALREADY has a location to that location
+ * ({@link coordinateKey} → id/name). Because OSM-imported coordinates are stored
+ * verbatim, a true duplicate sits at coordinate-identical lat/lon — so this lets
+ * create_locations skip re-importing a venue already on the map. Coordinates with
+ * no existing location are absent from the map.
+ */
+export async function existingLocationsAtCoords(
+	db: D1Like,
+	coords: { latitude: number; longitude: number }[]
+): Promise<Map<string, { id: string; name: string }>> {
+	const distinct = [
+		...new Map(coords.map((c) => [coordinateKey(c.latitude, c.longitude), c])).values()
+	];
+	if (distinct.length === 0) return new Map();
+	const conds = distinct.map(() => '(latitude = ? AND longitude = ?)').join(' OR ');
+	const binds = distinct.flatMap((c) => [c.latitude, c.longitude]);
+	const { results } = await db
+		.prepare(`SELECT id, name, latitude, longitude FROM locations WHERE ${conds}`)
+		.bind(...binds)
+		.all<{ id: string; name: string; latitude: number; longitude: number }>();
+	const out = new Map<string, { id: string; name: string }>();
+	for (const r of results) {
+		const key = coordinateKey(r.latitude, r.longitude);
+		if (!out.has(key)) out.set(key, { id: r.id, name: r.name });
+	}
+	return out;
+}
+
 /**
  * Returns everything the map page needs for the given viewport in one payload
  * (see {@link MapData}): every location inside `bounds` with its per-item
@@ -679,6 +734,7 @@ async function queryMapData(
 	const [
 		{ results: locations },
 		{ results: itemRows },
+		{ results: menuCurrencyRows },
 		{ results: itemTagRows },
 		{ results: itemSourceRows },
 		{ results: menuSourceRows },
@@ -695,6 +751,10 @@ async function queryMapData(
 			)
 			.bind(...params)
 			.all<ItemRow>(),
+		db
+			.prepare(`SELECT id, currency FROM menus WHERE id IN (${inMenus})`)
+			.bind(...params)
+			.all<{ id: string; currency: string }>(),
 		db
 			.prepare(
 				`SELECT it.item_id AS owner_id, ${ITEM_TAG_SELECT}
@@ -742,6 +802,7 @@ async function queryMapData(
 	const sourcesByItem = groupSources(itemSourceRows);
 	const sourcesByMenu = groupSources(menuSourceRows);
 	const sourcesByLocation = groupSources(locationSourceRows);
+	const currencyByMenu = new Map(menuCurrencyRows.map((r) => [r.id, r.currency]));
 
 	const menus: Record<string, Item[]> = {};
 	for (const row of itemRows) {
@@ -751,6 +812,7 @@ async function queryMapData(
 			item_name: row.item_name,
 			description: row.description,
 			price: row.price,
+			currency: currencyByMenu.get(row.menu_id) ?? DEFAULT_CURRENCY,
 			tags: tagsByItem.get(row.id) ?? [],
 			sources: mergeSources(sourcesByItem.get(row.id) ?? [], sourcesByMenu.get(row.menu_id) ?? [])
 		});
@@ -798,6 +860,7 @@ export async function getLocationById(db: D1Like, id: string): Promise<Location 
 async function getItemsByMenu(db: D1Like, menuId: string): Promise<Item[]> {
 	const [
 		{ results: rows },
+		menuRow,
 		{ results: tagRows },
 		{ results: itemSourceRows },
 		{ results: menuSourceRows }
@@ -806,6 +869,10 @@ async function getItemsByMenu(db: D1Like, menuId: string): Promise<Item[]> {
 			.prepare(`SELECT ${ITEM_FIELDS} FROM items WHERE menu_id = ? ORDER BY item_name`)
 			.bind(menuId)
 			.all<ItemRow>(),
+		db
+			.prepare(`SELECT currency FROM menus WHERE id = ?`)
+			.bind(menuId)
+			.first<{ currency: string }>(),
 		db
 			.prepare(
 				`SELECT it.item_id AS owner_id, ${ITEM_TAG_SELECT}
@@ -835,8 +902,10 @@ async function getItemsByMenu(db: D1Like, menuId: string): Promise<Item[]> {
 
 	const tagsByItem = groupItemTags(tagRows);
 	const sourcesByItem = groupSources(itemSourceRows);
+	const currency = menuRow?.currency ?? DEFAULT_CURRENCY;
 	return rows.map((row) => ({
 		...row,
+		currency,
 		tags: tagsByItem.get(row.id) ?? [],
 		sources: mergeSources(sourcesByItem.get(row.id) ?? [], menuSourceRows)
 	}));
@@ -880,12 +949,19 @@ export async function getItemById(db: D1Like, id: string): Promise<Item | null> 
 			.all<Source>()
 	]);
 	if (!row) return null;
-	const { results: menuSources } = await db
-		.prepare(`SELECT url, label FROM menu_sources WHERE menu_id = ? ORDER BY rowid`)
-		.bind(row.menu_id)
-		.all<Source>();
+	const [{ results: menuSources }, menuRow] = await Promise.all([
+		db
+			.prepare(`SELECT url, label FROM menu_sources WHERE menu_id = ? ORDER BY rowid`)
+			.bind(row.menu_id)
+			.all<Source>(),
+		db
+			.prepare(`SELECT currency FROM menus WHERE id = ?`)
+			.bind(row.menu_id)
+			.first<{ currency: string }>()
+	]);
 	return {
 		...row,
+		currency: menuRow?.currency ?? DEFAULT_CURRENCY,
 		tags: tags.map((t) => ({
 			id: t.id,
 			name: t.name,
@@ -1024,6 +1100,11 @@ export type LocationInsert = Omit<
 	menu_id?: string | null;
 	sources?: Source[];
 	/**
+	 * Currency (ISO-4217, default CAD) for the private menu created when `items` are
+	 * given. Ignored for a chain branch (which shares its menu's currency).
+	 */
+	currency?: string;
+	/**
 	 * The venue's OWN menu items, created on a private menu in the SAME atomic
 	 * batch as the location (independent venues only). Equivalent to a follow-up
 	 * {@link insertFoods} call folded in. Must NOT be combined with `brand_id`/
@@ -1063,9 +1144,9 @@ export async function insertLocations(db: D1Like, locs: LocationInsert[]): Promi
 			stmts.push(
 				db
 					.prepare(
-						`INSERT INTO menus (id, brand_id, name, region, last_verified) VALUES (?, NULL, ?, NULL, NULL)`
+						`INSERT INTO menus (id, brand_id, name, region, currency, last_verified) VALUES (?, NULL, ?, NULL, ?, NULL)`
 					)
-					.bind(privateMenuId, loc.name)
+					.bind(privateMenuId, loc.name, loc.currency ?? DEFAULT_CURRENCY)
 			);
 		}
 		stmts.push(
@@ -1128,7 +1209,11 @@ const LOCATION_COLUMNS = [
 ] as const;
 
 /** A partial update to one location, keyed by id (for {@link updateLocations}). */
-export type LocationPatch = Partial<Omit<Location, 'id' | 'address'>> & { id: string };
+export type LocationPatch = Partial<Omit<Location, 'id' | 'address'>> & {
+	id: string;
+	/** Append these sources (dedupe by url), keeping existing ones — vs `sources` which replaces. */
+	addSources?: Source[];
+};
 
 /**
  * Statements that apply one location patch: the scalar SET (only the columns
@@ -1153,17 +1238,20 @@ function locationUpdateStmts(db: D1Like, patch: LocationPatch): D1PreparedLike[]
 				.bind(...values, patch.id)
 		);
 	}
-	if (patch.sources !== undefined) {
+	// `sources` replaces the whole set; `addSources` appends (dedupe via the PK).
+	const replace = patch.sources !== undefined;
+	if (replace) {
 		stmts.push(db.prepare(`DELETE FROM location_sources WHERE location_id = ?`).bind(patch.id));
-		for (const source of patch.sources) {
-			stmts.push(
-				db
-					.prepare(
-						`INSERT OR IGNORE INTO location_sources (location_id, url, label) VALUES (?, ?, ?)`
-					)
-					.bind(patch.id, source.url, source.label ?? null)
-			);
-		}
+	}
+	const toAdd = replace ? patch.sources : patch.addSources;
+	for (const source of toAdd ?? []) {
+		stmts.push(
+			db
+				.prepare(
+					`INSERT OR IGNORE INTO location_sources (location_id, url, label) VALUES (?, ?, ?)`
+				)
+				.bind(patch.id, source.url, source.label ?? null)
+		);
 	}
 	return stmts;
 }
@@ -1237,7 +1325,8 @@ export type FoodInsert = {
  */
 async function resolvePrivateMenus(
 	db: D1Like,
-	locationIds: string[]
+	locationIds: string[],
+	currency: string = DEFAULT_CURRENCY
 ): Promise<{ menuByLocation: Map<string, string>; stmts: D1PreparedLike[] }> {
 	const menuByLocation = new Map<string, string>();
 	const stmts: D1PreparedLike[] = [];
@@ -1273,9 +1362,9 @@ async function resolvePrivateMenus(
 		stmts.push(
 			db
 				.prepare(
-					`INSERT INTO menus (id, brand_id, name, region, last_verified) VALUES (?, NULL, ?, NULL, NULL)`
+					`INSERT INTO menus (id, brand_id, name, region, currency, last_verified) VALUES (?, NULL, ?, NULL, ?, NULL)`
 				)
-				.bind(menuId, owner.name),
+				.bind(menuId, owner.name, currency),
 			db.prepare(`UPDATE locations SET menu_id = ? WHERE id = ?`).bind(menuId, locationId)
 		);
 	});
@@ -1286,11 +1375,16 @@ async function resolvePrivateMenus(
  * Inserts many items belonging to independent venues (their own private menus),
  * in one atomic batch, returning their ids in input order. Each item's
  * `ingredients` string is stored as ingredient tags. A venue with no menu yet
- * gets a private menu created for it automatically.
+ * gets a private menu created for it automatically; `currency` (default CAD) sets
+ * that new menu's currency (ignored for a venue whose private menu already exists).
  */
-export async function insertFoods(db: D1Like, items: FoodInsert[]): Promise<string[]> {
+export async function insertFoods(
+	db: D1Like,
+	items: FoodInsert[],
+	currency: string = DEFAULT_CURRENCY
+): Promise<string[]> {
 	const locationIds = [...new Set(items.map((it) => it.location_id))];
-	const { menuByLocation, stmts: menuStmts } = await resolvePrivateMenus(db, locationIds);
+	const { menuByLocation, stmts: menuStmts } = await resolvePrivateMenus(db, locationIds, currency);
 
 	const ids: string[] = [];
 	const stmts: D1PreparedLike[] = [...menuStmts];
@@ -1324,6 +1418,8 @@ async function applyItemUpdate(
 		item_name?: string;
 		description?: string | null;
 		price?: number | null;
+		/** Append these sources (dedupe by url), keeping existing ones — vs `sources` which replaces. */
+		addSources?: Source[];
 	} & ItemContent
 ): Promise<Item | null> {
 	if (!(await getItemById(db, id))) return null;
@@ -1378,6 +1474,9 @@ async function applyItemUpdate(
 	if (patch.sources !== undefined) {
 		stmts.push(db.prepare(`DELETE FROM item_sources WHERE item_id = ?`).bind(id));
 		stmts.push(...sourceLinkStmts(db, id, patch.sources));
+	} else if (patch.addSources !== undefined) {
+		// Append-only: existing sources stay; INSERT OR IGNORE dedupes by (item_id, url).
+		stmts.push(...sourceLinkStmts(db, id, patch.addSources));
 	}
 
 	if (stmts.length > 0) await db.batch(stmts);
@@ -1400,6 +1499,15 @@ export async function getBrandById(db: D1Like, id: string): Promise<Brand | null
 		.prepare(`SELECT id, name, website, logo_url FROM brands WHERE id = ?`)
 		.bind(id)
 		.first<Brand>();
+}
+
+/** Ids of brands whose name matches `name` (case-insensitive). Used to flag a likely duplicate. */
+export async function findBrandIdsByName(db: D1Like, name: string): Promise<string[]> {
+	const { results } = await db
+		.prepare(`SELECT id FROM brands WHERE name = ? COLLATE NOCASE ORDER BY id`)
+		.bind(name)
+		.all<{ id: string }>();
+	return results.map((r) => r.id);
 }
 
 export async function insertBrand(
@@ -1456,7 +1564,7 @@ export async function deleteBrand(db: D1Like, id: string): Promise<boolean> {
 /** Internal raw shape of a `menus` row before its sources are attached. */
 type MenuRow = Omit<Menu, 'sources'>;
 
-const MENU_FIELDS = `id, brand_id, name, region, last_verified`;
+const MENU_FIELDS = `id, brand_id, name, region, currency, last_verified`;
 
 /**
  * Lists brand menus (with an item count), optionally filtered by brand. Private
@@ -1464,7 +1572,7 @@ const MENU_FIELDS = `id, brand_id, name, region, last_verified`;
  */
 export async function getMenus(db: D1Like, brandId?: string): Promise<MenuSummary[]> {
 	const sql =
-		`SELECT m.id, m.brand_id, m.name, m.region, m.last_verified, COUNT(i.id) AS item_count
+		`SELECT m.id, m.brand_id, m.name, m.region, m.currency, m.last_verified, COUNT(i.id) AS item_count
 		 FROM menus m LEFT JOIN items i ON i.menu_id = m.id` +
 		(brandId ? ` WHERE m.brand_id = ?` : ` WHERE m.brand_id IS NOT NULL`) +
 		` GROUP BY m.id ORDER BY m.name`;
@@ -1485,6 +1593,22 @@ export async function getMenuById(db: D1Like, id: string): Promise<Menu | null> 
 	return { ...row, sources };
 }
 
+/**
+ * Ids of menus belonging to `brandId` whose name matches `name` (case-insensitive).
+ * Used to flag a likely duplicate when creating another menu under the same brand.
+ */
+export async function findMenuIdsByName(
+	db: D1Like,
+	brandId: string,
+	name: string
+): Promise<string[]> {
+	const { results } = await db
+		.prepare(`SELECT id FROM menus WHERE brand_id = ? AND name = ? COLLATE NOCASE ORDER BY id`)
+		.bind(brandId, name)
+		.all<{ id: string }>();
+	return results.map((r) => r.id);
+}
+
 export async function getMenuWithItems(db: D1Like, id: string): Promise<MenuWithItems | null> {
 	const menu = await getMenuById(db, id);
 	if (!menu) return null;
@@ -1493,15 +1617,26 @@ export async function getMenuWithItems(db: D1Like, id: string): Promise<MenuWith
 
 export async function insertMenu(
 	db: D1Like,
-	menu: Omit<Menu, 'id' | 'sources'> & { id?: string; sources?: Source[] }
+	menu: Omit<Menu, 'id' | 'sources' | 'currency'> & {
+		id?: string;
+		currency?: string;
+		sources?: Source[];
+	}
 ): Promise<string> {
 	const id = menu.id ?? crypto.randomUUID();
 	const stmts: D1PreparedLike[] = [
 		db
 			.prepare(
-				`INSERT INTO menus (id, brand_id, name, region, last_verified) VALUES (?, ?, ?, ?, ?)`
+				`INSERT INTO menus (id, brand_id, name, region, currency, last_verified) VALUES (?, ?, ?, ?, ?, ?)`
 			)
-			.bind(id, menu.brand_id ?? null, menu.name, menu.region ?? null, menu.last_verified ?? null)
+			.bind(
+				id,
+				menu.brand_id ?? null,
+				menu.name,
+				menu.region ?? null,
+				menu.currency ?? DEFAULT_CURRENCY,
+				menu.last_verified ?? null
+			)
 	];
 	for (const source of menu.sources ?? []) {
 		stmts.push(
@@ -1514,7 +1649,7 @@ export async function insertMenu(
 	return id;
 }
 
-const MENU_COLUMNS = ['brand_id', 'name', 'region', 'last_verified'] as const;
+const MENU_COLUMNS = ['brand_id', 'name', 'region', 'currency', 'last_verified'] as const;
 
 /**
  * Partial update of a menu. Scalar fields present in `patch` are written; if
@@ -1524,7 +1659,10 @@ const MENU_COLUMNS = ['brand_id', 'name', 'region', 'last_verified'] as const;
 export async function updateMenu(
 	db: D1Like,
 	id: string,
-	patch: Partial<Omit<Menu, 'id'>>
+	patch: Partial<Omit<Menu, 'id'>> & {
+		/** Append these sources (dedupe by url), keeping existing ones — vs `sources` which replaces. */
+		addSources?: Source[];
+	}
 ): Promise<Menu | null> {
 	if (!(await getMenuById(db, id))) return null;
 
@@ -1542,15 +1680,17 @@ export async function updateMenu(
 			db.prepare(`UPDATE menus SET ${assignments.join(', ')} WHERE id = ?`).bind(...values, id)
 		);
 	}
-	if (patch.sources !== undefined) {
+	// `sources` replaces the whole set; `addSources` appends (dedupe via the PK).
+	const replaceSources = patch.sources !== undefined;
+	if (replaceSources) {
 		stmts.push(db.prepare(`DELETE FROM menu_sources WHERE menu_id = ?`).bind(id));
-		for (const source of patch.sources) {
-			stmts.push(
-				db
-					.prepare(`INSERT OR IGNORE INTO menu_sources (menu_id, url, label) VALUES (?, ?, ?)`)
-					.bind(id, source.url, source.label ?? null)
-			);
-		}
+	}
+	for (const source of (replaceSources ? patch.sources : patch.addSources) ?? []) {
+		stmts.push(
+			db
+				.prepare(`INSERT OR IGNORE INTO menu_sources (menu_id, url, label) VALUES (?, ?, ?)`)
+				.bind(id, source.url, source.label ?? null)
+		);
 	}
 	if (stmts.length > 0) await db.batch(stmts);
 	return getMenuById(db, id);
@@ -1604,6 +1744,41 @@ export async function insertMenuItems(db: D1Like, items: MenuItemInsert[]): Prom
 	return ids;
 }
 
+/**
+ * Of the given item names, those that ALREADY exist on `menuId` (case-insensitive),
+ * each with the existing item ids. Lets create_foods / create_menu_items warn that a
+ * re-run or extend would duplicate an item the menu already lists, so an agent can
+ * update the existing item instead. Returns `[]` when nothing collides.
+ */
+export async function itemNameCollisions(
+	db: D1Like,
+	menuId: string,
+	names: string[]
+): Promise<{ item_name: string; existing_ids: string[] }[]> {
+	const distinct = [...new Set(names)];
+	if (distinct.length === 0) return [];
+	const placeholders = distinct.map(() => '?').join(', ');
+	const { results } = await db
+		.prepare(
+			`SELECT id, item_name FROM items WHERE menu_id = ? AND item_name COLLATE NOCASE IN (${placeholders})`
+		)
+		.bind(menuId, ...distinct)
+		.all<{ id: string; item_name: string }>();
+	const idsByLowerName = new Map<string, string[]>();
+	for (const r of results) {
+		const key = r.item_name.toLowerCase();
+		const list = idsByLowerName.get(key) ?? [];
+		list.push(r.id);
+		idsByLowerName.set(key, list);
+	}
+	const out: { item_name: string; existing_ids: string[] }[] = [];
+	for (const name of distinct) {
+		const ids = idsByLowerName.get(name.toLowerCase());
+		if (ids?.length) out.push({ item_name: name, existing_ids: ids });
+	}
+	return out;
+}
+
 /** Arguments accepted by {@link updateItem}. */
 export type ItemUpdate = {
 	/** Move the item to a different menu (rare). */
@@ -1611,6 +1786,8 @@ export type ItemUpdate = {
 	item_name?: string;
 	description?: string | null;
 	price?: number | null;
+	/** Append these sources (dedupe by url), keeping existing ones — vs `sources` which replaces. */
+	addSources?: Source[];
 } & ItemContent;
 
 /**
@@ -1653,22 +1830,35 @@ export async function getLocationItemOverrides(
 }
 
 /**
- * Creates or replaces a location's override of one menu item. `available` `false`
- * hides the item at this location; `price` overrides its price here. Pass `null`
- * for either to inherit the menu default.
+ * Creates or updates a location's override of one menu item as a PARTIAL PATCH:
+ * only the fields PRESENT in `override` change. A field left `undefined` keeps its
+ * currently-stored value (so toggling just `available` no longer wipes a previously
+ * set `price`, and vice-versa); pass an explicit `null` to reset that field to
+ * inherit the menu default. `available` `false` hides the item at this location;
+ * `price` overrides its price here.
  */
 export async function setLocationItemOverride(
 	db: D1Like,
 	locationId: string,
 	itemId: string,
 	override: { available?: boolean | null; price?: number | null }
-): Promise<void> {
+): Promise<{ available: boolean | null; price: number | null }> {
+	// Merge with the existing row so an omitted field is preserved, not cleared.
+	const existing = await db
+		.prepare(
+			`SELECT available, price FROM location_item_overrides WHERE location_id = ? AND item_id = ?`
+		)
+		.bind(locationId, itemId)
+		.first<{ available: number | null; price: number | null }>();
 	const available =
-		override.available === undefined || override.available === null
-			? null
-			: override.available
-				? 1
-				: 0;
+		override.available !== undefined
+			? override.available === null
+				? null
+				: override.available
+					? 1
+					: 0
+			: (existing?.available ?? null);
+	const price = override.price !== undefined ? (override.price ?? null) : (existing?.price ?? null);
 	await db
 		.prepare(
 			`INSERT INTO location_item_overrides (location_id, item_id, available, price)
@@ -1676,8 +1866,10 @@ export async function setLocationItemOverride(
 			 ON CONFLICT(location_id, item_id)
 			 DO UPDATE SET available = excluded.available, price = excluded.price`
 		)
-		.bind(locationId, itemId, available, override.price ?? null)
+		.bind(locationId, itemId, available, price)
 		.run();
+	// Return the resulting (merged) override so callers can echo accurate state.
+	return { available: available === null ? null : available !== 0, price };
 }
 
 /** Removes an override so the location inherits the menu default again. */
