@@ -12,7 +12,7 @@ import { SESSION_COOKIE, clearSessionCookie, invalidateSessionToken } from '$lib
 
 /**
  * The signed-in user for the current request, or null. Backs the account control
- * and gates the like/history UI. Reads `locals.user` (set by the session hook), so
+ * and gates the like UI. Reads `locals.user` (set by the session hook), so
  * it needs no database round-trip of its own.
  */
 export const getCurrentUser = query((): Promise<User | null> => Promise.resolve(currentUser()));

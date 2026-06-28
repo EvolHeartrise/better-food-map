@@ -47,7 +47,7 @@
 		type="button"
 		class="diet__trigger"
 		class:diet__trigger--active={value !== null}
-		aria-haspopup="listbox"
+		aria-haspopup="menu"
 		aria-expanded={open}
 		onclick={() => (open = !open)}
 	>
@@ -57,10 +57,15 @@
 	</button>
 
 	{#if open}
-		<ul class="menu" role="listbox" aria-label="Dietary filter">
-			<li role="option" aria-selected={value === null}>
+		<!-- A single-select menu: each option is a `menuitemradio` whose `aria-checked`
+		     marks the current diet — so the option role lives on the button itself, not
+		     on a wrapper around it. -->
+		<ul class="menu" role="menu" aria-label="Dietary filter">
+			<li role="none">
 				<button
 					type="button"
+					role="menuitemradio"
+					aria-checked={value === null}
 					class="menu__option"
 					class:menu__option--selected={value === null}
 					onclick={() => choose(null)}
@@ -69,9 +74,11 @@
 				</button>
 			</li>
 			{#each DIET_OPTIONS as option (option.id)}
-				<li role="option" aria-selected={value === option.id}>
+				<li role="none">
 					<button
 						type="button"
+						role="menuitemradio"
+						aria-checked={value === option.id}
 						class="menu__option"
 						class:menu__option--selected={value === option.id}
 						onclick={() => choose(option.id)}
