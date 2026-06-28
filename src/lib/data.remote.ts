@@ -43,7 +43,7 @@ export const getLocations = query(BoundsSchema, async (bounds): Promise<MapData>
 /**
  * Returns a single location (by id) in the same {@link MapData} shape as
  * {@link getLocations}. Backs the detail view when the open location isn't in the
- * current viewport — a shared `/locations/<id>` link, or one panned off screen —
+ * current viewport — a shared `/map/locations/<id>` link, or one panned off screen —
  * so it always resolves. Yields an empty payload if no location has that id.
  */
 export const getLocationData = query(v.string(), async (id): Promise<MapData> => {

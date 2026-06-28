@@ -42,7 +42,8 @@
 		</p>
 
 		{#if user}
-			<a class="cta" href={resolve('/map')}>
+			<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- validated same-origin path (safeInternalPath), defaults to /map -->
+			<a class="cta" href={redirectTo}>
 				<MapIcon size={18} aria-hidden="true" />
 				Open the map
 			</a>
