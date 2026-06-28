@@ -5,10 +5,7 @@ import {
 	getMapData,
 	getLocationMapData,
 	getSearchMapData,
-	searchTagVocabulary,
-	getTagSuggestions as getTagSuggestionsFromDb,
 	getBrands as getBrandsFromDb,
-	type Tag,
 	type Brand,
 	type MapData
 } from '$lib/server/db';
@@ -56,15 +53,14 @@ export const getLocationData = query(v.string(), async (id): Promise<MapData> =>
  * {@link getLocations} is bounded to the viewport, this searches the whole index
  * and returns the matches nearest the anchor (nearest first, same {@link MapData}
  * shape), so an active search is answered from everywhere on the map rather than
- * only what's on screen. The free-text and tag filters mirror the client's own
+ * only what's on screen. The free-text and diet filters mirror the client's own
  * filtering; see {@link getSearchMapData}. Validated because, like every remote
  * query, the argument arrives untrusted over HTTP.
  */
 const SearchQuerySchema = v.object({
 	place: v.string(),
 	item: v.string(),
-	includedTagIds: v.array(v.string()),
-	excludedTagIds: v.array(v.string()),
+	dietTagId: v.nullable(v.string()),
 	lat: v.number(),
 	lng: v.number()
 });
@@ -83,35 +79,6 @@ export const getBrands = query(async (): Promise<Brand[]> => {
 	requireUser();
 	return getBrandsFromDb(db());
 });
-
-/**
- * Searches the full tag vocabulary (curated dietary/course tags AND the
- * ingredient tags created from item data) by name substring, ranked and capped
- * (see {@link searchTagVocabulary}). Backs the tag filter's searchable picker:
- * the ingredient vocabulary is thousands of rows, so it is searched on the
- * server per keystroke rather than shipped to the client. An empty query yields
- * the curated tags.
- */
-export const searchTags = query(v.string(), async (q): Promise<Tag[]> => {
-	requireUser();
-	return searchTagVocabulary(db(), q);
-});
-
-/**
- * Suggested tags for one tag-filter picker (`include` or `exclude`) — the list
- * it shows before the user types, and the popularity signal it re-ranks typed
- * results by. Drawn from logged searches: the tags most searched in that mode
- * across all users, with the signed-in user's own recently-used tags floated to
- * the front (see {@link getTagSuggestionsFromDb}). Empty when no history matches
- * (e.g. a fresh database), in which case the picker simply waits for a query.
- */
-export const getTagSuggestions = query(
-	v.picklist(['include', 'exclude']),
-	async (mode): Promise<Tag[]> => {
-		const user = requireUser();
-		return getTagSuggestionsFromDb(db(), user.id, mode);
-	}
-);
 
 /**
  * Best-effort opening location for the map, from Cloudflare's edge IP
