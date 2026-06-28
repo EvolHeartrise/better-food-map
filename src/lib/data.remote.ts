@@ -82,9 +82,9 @@ export const getBrands = query(async (): Promise<Brand[]> => {
 });
 
 /**
- * Aggregate coverage totals (locations, items, cities, countries) for the
- * zoomed-out landing overlay. Public — no sign-in required, and it returns only
- * counts, never any row data.
+ * Aggregate coverage totals (locations, items, cities) for the zoomed-out landing
+ * overlay. Public — no sign-in required, and it returns only counts, never any row
+ * data.
  */
 export const getStats = query((): Promise<MapStats> => getStatsFromDb(db()));
 

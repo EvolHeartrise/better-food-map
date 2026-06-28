@@ -1467,8 +1467,6 @@ export interface MapStats {
 	/** Distinct cities covered, keyed by city + region + country so same-named
 	 *  cities in different provinces/countries aren't merged. */
 	cities: number;
-	/** Distinct countries covered. */
-	countries: number;
 }
 
 /**
@@ -1482,11 +1480,10 @@ export async function getStats(db: D1Like): Promise<MapStats> {
 			`SELECT
 				(SELECT COUNT(*) FROM locations) AS locations,
 				(SELECT COUNT(*) FROM items) AS items,
-				(SELECT COUNT(DISTINCT city || '|' || region || '|' || country) FROM locations) AS cities,
-				(SELECT COUNT(DISTINCT country) FROM locations) AS countries`
+				(SELECT COUNT(DISTINCT city || '|' || region || '|' || country) FROM locations) AS cities`
 		)
 		.first<MapStats>();
-	return row ?? { locations: 0, items: 0, cities: 0, countries: 0 };
+	return row ?? { locations: 0, items: 0, cities: 0 };
 }
 
 export async function getBrandById(db: D1Like, id: string): Promise<Brand | null> {

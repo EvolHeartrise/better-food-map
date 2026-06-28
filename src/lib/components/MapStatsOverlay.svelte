@@ -9,7 +9,6 @@
 		locations: number;
 		items: number;
 		cities: number;
-		countries: number;
 	};
 
 	let {
@@ -27,13 +26,11 @@
 		return value === undefined ? '—' : numberFormat.format(value);
 	}
 
-	// The figures, in display order. `countries` is the only one that can realistically
-	// be 1, so it's the only label that bothers to singularise.
+	// The figures, in display order.
 	const figures = $derived([
 		{ value: stats?.locations, label: 'venues' },
 		{ value: stats?.items, label: 'menu items' },
-		{ value: stats?.cities, label: 'cities' },
-		{ value: stats?.countries, label: stats?.countries === 1 ? 'country' : 'countries' }
+		{ value: stats?.cities, label: 'cities' }
 	]);
 </script>
 
@@ -139,7 +136,7 @@
 	.stats {
 		list-style: none;
 		display: grid;
-		grid-template-columns: repeat(4, 1fr);
+		grid-template-columns: repeat(3, 1fr);
 		gap: 0.5rem 1.5rem;
 		width: 100%;
 		margin: 0;
@@ -201,12 +198,5 @@
 	.cta:focus-visible {
 		outline: 2px solid var(--color-accent);
 		outline-offset: 2px;
-	}
-
-	/* On narrow screens the four figures don't fit abreast; drop to two columns. */
-	@media (max-width: 30rem) {
-		.stats {
-			grid-template-columns: repeat(2, 1fr);
-		}
 	}
 </style>
