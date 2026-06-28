@@ -73,7 +73,7 @@
 
 		<p class="dialog__intro">
 			Pick your dietary restrictions and allergies. We’ll apply them as default filters whenever you
-			use the map — you can always remove a filter for a one-off search.
+			use the map.
 		</p>
 
 		<div class="dialog__body">
