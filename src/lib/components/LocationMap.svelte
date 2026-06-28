@@ -40,10 +40,6 @@
 		// plus once on load. The landing uses this to drive itself: it shows while the
 		// map is zoomed out and hides once the user zooms in (and returns on zoom-out).
 		onzoom,
-		// When true (the zoomed-out landing), bias the globe DOWNWARD on screen — via top
-		// camera padding — so the landing's intro text up top has room; a centred view
-		// otherwise. The parent sets this from the same condition as the landing.
-		biasDown = false,
 		// A point to fly the camera to (without selecting it) — used by global search
 		// to bring the nearest match into view. The camera flies whenever `key`
 		// changes, so the parent controls exactly when a fly happens (it omits it when
@@ -60,7 +56,6 @@
 		initialCenter?: [number, number] | null;
 		initialZoom?: number | null;
 		onzoom?: (zoom: number) => void;
-		biasDown?: boolean;
 		focus?: { latitude: number; longitude: number; key: string } | null;
 		onviewchange?: (bounds: Bounds) => void;
 	} = $props();
@@ -96,10 +91,15 @@
 	// Debounce (ms) before reporting a new viewport, so a drag or pinch settles into
 	// a single fetch rather than firing on every intermediate `moveend`.
 	const VIEW_DEBOUNCE_MS = 250;
-	// When `biasDown` is set, push the camera's focal point down by this fraction of the
-	// map height (as top padding), so the zoomed-out globe sits below centre and the
-	// landing's top text has room. The globe shifts down by about half this fraction.
+	// Downward bias for the zoomed-out globe (so the landing's top text has room): top
+	// camera padding as a fraction of the map height, scaled by how zoomed-out we are.
+	// The globe shifts down by about half this fraction at full bias.
 	const GLOBE_BIAS_TOP_FRACTION = 0.22;
+	// The bias INTERPOLATES with zoom instead of snapping: full at/under FULL_ZOOM,
+	// gone at/over ZERO_ZOOM, linear between — so it eases in/out as the user (or a
+	// flight) zooms, with no jump. ZERO_ZOOM matches the page's landing threshold.
+	const GLOBE_BIAS_FULL_ZOOM = 2;
+	const GLOBE_BIAS_ZERO_ZOOM = 3;
 
 	let mapEl: HTMLDivElement;
 
@@ -133,12 +133,22 @@
 		return [lng, lat];
 	}
 
-	// Camera padding for the current `biasDown`: top padding (a fraction of the map
-	// height) when biased so the globe sits below centre, otherwise none. Applied
-	// instantly (never via easeTo) so it can't cancel an in-flight flyTo.
-	function biasPadding(on: boolean) {
-		const top = on ? mapEl.clientHeight * GLOBE_BIAS_TOP_FRACTION : 0;
-		return { top, right: 0, bottom: 0, left: 0 };
+	// Push the camera focal point down by an amount that scales with how zoomed-out the
+	// map is (see the GLOBE_BIAS_* constants), so the globe eases below centre as you
+	// zoom out and back to centre as you zoom in. Set directly (never via easeTo) and
+	// called every zoom frame, so it tracks the zoom smoothly without cancelling an
+	// in-flight flyTo.
+	function applyGlobeBias() {
+		if (!map) return;
+		const t =
+			(GLOBE_BIAS_ZERO_ZOOM - map.getZoom()) / (GLOBE_BIAS_ZERO_ZOOM - GLOBE_BIAS_FULL_ZOOM);
+		const fraction = Math.max(0, Math.min(1, t));
+		map.setPadding({
+			top: mapEl.clientHeight * GLOBE_BIAS_TOP_FRACTION * fraction,
+			right: 0,
+			bottom: 0,
+			left: 0
+		});
 	}
 
 	function escapeHtml(value: string): string {
@@ -306,8 +316,8 @@
 
 			// Apply the opening downward bias synchronously (no constructor `padding`
 			// option exists), so a landing that opens zoomed out starts biased without a
-			// post-load jump. The effect below keeps it in sync as `biasDown` changes.
-			map.setPadding(biasPadding(biasDown));
+			// post-load jump. The 'zoom' handler keeps it tracking the zoom thereafter.
+			applyGlobeBias();
 
 			// Zoom control sits bottom-left, clear of the floating search (top-left)
 			// and results (top-right) panels that overlay the full-screen map. No
@@ -321,9 +331,15 @@
 			// Report the zoom live (every frame of a gesture or flight) so the landing can
 			// track it: it shows while zoomed out and hides as the user zooms in, then
 			// returns on zoom-out — whether the zoom is a user gesture or a programmatic fly.
+			// Re-bias the globe on the same frames so its downward offset eases with the zoom.
 			map.on('zoom', () => {
-				if (map) onzoom?.(map.getZoom());
+				if (!map) return;
+				onzoom?.(map.getZoom());
+				applyGlobeBias();
 			});
+
+			// The bias is a fraction of the map height, so recompute it when that changes.
+			map.on('resize', applyGlobeBias);
 
 			// `load` fires once the style is parsed and the first frame is painted —
 			// only then are markers safe to add and the opening view worth reporting.
@@ -334,6 +350,9 @@
 				// Kick off the first load immediately (no debounce) for the opening view.
 				reportView();
 				onzoom?.(map.getZoom());
+				// Re-apply with the now-laid-out dimensions, in case the container had no
+				// measured height when the opening bias was set in the constructor.
+				applyGlobeBias();
 			});
 		})();
 
@@ -347,14 +366,6 @@
 				markersById = {};
 			}
 		};
-	});
-
-	// Keep the downward bias in step with `biasDown` (set instantly so it never cancels
-	// an in-flight flyTo, e.g. "Start using"). Crossing into/out of the zoomed-out
-	// landing nudges the globe down / back to centre.
-	$effect(() => {
-		if (!ready || !map) return;
-		map.setPadding(biasPadding(biasDown));
 	});
 
 	// Re-render markers when the in-view locations (or the selection) change. This
