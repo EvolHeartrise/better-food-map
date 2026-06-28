@@ -103,7 +103,7 @@ test('getLocationsWithTags with no filter returns every location', async () => {
 	expect((await getLocationsWithTags(db)).length).toBe(3);
 });
 
-test('getLocationsWithTags filters by nameLike (case-insensitive substring, behind find_locations)', async () => {
+test('getLocationsWithTags filters by nameLike (case-insensitive substring, behind list_locations query)', async () => {
 	const db = freshDb();
 	await seed(db);
 	expect((await getLocationsWithTags(db, { nameLike: 'van' })).map((l) => l.id).toSorted()).toEqual(
