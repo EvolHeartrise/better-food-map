@@ -33,7 +33,6 @@ import {
 	getItemById,
 	updateItem,
 	deleteItem,
-	getAllTags,
 	insertLocations,
 	insertFoods,
 	updateLocations,
@@ -64,6 +63,7 @@ import {
 	TAGS,
 	TAG_SEARCH_LIMIT,
 	type D1Like,
+	type Item,
 	type LocationWithTags
 } from '../src/lib/server/db';
 import { createHttpD1 } from '../src/lib/server/d1-http';
@@ -601,7 +601,7 @@ const updateLocationsArgs = v.object({
 		v.description(
 			'Location patches to apply in one atomic batch — pass a single item to edit one place. ' +
 				'Each carries an `id` plus only the fields to change. Ideal for mass backfills from ' +
-				'find_missing_address / find_coordinate_drift. Ids that do not exist are reported in ' +
+				'audit_locations. Ids that do not exist are reported in ' +
 				'`not_found_ids` rather than failing the batch.'
 		)
 	)
@@ -639,6 +639,17 @@ const nearSchema = v.object({
 });
 
 const listLocationsArgs = v.object({
+	query: v.optional(
+		v.pipe(
+			v.string(),
+			v.trim(),
+			v.minLength(1, 'query must be a non-empty, non-blank substring.'),
+			v.description(
+				'Optional case-insensitive substring matched against the location name — use it to find a ' +
+					'venue by name (e.g. to de-dup before adding, or to locate one to edit). Omit to list all.'
+			)
+		)
+	),
 	near: v.optional(
 		v.pipe(
 			nearSchema,
@@ -647,35 +658,6 @@ const listLocationsArgs = v.object({
 	),
 	category: v.optional(
 		v.pipe(categorySchema, v.description('Only return locations in this category.'))
-	),
-	limit: v.optional(
-		v.pipe(v.number(), v.integer(), v.minValue(1), v.description('Maximum number to return.'))
-	),
-	offset: v.optional(
-		v.pipe(
-			v.number(),
-			v.integer(),
-			v.minValue(0),
-			v.description('Skip this many results (paging).')
-		)
-	)
-});
-
-const findLocationsArgs = v.object({
-	query: v.pipe(
-		v.string(),
-		v.trim(),
-		v.minLength(1, 'query must be a non-empty, non-blank substring.'),
-		v.description('Case-insensitive substring matched against the location name.')
-	),
-	near: v.optional(
-		v.pipe(
-			nearSchema,
-			v.description('Only return matches within radius_km of this point, ordered nearest first.')
-		)
-	),
-	category: v.optional(
-		v.pipe(categorySchema, v.description('Only return matches in this category.'))
 	),
 	limit: v.optional(
 		v.pipe(v.number(), v.integer(), v.minValue(1), v.description('Maximum number to return.'))
@@ -787,45 +769,27 @@ const searchPoiArgs = v.pipe(
 	}, 'Provide EITHER `bbox` OR all of `latitude`, `longitude` and `radius_km` (not both, and centre coordinates must be complete).')
 );
 
-const findDriftArgs = v.object({
-	limit: v.optional(
-		v.pipe(
-			v.number(),
-			v.integer(),
-			v.minValue(1),
-			v.maxValue(200),
-			v.description('Maximum mismatched locations to return (default 50, max 200).')
+// One tool, two audits against the local OSM staging store, selected by `check`.
+// `limit`/`search_radius_m` apply to both; the remaining options are mode-specific
+// (flagged in their descriptions) and simply ignored by the audit they don't apply to.
+const auditLocationsArgs = v.object({
+	check: v.pipe(
+		v.picklist(['coordinate_drift', 'missing_address']),
+		v.description(
+			'Which audit to run:\n' +
+				'• "coordinate_drift" — locations whose stored coordinates do NOT coincide with their ' +
+				'OpenStreetMap POI. Each `drifted` entry carries the matched POI (`osm_url`, `osm_latitude`, ' +
+				'`osm_longitude`, `distance_m`, `matched_osm_name`) — pass `osm_latitude`/`osm_longitude` to ' +
+				'update_locations to snap it back, citing `osm_url`. Locations with no name-matching POI nearby ' +
+				'are reported as `no_osm_match` (omit via include_unmatched=false).\n' +
+				'• "missing_address" — locations whose stored address is empty (`reason: "missing"`) or, unless ' +
+				'include_incomplete=false, a streetless fragment like a bare house number/postcode (`reason: ' +
+				'"incomplete"`). Each entry is classified `osm_fix_available` (a nearby name-matching POI HAS an ' +
+				'address — pass its `osm_address_parts` to update_locations, or split the `osm_address` preview ' +
+				'when parts are absent, and cite `osm_url`), `osm_has_no_address`, or `no_osm_match`. Set ' +
+				'include_unfixable=false for just the OSM-fixable work list.'
 		)
 	),
-	tolerance_m: v.optional(
-		v.pipe(
-			v.number(),
-			v.minValue(0),
-			v.description(
-				'A location counts as OSM-aligned when a name-matching OSM POI sits within this many metres (default 1).'
-			)
-		)
-	),
-	search_radius_m: v.optional(
-		v.pipe(
-			v.number(),
-			v.minValue(0),
-			v.maxValue(50000),
-			v.description(
-				'How far to look for a name-matching OSM POI before reporting no match (default 250). ' +
-					'Widen to hunt relocated/far matches, but then check distance_m — a far match may be a different branch.'
-			)
-		)
-	),
-	include_unmatched: v.optional(
-		v.pipe(
-			v.boolean(),
-			v.description('Also report locations with no name-matching OSM POI nearby (default true).')
-		)
-	)
-});
-
-const findMissingAddressArgs = v.object({
 	limit: v.optional(
 		v.pipe(
 			v.number(),
@@ -841,9 +805,27 @@ const findMissingAddressArgs = v.object({
 			v.minValue(0),
 			v.maxValue(50000),
 			v.description(
-				'How far to look for a name-matching OSM POI to take the address from (default 250). ' +
-					'A location is OSM-sourced, so its source POI sits ~0 m away; widen to hunt relocated ' +
-					'matches, but then check distance_m — a far match may be a different branch.'
+				'How far to look for a name-matching OSM POI before reporting no match (default 250). A ' +
+					'location is OSM-sourced, so its source POI sits ~0 m away; widen to hunt relocated matches, ' +
+					'but then check distance_m — a far match may be a different branch.'
+			)
+		)
+	),
+	tolerance_m: v.optional(
+		v.pipe(
+			v.number(),
+			v.minValue(0),
+			v.description(
+				'[coordinate_drift only] A location counts as OSM-aligned when a name-matching POI sits ' +
+					'within this many metres (default 1).'
+			)
+		)
+	),
+	include_unmatched: v.optional(
+		v.pipe(
+			v.boolean(),
+			v.description(
+				'[coordinate_drift only] Also report locations with no name-matching OSM POI nearby (default true).'
 			)
 		)
 	),
@@ -851,8 +833,8 @@ const findMissingAddressArgs = v.object({
 		v.pipe(
 			v.boolean(),
 			v.description(
-				'Also flag locations whose stored address is a streetless fragment — a bare house number ' +
-					'or postcode with no letter (e.g. "31", "90210") — not just empty ones (default true).'
+				'[missing_address only] Also flag locations whose stored address is a streetless fragment — a ' +
+					'bare house number or postcode with no letter (e.g. "31", "90210") — not just empty ones (default true).'
 			)
 		)
 	),
@@ -860,8 +842,9 @@ const findMissingAddressArgs = v.object({
 		v.pipe(
 			v.boolean(),
 			v.description(
-				'Include locations OSM cannot fix (osm_has_no_address, no_osm_match) in the list; they are ' +
-					'always counted regardless. Set false for just the actionable, OSM-fixable work list (default true).'
+				'[missing_address only] Include locations OSM cannot fix (osm_has_no_address, no_osm_match) in ' +
+					'the list; they are always counted regardless. Set false for just the actionable, OSM-fixable ' +
+					'work list (default true).'
 			)
 		)
 	)
@@ -1277,7 +1260,7 @@ function resolveLocationInsertCore(it: CreateLocationItem): ResolvedLocationCore
 	};
 }
 
-/** Lightweight location overview, shared by list_locations and find_locations. */
+/** Lightweight location overview, returned by list_locations. */
 function projectLocationOverview(loc: LocationWithTags) {
 	return {
 		id: loc.id,
@@ -1331,31 +1314,33 @@ async function queryLocations(opts: {
 	return rows.map(projectLocationOverview);
 }
 
+/**
+ * Strips the menu-level fields (`menu_id`, `currency`) from an item returned INSIDE
+ * its parent menu/location, which carries them once already — so a 100-item menu
+ * doesn't repeat `"currency":"CAD"` and the same `menu_id` on every item. A
+ * standalone get_item keeps them (it has no parent context to read them from).
+ */
+function itemWithinParent({
+	menu_id: _menu_id,
+	currency: _currency,
+	...rest
+}: Item): Omit<Item, 'menu_id' | 'currency'> {
+	return rest;
+}
+
 const tools = [
 	defineTool({
 		name: 'list_locations',
 		annotations: READ_ONLY,
 		description:
-			'List locations as a lightweight overview — id, name, category, coordinates, address, phone, ' +
-			'website, brand_id/menu_id (set for chain branches), and the distinct tag ids offered across the ' +
-			'effective menu (no per-item detail, no source URLs). ' +
-			'Supports optional `near`/`category` filtering and `limit`/`offset` paging. Use get_location for ' +
-			'a single place with its menu and sources.',
+			'List locations in the LIVE map database as a lightweight overview — id, name, category, ' +
+			'coordinates, address, phone, website, brand_id/menu_id (set for chain branches), and the distinct ' +
+			'tag ids offered across the effective menu (no per-item detail, no source URLs). Pass `query` to ' +
+			'match by name (case-insensitive substring) — e.g. to check whether a venue is already on the map ' +
+			'(de-dup before adding) or to find one to edit; this reads the live D1, distinct from search_poi ' +
+			'which finds OSM venues NOT yet on the map. Optionally narrow with `near`/`category` and page with ' +
+			'`limit`/`offset`. Use get_location for a single place with its full menu and sources.',
 		schema: listLocationsArgs,
-		handler: ({ near, category, limit, offset }) =>
-			queryLocations({ near, category, limit, offset })
-	}),
-	defineTool({
-		name: 'find_locations',
-		annotations: READ_ONLY,
-		description:
-			'Search the LIVE map database for existing locations by name (case-insensitive substring), ' +
-			'returning the same lightweight overview as list_locations. Use it to check whether a venue is ' +
-			'already on the map (de-dup before adding) or to find a place to edit/inspect by name. This reads ' +
-			'the live D1 — distinct from search_poi, which finds OSM venues NOT yet on the map. Optionally ' +
-			'narrow with `near`/`category` and page with `limit`/`offset`. For a single place with its full ' +
-			'menu and sources, call get_location with the id.',
-		schema: findLocationsArgs,
 		handler: ({ query, near, category, limit, offset }) =>
 			queryLocations({ near, category, nameLike: query, limit, offset })
 	}),
@@ -1364,9 +1349,10 @@ const tools = [
 		annotations: READ_ONLY,
 		description:
 			'Get a single location with its source URLs. `menu` lists only the items owned directly by this ' +
-			'venue (on its own private menu). If `menu_id` is a shared brand menu the location is a chain branch — ' +
-			"call get_menu to see/edit those items; `overrides` lists this branch's per-item deviations from " +
-			'them. Returns null if not found.',
+			'venue (on its own private menu); each item omits the menu-level `currency`/`menu_id`, surfaced ' +
+			'once as the top-level `currency` (the venue serves one private menu). If `menu_id` is a shared ' +
+			'brand menu the location is a chain branch — call get_menu to see/edit those items; `overrides` ' +
+			"lists this branch's per-item deviations from them. Returns null if not found.",
 		schema: idArgs,
 		handler: async ({ id }) => {
 			const location = await getLocationById(getDb(), id);
@@ -1375,7 +1361,16 @@ const tools = [
 				getFoodByLocation(getDb(), id),
 				getLocationItemOverrides(getDb(), id)
 			]);
-			return { ...location, menu, overrides };
+			// An independent venue's items all live on one private menu, so the menu-level
+			// currency/menu_id are identical across them: surface currency once at the top
+			// and drop the per-item copies (see itemWithinParent).
+			const currency = menu[0]?.currency;
+			return {
+				...location,
+				...(currency ? { currency } : {}),
+				menu: menu.map(itemWithinParent),
+				overrides
+			};
 		}
 	}),
 	defineTool({
@@ -1383,25 +1378,17 @@ const tools = [
 		annotations: CREATE,
 		description:
 			'Create one or more locations in a single atomic batch (all-or-nothing) — the only way to add ' +
-			'locations; pass a one-item `items` array to add a single place. PREFERRED: give each item the ' +
-			"`osm_id` of a search_poi candidate — the server then takes that venue's coordinates VERBATIM " +
-			"from OSM (keeping de-duplication coordinate-exact), fills its address from the POI's addr:* " +
-			'tags, and auto-cites the osm_url; you supply only brand/menu links and any menu_items, plus ' +
-			'street/city/region to override or fill parts the POI lacks. ONLY for a venue genuinely not in ' +
-			'OSM, fall back to the manual path: pass latitude/longitude plus a structured address (`street`, ' +
-			'`city`, `region`, `country` required, `postcode` optional; never geocode or invent parts). ' +
-			'region/postcode/country are normalized for you (e.g. "Ontario" → "ON"). For a chain branch, set ' +
-			'`menu_id` (and `brand_id`) so it serves that shared menu; for an INDEPENDENT venue omit them and ' +
-			'optionally pass `menu_items` to create its own menu in the SAME batch (else add it later with ' +
-			'create_foods). Ideal for bulk imports like backfilling a chain across a region. Idempotent on ' +
-			'explicit ids: items whose `id` already exists are skipped (reported in `skipped_existing_ids`), ' +
-			'so a retried batch is safe (for a location with inline `menu_items`, give it an explicit `id` ' +
-			'too, so its items are skipped with it). Also de-duplicates by COORDINATE: an item whose resolved ' +
-			'coordinates already match a location on the map (or another item earlier in the same batch) is ' +
-			'skipped and reported in `skipped_duplicate_locations`, so re-importing a venue is safe even ' +
-			'without an explicit id. If any remaining item is invalid, nothing is written. ' +
-			'Returns { created, location_ids, items_created, item_ids, skipped_existing_ids, ' +
-			'skipped_duplicate_locations } — fetch details with get_location if needed.',
+			"locations; pass a one-item `items` array for a single place. PREFERRED: set each item's " +
+			'`osm_id` from a search_poi candidate (see the `osm_id` field doc) so coordinates + address come ' +
+			'from OSM verbatim; otherwise pass latitude/longitude + a structured address (street/city/region/' +
+			'country required, postcode optional; region/postcode/country are normalized, e.g. "Ontario" → ' +
+			'"ON"). For a chain branch set `menu_id`/`brand_id`; for an independent venue omit them and ' +
+			'optionally pass `menu_items` to create its private menu in the same batch (else use create_foods). ' +
+			'Idempotent on explicit ids (skipped → `skipped_existing_ids`; give an inline-`menu_items` location ' +
+			'an explicit id too, so its items skip with it) and coordinate-deduped against the map and earlier ' +
+			'batch items (skipped → `skipped_duplicate_locations`), so retries/re-imports are safe. If any ' +
+			'remaining item is invalid, nothing is written. Returns { created, location_ids, items_created, ' +
+			'item_ids, skipped_existing_ids, skipped_duplicate_locations } — fetch details with get_location if needed.',
 		schema: createLocationsArgs,
 		handler: async ({ items }) => {
 			// Validate each DISTINCT brand/menu pair once — a chain backfill reuses a
@@ -1526,7 +1513,7 @@ const tools = [
 			"replaces that location's whole source set (pass [] to clear), or use `add_sources` to append a " +
 			'citation without resending the rest. Set `menu_id`/`brand_id` to attach a ' +
 			'branch to a chain menu, or null to detach it. region/postcode/country are normalized for you. ' +
-			'Ideal for mass backfills from find_missing_address / find_coordinate_drift. Ids that do not exist ' +
+			'Ideal for mass backfills from audit_locations. Ids that do not exist ' +
 			'are skipped and listed in `not_found_ids`. Returns { updated, updated_ids, not_found_ids }.',
 		schema: updateLocationsArgs,
 		handler: async ({ items }) => {
@@ -1689,16 +1676,6 @@ const tools = [
 		handler: async ({ id }) => ({ deleted: await deleteItem(getDb(), id) })
 	}),
 	defineTool({
-		name: 'list_tags',
-		annotations: READ_ONLY,
-		description:
-			'List the canonical, app-defined tags, each with a tag_type (dietary or course). These are fixed ' +
-			'and cannot be created via this server. Ingredient tags (tag_type "ingredient") are not listed ' +
-			'here — they are data, created automatically from item `ingredients`.',
-		schema: v.object({}),
-		handler: () => getAllTags()
-	}),
-	defineTool({
 		name: 'search_tags',
 		annotations: READ_ONLY,
 		description:
@@ -1707,8 +1684,10 @@ const tools = [
 			'BEFORE authoring `ingredients` so you REUSE the established tag instead of minting a ' +
 			'near-duplicate (find "tomato" before writing "tomatoes"). Variant spellings are resolved ' +
 			'through the alias map, so searching "tomatoes", "garbanzo" or "jalapeño" returns the canonical ' +
-			'tag. An empty query lists just the curated dietary/course tags. Unlike list_tags (curated only), ' +
-			'this exposes the thousands of ingredient tags. Read-only.',
+			'tag. An empty query lists just the curated, app-defined dietary/course tags — the fixed set (each ' +
+			'with a tag_type) that the item `tags` field accepts; any query also searches the thousands of ' +
+			'ingredient tags (tag_type "ingredient"), which are data created automatically from item ' +
+			'`ingredients`. Read-only.',
 		schema: searchTagsArgs,
 		handler: ({ query, limit }) => searchTagVocabulary(getDb(), query ?? '', limit)
 	})
@@ -1835,9 +1814,15 @@ const chainTools = [
 		annotations: READ_ONLY,
 		description:
 			"Get a menu with its full item list (each item carries its tags and sources) and the menu's own " +
-			'source URLs. Returns null if not found.',
+			'source URLs. Each item omits the menu-level `currency`/`menu_id`, which the menu itself carries ' +
+			'once. Returns null if not found.',
 		schema: idArgs,
-		handler: ({ id }) => getMenuWithItems(getDb(), id)
+		handler: async ({ id }) => {
+			const menu = await getMenuWithItems(getDb(), id);
+			if (!menu) return null;
+			// The menu already carries its id + currency; drop the identical per-item copies.
+			return { ...menu, items: menu.items.map(itemWithinParent) };
+		}
 	}),
 	defineTool({
 		name: 'update_menu',
@@ -1975,10 +1960,8 @@ const osmTools = [
 			'`osm_id` and `osm_url`, a `suggested_category` (cafe/fast_food/restaurant/bakery, ' +
 			'or null for bars/pubs/ice_cream/food_court — pick the best fit), OSM ' +
 			'phone/website/cuisine/opening_hours where tagged, and a single-line `address` plus ' +
-			'structured `address_parts`. Workflow: call this, then create_locations passing each ' +
-			"candidate's `osm_id` — the server then takes that venue's coordinates VERBATIM from OSM " +
-			'and fills its address from the POI, auto-citing the osm_url, so you never copy or geocode ' +
-			'coordinates by hand.',
+			"structured `address_parts`. Workflow: call this, then pass each candidate's `osm_id` to " +
+			'create_locations to import it (coordinates + address come from OSM verbatim, auto-cited).',
 		schema: searchPoiArgs,
 		handler: async (input) => {
 			const db = input.exclude_existing === false ? null : getDb();
@@ -2003,53 +1986,34 @@ const osmTools = [
 		}
 	}),
 	defineTool({
-		name: 'find_coordinate_drift',
+		name: 'audit_locations',
 		annotations: READ_ONLY,
 		description:
-			'Audit existing locations against the LOCAL OSM staging store and surface those whose stored ' +
-			'coordinates do NOT coincide with their OpenStreetMap POI — i.e. coordinate drift. Coordinates ' +
-			'must be OSM-sourced (see create_locations), so a healthy location sits ~0 m from its OSM POI; ' +
-			'this finds the exceptions so they can be snapped back. Each `drifted` entry carries the matched ' +
-			'OSM POI (`osm_url`, `osm_latitude`, `osm_longitude`, `distance_m`, `matched_osm_name`) — pass ' +
-			'`osm_latitude`/`osm_longitude` straight to update_locations to fix it, and cite `osm_url`. ' +
-			'Locations with no name-matching OSM POI nearby are reported as `no_osm_match` (these have no ' +
-			'OSM counterpart to align to; set include_unmatched=false to omit them). Results are ' +
-			'worst-drift-first; `limit` caps how many are returned and `additional` is how many more ' +
-			'mismatches exist beyond it, with a `counts` breakdown by classification.',
-		schema: findDriftArgs,
-		handler: async (input) =>
-			findCoordinateDrift(getOsmStore(), getDb(), {
-				limit: input.limit,
-				tolerance_m: input.tolerance_m,
-				search_radius_m: input.search_radius_m,
-				include_unmatched: input.include_unmatched
-			})
-	}),
-	defineTool({
-		name: 'find_missing_address',
-		annotations: READ_ONLY,
-		description:
-			'Audit existing locations for a MISSING address and, where possible, surface the address from ' +
-			'their OpenStreetMap POI so it can be backfilled. Addresses should be present and OSM-sourced, ' +
-			'like coordinates (see create_locations), so a location sits ~0 m from the OSM POI its address ' +
-			'should come from. Flags any location whose stored address is empty (`reason: "missing"`) or — ' +
-			'unless include_incomplete=false — a streetless fragment like a bare house number/postcode ' +
-			'(`reason: "incomplete"`). Each entry is classified by what can be done: `osm_fix_available` ' +
-			'(a name-matching OSM POI nearby HAS an address — pass its structured `osm_address_parts` to ' +
-			'update_locations, or split the `osm_address` preview into parts when `osm_address_parts` is ' +
-			'absent, and cite `osm_url`), `osm_has_no_address` (matched a POI, but it too lacks one ' +
-			'— needs another source), or `no_osm_match` (no name-matching POI within search_radius_m). ' +
-			'Results are actionable-first; set include_unfixable=false for just the OSM-fixable work list. ' +
-			'`limit` caps how many are returned, `additional` is how many more were flagged beyond it, and ' +
-			'`counts` breaks them down by classification and reason.',
-		schema: findMissingAddressArgs,
-		handler: async (input) =>
-			findMissingAddress(getOsmStore(), getDb(), {
+			'Audit existing locations against the LOCAL OSM staging store and surface a work-list to fix with ' +
+			'update_locations. `check` selects the audit: "coordinate_drift" (stored coordinates that do NOT ' +
+			'coincide with the location\'s OSM POI) or "missing_address" (empty or streetless addresses, with ' +
+			'the OSM address to backfill where available). Coordinates and addresses must be OSM-sourced (see ' +
+			'create_locations), so a healthy location sits ~0 m from its OSM POI and this finds the exceptions. ' +
+			'Results are worst-first / actionable-first; `limit` caps how many are returned, `additional` is ' +
+			'how many more exist beyond it, and `counts` breaks them down by classification. See the `check` ' +
+			"field for each mode's entry shape and which options apply.",
+		schema: auditLocationsArgs,
+		handler: async (input) => {
+			if (input.check === 'coordinate_drift') {
+				return findCoordinateDrift(getOsmStore(), getDb(), {
+					limit: input.limit,
+					tolerance_m: input.tolerance_m,
+					search_radius_m: input.search_radius_m,
+					include_unmatched: input.include_unmatched
+				});
+			}
+			return findMissingAddress(getOsmStore(), getDb(), {
 				limit: input.limit,
 				search_radius_m: input.search_radius_m,
 				include_incomplete: input.include_incomplete,
 				include_unfixable: input.include_unfixable
-			})
+			});
+		}
 	})
 ] as const;
 
