@@ -6,6 +6,16 @@
 
 ---
 
+## SvelteKit conventions
+
+- **Prefer remote functions over API routes and `load`.** Put server logic in `*.remote.ts` files using `query`/`command`/`form` from `$app/server` and call them directly from components — don't add `+server.ts` API routes or `load` functions for data the page can fetch itself. A server-only module (`$lib/server/*`) reached through a remote function never leaks into the client bundle.
+
+- **SvelteKit config lives in `vite.config.ts`, not `svelte.config.js`.** Since `@sveltejs/kit` 2.62 the kit/compiler config is passed straight to the `sveltekit({...})` plugin, and any `svelte.config.js` is ignored — do not create one. The `kit` options (`adapter`, `experimental.remoteFunctions: true`) and `compilerOptions` (`experimental.async: true`, needed for top-level `await` in components) sit at the **top level** of the plugin options (no `kit:` wrapper). Server-only deps like `bun:sqlite` go in `ssr.external` + `optimizeDeps.exclude`.
+
+- **Don't trust training-cutoff knowledge for Svelte/SvelteKit config — it moves fast.** Pull the latest docs via the Svelte MCP server (`list-sections` → `get-documentation`) before changing framework config, and run new Svelte components through `svelte-autofixer` until it's clean.
+
+---
+
 ## Data policy
 
 - **Dietary tags are source-asserted, never inferred from ingredients.** Apply a dietary tag (`vegan`, `vegetarian`, `gluten_free`, `dairy_free`, `nut_free`, `halal`) to a food item only when the source explicitly designates it — either through a dietary marker/label in the source, or when the item's name **as displayed in the source** contains that designation (e.g. a source listing "Vegan Burger", "Halal Chicken", or "Vegetarian Thali" supports the corresponding tag). Never infer a tag from the ingredient list, and never add a designation the source itself doesn't show. Removing an unsupported allergen-free tag is fine; adding a dietary tag without an explicit source designation is not.
@@ -17,6 +27,14 @@
 - **Ingredient tags name ONE food component — never a description.** An ingredient is a noun for a single food component (`tomato`, `cashew`, `paneer`, `soy sauce`, `coconut milk`), kept generic, reusable across menus, and **atomic** — one ingredient per comma-separated part (split "beets & cilantro" into `beets, cilantro`). **Drop cooking-method, cut/form and sourcing qualifiers down to the base component**: write `chicken`, not `grilled chicken`, `whole chicken` or `house chicken` — the dietary filter keys on _what_ the component is, not how it was cooked, cut or sourced. Transformation-defining preps that yield a distinct product (`smoked`, `pickled`, `dried`, `fermented`) and idioms (`hot sauce`, `whole wheat flour`) are the exception and stay; the fold-vs-keep boundary is recorded in `scripts/fold-classifications.json`. Never put a dish description, preparation, serving note, price, size or choice list in `ingredients` (no "served with…", "topped with…", "12 oz", "choice of milk") — prose belongs in the item `description`, and dietary/course facts in `tags`. Before authoring `ingredients`, call `search_tags` to **reuse** the established tag rather than minting a near-duplicate. Spellings are canonicalized for you on write: accents are folded deterministically (`foldIngredientName`, `src/lib/tags.ts`), and known plurals/synonyms are redirected to one canonical tag via the `ingredient_aliases` map (migration 0010), which the tag-filter search also reads so a user typing "tomatoes"/"jalapeño" finds the canonical tag. Qualifiers and conjunctions are **not** auto-stripped — instead the create/update MCP tools surface a non-blocking `warnings` array (from `ingredientProseWarning`, `src/lib/tags.ts`) flagging parts that read like a qualifier, a conjunction or prose, so you fix them at authoring time. The one-time vocabulary cleanups live in `scripts/canonicalize-ingredients.ts` (variant merge), `scripts/fold-prep-qualifiers.ts` (prep folding) and `scripts/cleanup-ingredient-tags.ts` (qualifier/conjunction/prose fold·split·delete, driven by the reviewed `scripts/ingredient-cleanup-decisions.json`).
 
 - **A venue's menu must be EXHAUSTIVE, never a representative sample.** When you add or backfill a location's menu, capture _every_ item the source lists — across all sections (appetizers, mains, sides, noodles/rice, drinks, desserts, kids, specials) and every size/variant the source itemizes — not a curated subset. Work from the most complete source available (the venue's own online-ordering menu, menu PDF, or ordering backend/API beats a photo, a Yelp blurb, or a third-party listing), and fetch the underlying ordering API or PDF when the page is JS-rendered. Exhaustive means everything the source actually shows — still never invent or pad items the source doesn't list, and still split combos/choice-lists into `optional_*` rather than prose. If the source genuinely caps what's visible (a rotating daily-bread board, a "seasonal selection"), add everything currently shown and note the cap in the item/source. Representative ~10-item samples are not acceptable.
+
+---
+
+## Data ingestion & coverage roadmap
+
+- **Coverage goal:** fill the map outward by region — **Canada first, then the US, then other English-speaking countries.**
+
+- **Ingestion path:** new venues come from the offline OpenStreetMap food-POI staging store (built by `bun run osm:extract`), surfaced through the `search_poi` MCP tool (already de-duplicated against existing locations) and imported with batched `create_locations`, passing each candidate's `osm_id` so coordinates and address import verbatim from OSM (see the coordinate/address policies above). **Overture Places** is the planned next ingestion feed.
 
 ---
 
