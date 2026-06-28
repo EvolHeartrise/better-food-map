@@ -65,5 +65,6 @@ export function freshDb(): TestD1 {
 	db.exec(readFileSync('migrations/0008_location_address_parts.sql', 'utf8'));
 	db.exec(readFileSync('migrations/0009_require_address_parts.sql', 'utf8'));
 	db.exec(readFileSync('migrations/0010_ingredient_aliases.sql', 'utf8'));
+	db.exec(readFileSync('migrations/0011_menu_currency.sql', 'utf8'));
 	return new TestD1(db);
 }

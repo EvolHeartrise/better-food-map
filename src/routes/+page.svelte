@@ -114,7 +114,17 @@
 	// so this flag is inert there.
 	let filtersOpen = $state(true);
 
-	const currency = new Intl.NumberFormat('en-CA', { style: 'currency', currency: 'CAD' });
+	// Price formatters, one per ISO-4217 currency code (each item carries its menu's
+	// currency), built lazily and cached so a mixed-currency result set still formats
+	// every price in its own currency rather than a single hard-coded one. A plain
+	// record, not a Map — it's a non-reactive memo cache, never component state.
+	const moneyFormatters: Record<string, Intl.NumberFormat> = {};
+	function moneyFormatter(code: string): Intl.NumberFormat {
+		return (moneyFormatters[code] ??= new Intl.NumberFormat('en-CA', {
+			style: 'currency',
+			currency: code
+		}));
+	}
 
 	// The item-level filters, normalised once. `hasItemFilter` is true when any of
 	// them is active; with none active they don't narrow a venue's menu at all.
@@ -416,8 +426,8 @@
 		return () => clearTimeout(timer);
 	});
 
-	function formatPrice(price: number | null): string {
-		return price === null ? '—' : currency.format(price);
+	function formatPrice(price: number | null, code: string): string {
+		return price === null ? '—' : moneyFormatter(code).format(price);
 	}
 
 	// A short, readable name for a source: its label, else the bare hostname.
@@ -748,7 +758,9 @@
 										>
 											<span class="menu__line">
 												<span class="menu__name">{menuItem.item_name}</span>
-												<span class="menu__price">{formatPrice(menuItem.price)}</span>
+												<span class="menu__price"
+													>{formatPrice(menuItem.price, menuItem.currency)}</span
+												>
 											</span>
 											{#if menuItem.description}
 												<span class="menu__description">{menuItem.description}</span>
@@ -916,7 +928,9 @@
 					<li class="card__item">
 						<span class="card__item-name">{menuItem.item_name}</span>
 						{#if menuItem.price !== null}
-							<span class="card__item-price">{currency.format(menuItem.price)}</span>
+							<span class="card__item-price"
+								>{moneyFormatter(menuItem.currency).format(menuItem.price)}</span
+							>
 						{/if}
 					</li>
 				{/each}
@@ -963,7 +977,8 @@
 		<div class="menu-popup" role="tooltip" bind:this={popupEl}>
 			<div class="menu__line">
 				<span class="menu__name">{activeMenuItem.item_name}</span>
-				<span class="menu__price">{formatPrice(activeMenuItem.price)}</span>
+				<span class="menu__price">{formatPrice(activeMenuItem.price, activeMenuItem.currency)}</span
+				>
 			</div>
 			{#if activeMenuItem.description}
 				<span class="menu__description">{activeMenuItem.description}</span>
