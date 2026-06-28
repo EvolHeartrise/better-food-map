@@ -13,6 +13,14 @@ export const GOOGLE_SCOPES = ['openid', 'profile', 'email'];
 export const STATE_COOKIE = 'google_oauth_state';
 export const CODE_VERIFIER_COOKIE = 'google_code_verifier';
 
+/**
+ * Short-lived cookie holding where to send the user after a successful sign-in (a
+ * validated same-origin path). Set by the login route from `?redirectTo`, read and
+ * cleared by the callback. Stored server-side for the round trip rather than in the
+ * OAuth `state` so it can't influence state validation.
+ */
+export const REDIRECT_COOKIE = 'oauth_redirect';
+
 /** The path Google redirects back to; must match a URI registered in the console. */
 export const CALLBACK_PATH = '/auth/callback/google';
 

@@ -9,10 +9,12 @@ import {
 	createGoogleClient,
 	STATE_COOKIE,
 	CODE_VERIFIER_COOKIE,
+	REDIRECT_COOKIE,
 	type GoogleIdTokenClaims
 } from '$lib/server/oauth';
 import { upsertOAuthUser } from '$lib/server/db';
 import { createUserSession, setSessionCookie } from '$lib/server/auth';
+import { safeInternalPath } from '$lib/redirect';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async (event) => {
@@ -24,14 +26,18 @@ export const GET: RequestHandler = async (event) => {
 	const oauthError = event.url.searchParams.get('error');
 	const storedState = event.cookies.get(STATE_COOKIE) ?? null;
 	const codeVerifier = event.cookies.get(CODE_VERIFIER_COOKIE) ?? null;
+	// Where to land after sign-in (set by the login route from `?redirectTo`),
+	// re-validated to a same-origin path; defaults to the map.
+	const redirectTo = safeInternalPath(event.cookies.get(REDIRECT_COOKIE));
 
 	// Clear the in-flight cookies regardless of outcome so a stale state can't linger.
 	event.cookies.delete(STATE_COOKIE, { path: '/' });
 	event.cookies.delete(CODE_VERIFIER_COOKIE, { path: '/' });
+	event.cookies.delete(REDIRECT_COOKIE, { path: '/' });
 
 	// The user declined consent (or Google reported an error): Google sends back
 	// `?error=…` and no code. That's a normal cancellation, not a fault — send them
-	// back to the map rather than showing a 400 page.
+	// back to the landing page rather than showing a 400 page.
 	if (oauthError) redirect(302, '/');
 
 	if (!code || !state || !storedState || !codeVerifier || state !== storedState) {
@@ -64,5 +70,5 @@ export const GET: RequestHandler = async (event) => {
 	const { token, session } = await createUserSession(db, user.id);
 	setSessionCookie(event.cookies, token, session.expires_at);
 
-	redirect(302, '/');
+	redirect(302, redirectTo);
 };
