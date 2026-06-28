@@ -1,8 +1,10 @@
 <script lang="ts">
 	import LogIn from '@lucide/svelte/icons/log-in';
 	import LogOut from '@lucide/svelte/icons/log-out';
+	import Utensils from '@lucide/svelte/icons/utensils';
 	import { resolve } from '$app/paths';
 	import { signOut } from '$lib/user.remote';
+	import DietProfileModal from '$lib/components/DietProfileModal.svelte';
 	import type { User } from '$lib/server/db';
 
 	// The account control: a "Sign in" pill when signed out, or an avatar that opens
@@ -15,6 +17,9 @@
 	} = $props();
 
 	let open = $state(false);
+	// The dietary-profile editor modal, opened from the popover. Mounts fresh each
+	// time so it re-seeds from the latest saved profile.
+	let profileOpen = $state(false);
 
 	const displayName = $derived(user?.name ?? user?.email ?? 'Account');
 	const initial = $derived(
@@ -64,6 +69,18 @@
 					{/if}
 				</div>
 
+				<button
+					type="button"
+					class="account__action"
+					onclick={() => {
+						open = false;
+						profileOpen = true;
+					}}
+				>
+					<Utensils size={15} aria-hidden="true" />
+					Dietary profile
+				</button>
+
 				<button type="button" class="account__signout" onclick={handleSignOut}>
 					<LogOut size={15} aria-hidden="true" />
 					Sign out
@@ -77,6 +94,10 @@
 		</a>
 	{/if}
 </div>
+
+{#if profileOpen}
+	<DietProfileModal onClose={() => (profileOpen = false)} />
+{/if}
 
 <style>
 	.account {
@@ -165,23 +186,34 @@
 		white-space: nowrap;
 	}
 
+	.account__action,
 	.account__signout {
 		display: flex;
 		align-items: center;
 		gap: 0.45rem;
-		margin-top: 0.25rem;
 		padding: 0.5rem;
 		border: none;
-		border-top: 1px solid rgba(0, 0, 0, 0.08);
 		background: transparent;
 		color: inherit;
 		font: inherit;
 		font-size: 0.85rem;
 		text-align: left;
 		cursor: pointer;
+		border-radius: 0.5rem;
+	}
+
+	/* The first item in the action list keeps a divider from the header above. */
+	.account__action {
+		margin-top: 0.25rem;
+		border-top: 1px solid rgba(0, 0, 0, 0.08);
+		border-radius: 0;
+	}
+
+	.account__signout {
 		border-radius: 0 0 0.5rem 0.5rem;
 	}
 
+	.account__action:hover,
 	.account__signout:hover {
 		background: rgba(0, 0, 0, 0.06);
 	}
