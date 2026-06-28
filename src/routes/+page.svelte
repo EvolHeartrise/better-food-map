@@ -69,7 +69,6 @@
 	// it, but there's no profile to save it to, so the persist call is skipped.
 	function selectDiet(id: string | null): void {
 		diet = id;
-		dismissStats();
 		if (user) setDiet(id).catch(() => {});
 	}
 
@@ -233,39 +232,35 @@
 	const brandsById = $derived(new Map(brands.map((brand) => [brand.id, brand])));
 
 	// --- Landing: zoomed-out globe + stats overlay ----------------------------
-	// The map is public and opens on the fully zoomed-out globe (WORLD_ZOOM); a stats
-	// overlay floats over it with our coverage totals and a "Start using" button. The
-	// overlay dismisses on the first map interaction, a search, or either of its own
-	// buttons — once dismissed it stays gone for the rest of the session.
+	// The map is public and opens on the fully zoomed-out globe (WORLD_ZOOM). A landing
+	// overlay floats over it with our coverage totals and the entry buttons. The landing
+	// is driven by ZOOM, not a one-way dismissal: it shows whenever the map is zoomed out
+	// onto the globe with no location open, and it RETURNS if the user zooms back out (see
+	// `landing`, declared once `selectedId` is in scope).
 	const WORLD_ZOOM = 1.5;
-	const WORLD_CENTER: [number, number] = [30, -30];
+	// Orient the opening globe over North America — where coverage is concentrated
+	// (Canada first) — so the backdrop markers are in view on the landing.
+	const WORLD_CENTER: [number, number] = [45, -95];
+	// At or below this zoom the map reads as "the globe" and the landing shows; above it
+	// the app UI (search, results) takes over. "Start using" flies past this threshold,
+	// and zooming the globe in/out crosses it to leave/return to the landing.
+	const LANDING_MAX_ZOOM = 3;
+
+	// The live map zoom, reported by <LocationMap>. Null until the map first reports it;
+	// treated as zoomed-out until then (the map opens at WORLD_ZOOM).
+	let zoomLevel = $state<number | null>(null);
 
 	// Coverage totals for the overlay, read non-suspending (`.current`) so the map
 	// paints immediately and the figures fill in when the count query resolves.
 	const statsResource = getStats();
 	const stats = $derived(statsResource.current ?? null);
 
-	// Suppress the landing overlay when the page opens straight onto a location (a
-	// shared/bookmarked `/locations/<id>` deep link): the visitor came for that place,
-	// not the landing. `idFromPath` reads the id from the initial URL — the same source
-	// `landingId` snapshots below — so this is true exactly when a detail is opening.
-	let statsDismissed = $state(idFromPath(page.url.pathname) !== null);
-	function dismissStats(): void {
-		statsDismissed = true;
-	}
-
-	// True while the landing overlay is up: the zoomed-out globe is just a backdrop for
-	// the two floating landing pieces, so the search controls and the results list are
-	// hidden until the visitor leaves the landing (Start using / browse / a search / a
-	// map drag / selecting a place — all of which dismiss the overlay).
-	const landing = $derived(!statsDismissed);
-
-	// "Start using the map": dismiss the overlay and fly to the visitor's IP-detected
-	// location at city zoom. getUserLocation is prompt-free edge geolocation — null
-	// under local dev or when unavailable, so we fall back to the default centre. The
-	// fly reuses the search focus channel (a fresh nonce flies the camera exactly once).
+	// "Start using the map": fly to the visitor's IP-detected location at city zoom, which
+	// leaves the landing (the zoom passes LANDING_MAX_ZOOM). getUserLocation is prompt-free
+	// edge geolocation — null under local dev or when unavailable, so we fall back to the
+	// default centre. The fly reuses the search focus channel (a fresh nonce flies exactly
+	// once); with no `zoom` override it pulls in to a city view.
 	async function startUsing(): Promise<void> {
-		statsDismissed = true;
 		const loc = await getUserLocation();
 		const target = loc ?? { lat: DEFAULT_CENTER[0], lng: DEFAULT_CENTER[1] };
 		focusNonce += 1;
@@ -420,6 +415,13 @@
 	let landingId = $state(idFromPath(page.url.pathname));
 	const selectedId = $derived(page.state.selected ?? landingId);
 
+	// True while the landing should show (see the WORLD_ZOOM block): the map is zoomed out
+	// onto the globe with nothing open. An open location (including a `/locations/<id>`
+	// deep link, via `selectedId`) always takes precedence, and zooming back out brings the
+	// landing back. While it's up, the search controls and results list are hidden so the
+	// globe and the two floating landing pieces are all that show.
+	const landing = $derived(!selectedId && (zoomLevel === null || zoomLevel <= LANDING_MAX_ZOOM));
+
 	// The resolved record for the open location. Because we now load only the
 	// visible area, the selected place isn't always among `locations` — a shared
 	// `/locations/<id>` link, or one panned off screen, falls outside it. So we
@@ -468,9 +470,8 @@
 	}
 
 	function selectLocation(id: string): void {
-		// Selecting a place (e.g. tapping a marker on the landing globe) leaves the
-		// landing state so the detail panel — hidden during landing — can show.
-		dismissStats();
+		// Selecting a place (e.g. tapping a marker on the landing globe) sets `selectedId`,
+		// which leaves the landing (see `landing`) so the detail panel can show.
 		// `/locations/<id>` is a synthetic shallow-routing URL: there is no such route
 		// (the `reroute` hook serves this root map page for it), so the address bar can
 		// reflect the open location — and the link stays shareable — without a real
@@ -720,16 +721,17 @@
 			onselect={selectLocation}
 			initialCenter={WORLD_CENTER}
 			initialZoom={WORLD_ZOOM}
-			oninteract={dismissStats}
+			onzoom={(z) => (zoomLevel = z)}
 			focus={focusTarget}
 			onviewchange={(bounds) => (viewport = bounds)}
 		/>
 	</div>
 
-	<!-- The landing overlay: coverage stats + a "Start using" button, shown over the
-	     zoomed-out globe until the visitor interacts (see dismissStats / startUsing). -->
-	{#if !statsDismissed}
-		<MapStatsOverlay {stats} onstart={startUsing} onclose={dismissStats} />
+	<!-- The landing overlay: coverage stats + entry buttons, shown over the zoomed-out
+	     globe. It's zoom-driven (see `landing`): it appears whenever the map is zoomed
+	     out and returns if the visitor zooms back out. -->
+	{#if landing}
+		<MapStatsOverlay {stats} onstart={startUsing} />
 	{/if}
 
 	<!-- The search controls don't live in a panel: each is its own pill floating
@@ -793,7 +795,6 @@
 							placeholder="Place name…"
 							aria-label="Search by place name"
 							bind:value={place}
-							oninput={dismissStats}
 						/>
 						<Search class="searchpill__icon" size={16} aria-hidden="true" />
 					</label>
@@ -806,7 +807,6 @@
 						placeholder="Item name…"
 						aria-label="Search by item name"
 						bind:value={item}
-						oninput={dismissStats}
 					/>
 					<Search class="searchpill__icon" size={16} aria-hidden="true" />
 				</label>

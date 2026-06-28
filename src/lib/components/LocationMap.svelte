@@ -36,10 +36,10 @@
 		// Zoom the map opens at. Defaults to a city view (DEFAULT_ZOOM); the landing
 		// passes a low value so the map opens on the fully zoomed-out globe.
 		initialZoom = null,
-		// Called once per user-initiated camera move (drag, scroll-zoom, pinch). Used by
-		// the landing to dismiss its stats overlay the moment the user grabs the map.
-		// Programmatic flights (selection, search focus, "Start using") don't fire it.
-		oninteract,
+		// Called with the current zoom whenever it changes (live, during the gesture),
+		// plus once on load. The landing uses this to drive itself: it shows while the
+		// map is zoomed out and hides once the user zooms in (and returns on zoom-out).
+		onzoom,
 		// A point to fly the camera to (without selecting it) — used by global search
 		// to bring the nearest match into view. The camera flies whenever `key`
 		// changes, so the parent controls exactly when a fly happens (it omits it when
@@ -55,7 +55,7 @@
 		onselect?: (id: string) => void;
 		initialCenter?: [number, number] | null;
 		initialZoom?: number | null;
-		oninteract?: () => void;
+		onzoom?: (zoom: number) => void;
 		focus?: { latitude: number; longitude: number; key: string } | null;
 		onviewchange?: (bounds: Bounds) => void;
 	} = $props();
@@ -296,21 +296,22 @@
 			// `moveend` fires after both pans and zooms (and programmatic flights) settle.
 			map.on('moveend', scheduleViewReport);
 
-			// Notify the parent of a user-initiated camera grab. Only real gestures carry
-			// an `originalEvent`; programmatic flyTo (selection, search focus, "Start
-			// using") does not, so the stats overlay isn't dismissed by its own flight.
-			map.on('movestart', (event) => {
-				if ('originalEvent' in event && event.originalEvent) oninteract?.();
+			// Report the zoom live (every frame of a gesture or flight) so the landing can
+			// track it: it shows while zoomed out and hides as the user zooms in, then
+			// returns on zoom-out — whether the zoom is a user gesture or a programmatic fly.
+			map.on('zoom', () => {
+				if (map) onzoom?.(map.getZoom());
 			});
 
 			// `load` fires once the style is parsed and the first frame is painted —
 			// only then are markers safe to add and the opening view worth reporting.
 			map.on('load', () => {
-				if (!active) return;
+				if (!active || !map) return;
 				ready = true;
 				renderMarkers();
 				// Kick off the first load immediately (no debounce) for the opening view.
 				reportView();
+				onzoom?.(map.getZoom());
 			});
 		})();
 

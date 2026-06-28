@@ -14,15 +14,12 @@
 
 	let {
 		stats,
-		onstart,
-		onclose
+		onstart
 	}: {
 		// Null until the counts resolve; each figure shows a placeholder until then.
 		stats: Stats | null;
 		// "Start using": fly the map to the visitor's location. The parent owns the fly.
 		onstart: () => void;
-		// Dismiss the overlay to browse the whole map from the zoomed-out view.
-		onclose: () => void;
 	} = $props();
 
 	const numberFormat = new Intl.NumberFormat('en-CA');
@@ -43,8 +40,8 @@
 <!-- Two floating pieces over the zoomed-out globe: an intro pinned to the top and an
      actions block pinned to the bottom, with the globe visible in the gap between them.
      No card chrome — just text and controls floating on the map. The backdrop and the
-     non-interactive text pass pointers through (so a drag on the globe still pans and
-     dismisses); only the buttons take clicks. -->
+     non-interactive text pass pointers through (so a drag on the globe still pans, and
+     zooming in dismisses the landing); only the button takes clicks. -->
 <div class="overlay" transition:fade={{ duration: 200 }}>
 	<section class="intro" aria-label="About BetterFoodMaps">
 		<p class="intro__brand">🍴 BetterFoodMaps</p>
@@ -65,13 +62,10 @@
 			{/each}
 		</ul>
 
-		<div class="actions__start">
-			<button type="button" class="cta" onclick={onstart}>
-				<MapPin size={18} aria-hidden="true" />
-				Start using the map
-			</button>
-			<button type="button" class="browse" onclick={onclose}>or browse the whole map</button>
-		</div>
+		<button type="button" class="cta" onclick={onstart}>
+			<MapPin size={18} aria-hidden="true" />
+			Start using the map
+		</button>
 	</section>
 </div>
 
@@ -96,7 +90,7 @@
 
 	/* No card chrome — the two pieces float as plain text/controls on the map. They lay
 	   out their contents but pass pointers straight through, so only the interactive
-	   buttons inside (.cta / .browse) capture clicks; everywhere else the globe drags. */
+	   button inside (.cta) captures clicks; everywhere else the globe drags. */
 	.intro,
 	.actions {
 		pointer-events: none;
@@ -174,14 +168,6 @@
 		color: var(--color-text-muted);
 	}
 
-	/* The start/browse pair, stacked and centred under the figures. */
-	.actions__start {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		gap: 0.5rem;
-	}
-
 	/* The primary action — accent-filled so "Start using the map" is unmistakable.
 	   pointer-events re-enabled here (the floating containers pass them through). */
 	.cta {
@@ -215,31 +201,6 @@
 	.cta:focus-visible {
 		outline: 2px solid var(--color-accent);
 		outline-offset: 2px;
-	}
-
-	.browse {
-		pointer-events: auto;
-		padding: 0.2rem 0.4rem;
-		border: none;
-		background: none;
-		color: var(--color-text);
-		font: inherit;
-		font-size: 0.85rem;
-		text-decoration: underline;
-		text-shadow:
-			0 1px 2px rgba(255, 255, 255, 0.9),
-			0 0 12px rgba(255, 255, 255, 0.7);
-		cursor: pointer;
-	}
-
-	.browse:hover {
-		color: var(--color-text);
-	}
-
-	.browse:focus-visible {
-		outline: 2px solid var(--color-accent);
-		outline-offset: 2px;
-		border-radius: 0.3rem;
 	}
 
 	/* On narrow screens the four figures don't fit abreast; drop to two columns. */
