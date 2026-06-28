@@ -185,6 +185,14 @@ export interface MapData {
 	locations: MapLocation[];
 	/** Menus referenced by the returned locations, items resolved once, keyed by menu_id. */
 	menus: Record<string, Item[]>;
+	/**
+	 * Per-menu metadata for the referenced menus, keyed by menu_id — currently just
+	 * `last_verified` (the ISO date a menu was last checked against its source, or
+	 * null). Sent once per menu alongside {@link menus} so the detail view can show a
+	 * freshness signal without a second read. A chain branch and a private venue menu
+	 * both appear here; private menus are typically `last_verified: null`.
+	 */
+	menuMeta: Record<string, { last_verified: string | null }>;
 }
 
 /**
@@ -706,27 +714,128 @@ export function getLocationMapData(db: D1Like, id: string): Promise<MapData> {
 }
 
 /**
- * Shared implementation of {@link getMapData} / {@link getLocationMapData}.
- * `locFilter` is a predicate over the `locations` table (its `?` placeholders
- * bound from `params`); every sub-row read is scoped to the locations it selects
- * — and the menus those locations reference — so neither a viewport box nor a
- * single-id lookup ever pulls an unscoped table.
+ * A global menu search, anchored to a point. Unlike {@link getMapData} — which is
+ * bounded to a viewport — this searches the WHOLE table and returns the
+ * {@link MAP_RESULT_LIMIT} matches NEAREST to (`lat`,`lng`), nearest first, so the
+ * map can act as a result view rather than the query itself. All filters are
+ * optional and AND together:
+ *   • `place` — case-insensitive substring of the location name.
+ *   • `item`  — the location's menu must hold an item whose name matches,
+ *   • `includedTagIds` / `excludedTagIds` — …that ALSO carries every included tag
+ *     and none of the excluded ones (the SAME item must satisfy all three, so a
+ *     menu with a vegan soup and a separate gluten-free cake doesn't match
+ *     "vegan AND gluten-free"). This mirrors the client's per-item `itemMatches`.
+ * Per-location overrides are not applied here (the shared menu is what's
+ * searched); the client re-filters the resolved menu, so an item made unavailable
+ * at one branch simply drops from that card.
+ */
+export interface SearchMapQuery {
+	place: string;
+	item: string;
+	includedTagIds: string[];
+	excludedTagIds: string[];
+	/** Anchor the "nearest" ranking is measured from (the map centre). */
+	lat: number;
+	lng: number;
+}
+
+export function getSearchMapData(db: D1Like, q: SearchMapQuery): Promise<MapData> {
+	const conds: string[] = [];
+	const params: (string | number)[] = [];
+
+	const place = q.place.trim();
+	if (place !== '') {
+		conds.push("name LIKE ? ESCAPE '\\'");
+		params.push(`%${escapeLikePattern(place)}%`);
+	}
+
+	// The item-level predicate: a single correlated EXISTS over the location's menu
+	// items, so a venue matches only when ONE item satisfies the name, every
+	// included tag and no excluded tag. The outer table is referenced as
+	// `locations.menu_id` (it is always the unaliased `locations` wherever
+	// `locFilter` is spliced in — see queryMapData), since `items` also has a
+	// `menu_id` column and a bare name would be ambiguous.
+	const item = q.item.trim();
+	const itemConds: string[] = [];
+	const itemParams: (string | number)[] = [];
+	if (item !== '') {
+		itemConds.push("i.item_name LIKE ? ESCAPE '\\'");
+		itemParams.push(`%${escapeLikePattern(item)}%`);
+	}
+	if (q.includedTagIds.length > 0) {
+		const ph = q.includedTagIds.map(() => '?').join(', ');
+		// COUNT(DISTINCT) over the included set = its size ⇒ the item carries them all.
+		itemConds.push(
+			`(SELECT COUNT(DISTINCT it.tag_id) FROM item_tags it WHERE it.item_id = i.id AND it.tag_id IN (${ph})) = ${q.includedTagIds.length}`
+		);
+		itemParams.push(...q.includedTagIds);
+	}
+	if (q.excludedTagIds.length > 0) {
+		const ph = q.excludedTagIds.map(() => '?').join(', ');
+		itemConds.push(
+			`NOT EXISTS (SELECT 1 FROM item_tags x WHERE x.item_id = i.id AND x.tag_id IN (${ph}))`
+		);
+		itemParams.push(...q.excludedTagIds);
+	}
+	if (itemConds.length > 0) {
+		conds.push(
+			`EXISTS (SELECT 1 FROM items i WHERE i.menu_id = locations.menu_id AND ${itemConds.join(' AND ')})`
+		);
+		params.push(...itemParams);
+	}
+
+	// With no filter at all this would match every venue; the caller only searches
+	// when a filter is set, but guard so an empty query can't scan the whole table.
+	if (conds.length === 0) return Promise.resolve({ locations: [], menus: {}, menuMeta: {} });
+
+	// Rank by an approximate squared planar distance from the anchor: latitude in
+	// degrees, longitude scaled by cos²(lat) so a degree of longitude counts for
+	// its real (shrunk) width at this latitude. Exact enough to order matches
+	// within a region; the anchor params bind AFTER `conds` (see queryMapData).
+	const lngScale = Math.cos((q.lat * Math.PI) / 180) ** 2;
+	const capClause =
+		`ORDER BY ((latitude - ?) * (latitude - ?) + (longitude - ?) * (longitude - ?) * ?) ASC, id ` +
+		`LIMIT ${MAP_RESULT_LIMIT}`;
+	params.push(q.lat, q.lat, q.lng, q.lng, lngScale);
+
+	return queryMapData(db, conds.join(' AND '), params, capClause);
+}
+
+/**
+ * The default ordering+cap for {@link queryMapData}: the alphabetically-first
+ * {@link MAP_RESULT_LIMIT} locations. {@link getSearchMapData} passes a
+ * distance-ordered clause instead so a global search returns the NEAREST matches.
+ */
+const DEFAULT_MAP_CAP = `ORDER BY name, id LIMIT ${MAP_RESULT_LIMIT}`;
+
+/**
+ * Shared implementation of {@link getMapData} / {@link getLocationMapData} /
+ * {@link getSearchMapData}. `locFilter` is a predicate over the `locations` table
+ * (its `?` placeholders bound from the front of `params`); every sub-row read is
+ * scoped to the locations it selects — and the menus those locations reference —
+ * so neither a viewport box, a single-id lookup nor a search ever pulls an
+ * unscoped table.
+ *
+ * `capClause` is the trailing `ORDER BY … LIMIT …` that both bounds and orders the
+ * location set. It is applied IDENTICALLY in `inLocations` and the main row read,
+ * so both select the exact same rows. Any `?` placeholders it carries (e.g. a
+ * distance anchor) are bound from the END of `params`, AFTER the `locFilter` ones
+ * — the two clauses appear in that fixed order in every statement, so one
+ * `.bind(...params)` is correct everywhere.
  */
 async function queryMapData(
 	db: D1Like,
 	locFilter: string,
-	params: (string | number)[]
+	params: (string | number)[],
+	capClause: string = DEFAULT_MAP_CAP
 ): Promise<MapData> {
 	// Sub-selects that resolve, from `locFilter`, the in-scope location ids, the
 	// menus they reference, and the items on those menus.
 	//
-	// The location set is capped at MAP_RESULT_LIMIT via a deterministic
-	// `ORDER BY name, id LIMIT` applied IDENTICALLY here in `inLocations` and in
-	// the main row read below, so both select the exact same rows — every scoped
-	// sub-read therefore covers precisely the returned set. The LIMIT is a trusted
-	// integer literal, so it is interpolated rather than bound; this keeps each
-	// statement's single `locFilter` placeholder count correct under `.bind(...params)`.
-	const capClause = `ORDER BY name, id LIMIT ${MAP_RESULT_LIMIT}`;
+	// The location set is capped via `capClause`'s deterministic `ORDER BY … LIMIT`
+	// applied IDENTICALLY here in `inLocations` and in the main row read below, so
+	// both select the exact same rows — every scoped sub-read therefore covers
+	// precisely the returned set.
 	const inLocations = `SELECT id FROM locations WHERE ${locFilter} ${capClause}`;
 	const inMenus = `SELECT DISTINCT menu_id FROM locations WHERE menu_id IS NOT NULL AND id IN (${inLocations})`;
 	const inItems = `SELECT id FROM items WHERE menu_id IN (${inMenus})`;
@@ -752,9 +861,9 @@ async function queryMapData(
 			.bind(...params)
 			.all<ItemRow>(),
 		db
-			.prepare(`SELECT id, currency FROM menus WHERE id IN (${inMenus})`)
+			.prepare(`SELECT id, currency, last_verified FROM menus WHERE id IN (${inMenus})`)
 			.bind(...params)
-			.all<{ id: string; currency: string }>(),
+			.all<{ id: string; currency: string; last_verified: string | null }>(),
 		db
 			.prepare(
 				`SELECT it.item_id AS owner_id, ${ITEM_TAG_SELECT}
@@ -803,6 +912,8 @@ async function queryMapData(
 	const sourcesByMenu = groupSources(menuSourceRows);
 	const sourcesByLocation = groupSources(locationSourceRows);
 	const currencyByMenu = new Map(menuCurrencyRows.map((r) => [r.id, r.currency]));
+	const menuMeta: MapData['menuMeta'] = {};
+	for (const row of menuCurrencyRows) menuMeta[row.id] = { last_verified: row.last_verified };
 
 	const menus: Record<string, Item[]> = {};
 	for (const row of itemRows) {
@@ -838,7 +949,7 @@ async function queryMapData(
 		overrides: overridesByLocation.get(loc.id) ?? []
 	}));
 
-	return { locations: mapLocations, menus };
+	return { locations: mapLocations, menus, menuMeta };
 }
 
 export async function getLocationById(db: D1Like, id: string): Promise<Location | null> {

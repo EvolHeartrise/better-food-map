@@ -34,6 +34,11 @@
 		// unavailable). The camera otherwise only moves when the user pans/zooms or
 		// selects a place — search/filter changes never move it.
 		initialCenter = null,
+		// A point to fly the camera to (without selecting it) — used by global search
+		// to bring the nearest match into view. The camera flies whenever `key`
+		// changes, so the parent controls exactly when a fly happens (it omits it when
+		// the target is already on screen). Null leaves the camera untouched.
+		focus = null,
 		// Called (debounced) with the visible bounding box whenever the map settles
 		// after a pan/zoom, plus once on load. The parent fetches location data for
 		// this box, so only what's on screen is ever loaded.
@@ -43,6 +48,7 @@
 		selected?: Location | null;
 		onselect?: (id: string) => void;
 		initialCenter?: [number, number] | null;
+		focus?: { latitude: number; longitude: number; key: string } | null;
 		onviewchange?: (bounds: Bounds) => void;
 	} = $props();
 
@@ -57,6 +63,10 @@
 	const DEFAULT_ZOOM = 12;
 	// Zoom level used when flying to a single selected location.
 	const SELECTED_ZOOM = 15;
+	// Minimum zoom when flying to a search's nearest match: if the user is already
+	// zoomed further in we keep their zoom (just recenter), but from a zoomed-out
+	// globe we pull in to at least a city view so the match is legible on arrival.
+	const FOCUS_MIN_ZOOM = 12;
 	// Fly animation duration when centering on a selected location (milliseconds —
 	// MapLibre takes ms, where Leaflet took seconds).
 	const FLY_DURATION_MS = 600;
@@ -96,6 +106,9 @@
 	// The last selected id we flew to, so re-renders (e.g. a viewport refetch) don't
 	// re-fly to an already-open location — only a genuine change of selection does.
 	let lastSelectedId: string | null = null;
+	// The last focus key we flew to, so the focus effect fires once per new target
+	// (a marker re-render or the parent re-passing the same focus won't re-fly).
+	let lastFocusKey: string | null = null;
 
 	// The prop contract carries centres as `[lat, lng]` (Leaflet's order, and how
 	// the page supplies the IP-detected centre); MapLibre wants `[lng, lat]`.
@@ -314,6 +327,26 @@
 		const id = selected?.id ?? null;
 		if (id && id !== lastSelectedId) flyToSelected();
 		lastSelectedId = id;
+	});
+
+	// Fly to a search focus target (the nearest match) when its key changes. Keeps
+	// the user's zoom if they're already closer than FOCUS_MIN_ZOOM, so a fly from a
+	// street-level view doesn't jump back out. Unlike selection, this never opens a
+	// popup or detail — it only moves the camera so the nearest result is on screen.
+	$effect(() => {
+		if (!ready) return;
+		const f = focus;
+		if (!f) {
+			lastFocusKey = null;
+			return;
+		}
+		if (f.key === lastFocusKey) return;
+		lastFocusKey = f.key;
+		map?.flyTo({
+			center: [f.longitude, f.latitude],
+			zoom: Math.max(map.getZoom(), FOCUS_MIN_ZOOM),
+			duration: FLY_DURATION_MS
+		});
 	});
 </script>
 
