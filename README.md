@@ -108,12 +108,21 @@ extract; Geofabrik updates daily.
 
 ## Accounts & sign-in (Google OAuth)
 
-Signed-in users can **like** locations and menu items, and their searches are
+**The app requires sign-in.** The root `/` is a landing page
+(`src/routes/+page.svelte`); the map itself lives at `/map`
+(`src/routes/map/+page.svelte`) and is gated. A `requireAuth` hook in
+`src/hooks.server.ts` redirects unauthenticated requests for `/map` (and shared
+`/map/locations/<id>` deep links) to the landing page, carrying the requested URL
+in `?redirectTo` so the OAuth flow returns the user there after sign-in. The map's
+data is independently protected by `requireUser()` in `src/lib/data.remote.ts`.
+Signed-in users can also **like** locations and menu items, and their searches are
 auto-logged as history. Sign-in is **Google OAuth only** (no passwords),
 implemented directly with [Arctic](https://arcticjs.dev):
 
 - `src/lib/server/oauth.ts` builds the Google client; `src/routes/auth/login/google`
-  starts the flow and `src/routes/auth/callback/google` completes it.
+  starts the flow and `src/routes/auth/callback/google` completes it. The login route
+  stashes the validated `redirectTo` (see `src/lib/redirect.ts`) in a short-lived
+  cookie that the callback reads to land the user back where they started.
 - Sessions are **database-backed** (`sessions` table). The cookie holds an opaque
   token whose SHA-256 hash is the row key, so the raw token is never stored
   (`src/lib/server/auth.ts`). The session hook in `src/hooks.server.ts` resolves it
