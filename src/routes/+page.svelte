@@ -245,7 +245,11 @@
 	const statsResource = getStats();
 	const stats = $derived(statsResource.current ?? null);
 
-	let statsDismissed = $state(false);
+	// Suppress the landing overlay when the page opens straight onto a location (a
+	// shared/bookmarked `/locations/<id>` deep link): the visitor came for that place,
+	// not the landing. `idFromPath` reads the id from the initial URL — the same source
+	// `landingId` snapshots below — so this is true exactly when a detail is opening.
+	let statsDismissed = $state(idFromPath(page.url.pathname) !== null);
 	function dismissStats(): void {
 		statsDismissed = true;
 	}
