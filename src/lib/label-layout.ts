@@ -12,10 +12,11 @@
 //     is how names reveal progressively without ever drawing a dot.
 //
 //   • `stepSimulation` advances the force model one frame: every pill is pulled
-//     toward its origin (a spring) and pushed off any overlapping neighbour, so a knot
-//     of nearby venues — or a venue's whole menu all springing to one point — fans out
-//     into a compact cluster centred on the point, while each pill stays tethered to it
-//     by a short leader line.
+//     strongly toward its origin (a spring), so it wants to sit centred on its venue's
+//     coordinate, and is pushed off a neighbour ONLY where their boxes would actually
+//     overlap (an axis-aligned collision), by the least amount that separates them — so a
+//     knot of nearby venues nudges just far enough apart to never overlap and otherwise
+//     stays put on its point. There are no connector/leader lines.
 //
 //   • `LabelEngine` owns the persistent per-pill state across frames and ties the
 //     two together: `recompute` re-picks the visible set, `tick` re-projects and
@@ -45,37 +46,37 @@ export type SimNode = {
 	// Anchor (origin) — refreshed every frame from the live projection.
 	ax: number;
 	ay: number;
-	// Pill-centre offset from the anchor, and the velocity of that offset.
+	// Pill-centre offset from the anchor.
 	ox: number;
 	oy: number;
+	// The net change in (ox, oy) on the last simulation step, written by stepSimulation.
+	// The caller reads vx²+vy² as the pill's movement to tell when the layout has settled.
 	vx: number;
 	vy: number;
 	// Half the measured pill width/height, used as the pill's collision extent.
 	hw: number;
 	hh: number;
-	// Multiplies this pill's spring constant (default 1). Name pills set this > 1 so
-	// they hold near their own dot while the lighter item pills fan out around them.
-	springScale?: number;
 };
 
 export type SimConfig = {
-	// Pull toward the anchor per tick, as a fraction of the remaining offset.
+	// How far a pill is eased back toward its origin each frame, as a fraction (0–1) of
+	// the remaining offset. Kept strong so an unobstructed pill hugs its venue's
+	// coordinate and only sits off it where a neighbour's collision holds it away.
 	spring: number;
-	// Fraction of velocity retained per tick (0–1); lower settles faster.
-	damping: number;
-	// Stiffness of the radial separation force: the push two overlapping pills get,
-	// per px of penetration, along their centre-to-centre line. (Force = −∇U of the
-	// penalty energy U = ½·separation·penetration², so the model stays conservative.)
+	// Fraction of the box penetration each collision pass removes (0–1); a few passes
+	// (see COLLISION_PASSES) then converge so that, at rest, no two boxes overlap.
 	separation: number;
-	// Extra breathing room kept between pills, in px.
+	// Breathing room kept between pill boxes, in px: the collision treats each box as if
+	// grown by this much, so pills settle a hair apart rather than exactly edge-to-edge.
 	padding: number;
-	// How far a pill may drift from its origin before the leader is clamped, in px.
+	// Hard cap on how far a pill may be pushed from its origin, in px — a backstop so an
+	// over-constrained spot can't fling a pill far from its coordinate.
 	maxLeader: number;
-	// Shapes each pill's effective collision radius: `hh + radiusBlend·(hw − hh)`.
-	// 1 ⇒ the half-width (an isotropic circle that circumscribes the wide-short pill,
-	// so a co-anchored cluster relaxes into a ROUND blob); smaller ⇒ tighter/flatter.
-	radiusBlend: number;
 };
+
+// How many position-based collision passes stepSimulation runs per frame. Each pass
+// removes `separation` of any remaining box penetration, so a few converge to clear.
+const COLLISION_PASSES = 4;
 
 /** Deterministic value in [0, 1) hashed from an id, for a stable tie-break. */
 export function hashId(id: string): number {
@@ -88,47 +89,55 @@ export function hashId(id: string): number {
 }
 
 /**
- * Greedy decluttering: keep the highest-priority anchors that sit at least
- * `minGap` px from every already-kept anchor, up to `max` of them. Returns the set
- * of kept ids. Input order doesn't matter — selection is by descending priority.
+ * Screen-space grid decluttering: tile the overlay into `cellSize`-px square cells,
+ * drop each anchor into its cell, and keep the highest-`priority` `perCell` of them in
+ * each — then, if more than `max` survive overall, keep the top `max` by priority. This
+ * bounds label DENSITY uniformly across the screen (≈`perCell` per cell everywhere)
+ * regardless of how the underlying venues clump, so a dense downtown shows the same
+ * labels-per-area as a sparse suburb. Because the cells are in PROJECTED pixel space,
+ * the thinning is zoom-invariant: as the user zooms in, anchors spread across more
+ * cells and more labels clear the bar — the progressive reveal, with a hard density cap.
+ *
+ * Bucketing on a fixed grid is O(n) (one cell lookup per anchor) and, crucially, caps
+ * the number of pills handed to the force simulation, so an over-dense viewport can't
+ * hand it an unsatisfiable packing that never settles. Input order doesn't matter —
+ * within-cell selection and the global trim are both by descending priority. Pass
+ * `perCell: Infinity` to disable per-cell thinning entirely (bounded only by `max`).
  */
-export function selectVisible(anchors: LabelAnchor[], minGap: number, max: number): Set<string> {
-	const sorted = anchors.toSorted((a, b) => b.priority - a.priority);
+export function selectVisible(
+	anchors: LabelAnchor[],
+	cellSize: number,
+	perCell: number,
+	max: number
+): Set<string> {
+	// Bucket anchors into screen-space cells.
+	const cells = new Map<string, LabelAnchor[]>();
+	for (const a of anchors) {
+		const key = `${Math.floor(a.ax / cellSize)},${Math.floor(a.ay / cellSize)}`;
+		let bucket = cells.get(key);
+		if (!bucket) cells.set(key, (bucket = []));
+		bucket.push(a);
+	}
+
+	// Keep the top `perCell` (by priority) within each cell.
 	const kept: LabelAnchor[] = [];
-	const keptIds = new Set<string>();
-	const gapSq = minGap * minGap;
-	for (const a of sorted) {
-		if (kept.length >= max) break;
-		let ok = true;
-		for (const k of kept) {
-			const dx = a.ax - k.ax;
-			const dy = a.ay - k.ay;
-			if (dx * dx + dy * dy < gapSq) {
-				ok = false;
-				break;
-			}
-		}
-		if (ok) {
-			kept.push(a);
-			keptIds.add(a.id);
+	for (const bucket of cells.values()) {
+		if (bucket.length > perCell) {
+			bucket.sort((a, b) => b.priority - a.priority);
+			for (let i = 0; i < perCell; i++) kept.push(bucket[i]);
+		} else {
+			for (const a of bucket) kept.push(a);
 		}
 	}
-	return keptIds;
-}
 
-/**
- * Fraction of `maxLeader` at which a soft inward "cushion" begins. Within
- * [LEADER_CUSHION·maxLeader, maxLeader] a pill feels an extra, smooth restoring pull
- * back toward its origin (on top of the spring), growing with how far it has strayed.
- * This is a conservative force — the gradient of a quadratic boundary potential — so it
- * doesn't break the energy-descent guarantee; its job is to DECELERATE pills before
- * they pile onto the hard `maxLeader` ring. A crowd of pills pinned hard on that ring
- * can shuffle tangentially forever (a limit cycle that never settles); the cushion lets
- * them relax inward instead, so even an over-full cluster still converges.
- */
-const LEADER_CUSHION = 0.7;
-/** Stiffness of the leader cushion: extra inward force per px past the cushion radius. */
-const LEADER_CUSHION_STRENGTH = 0.5;
+	// Global density backstop: if still over `max`, keep the highest-priority `max`.
+	if (kept.length > max) {
+		kept.sort((a, b) => b.priority - a.priority);
+		kept.length = max;
+	}
+
+	return new Set(kept.map((a) => a.id));
+}
 
 /**
  * Advance the pill positions one frame, mutating the nodes in place. Everything
@@ -136,109 +145,88 @@ const LEADER_CUSHION_STRENGTH = 0.5;
  * zero and collisions push it outward, so the rigid component of any camera motion
  * (a pan re-projecting every anchor by the same delta) never enters the dynamics.
  *
- * The whole step is DAMPED GRADIENT DESCENT on one smooth energy — inward springs +
- * pairwise repulsion + the leader cushion are each the negative gradient of a potential,
- * and the velocity damping dissipates kinetic energy — so it provably relaxes to a local
- * minimum and SETTLES (the caller's loop can then park), rather than orbiting in a limit
- * cycle the way a non-conservative push would.
+ * The model is a position-based relaxation with two parts, run each frame:
+ *   1. a STRONG spring that eases every pill a fraction of the way back onto its origin,
+ *      so an unobstructed pill homes right onto its venue's coordinate; and
+ *   2. a COLLISION pass that, wherever two padded boxes would overlap, moves the pair
+ *      directly apart along their least-penetration axis (the smallest nudge that clears
+ *      them) -- so once the layout settles NO two boxes overlap.
  *
- * Repulsion uses a "soft circle" model: each pill is a circle of radius
- * `hh + radiusBlend·(hw − hh)` and an overlapping pair is pushed apart ALONG THEIR
- * CENTRE LINE with a force proportional to penetration depth (= −∇ of ½·separation·
- * penetration²). Because the push is radial and isotropic, a knot of co-anchored labels
- * — a venue's whole menu springing to one point — opens out into a ROUND cluster in
- * every direction, not the vertical pile the old minimum-translation (axis-aligned) push
- * produced for wide-short pills. Name pills carry a larger `springScale`, so they hold
- * near their dot while the item pills ring around them.
+ * There is no momentum and no extra spreading force: in open space a pill sits exactly on
+ * its point, and only where two would collide do they push each other just far enough to
+ * stop overlapping. There are no connector lines. Each pill's net movement this frame is
+ * recorded back into (vx, vy) so the caller's loop can read vx^2+vy^2 to tell when the
+ * layout has come to rest and park itself.
  */
 export function stepSimulation(nodes: SimNode[], cfg: SimConfig): void {
-	const { spring, damping, separation, padding, maxLeader, radiusBlend } = cfg;
-	const cushionRadius = maxLeader * LEADER_CUSHION;
-	const radiusOf = (n: SimNode) => n.hh + radiusBlend * (n.hw - n.hh);
+	const { spring, separation, padding, maxLeader } = cfg;
 
-	// 1. Spring each pill's offset back toward zero (its origin), scaled per-pill so a
-	//    name pill (springScale > 1) resists being shoved off its dot.
+	// Remember each offset so the net movement this frame can be reported as (vx, vy).
+	const prevOx = nodes.map((n) => n.ox);
+	const prevOy = nodes.map((n) => n.oy);
+
+	// 1. Spring: ease each pill's offset a fraction of the way back toward zero (its
+	//    origin / venue coordinate). An unobstructed pill converges onto its point.
 	for (const n of nodes) {
-		const k = spring * (n.springScale ?? 1);
-		n.vx -= n.ox * k;
-		n.vy -= n.oy * k;
+		n.ox *= 1 - spring;
+		n.oy *= 1 - spring;
 	}
 
-	// 2. Conservative radial repulsion. Compare absolute screen positions (anchor +
-	//    offset) so a venue's real on-screen spot drives the collision, and push any
-	//    overlapping pair apart along their centre-to-centre line by their penetration.
-	for (let i = 0; i < nodes.length; i++) {
-		const a = nodes[i];
-		const ra = radiusOf(a);
-		const ax = a.ax + a.ox;
-		const ay = a.ay + a.oy;
-		for (let j = i + 1; j < nodes.length; j++) {
-			const b = nodes[j];
-			let dx = b.ax + b.ox - ax;
-			let dy = b.ay + b.oy - ay;
-			if (dx === 0 && dy === 0) {
-				// Coincident centres: pick a stable, deterministic direction so the pair
-				// still separates — and separates the same way every frame.
-				const angle = hashId(a.id + ' ' + b.id) * 2 * Math.PI;
-				dx = Math.cos(angle) * 0.01;
-				dy = Math.sin(angle) * 0.01;
-			}
-			const dist = Math.hypot(dx, dy);
-			const minDist = ra + radiusOf(b) + padding;
-			if (dist < minDist) {
-				const push = separation * (minDist - dist);
-				const ux = dx / dist;
-				const uy = dy / dist;
-				a.vx -= push * ux;
-				a.vy -= push * uy;
-				b.vx += push * ux;
-				b.vy += push * uy;
+	// 2. Collision resolution: a few position-based passes that move any pair whose padded
+	//    boxes overlap directly apart (half the correction each) along their least-
+	//    penetration axis. `separation` is the fraction of the penetration each pass
+	//    removes; a handful of passes converges so that, at rest, no two boxes overlap.
+	//    Absolute screen positions (anchor + offset) drive the test, so a venue's real
+	//    on-screen spot is what collides.
+	for (let pass = 0; pass < COLLISION_PASSES; pass++) {
+		for (let i = 0; i < nodes.length; i++) {
+			const a = nodes[i];
+			const ax = a.ax + a.ox;
+			const ay = a.ay + a.oy;
+			for (let j = i + 1; j < nodes.length; j++) {
+				const b = nodes[j];
+				const dx = b.ax + b.ox - ax;
+				const dy = b.ay + b.oy - ay;
+				// Overlap of the padded boxes on each axis; both > 0 means they intersect.
+				const overlapX = a.hw + b.hw + padding - Math.abs(dx);
+				const overlapY = a.hh + b.hh + padding - Math.abs(dy);
+				if (overlapX <= 0 || overlapY <= 0) continue;
+				if (overlapX <= overlapY) {
+					// Cheaper to separate on x. A deterministic sign breaks the tie when the
+					// centres share an x, so the pair parts the same way every frame.
+					const sign = dx !== 0 ? Math.sign(dx) : hashId(a.id + ' ' + b.id) < 0.5 ? -1 : 1;
+					const shift = (separation * overlapX) / 2;
+					a.ox -= shift * sign;
+					b.ox += shift * sign;
+				} else {
+					const sign = dy !== 0 ? Math.sign(dy) : hashId(a.id + ' ' + b.id) < 0.5 ? -1 : 1;
+					const shift = (separation * overlapY) / 2;
+					a.oy -= shift * sign;
+					b.oy += shift * sign;
+				}
 			}
 		}
 	}
 
-	// 3. Soft leader cushion: an extra inward pull once a pill strays past the cushion
-	//    radius, so it decelerates before reaching the hard clamp (see LEADER_CUSHION).
-	for (const n of nodes) {
-		const dist = Math.hypot(n.ox, n.oy);
-		if (dist > cushionRadius) {
-			const f = LEADER_CUSHION_STRENGTH * (dist - cushionRadius);
-			n.vx -= (f * n.ox) / dist;
-			n.vy -= (f * n.oy) / dist;
-		}
-	}
-
-	// 4. Integrate, damp, and hard-clamp the leader length. If a pill is still being
-	//    forced past `maxLeader`, also strip the OUTWARD part of its velocity so it can't
-	//    keep overshooting-and-being-pulled-back forever — that residual motion would
-	//    otherwise hold the kinetic energy above the settle threshold and never park.
-	for (const n of nodes) {
-		n.vx *= damping;
-		n.vy *= damping;
-		n.ox += n.vx;
-		n.oy += n.vy;
+	// 3. Hard-clamp each offset to `maxLeader`, then record the net movement this frame in
+	//    (vx, vy) — small movement everywhere means the layout has settled.
+	for (let k = 0; k < nodes.length; k++) {
+		const n = nodes[k];
 		const dist = Math.hypot(n.ox, n.oy);
 		if (dist > maxLeader) {
-			const k = maxLeader / dist;
-			n.ox *= k;
-			n.oy *= k;
-			const ux = n.ox / maxLeader;
-			const uy = n.oy / maxLeader;
-			const vr = n.vx * ux + n.vy * uy;
-			if (vr > 0) {
-				n.vx -= vr * ux;
-				n.vy -= vr * uy;
-			}
+			const s = maxLeader / dist;
+			n.ox *= s;
+			n.oy *= s;
 		}
+		n.vx = n.ox - prevOx[k];
+		n.vy = n.oy - prevOy[k];
 	}
 }
 
 /**
- * A label candidate, with the geographic origin its pill anchors to. Used for both
- * the venue-name pills and the menu-item labels. `priority` overrides the default
- * tie-break (a stable id hash): the item engine passes a build-order priority so a
- * crowd of co-anchored item labels keeps the nearest venues' items when capped, and
- * so the location engine can keep a chain's branches deterministically ordered.
+ * A label candidate, with the geographic origin its pill anchors to. `priority`
+ * overrides the default declutter tie-break (a stable id hash) when a caller wants a
+ * specific ordering among labels that compete for the same screen cell.
  */
 export type Candidate = {
 	id: string;
@@ -246,10 +234,6 @@ export type Candidate = {
 	lat: number;
 	lng: number;
 	priority?: number;
-	// Optional grouping key. Item labels set this to their venue id. It no longer
-	// drives layout (every label springs to its own venue point in the unified force
-	// pass); it's kept on the data as a stable per-venue tag.
-	groupId?: string;
 };
 
 /** Projects a lng/lat to CSS-pixel screen coordinates (i.e. `map.project`). */
@@ -263,8 +247,6 @@ export type LabelNode = SimNode & {
 	name: string;
 	lat: number;
 	lng: number;
-	// Grouping key (item labels carry their venue id); undefined for name pills.
-	groupId?: string;
 	el: HTMLElement | null;
 };
 
@@ -277,23 +259,12 @@ export type RecomputeOptions = {
 	height: number;
 	margin: number;
 	selectedId: string | null;
-	// Min on-screen spacing between survivors, and a hard cap on simultaneous pills.
-	gap: number;
+	// Screen-space declutter grid: cell size (px) and how many labels survive per cell
+	// (the density cap — see selectVisible), plus a hard cap on simultaneous pills.
+	cellSize: number;
+	perCell: number;
 	max: number;
-	// Spring multiplier stamped on every node this engine owns (see SimNode.springScale).
-	// The name-pill engine passes > 1 so its pills hold near their dots in the unified
-	// force pass; the item engine leaves it at the default 1.
-	springScale?: number;
 };
-
-/**
- * Radius (px) of the ring a NEW pill's offset is seeded onto, at an angle taken from
- * its id hash. Small enough that a pill still reads as starting near its origin, large
- * enough to break the symmetry of co-anchored labels (a venue's whole menu shares one
- * point) so the radial repulsion opens them out evenly from the first frame rather than
- * starting from a degenerate coincident pile. See `recompute`.
- */
-const SEED_RADIUS = 10;
 
 /**
  * Owns the persistent pill state across frames. `recompute` (throttled) re-picks
@@ -309,11 +280,11 @@ export class LabelEngine {
 	/**
 	 * Re-pick the visible labels for the current camera: project every candidate,
 	 * drop those off-screen, declutter the rest, sync the node map (seeding new
-	 * pills at their origin, pruning departed ones), and return the render list in
+	 * pills on their origin, pruning departed ones), and return the render list in
 	 * candidate order for a stable key sequence.
 	 */
 	recompute(opts: RecomputeOptions): RenderItem[] {
-		const { candidates, project, width, height, margin, selectedId, gap, max, springScale } = opts;
+		const { candidates, project, width, height, margin, selectedId, cellSize, perCell, max } = opts;
 
 		const anchors: LabelAnchor[] = [];
 		const candidateIds = new Set<string>();
@@ -331,7 +302,7 @@ export class LabelEngine {
 			});
 		}
 
-		const keep = selectVisible(anchors, gap, max);
+		const keep = selectVisible(anchors, cellSize, perCell, max);
 
 		const items: RenderItem[] = [];
 		const visible: string[] = [];
@@ -342,31 +313,24 @@ export class LabelEngine {
 				node.name = c.name;
 				node.lat = c.lat;
 				node.lng = c.lng;
-				node.groupId = c.groupId;
-				node.springScale = springScale;
 			} else {
 				const p = project(c.lng, c.lat);
-				// Seed the offset on a small ring at a hashed angle rather than at the
-				// origin. Co-anchored labels (a venue's whole menu) would otherwise all
-				// start at exactly (0, 0); a per-id starting angle breaks that symmetry so
-				// the radial repulsion opens the cluster out evenly in all directions from
-				// the first frame. The spring still pulls each offset back toward zero.
-				const angle = hashId(c.id) * 2 * Math.PI;
+				// Seed the offset at zero, so a new pill starts centred exactly on its
+				// venue's coordinate. The spring holds it there; the collision push is what
+				// nudges it off only when a neighbour would otherwise overlap it.
 				node = {
 					id: c.id,
 					name: c.name,
 					lat: c.lat,
 					lng: c.lng,
-					groupId: c.groupId,
 					ax: p.x,
 					ay: p.y,
-					ox: Math.cos(angle) * SEED_RADIUS,
-					oy: Math.sin(angle) * SEED_RADIUS,
+					ox: 0,
+					oy: 0,
 					vx: 0,
 					vy: 0,
 					hw: 0,
 					hh: 0,
-					springScale,
 					el: null
 				};
 				this.nodes.set(c.id, node);
@@ -431,7 +395,7 @@ export class LabelEngine {
 	/**
 	 * Advance one frame: refresh every visible node's anchor from the live
 	 * projection, step the force model, and return the active nodes so the caller
-	 * can write their transforms and draw the leader lines.
+	 * can write each pill's transform.
 	 */
 	tick(project: Projector, config: SimConfig): LabelNode[] {
 		const active: LabelNode[] = [];
@@ -444,26 +408,6 @@ export class LabelEngine {
 			active.push(node);
 		}
 		stepSimulation(active, config);
-		return active;
-	}
-
-	/**
-	 * Like `tick`, but WITHOUT stepping the force model: refresh every visible node's
-	 * anchor from the live projection and return the active nodes, leaving the stepping
-	 * to the caller. The component uses this to re-project BOTH engines' nodes and then
-	 * run a single `stepSimulation` over their union, so the name pills and the item
-	 * labels collide and spring in one unified pass.
-	 */
-	tickStatic(project: Projector): LabelNode[] {
-		const active: LabelNode[] = [];
-		for (const id of this.visibleIds) {
-			const node = this.nodes.get(id);
-			if (!node) continue;
-			const p = project(node.lng, node.lat);
-			node.ax = p.x;
-			node.ay = p.y;
-			active.push(node);
-		}
 		return active;
 	}
 

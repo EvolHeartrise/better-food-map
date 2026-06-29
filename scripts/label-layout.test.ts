@@ -10,16 +10,13 @@ import {
 	type Candidate
 } from '../src/lib/label-layout';
 
-// Mirrors the component's shared SIM_CONFIG (one unified pass over name pills + item
-// labels): the conservative radial "soft circle" repulsion (radiusBlend 1) that fans a
-// co-anchored cluster into a round blob, with a leader clamp generous enough to hold it.
+// Mirrors the component's SIM_CONFIG: a strong spring that holds each pill on its venue
+// coordinate, plus a position-based collision pass that separates only overlapping boxes.
 const CFG: SimConfig = {
-	spring: 0.05,
-	damping: 0.84,
-	separation: 0.55,
-	padding: 14,
-	maxLeader: 130,
-	radiusBlend: 1
+	spring: 0.25,
+	separation: 0.5,
+	padding: 6,
+	maxLeader: 120
 };
 
 const absX = (n: SimNode) => n.ax + n.ox;
@@ -40,12 +37,13 @@ const maxBoxOverlap = (nodes: SimNode[]): number => {
 	return m;
 };
 
-// The component's settle threshold: the rAF loop parks once every pill's kinetic
-// energy (vx²+vy²) has stayed below this for a stretch of frames.
+// The component's settle threshold: the rAF loop parks once every pill's per-frame
+// movement (vx²+vy², the offset change the sim records) has stayed below this for a
+// stretch of frames.
 const SETTLE_KE_EPS = 0.0016;
 
 // Steps the simulation and returns the frame on which it SETTLED — the first frame of
-// the run where max kinetic energy fell below SETTLE_KE_EPS and stayed there for 60
+// the run where max per-frame movement fell below SETTLE_KE_EPS and stayed there for 60
 // consecutive frames (mirroring the rAF loop's park condition) — or -1 if it never did.
 const settleStep = (nodes: SimNode[], cfg: SimConfig, maxSteps = 1500): number => {
 	let belowRun = 0;
@@ -68,31 +66,6 @@ const settleStep = (nodes: SimNode[], cfg: SimConfig, maxSteps = 1500): number =
 	return settled;
 };
 
-// A co-anchored item pill, seeded on the same hashed ring the engine uses, so the test
-// fixtures match how production breaks the symmetry of a venue's whole menu.
-const seeded = (
-	id: string,
-	hw: number,
-	hh = 10,
-	ax = 300,
-	ay = 220,
-	springScale?: number
-): SimNode => {
-	const angle = hashId(id) * 2 * Math.PI;
-	return {
-		id,
-		ax,
-		ay,
-		ox: Math.cos(angle) * 10,
-		oy: Math.sin(angle) * 10,
-		vx: 0,
-		vy: 0,
-		hw,
-		hh,
-		springScale
-	};
-};
-
 describe('hashId', () => {
 	test('is deterministic and in [0, 1)', () => {
 		const h = hashId('abc');
@@ -109,27 +82,85 @@ describe('hashId', () => {
 describe('selectVisible', () => {
 	const anchors: LabelAnchor[] = [
 		{ id: 'a', ax: 100, ay: 100, priority: 0.9 },
-		{ id: 'b', ax: 110, ay: 105, priority: 0.5 }, // ~11px from a → too close
-		{ id: 'c', ax: 400, ay: 400, priority: 0.1 } // far → kept
+		{ id: 'b', ax: 110, ay: 105, priority: 0.5 }, // same 84px cell as a → loses
+		{ id: 'c', ax: 400, ay: 400, priority: 0.1 } // far → own cell, kept
 	];
 
-	test('keeps the higher-priority pill of a too-close pair', () => {
-		const keep = selectVisible(anchors, 42, 100);
+	test('keeps the higher-priority pill when two share a cell', () => {
+		const keep = selectVisible(anchors, 84, 1, 100);
 		expect(keep.has('a')).toBe(true);
 		expect(keep.has('b')).toBe(false);
 	});
 
-	test('keeps a far-apart pill', () => {
-		expect(selectVisible(anchors, 42, 100).has('c')).toBe(true);
+	test('keeps a pill alone in its cell', () => {
+		expect(selectVisible(anchors, 84, 1, 100).has('c')).toBe(true);
 	});
 
-	test('honours the max cap', () => {
-		expect(selectVisible(anchors, 42, 1).size).toBe(1);
+	test('honours the global max cap, keeping the highest priority', () => {
+		const keep = selectVisible(anchors, 84, 1, 1);
+		expect(keep.size).toBe(1);
+		expect(keep.has('a')).toBe(true); // a (0.9) outranks c (0.1)
+	});
+
+	test('perCell caps how many survive within one cell', () => {
+		// Five anchors at one point; perCell 2 keeps the top two by priority.
+		const packed: LabelAnchor[] = Array.from({ length: 5 }, (_, i) => ({
+			id: `p${i}`,
+			ax: 200,
+			ay: 200,
+			priority: i / 10
+		}));
+		const keep = selectVisible(packed, 84, 2, 100);
+		expect(keep.size).toBe(2);
+		expect([...keep].toSorted()).toEqual(['p3', 'p4']); // priorities 0.4, 0.3
+	});
+
+	test('perCell Infinity keeps every co-located anchor, bounded only by max', () => {
+		// A venue's co-anchored menu: all share one point, none should be thinned out.
+		const packed: LabelAnchor[] = Array.from({ length: 6 }, (_, i) => ({
+			id: `q${i}`,
+			ax: 200,
+			ay: 200,
+			priority: i
+		}));
+		expect(selectVisible(packed, 1, Infinity, 100).size).toBe(6);
+		expect(selectVisible(packed, 1, Infinity, 4).size).toBe(4); // global cap still bites
+	});
+
+	test('spreads density: one survivor per occupied cell across the screen', () => {
+		// A 3×3 lattice of cells, two anchors in each; perCell 1 keeps exactly one per cell.
+		const grid: LabelAnchor[] = [];
+		for (let cx = 0; cx < 3; cx++) {
+			for (let cy = 0; cy < 3; cy++) {
+				grid.push({ id: `${cx}-${cy}-hi`, ax: cx * 84 + 10, ay: cy * 84 + 10, priority: 1 });
+				grid.push({ id: `${cx}-${cy}-lo`, ax: cx * 84 + 20, ay: cy * 84 + 20, priority: 0 });
+			}
+		}
+		const keep = selectVisible(grid, 84, 1, 100);
+		expect(keep.size).toBe(9); // one per occupied cell
+		expect([...keep].every((id) => id.endsWith('-hi'))).toBe(true); // the higher-priority one
+	});
+
+	test('keeps a high-priority group intact while trimming a co-celled neighbour', () => {
+		// The item-label case: a selected venue's whole 10-item cluster (highest priority)
+		// shares a screen cell with a neighbour venue's 4 items. A perCell of 12 keeps the
+		// cluster intact — a venue's labels are contiguous in priority — and trims the rest.
+		const labels: LabelAnchor[] = [];
+		for (let i = 0; i < 10; i++)
+			labels.push({ id: `sel-${i}`, ax: 200, ay: 200, priority: 100 - i });
+		for (let i = 0; i < 4; i++) labels.push({ id: `nb-${i}`, ax: 210, ay: 205, priority: 50 - i });
+		const keep = selectVisible(labels, 84, 12, 80);
+		expect(keep.size).toBe(12);
+		for (let i = 0; i < 10; i++) expect(keep.has(`sel-${i}`)).toBe(true); // cluster intact
+		expect(keep.has('nb-0')).toBe(true); // plus the neighbour's top two
+		expect(keep.has('nb-1')).toBe(true);
+		expect(keep.has('nb-2')).toBe(false); // and not the rest
+		expect(keep.has('nb-3')).toBe(false);
 	});
 
 	test('does not mutate the input array', () => {
 		const copy = [...anchors];
-		selectVisible(anchors, 42, 100);
+		selectVisible(anchors, 84, 1, 100);
 		expect(anchors).toEqual(copy);
 	});
 });
@@ -147,7 +178,8 @@ describe('stepSimulation', () => {
 		hh: 11
 	});
 
-	test('overlapping pills fan apart and stay within maxLeader', () => {
+	test('two overlapping pills separate and end clear of each other, within maxLeader', () => {
+		// Both spring to the SAME point, so the only way to stop overlapping is to push apart.
 		const nodes = [mk('a', -1), mk('b', 1)];
 		for (let i = 0; i < 600; i++) stepSimulation(nodes, CFG);
 		expect(overlaps(nodes[0], nodes[1])).toBe(false);
@@ -172,7 +204,14 @@ describe('stepSimulation', () => {
 		expect(Math.hypot(n.ox, n.oy)).toBeLessThan(0.5);
 	});
 
-	test('a rigid pan of every anchor leaves the spread unchanged (no pan lag)', () => {
+	test('a pill with no neighbour homes onto its origin and is never pushed off it', () => {
+		// Two pills far apart: each is pulled onto its own coordinate; nothing pushes it off.
+		const nodes = [mk('a', 6, 100), mk('b', -6, 600)];
+		for (let i = 0; i < 300; i++) stepSimulation(nodes, CFG);
+		for (const n of nodes) expect(Math.hypot(n.ox, n.oy)).toBeLessThan(0.5);
+	});
+
+	test('a rigid pan of every anchor leaves the layout unchanged (no pan lag)', () => {
 		const nodes = [mk('a', -1, 500), mk('b', 1, 500)];
 		for (let i = 0; i < 600; i++) stepSimulation(nodes, CFG); // settle
 		const before = nodes.map((n) => ({ ox: n.ox, oy: n.oy }));
@@ -188,47 +227,23 @@ describe('stepSimulation', () => {
 		}
 	});
 
-	test('a realistic co-anchored menu cluster SETTLES, overlap-free and radial', () => {
-		// Eight item pills (mixed real-name widths) all springing to one venue point —
-		// the case the old axis-aligned push left in a never-settling vertical pile. The
-		// non-negotiable: the conservative radial model must reach a rest state the rAF
-		// loop can park on, with the cluster spread round (not stacked) and not overlapping.
-		const widths = [30, 40, 50, 35, 45, 55, 40, 50];
-		const nodes = widths.map((hw, i) => seeded(`item-${i}`, hw));
-
+	test('a cluster of overlapping neighbours settles overlap-free near their points', () => {
+		// Four venues whose boxes overlap their neighbours but for which a clear arrangement
+		// exists comfortably within the leader cap: a 2×2 block where each pill need only
+		// nudge a little to part from the one beside it. The collision must reach a rest
+		// state the loop can park on, with no two boxes overlapping and every pill still
+		// close to its own coordinate.
+		const nodes: SimNode[] = [
+			{ id: 'tl', ax: 300, ay: 220, ox: 0, oy: 0, vx: 0, vy: 0, hw: 35, hh: 12 },
+			{ id: 'tr', ax: 350, ay: 220, ox: 0, oy: 0, vx: 0, vy: 0, hw: 35, hh: 12 },
+			{ id: 'bl', ax: 300, ay: 252, ox: 0, oy: 0, vx: 0, vy: 0, hw: 35, hh: 12 },
+			{ id: 'br', ax: 350, ay: 252, ox: 0, oy: 0, vx: 0, vy: 0, hw: 35, hh: 12 }
+		];
 		const settled = settleStep(nodes, CFG);
-		// It settles (and well within a reasonable transient, not just before the cap).
 		expect(settled).toBeGreaterThanOrEqual(0);
-		expect(settled).toBeLessThan(600);
-
-		// Overlap-free (a hair of sub-pixel penetration from finite stiffness is fine).
-		expect(maxBoxOverlap(nodes)).toBeLessThan(5);
-
-		// Radial: the cluster of pill centres occupies BOTH dimensions substantially —
-		// i.e. it surrounds the point rather than collapsing onto one axis (a stack would
-		// leave the horizontal span near zero). Also every pill stays within its leader.
-		const xs = nodes.map((n) => n.ox);
-		const ys = nodes.map((n) => n.oy);
-		const spanX = Math.max(...xs) - Math.min(...xs);
-		const spanY = Math.max(...ys) - Math.min(...ys);
-		expect(spanX).toBeGreaterThan(60);
-		expect(spanY).toBeGreaterThan(60);
-		for (const n of nodes) expect(Math.hypot(n.ox, n.oy)).toBeLessThanOrEqual(CFG.maxLeader + 0.5);
-	});
-
-	test('a name pill (springScale) holds near its dot while items fan around it', () => {
-		// A venue name pill (springScale > 1) co-anchored with its menu items: it must end
-		// up nearer the shared point than the items, which ring out around it.
-		const name = seeded('name', 50, 11, 300, 220, 8);
-		const items = [30, 40, 50, 35, 45, 55, 40, 50].map((hw, i) => seeded(`item-${i}`, hw));
-		const nodes = [name, ...items];
-
-		expect(settleStep(nodes, CFG)).toBeGreaterThanOrEqual(0);
-
-		const nameOffset = Math.hypot(name.ox, name.oy);
-		const maxItemOffset = Math.max(...items.map((n) => Math.hypot(n.ox, n.oy)));
-		expect(nameOffset).toBeLessThan(50); // stays near its dot
-		expect(nameOffset).toBeLessThan(maxItemOffset); // and nearer than the items fan out
+		expect(maxBoxOverlap(nodes)).toBeLessThan(2);
+		// Each pill ends near its own coordinate (only a modest nudge was needed to part).
+		for (const n of nodes) expect(Math.hypot(n.ox, n.oy)).toBeLessThan(40);
 	});
 });
 
@@ -242,7 +257,8 @@ describe('LabelEngine', () => {
 		height: 1000,
 		margin: 80,
 		selectedId,
-		gap: 42,
+		cellSize: 42,
+		perCell: 1,
 		max: 100
 	});
 
@@ -290,9 +306,10 @@ describe('LabelEngine', () => {
 		expect(items.some((i) => i.id === 'b')).toBe(false);
 	});
 
-	test('co-anchored radial-seeded nodes fan apart without overlap and stay within maxLeader', () => {
-		// Four labels sharing ONE anchor (a venue's menu) — the case that used to
-		// collapse into an exact vertical pile when every node seeded at offset (0, 0).
+	test('co-located labels are separated by the collision so none overlap', () => {
+		// Four labels sharing ONE anchor: they all seed at offset (0, 0), exactly coincident.
+		// The collision must still push them apart (deterministically, via the id-hashed tie
+		// break) so that, once settled, no two overlap and each stays within the leader cap.
 		const engine = new LabelEngine();
 		const co: Candidate[] = Array.from({ length: 4 }, (_, i) => ({
 			id: `item-${i}`,
@@ -301,8 +318,8 @@ describe('LabelEngine', () => {
 			lng: 10
 		}));
 		const project = (lng: number, lat: number) => ({ x: lng * 10, y: lat * 10 });
-		// gap 0: co-anchored items never declutter by distance, so all four survive and
-		// the force model is what fans them out.
+		// perCell Infinity disables per-cell thinning, so all four co-located candidates
+		// survive declutter and the collision alone is what's under test here.
 		engine.recompute({
 			candidates: co,
 			project,
@@ -310,7 +327,8 @@ describe('LabelEngine', () => {
 			height: 1000,
 			margin: 80,
 			selectedId: null,
-			gap: 0,
+			cellSize: 1,
+			perCell: Infinity,
 			max: 100
 		});
 		// Give every pill a measured box so the collision has something to separate.
@@ -318,8 +336,7 @@ describe('LabelEngine', () => {
 		let nodes: SimNode[] = [];
 		for (let i = 0; i < 800; i++) nodes = engine.tick(project, CFG);
 		expect(nodes.length).toBe(co.length);
-		// The hashed seed offsets broke the symmetry, so the cluster fanned out from the
-		// shared origin instead of piling up at it: every pill ended up displaced...
+		// Starting coincident, the collision pushed each pill off the shared point...
 		for (const n of nodes) {
 			expect(Math.hypot(n.ox, n.oy)).toBeGreaterThan(0.5);
 		}
@@ -329,7 +346,7 @@ describe('LabelEngine', () => {
 				expect(overlaps(nodes[i], nodes[j])).toBe(false);
 			}
 		}
-		// ...and each stays tethered within the leader clamp.
+		// ...and each stays within the leader clamp.
 		for (const n of nodes) {
 			expect(Math.hypot(n.ox, n.oy)).toBeLessThanOrEqual(CFG.maxLeader + 0.5);
 		}
@@ -345,12 +362,13 @@ describe('LabelEngine', () => {
 			height: 1000,
 			margin: 80,
 			selectedId: null,
-			gap: 42,
+			cellSize: 84,
+			perCell: 1,
 			max: 100
 		});
 		engine.attach('p', null as unknown as HTMLElement, 30, 11); // measured half-extents
-		// A new node is seeded on a small ring (see recompute); settle the lone pill back
-		// onto its origin (zero offset) so its box sits exactly on its anchor below.
+		// A new node seeds at offset zero (see recompute), so the lone pill already sits
+		// exactly on its anchor; a few ticks confirm the spring keeps it there.
 		for (let i = 0; i < 400; i++) engine.tick(project, CFG);
 		expect(engine.hitTest(210, 305)).toBe('p'); // inside the box
 		expect(engine.hitTest(235, 305)).toBeNull(); // outside (box half-width 30 → edge at 230)
