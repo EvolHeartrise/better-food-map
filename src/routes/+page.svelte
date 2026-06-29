@@ -2,7 +2,7 @@
 	import { resolve } from '$app/paths';
 	import { pushState, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
-	import { MediaQuery, SvelteSet, SvelteMap } from 'svelte/reactivity';
+	import { SvelteSet, SvelteMap } from 'svelte/reactivity';
 	import {
 		getLocations,
 		getLocationData,
@@ -303,14 +303,26 @@
 		return out;
 	});
 
-	// The map plots EVERY matching location (the chain-branch grouping the old results
-	// list did is gone — the map itself is the result surface now). A 30-branch chain
-	// still drops 30 name pills.
-	const mapLocations = $derived(results.map((result) => result.loc));
+	// The food-item names a venue's map label rotates through, shown one at a time under
+	// its name with a "+N more" count: the items matching an active item/diet filter, or
+	// — with no such filter — its whole menu (empty when the venue has no menu).
+	function rotationItems(loc: LocationData): string[] {
+		const source = hasItemFilter ? loc.menu.filter(itemMatches) : loc.menu;
+		return source.map((menuItem) => menuItem.item_name);
+	}
 
-	// In-view locations keyed by id, so an item-label tap can resolve back to its
-	// venue's resolved menu for the details popup.
-	const locationById = $derived(new Map(locations.map((loc) => [loc.id, loc])));
+	// The map plots EVERY matching location (the chain-branch grouping the old results
+	// list did is gone — the map itself is the result surface now). Each carries the item
+	// names its label rotates through; a 30-branch chain still drops 30 name pills.
+	const mapLocations = $derived(
+		results.map((result) => ({
+			id: result.loc.id,
+			name: result.loc.name,
+			latitude: result.loc.latitude,
+			longitude: result.loc.longitude,
+			items: rotationItems(result.loc)
+		}))
+	);
 
 	// --- Selected location (integrated detail view) ---------------------------
 	// The open location is driven by shallow routing: selecting pushes a
@@ -368,78 +380,21 @@
 		};
 	});
 
-	// Below this width the selected venue's menu is shown as a scrollable list inside
-	// its detail card instead of as an on-map cluster — there's no room for a fanned-out
-	// cluster of labels beside the near-full-width card on a phone.
-	const narrowMap = new MediaQuery('(max-width: 48rem)');
-
-	// The menu-item labels plotted on the map. Each venue's labels fan out as a force-
-	// laid-out cluster around its name pill (see <LocationMap>), so they're capped PER
-	// venue — a radial cluster only stays readable up to ~10–14 labels, and a deep menu
-	// would otherwise bury the map. Two cases:
-	//   1. the selected venue (the showcase): up to SELECTED_MENU_CAP items of its menu,
-	//      in menu order. A deeper menu is truncated and the card notes the remainder;
-	//      on a narrow screen the cluster is suppressed (the card lists the menu instead).
-	//   2. when a filter is active: the matching items at every OTHER visible venue,
-	//      nearest first — at most FILTER_VENUE_CAP per venue, the last being a
-	//      "+N more" chip that selects the venue (revealing its full cluster).
-	// A global MAX_MAP_ITEM_LABELS backstops the total. `groupId` tags a venue's labels;
-	// ids are an injective (venue, item) JSON tuple.
-	const MAX_MAP_ITEM_LABELS = 80;
-	const SELECTED_MENU_CAP = 10;
-	const FILTER_VENUE_CAP = 2;
-	// Sentinel item id for a "+N more" chip; tapping it selects the venue rather than
-	// opening an item popup (see openItemLabel).
-	const MORE_ITEM_ID = '__more__';
-	type MapItemLabel = {
-		id: string;
-		groupId: string;
-		locationId: string;
-		itemId: string;
-		name: string;
-		latitude: number;
-		longitude: number;
-	};
-	const itemLabels = $derived.by(() => {
-		const out: MapItemLabel[] = [];
-		const push = (loc: LocationData, itemId: string, name: string) => {
-			out.push({
-				id: JSON.stringify([loc.id, itemId]),
-				groupId: loc.id,
-				locationId: loc.id,
-				itemId,
-				name,
-				latitude: loc.latitude,
-				longitude: loc.longitude
-			});
-		};
-
-		const sel = selectedLocation;
-		// Selected venue: its menu as a cluster (capped), unless the screen is too
-		// narrow — then the card lists it instead (see the detail card snippet).
-		if (sel && !narrowMap.current) {
-			for (const menuItem of sel.menu.slice(0, SELECTED_MENU_CAP)) {
-				push(sel, menuItem.id, menuItem.item_name);
-			}
-		}
-
-		// Filter matches at every other visible venue: a few chips each, "+N more" last.
-		if (hasItemFilter) {
-			for (const result of results) {
-				if (sel && result.loc.id === sel.id) continue;
-				const matched = result.items;
-				if (matched.length <= FILTER_VENUE_CAP) {
-					for (const menuItem of matched) push(result.loc, menuItem.id, menuItem.item_name);
-				} else {
-					for (const menuItem of matched.slice(0, FILTER_VENUE_CAP - 1)) {
-						push(result.loc, menuItem.id, menuItem.item_name);
-					}
-					push(result.loc, MORE_ITEM_ID, `+${matched.length - (FILTER_VENUE_CAP - 1)} more`);
+	// The selected venue, trimmed to what <LocationMap> needs and carrying its own
+	// rotating item line. Passed as `selected` so the map keeps its label (and rotation)
+	// even when the venue isn't among `mapLocations` — opened from a `/locations/<id>`
+	// link, or panned off screen.
+	const mapSelected = $derived(
+		selectedLocation
+			? {
+					id: selectedLocation.id,
+					name: selectedLocation.name,
+					latitude: selectedLocation.latitude,
+					longitude: selectedLocation.longitude,
+					items: rotationItems(selectedLocation)
 				}
-			}
-		}
-		return out.slice(0, MAX_MAP_ITEM_LABELS);
-	});
+			: null
+	);
 
 	function idFromPath(pathname: string): string | null {
 		const match = pathname.match(/\/locations\/([^/]+)$/);
@@ -468,8 +423,6 @@
 	}
 
 	function closeDetail(): void {
-		// Closing the detail also dismisses any open item popup.
-		closeItemPopup();
 		// Drop the landing-id snapshot so a detail opened from a `/locations/<id>`
 		// URL actually closes. With `page.state` cleared below, `selectedId` falls
 		// back to `landingId`; since `page.url` is frozen at the landing path,
@@ -562,71 +515,6 @@
 		const days = verifiedDaysAgo(iso);
 		return days !== null && days > VERIFIED_STALE_DAYS;
 	}
-
-	// --- Item details popup ----------------------------------------------------
-	// Tapping a menu-item label on the map opens a small popup with that item's
-	// price, description and tags/sources, positioned at the tapped point (clamped to
-	// the viewport) and dismissed by tapping elsewhere or panning. It's
-	// non-interactive (pointer-events: none) — a quick read, not a control surface.
-	const POPUP_GAP = 12;
-	let popupItem = $state<Item | null>(null);
-	let popupAt = $state<{ x: number; y: number } | null>(null);
-	let popupEl = $state<HTMLElement>();
-
-	// Resolve a tapped item label (venue id + item id) to its resolved Item and open
-	// the popup at the tap point. The item comes from the venue's resolved menu —
-	// the in-view set when present, else the open location. A "+N more" chip carries
-	// no real item: tapping it selects the venue, revealing its full menu column.
-	function openItemLabel(
-		locationId: string,
-		itemId: string,
-		point: { x: number; y: number }
-	): void {
-		if (itemId === MORE_ITEM_ID) {
-			selectLocation(locationId);
-			return;
-		}
-		const loc =
-			locationById.get(locationId) ??
-			(selectedLocation?.id === locationId ? selectedLocation : null);
-		const found = loc?.menu.find((menuItem) => menuItem.id === itemId) ?? null;
-		if (!found) return;
-		popupItem = found;
-		popupAt = point;
-	}
-
-	function closeItemPopup(): void {
-		popupItem = null;
-		popupAt = null;
-	}
-
-	// Position the popup near the tap, flipping/clamping so it stays fully on screen.
-	$effect(() => {
-		const el = popupEl;
-		const at = popupAt;
-		if (!el || !at) return;
-		const w = el.offsetWidth;
-		const h = el.offsetHeight;
-		let left = at.x + POPUP_GAP;
-		let top = at.y + POPUP_GAP;
-		if (left + w + POPUP_GAP > window.innerWidth) left = at.x - w - POPUP_GAP;
-		if (top + h + POPUP_GAP > window.innerHeight) top = window.innerHeight - h - POPUP_GAP;
-		el.style.left = `${Math.max(POPUP_GAP, left)}px`;
-		el.style.top = `${Math.max(POPUP_GAP, top)}px`;
-	});
-
-	// A pointerdown anywhere outside the popup closes it — this also means starting a
-	// map pan (a pointerdown on the canvas) dismisses it. The map's own click reopens
-	// it for a fresh item, since click fires after this pointerdown.
-	$effect(() => {
-		if (!popupItem) return;
-		function onPointerDown(event: PointerEvent) {
-			if (popupEl?.contains(event.target as Element | null)) return;
-			closeItemPopup();
-		}
-		window.addEventListener('pointerdown', onPointerDown, true);
-		return () => window.removeEventListener('pointerdown', onPointerDown, true);
-	});
 </script>
 
 <svelte:head>
@@ -641,10 +529,8 @@
 	<div class="app__map">
 		<LocationMap
 			locations={mapLocations}
-			{itemLabels}
-			selected={selectedLocation}
+			selected={mapSelected}
 			onselect={selectLocation}
-			onitemselect={openItemLabel}
 			initialCenter={WORLD_CENTER}
 			initialZoom={WORLD_ZOOM}
 			onzoom={(z) => (zoomLevel = z)}
@@ -652,8 +538,8 @@
 			onviewchange={(bounds) => (viewport = bounds)}
 		>
 			<!-- The selected venue's detail card, rendered by the map at the venue's
-			     point. Holds the location info the old right panel did; the menu now
-			     lives on the map as item labels fanning out from this pill. -->
+			     point. Holds the location info the old right panel did, plus the venue's
+			     full menu (the map labels only tease a rotating item from it). -->
 			{#snippet detailCard()}
 				{#if selectedLocation}
 					{@const loc = selectedLocation}
@@ -727,28 +613,26 @@
 							</dl>
 						{/if}
 
-						<!-- On a narrow screen there's no room for an on-map menu cluster beside
-						     the near-full-width card, so the menu is listed in the card instead
-						     (its labels are suppressed in `itemLabels`). Each row taps through to
-						     the same item popup. -->
-						{#if narrowMap.current && loc.menu.length > 0}
+						<!-- The venue's full menu, listed in the open card. The map labels only
+						     rotate a teaser item per venue, so this is where the whole menu —
+						     each item's price, description, dietary markers, course and sources —
+						     is read. It scrolls within a capped height so a long menu can't
+						     overflow the card. -->
+						{#if loc.menu.length > 0}
 							<ul class="placecard__menu">
 								{#each loc.menu as menuItem (menuItem.id)}
-									<li>
-										<button
-											type="button"
-											class="placecard__item"
-											onclick={(event) =>
-												openItemLabel(loc.id, menuItem.id, { x: event.clientX, y: event.clientY })}
-										>
-											<span class="placecard__item-line">
-												<span class="placecard__item-name">{menuItem.item_name}</span>
-												<span class="placecard__item-price">
-													{formatPrice(menuItem.price, menuItem.currency)}
-												</span>
+									<li class="placecard__item">
+										<span class="placecard__item-line">
+											<span class="placecard__item-name">{menuItem.item_name}</span>
+											<span class="placecard__item-price">
+												{formatPrice(menuItem.price, menuItem.currency)}
 											</span>
-											{@render dietaryBadges(menuItem)}
-										</button>
+										</span>
+										{#if menuItem.description}
+											<p class="placecard__item-desc">{menuItem.description}</p>
+										{/if}
+										{@render dietaryBadges(menuItem)}
+										{@render itemExtras(menuItem)}
 									</li>
 								{/each}
 							</ul>
@@ -766,17 +650,11 @@
 							{/if}
 							{#if loc.menu.length === 0}
 								<span class="placecard__hint">No menu on file yet.</span>
-							{:else if narrowMap.current}
+							{:else}
 								<span class="placecard__hint">
 									{loc.menu.length}
 									{loc.menu.length === 1 ? 'item' : 'items'}
 								</span>
-							{:else if loc.menu.length > SELECTED_MENU_CAP}
-								<span class="placecard__hint">
-									Showing {SELECTED_MENU_CAP} of {loc.menu.length} — tap a label for details.
-								</span>
-							{:else}
-								<span class="placecard__hint">Tap an item label for details.</span>
 							{/if}
 						</footer>
 					</div>
@@ -876,9 +754,9 @@
 		{/if}
 	</div>
 
-	<!-- An item's DIETARY tags (vegan, gluten-free, halal, …) only, rendered inline
-	     wherever the item appears so the diet markers are visible at a glance rather
-	     than hidden behind the popup. Course tags stay in itemExtras.
+	<!-- An item's DIETARY tags (vegan, gluten-free, halal, …) only, rendered inline on
+	     each menu row in the open venue's card so the diet markers are visible at a
+	     glance. Course tags stay in itemExtras.
 	     `optional` (e.g. "can be made vegan") keeps its dashed marker. -->
 	{#snippet dietaryBadges(menuItem: Item)}
 		{@const dietaryTags = menuItem.tags.filter((tag) => tag.tag_type === 'dietary')}
@@ -891,9 +769,10 @@
 		{/if}
 	{/snippet}
 
-	<!-- The item's course tag and its data sources, shown in the popup. Dietary tags
-	     are shown inline on the row above (see dietaryBadges), so they're omitted here
-	     to avoid repeating them. An `optional` tag keeps its dashed marker. -->
+	<!-- The item's course tag and its data sources, shown beneath each menu row in the
+	     open venue's card. Dietary tags are shown inline on the row above (see
+	     dietaryBadges), so they're omitted here to avoid repeating them. An `optional`
+	     tag keeps its dashed marker. -->
 	{#snippet itemExtras(menuItem: Item)}
 		{@const courseTags = menuItem.tags.filter((tag) => tag.tag_type === 'course')}
 		{#if courseTags.length > 0}
@@ -914,25 +793,6 @@
 			</div>
 		{/if}
 	{/snippet}
-
-	<!-- The tapped item label's details, floating over the map at the tap point. It's
-	     non-interactive (pointer-events: none), so it never blocks the map beneath it;
-	     a tap elsewhere (or a pan) dismisses it. -->
-	{#if popupItem}
-		<div class="menu-popup" role="tooltip" bind:this={popupEl}>
-			<div class="menu__line">
-				<span class="menu__name">{popupItem.item_name}</span>
-				<span class="menu__price">{formatPrice(popupItem.price, popupItem.currency)}</span>
-			</div>
-			{#if popupItem.description}
-				<span class="menu__description">{popupItem.description}</span>
-			{:else}
-				<span class="menu__description menu__description--empty">No description</span>
-			{/if}
-			{@render dietaryBadges(popupItem)}
-			{@render itemExtras(popupItem)}
-		</div>
-	{/if}
 </div>
 
 <style>
@@ -1188,9 +1048,8 @@
 		color: var(--color-text-muted);
 	}
 
-	/* Narrow-screen in-card menu list, used in place of the on-map item column.
-	   Scrolls within a capped height so a long menu doesn't make the card overflow
-	   the viewport. */
+	/* The open venue's full menu, listed inside its detail card. Scrolls within a capped
+	   height so a long menu doesn't make the card overflow the viewport. */
 	.placecard__menu {
 		list-style: none;
 		margin: 0;
@@ -1204,25 +1063,13 @@
 	.placecard__item {
 		display: flex;
 		flex-direction: column;
-		gap: 0.15rem;
-		width: 100%;
-		appearance: none;
-		text-align: left;
-		color: inherit;
-		background: none;
-		border: none;
+		gap: 0.2rem;
 		border-top: 1px solid rgba(0, 0, 0, 0.06);
-		padding: 0.45rem 0.1rem;
-		cursor: pointer;
+		padding: 0.5rem 0.1rem;
 	}
 
-	.placecard__menu li:first-child .placecard__item {
+	.placecard__menu li:first-child {
 		border-top: none;
-	}
-
-	.placecard__item:hover .placecard__item-name,
-	.placecard__item:focus-visible .placecard__item-name {
-		color: var(--color-accent);
 	}
 
 	.placecard__item-line {
@@ -1241,6 +1088,12 @@
 		font-size: 0.82rem;
 		font-variant-numeric: tabular-nums;
 		white-space: nowrap;
+		color: var(--color-text-muted);
+	}
+
+	.placecard__item-desc {
+		margin: 0;
+		font-size: 0.78rem;
 		color: var(--color-text-muted);
 	}
 
@@ -1315,37 +1168,7 @@
 		border-color: #f0d28a;
 	}
 
-	/* The name/price line and description, shared by the item popup. */
-	.menu__line {
-		display: flex;
-		justify-content: space-between;
-		align-items: baseline;
-		gap: 0.75rem;
-	}
-
-	.menu__name {
-		font-weight: 600;
-		font-size: 0.9rem;
-	}
-
-	.menu__price {
-		font-size: 0.85rem;
-		font-variant-numeric: tabular-nums;
-		white-space: nowrap;
-	}
-
-	.menu__description {
-		display: block;
-		margin: 0.3rem 0 0;
-		font-size: 0.82rem;
-		color: var(--color-text-muted);
-	}
-
-	.menu__description--empty {
-		font-style: italic;
-	}
-
-	/* The course-tag pill row under an item's details. The pills themselves are
+	/* The course-tag pill row under a menu item in the card. The pills themselves are
 	   <FoodTag>; this only lays them out. */
 	.taglist {
 		list-style: none;
@@ -1356,15 +1179,14 @@
 		padding: 0;
 	}
 
-	/* Inline variant: the dietary badges shown directly on the popup, with a tighter
+	/* Inline variant: the dietary badges shown directly on the menu row, with a tighter
 	   top margin so they hug the row above. */
 	.taglist--inline {
 		margin-top: 0.3rem;
 	}
 
-	/* Provenance for the item. The popup is non-interactive (pointer-events: none),
-	   so these are shown as plain labels/hostnames rather than clickable links; the
-	   detail card renders its own sources as real links. */
+	/* Per-item provenance under a menu row, shown as plain labels/hostnames (the venue's
+	   own sources in the info block above render as real links). */
 	.sources {
 		margin: 0.5rem 0 0;
 	}
@@ -1400,29 +1222,8 @@
 		text-overflow: ellipsis;
 	}
 
-	/* The item details popup floats over the map at the tapped point. The positioning
-	   effect sets its `top`/`left`; it's non-interactive so it never steals a tap from
-	   the map beneath it. A touch higher opacity than the controls keeps text legible
-	   over the map. */
-	.menu-popup {
-		position: fixed;
-		z-index: 20;
-		width: min(18rem, calc(100vw - 2rem));
-		max-height: calc(100dvh - 2rem);
-		overflow-y: auto;
-		padding: 0.85rem 0.95rem;
-		border-radius: 0.85rem;
-		background: rgba(255, 255, 255, 0.92);
-		backdrop-filter: blur(16px) saturate(180%);
-		-webkit-backdrop-filter: blur(16px) saturate(180%);
-		border: 1px solid rgba(255, 255, 255, 0.6);
-		box-shadow: 0 10px 34px rgba(0, 0, 0, 0.22);
-		pointer-events: none;
-	}
-
 	/* Below ~48rem let the search row span the top (its items wrapping into their own
-	   row, foldable by the toggle); the map card and popup already adapt via their own
-	   width clamps. */
+	   row, foldable by the toggle); the map card already adapts via its own width clamp. */
 	@media (max-width: 48rem) {
 		.searchbar {
 			right: calc(1rem + env(safe-area-inset-right));
