@@ -1,8 +1,14 @@
 <script lang="ts">
 	import 'maplibre-gl/dist/maplibre-gl.css';
-	import { onMount } from 'svelte';
+	import { onMount, type Snippet } from 'svelte';
 	import type { Map as MapLibreMap, StyleSpecification } from 'maplibre-gl';
-	import { LabelEngine, type Projector, type RenderItem, type SimConfig } from '$lib/label-layout';
+	import {
+		LabelEngine,
+		stepSimulation,
+		type Projector,
+		type RenderItem,
+		type SimConfig
+	} from '$lib/label-layout';
 
 	// A geographic bounding box reported to the parent as the visible area. Kept
 	// structural (rather than imported from the server module) so this component
@@ -19,15 +25,42 @@
 		longitude: number;
 	};
 
+	// A menu-item label to draw near its venue. Several share one venue point (its
+	// menu, or every filter match there); each springs toward that point and is pushed
+	// off its neighbours, so a venue's items settle in a cluster surrounding its name
+	// pill, tethered by short leader lines. `id` is unique per (venue, item); `groupId`
+	// is the venue id (kept as a stable tag; it no longer drives layout).
+	type ItemLabel = {
+		id: string;
+		groupId: string;
+		locationId: string;
+		itemId: string;
+		name: string;
+		latitude: number;
+		longitude: number;
+	};
+
 	let {
 		locations,
-		// The currently selected location, shown zoomed-in with its detail panel
-		// open on the page. When set, the map flies to it once and keeps its label
+		// Menu-item labels to plot, anchored at their venue's point: the selected
+		// venue's menu and/or the items matching an active search filter. They join the
+		// name pills in one force pass, so each springs to its venue point and fans out
+		// around it, clear of every other label.
+		itemLabels = [],
+		// The currently selected location, shown zoomed-in with its detail card
+		// open on the map. When set, the map flies to it once and keeps its label
 		// visible even if it isn't among the in-view `locations`.
 		selected = null,
 		// Called with a location id when the user clicks a name label, so the parent
-		// can open that location (the same action as clicking a result card).
+		// can open that location (selecting it).
 		onselect,
+		// Called when the user taps a menu-item label, with the venue + item ids and
+		// the tap point (CSS px), so the parent can open that item's details popup.
+		onitemselect,
+		// The selected venue's detail card. Rendered as an overlay element the map
+		// keeps positioned at the venue's projected point; the parent supplies the
+		// content (and all its app state) via this snippet.
+		detailCard,
 		// Where the map opens, as `[lat, lng]`. Falls back to DEFAULT_CENTER when absent.
 		// The camera otherwise only moves when the user pans/zooms or selects a place —
 		// search/filter changes never move it.
@@ -50,8 +83,11 @@
 		onviewchange
 	}: {
 		locations: Location[];
+		itemLabels?: ItemLabel[];
 		selected?: Location | null;
 		onselect?: (id: string) => void;
+		onitemselect?: (locationId: string, itemId: string, point: { x: number; y: number }) => void;
+		detailCard?: Snippet;
 		initialCenter?: [number, number] | null;
 		initialZoom?: number | null;
 		onzoom?: (zoom: number) => void;
@@ -96,7 +132,7 @@
 	// Minimum on-screen spacing (px) between two surviving anchors. Anything packed
 	// tighter than this loses to its higher-priority neighbour and is hidden until
 	// zoom spreads the anchors apart. Larger = sparser map.
-	const DECLUTTER_GAP = 42;
+	const DECLUTTER_GAP = 30;
 	// Hard ceiling on simultaneously-drawn pills, a backstop against a pathological
 	// frame; the declutter gap is the real limiter well before this bites.
 	const MAX_VISIBLE = 160;
@@ -106,14 +142,42 @@
 	// Off-screen margin (px) within which anchors still count, so a pill entering
 	// from the edge is already simulated before it scrolls fully into view.
 	const OVERLAY_MARGIN = 80;
-	// Force-model constants (see SimConfig). Tuned for a calm, quick settle.
+	// Force-model constants (see SimConfig), shared by the ONE unified pass over the
+	// name pills and the item labels. The repulsion is a conservative radial "soft
+	// circle" push (`radiusBlend: 1` ⇒ each pill is treated as a circle the size of its
+	// half-width), so a venue's co-anchored menu relaxes into a ROUND cluster around its
+	// dot rather than a vertical stack, while the whole system stays a damped energy
+	// descent that reliably settles. `maxLeader` bounds the leader length; the cluster
+	// fans out within that budget (SELECTED_MENU_CAP on the page keeps it readable).
 	const SIM_CONFIG: SimConfig = {
-		spring: 0.08,
-		damping: 0.75,
-		separation: 0.6,
-		padding: 6,
-		maxLeader: 64
+		spring: 0.05,
+		damping: 0.84,
+		separation: 0.55,
+		padding: 14,
+		maxLeader: 130,
+		radiusBlend: 1
 	};
+	// Spring multiplier for name pills in the unified pass (see SimNode.springScale): a
+	// name pill holds near its own dot while the lighter item pills (springScale 1) ring
+	// around it, so a selected venue's name stays put at the centre of its menu cluster.
+	const NAME_SPRING_SCALE = 8;
+
+	// --- Item-label tuning ----------------------------------------------------
+	// Item labels never declutter by anchor distance — a venue's whole menu shares
+	// one point, so a distance gap would keep only one of them. Instead the gap is 0
+	// (the force model fans them apart) and a hard cap bounds the total; the page
+	// orders them so the selected venue and the nearest matches win the cap.
+	const ITEM_DECLUTTER_GAP = 0;
+	const MAX_ITEM_LABELS = 80;
+	// Item leader stroke — a lighter accent tint than the name-pill leaders, drawn
+	// underneath them. Each item label draws a leader from its venue point to its pill
+	// centre, the same way the name pills do.
+	const ITEM_LEADER_COLOR = 'rgba(47, 111, 79, 0.45)';
+	// Where the detail card sits relative to the selected venue's point: up and to
+	// the right, clamped to the viewport (see positionDetailCard).
+	const DETAIL_OFFSET_X = 16;
+	const DETAIL_OFFSET_Y = 12;
+
 	// Don't draw a leader line until the pill has been displaced at least this far
 	// (px) from its origin — an on-origin pill needs no line.
 	const LEADER_MIN_DISTANCE = 4;
@@ -130,6 +194,9 @@
 
 	let mapEl: HTMLDivElement;
 	let canvasEl: HTMLCanvasElement;
+	// The overlay element wrapping the detail-card snippet; the frame loop writes its
+	// transform to keep it pinned to the selected venue's point.
+	let detailCardEl = $state<HTMLDivElement | undefined>();
 
 	// MapLibre's JS is imported dynamically inside onMount (client-only) because it
 	// touches `window` at module load; the types are erased at compile time so
@@ -139,14 +206,19 @@
 
 	// Owns the persistent per-pill simulation state across frames (positions survive
 	// a re-render and brief visibility toggles). Plain — and deliberately
-	// non-reactive — Map/Set state lives inside the engine, not this component.
+	// non-reactive — Map/Set state lives inside the engine, not this component. A
+	// second engine drives the menu-item labels with their own tuning.
 	const engine = new LabelEngine();
+	const itemEngine = new LabelEngine();
 
 	// The pills currently mounted in the DOM. Reactive so the {#each} tracks it, but
 	// reassigned only when the visible set/selection actually changes (guarded by
-	// `renderSig`), so panning that keeps the same labels does no DOM work.
+	// `renderSig`), so panning that keeps the same labels does no DOM work. Mirrored
+	// for the item labels.
 	let render = $state<RenderItem[]>([]);
 	let renderSig = '';
+	let itemRender = $state<RenderItem[]>([]);
+	let itemRenderSig = '';
 
 	// Becomes true once the map's first render is done; effects below gate on it so
 	// they don't fire against a half-built map (the import + style load are async).
@@ -195,6 +267,24 @@
 		return list;
 	});
 
+	// The item-label candidates, anchored at each item's venue point. Build order is
+	// the page's priority order (selected venue first, then nearest matches), encoded
+	// as a descending `priority` so the cap keeps the most relevant labels.
+	const itemCandidates = $derived(
+		itemLabels.map((l, i) => ({
+			id: l.id,
+			groupId: l.groupId,
+			name: l.name,
+			lat: l.latitude,
+			lng: l.longitude,
+			priority: itemLabels.length - i
+		}))
+	);
+
+	// Composite-id → label lookup, so a hit on an item pill resolves back to its
+	// venue + item ids for the parent's details popup.
+	const itemById = $derived(new Map(itemLabels.map((l) => [l.id, l])));
+
 	// The prop contract carries centres as `[lat, lng]` (Leaflet's order, and how
 	// the page supplies the IP-detected centre); MapLibre wants `[lng, lat]`.
 	function toLngLat([lat, lng]: [number, number]): [number, number] {
@@ -236,19 +326,21 @@
 		};
 	}
 
-	// Svelte attachment: bind a pill's DOM element to its engine node, measure it
-	// once, and place it at its current position to avoid a flash at (0,0) before
-	// the first frame. Cleanup detaches the element on unmount.
-	function pill(id: string) {
-		return (el: HTMLElement) => {
-			engine.attach(id, el, el.offsetWidth / 2 || 1, el.offsetHeight / 2 || 1);
-			const node = engine.get(id);
+	// Svelte attachment factory: bind a pill's DOM element to a node in the given
+	// engine, measure it once, and place it at its current position to avoid a flash
+	// at (0,0) before the first frame. Cleanup detaches the element on unmount.
+	function pillAttach(eng: LabelEngine) {
+		return (id: string) => (el: HTMLElement) => {
+			eng.attach(id, el, el.offsetWidth / 2 || 1, el.offsetHeight / 2 || 1);
+			const node = eng.get(id);
 			if (node) {
 				el.style.transform = `translate(${node.ax + node.ox}px, ${node.ay + node.oy}px) translate(-50%, -50%)`;
 			}
-			return () => engine.detach(id, el);
+			return () => eng.detach(id, el);
 		};
 	}
+	const pill = pillAttach(engine);
+	const itemPill = pillAttach(itemEngine);
 
 	// Re-pick the visible labels for the current camera and reassign `render` — and
 	// thus touch the DOM — only when the set or selection actually changed, so a
@@ -262,12 +354,34 @@
 			margin: OVERLAY_MARGIN,
 			selectedId: selected?.id ?? null,
 			gap: DECLUTTER_GAP,
-			max: MAX_VISIBLE
+			max: MAX_VISIBLE,
+			springScale: NAME_SPRING_SCALE
 		});
 		const sig = next.map((i) => (i.selected ? '*' : '') + i.id).join(',');
 		if (sig !== renderSig) {
 			renderSig = sig;
 			render = next;
+		}
+	}
+
+	// As recomputeVisible, for the item labels. No anchor-distance declutter (gap 0):
+	// co-anchored items all survive and the force model fans them out; the cap bounds
+	// the total.
+	function recomputeItems(project: Projector) {
+		const next = itemEngine.recompute({
+			candidates: itemCandidates,
+			project,
+			width: canvasCssWidth,
+			height: canvasCssHeight,
+			margin: OVERLAY_MARGIN,
+			selectedId: null,
+			gap: ITEM_DECLUTTER_GAP,
+			max: MAX_ITEM_LABELS
+		});
+		const sig = next.map((i) => i.id).join(',');
+		if (sig !== itemRenderSig) {
+			itemRenderSig = sig;
+			itemRender = next;
 		}
 	}
 
@@ -292,6 +406,52 @@
 		}
 	}
 
+	// Draw the leader lines for one engine's active nodes and write each pill's
+	// transform, returning the largest per-node kinetic energy so the caller can tell
+	// whether the simulation has settled. Assumes the stroke style is already set and
+	// the canvas already cleared.
+	function drawLeaders(
+		ctx: CanvasRenderingContext2D,
+		active: ReturnType<LabelEngine['tick']>
+	): number {
+		let maxKineticEnergy = 0;
+		ctx.beginPath();
+		for (const node of active) {
+			const x = node.ax + node.ox;
+			const y = node.ay + node.oy;
+			if (node.ox * node.ox + node.oy * node.oy > LEADER_MIN_DISTANCE * LEADER_MIN_DISTANCE) {
+				// Draw to the pill centre; the opaque pill (above the canvas) hides the
+				// inner stub, so the line reads as meeting the pill's edge.
+				ctx.moveTo(node.ax, node.ay);
+				ctx.lineTo(x, y);
+			}
+			if (node.el) {
+				node.el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%)`;
+			}
+			const ke = node.vx * node.vx + node.vy * node.vy;
+			if (ke > maxKineticEnergy) maxKineticEnergy = ke;
+		}
+		ctx.stroke();
+		return maxKineticEnergy;
+	}
+
+	// Keep the detail card pinned to the selected venue's projected point (the stable
+	// geographic anchor, not the jittering name pill), offset up-and-right and clamped
+	// to stay on screen. A no-op when nothing is selected or the card isn't mounted.
+	function positionDetailCard(project: Projector) {
+		const el = detailCardEl;
+		if (!el || !selected) return;
+		const p = project(selected.longitude, selected.latitude);
+		const cw = el.offsetWidth;
+		const ch = el.offsetHeight;
+		const margin = 10;
+		let left = p.x + DETAIL_OFFSET_X;
+		let top = p.y - ch - DETAIL_OFFSET_Y;
+		left = Math.max(margin, Math.min(left, canvasCssWidth - cw - margin));
+		top = Math.max(margin, Math.min(top, canvasCssHeight - ch - margin));
+		el.style.transform = `translate(${left}px, ${top}px)`;
+	}
+
 	// Start (or restart) the rAF loop if it isn't already running. Called on load and
 	// whenever something that needs re-laying-out happens — a camera move/resize or a
 	// data/selection change — so the loop only spins while there's work to do.
@@ -302,10 +462,10 @@
 	}
 
 	// One animation frame: refresh anchors from the live projection, advance the
-	// force model, write each pill's transform, and redraw the leader lines. The loop
-	// keeps going only while the camera is moving or the pills are still settling;
-	// once everything is at rest it parks itself (see `wake`), so an idle map costs
-	// nothing per frame rather than redrawing 60×/s forever.
+	// force models, write each pill's transform, redraw the leader lines, and keep
+	// the detail card on its venue. The loop keeps going only while the camera is
+	// moving or the pills are still settling; once everything is at rest it parks
+	// itself (see `wake`), so an idle map costs nothing per frame.
 	function frame(time: number) {
 		const m = map;
 		if (!m) {
@@ -326,6 +486,11 @@
 				renderSig = '';
 				engine.clear();
 			}
+			if (itemRender.length) {
+				itemRender = [];
+				itemRenderSig = '';
+				itemEngine.clear();
+			}
 			canvasCtx?.clearRect(0, 0, canvasCssWidth, canvasCssHeight);
 		} else {
 			// A projector bound to the live camera (`m` is the narrowed, non-null map).
@@ -334,40 +499,36 @@
 			if (time - lastDeclutter > DECLUTTER_INTERVAL_MS) {
 				lastDeclutter = time;
 				recomputeVisible(project);
+				recomputeItems(project);
 			}
 
-			// Re-project and advance the visible pills, then draw them and their leaders.
-			const active = engine.tick(project, SIM_CONFIG);
+			// Re-project BOTH engines' anchors, then step their union in ONE force pass:
+			// the name pills and the item labels spring to their own venue points and
+			// collide as a single system, so a venue's items settle in a cluster centred
+			// on its name pill, all pushing off one another (and off nearby venues' labels).
+			const names = engine.tickStatic(project);
+			const items = itemEngine.tickStatic(project);
+			stepSimulation([...names, ...items], SIM_CONFIG);
 
 			const ctx = canvasCtx;
 			if (ctx) {
 				ctx.clearRect(0, 0, canvasCssWidth, canvasCssHeight);
-				ctx.strokeStyle = LEADER_COLOR;
 				ctx.lineWidth = 1;
-				ctx.beginPath();
-				let maxKineticEnergy = 0;
-				for (const node of active) {
-					const x = node.ax + node.ox;
-					const y = node.ay + node.oy;
-					if (node.ox * node.ox + node.oy * node.oy > LEADER_MIN_DISTANCE * LEADER_MIN_DISTANCE) {
-						// Draw to the pill centre; the opaque pill (above the canvas) hides
-						// the inner stub, so the line reads as meeting the pill's edge.
-						ctx.moveTo(node.ax, node.ay);
-						ctx.lineTo(x, y);
-					}
-					if (node.el) {
-						node.el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%)`;
-					}
-					const ke = node.vx * node.vx + node.vy * node.vy;
-					if (ke > maxKineticEnergy) maxKineticEnergy = ke;
-				}
-				ctx.stroke();
-				// Keep going while any pill is still moving enough to see.
-				if (maxKineticEnergy > SETTLE_KE_EPS) busy = true;
+				// Item leaders + pills first (underneath), then the name leaders + pills on
+				// top, so a selected venue's green name stays readable above its own cluster.
+				// drawLeaders both draws each node's leader and writes its DOM transform.
+				ctx.strokeStyle = ITEM_LEADER_COLOR;
+				const itemKe = drawLeaders(ctx, items);
+				ctx.strokeStyle = LEADER_COLOR;
+				const nameKe = drawLeaders(ctx, names);
+				// Keep going while any label — name or item — is still moving enough to see.
+				if (itemKe > SETTLE_KE_EPS || nameKe > SETTLE_KE_EPS) busy = true;
 			} else {
 				// Canvas not ready yet — try again next frame.
 				busy = true;
 			}
+
+			positionDetailCard(project);
 		}
 
 		if (busy) {
@@ -439,25 +600,37 @@
 			});
 
 			// Zoom control sits bottom-left, clear of the floating search (top-left)
-			// and results (top-right) panels that overlay the full-screen map. No
-			// compass: rotation isn't part of the interaction, matching the old map.
+			// that overlays the full-screen map. No compass: rotation isn't part of the
+			// interaction, matching the old map.
 			map.addControl(new lib.NavigationControl({ showCompass: false }), 'bottom-left');
 
-			// The name pills are pointer-transparent so wheel-zoom, drag-pan and pinch
-			// pass straight through to the map even when the cursor is over one. That
-			// means selection and the hover cursor can't come from DOM events on the
-			// pills, so we resolve them here by hit-testing the click/hover point
-			// against the pill boxes the engine is laying out.
+			// The name and item pills are pointer-transparent so wheel-zoom, drag-pan
+			// and pinch pass straight through to the map even when the cursor is over
+			// one. That means selection and the hover cursor can't come from DOM events
+			// on the pills, so we resolve them here by hit-testing the click/hover point
+			// against the pill boxes the engines are laying out. Name pills paint on top
+			// of the item labels, so a tap is resolved against them first: a tap on a
+			// venue name selects it, otherwise a tap on an item label (which fans clear
+			// of the names) opens that item's details.
 			map.on('click', (e) => {
 				const id = engine.hitTest(e.point.x, e.point.y, HIT_SLOP);
-				if (id) onselect?.(id);
+				if (id) {
+					onselect?.(id);
+					return;
+				}
+				const itemHit = itemEngine.hitTest(e.point.x, e.point.y, HIT_SLOP);
+				if (itemHit) {
+					const label = itemById.get(itemHit);
+					if (label) onitemselect?.(label.locationId, label.itemId, { x: e.point.x, y: e.point.y });
+				}
 			});
 			map.on('mousemove', (e) => {
 				const m = map;
 				if (!m) return;
-				m.getCanvas().style.cursor = engine.hitTest(e.point.x, e.point.y, HIT_SLOP)
-					? 'pointer'
-					: '';
+				const hit =
+					itemEngine.hitTest(e.point.x, e.point.y, HIT_SLOP) ||
+					engine.hitTest(e.point.x, e.point.y, HIT_SLOP);
+				m.getCanvas().style.cursor = hit ? 'pointer' : '';
 			});
 
 			// Any camera motion or container resize wakes the (possibly parked) layout
@@ -496,6 +669,7 @@
 			if (rafId) cancelAnimationFrame(rafId);
 			if (viewTimer) clearTimeout(viewTimer);
 			engine.clear();
+			itemEngine.clear();
 			if (map) {
 				map.remove();
 				map = null;
@@ -504,13 +678,23 @@
 	});
 
 	// Refresh the visible set promptly whenever the candidates change (a viewport
-	// refetch, a filter, or a new selection), rather than waiting up to one declutter
-	// interval. Resets the throttle and wakes the loop in case it had parked.
+	// refetch, a filter, a new selection, or a change to the item labels), rather than
+	// waiting up to one declutter interval. Resets the throttle and wakes the loop in
+	// case it had parked.
 	$effect(() => {
 		void candidates;
+		void itemCandidates;
 		if (!ready) return;
 		lastDeclutter = 0;
 		wake();
+	});
+
+	// Place the detail card the moment it mounts (or the selection changes), so it
+	// doesn't flash at (0,0) for a frame before the loop repositions it.
+	$effect(() => {
+		const m = map;
+		if (!ready || !m || !detailCardEl || !selected) return;
+		positionDetailCard((lng, lat) => m.project([lng, lat]));
 	});
 
 	// Centre on a newly-selected location. Guarded by `lastSelectedId` so a data
@@ -550,15 +734,31 @@
 	<div class="map" bind:this={mapEl} role="application" aria-label="Map of food locations"></div>
 	<canvas class="leaders" bind:this={canvasEl} aria-hidden="true"></canvas>
 	<!-- Pills are presentational: pointer-transparent so map gestures pass through,
-	     with click-to-select handled by the map's hit-test (see onMount). The venue
-	     names are also reachable in the results list, the accessible selection path. -->
+	     with click-to-select / tap-for-details handled by the map's hit-test (see
+	     onMount). The venue names are also reachable via search, the accessible path. -->
 	<div class="labels" aria-hidden="true">
+		<!-- Item labels render first so the venue name pills paint on top of them — a
+		     selected venue's green name stays readable above its own fanned-out menu. -->
+		{#each itemRender as item (item.id)}
+			<div class="pill pill--item" {@attach itemPill(item.id)}>
+				{item.name}
+			</div>
+		{/each}
 		{#each render as item (item.id)}
 			<div class="pill" class:pill--selected={item.selected} {@attach pill(item.id)}>
 				{item.name}
 			</div>
 		{/each}
 	</div>
+
+	<!-- The selected venue's detail card, kept positioned at its point by the frame
+	     loop. Sits outside `.labels` so it isn't clipped, and opts back into pointer
+	     events so its links/buttons work. -->
+	{#if selected && detailCard}
+		<div class="detail-card" bind:this={detailCardEl}>
+			{@render detailCard()}
+		</div>
+	{/if}
 </div>
 
 <style>
@@ -611,12 +811,41 @@
 		will-change: transform;
 	}
 
-	/* Mark the selected venue's pill in the app accent (--color-accent). */
+	/* Mark the selected venue's pill in the app accent. */
 	.pill--selected {
 		background: #2f6f4f;
 		border-color: #2f6f4f;
 		color: #ffffff;
 		font-weight: 600;
+	}
+
+	/* Menu-item labels: smaller, accent-tinted pills that cluster around their venue's
+	   name pill (force-laid-out) and tether back to it with a leader line. Width is
+	   bounded so a long item name elides with an ellipsis (the full name is in the tap
+	   popup) — that keeps the cluster tidy and collision boxes predictable. */
+	.pill--item {
+		max-width: 11rem;
+		padding: 1px 7px;
+		font-size: 11px;
+		font-weight: 500;
+		color: #2f6f4f;
+		background: #f3faf6;
+		border-color: rgba(47, 111, 79, 0.28);
+		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	/* The selected venue's detail card. The wrapper only positions it (the frame loop
+	   writes its transform) and re-enables pointer events; its surface styling is
+	   supplied by the page through the snippet. */
+	.detail-card {
+		position: absolute;
+		top: 0;
+		left: 0;
+		z-index: 3;
+		pointer-events: auto;
+		will-change: transform;
 	}
 
 	/* Keep the zoom control and attribution clear of notches and the home indicator
