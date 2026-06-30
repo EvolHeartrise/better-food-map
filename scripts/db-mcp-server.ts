@@ -195,9 +195,12 @@ const NAME_DESC =
 	'street, intersection, city, neighbourhood, mall/plaza, or landmark, and no parenthetical/suffix ' +
 	'locator like "(Scott Road)", "- 72 Ave", or " Surrey". Branches at different addresses are ' +
 	'EXPECTED to share an identical name — the map tells them apart by their address/coordinates, not ' +
-	"by the name. When adding from OSM, use the POI's `name` tag verbatim (dropping any such locator). " +
-	'Keep a word that only looks geographic when the source shows it AS the name (e.g. "Published on ' +
-	'Main", "MeeT on Main"); the test is whether the venue calls itself that, not whether it locates a branch.';
+	'by the name. No editorial annotation either: no former name like "(formerly Bandidas Taqueria)", ' +
+	'status note like "(closed)", or tacked-on descriptor like "(Tea & Coffee)" — that prose has no ' +
+	"place in the name. When adding from OSM, use the POI's `name` tag verbatim (dropping any such " +
+	'locator/annotation). Keep a word that only looks like an addition when the source shows it AS the ' +
+	'name (e.g. "Published on Main", "MeeT on Main", "Almond Dosa - Pure Vegetarian"); the test is ' +
+	'whether the venue calls itself that, not whether it locates or describes a branch.';
 const STREET_DESC =
 	'House number + street (+ unit), e.g. "1909 W 4th Ave". Take the street line from the candidate\'s ' +
 	'OSM/Overture address; never geocode or invent one.';
@@ -1264,8 +1267,8 @@ const tools = [
 			'from OSM verbatim; otherwise pass latitude/longitude + a structured address (street/city/region/' +
 			'country required, postcode optional; region/postcode/country are normalized, e.g. "Ontario" → ' +
 			'"ON"). `name` is the venue\'s own name ONLY — never bake a branch\'s location (street/' +
-			'neighbourhood/mall/landmark) into it to disambiguate; branches share a name and are told apart ' +
-			'by address (see the `name` field doc). For a chain branch set `menu_id`/`brand_id`; for an independent venue omit them and ' +
+			'neighbourhood/mall/landmark) or an editorial annotation (former name, status note) into it; ' +
+			'branches share a name and are told apart by address (see the `name` field doc). For a chain branch set `menu_id`/`brand_id`; for an independent venue omit them and ' +
 			'optionally pass `menu_items` to create its private menu in the same batch (else use create_items). ' +
 			'Idempotent on explicit ids (skipped → `skipped_existing_ids`; give an inline-`menu_items` location ' +
 			'an explicit id too, so its items skip with it) and coordinate-deduped against the map and earlier ' +
