@@ -11,6 +11,11 @@
 	--radius: 0.5rem;
 	--shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
 
+	/* Shared height for the floating map controls (sign-in, search, diet) so the row of
+	   bubbles lines up. Each uses border-box and centres its content, so this is the
+	   single source of truth for their height across the three component files. */
+	--control-height: 2.375rem;
+
 	--font-sans:
 		system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif, 'Apple Color Emoji',
 		'Segoe UI Emoji';
