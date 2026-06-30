@@ -861,6 +861,7 @@
 		align-items: center;
 		gap: 0.35rem;
 		width: 11rem;
+		height: var(--control-height);
 		padding: 0.3rem 0.5rem;
 		cursor: text;
 		border-radius: 0.7rem;
