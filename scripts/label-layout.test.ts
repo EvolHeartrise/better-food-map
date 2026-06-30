@@ -2,6 +2,7 @@ import { expect, test, describe } from 'bun:test';
 import {
 	hashId,
 	holdZoom,
+	geoCellDegrees,
 	selectVisible,
 	stepSimulation,
 	LabelEngine,
@@ -42,6 +43,10 @@ const maxBoxOverlap = (nodes: SimNode[]): number => {
 // movement (vx²+vy², the offset change the sim records) has stayed below this for a
 // stretch of frames.
 const SETTLE_KE_EPS = 0.0016;
+// Mirrors the component's SIM_MAX_SETTLE_FRAMES: once the camera is still, the loop gives
+// the sim this many frames to settle, then parks regardless. A normal cluster must reach
+// rest WITHIN this budget, or labels would ship permanently jostling — asserted below.
+const SIM_MAX_SETTLE_FRAMES = 240;
 
 // Steps the simulation and returns the frame on which it SETTLED — the first frame of
 // the run where max per-frame movement fell below SETTLE_KE_EPS and stayed there for 60
@@ -98,12 +103,21 @@ describe('holdZoom', () => {
 
 	test('holds steady through the exact jitter wander seen in the wild', () => {
 		// The zoom samples captured while panning over Vancouver — a ±0.0004 wander that, fed
-		// straight to the cell size, flickered labels. Held, the cell zoom never budges.
+		// straight to the cell size, flickered labels. Held, the cell zoom never budges, and
+		// — the property that actually matters — the declutter CELL SIZE it feeds is constant,
+		// whereas the raw jittered zoom would have wobbled it (which is what flipped labels).
+		const wander = [10.9306, 10.9308, 10.9309, 10.9304, 10.9299, 10.9296, 10.9295, 10.9297];
 		let z = holdZoom(0, 10.93, 0.25); // first frame adopts the real zoom
-		for (const live of [10.9306, 10.9308, 10.9309, 10.9304, 10.9299, 10.9296, 10.9295, 10.9297]) {
+		const heldCells = new Set<number>();
+		const rawCells = new Set<number>();
+		for (const live of wander) {
 			z = holdZoom(z, live, 0.25);
+			heldCells.add(geoCellDegrees(z, 84));
+			rawCells.add(geoCellDegrees(live, 84));
 		}
 		expect(z).toBe(10.93);
+		expect(heldCells.size).toBe(1); // cell size never wobbles → no boundary-label flips
+		expect(rawCells.size).toBeGreaterThan(1); // the raw jitter WOULD have wobbled it
 	});
 });
 
@@ -273,6 +287,10 @@ describe('stepSimulation', () => {
 		];
 		const settled = settleStep(nodes, CFG);
 		expect(settled).toBeGreaterThanOrEqual(0);
+		// ...and reaches rest WITHIN the budget the live loop allows before it parks, so a
+		// normal cluster never ships still-jostling (a future SIM_CONFIG retune that broke
+		// this would fail here rather than silently shipping perpetual motion).
+		expect(settled).toBeLessThan(SIM_MAX_SETTLE_FRAMES);
 		expect(maxBoxOverlap(nodes)).toBeLessThan(2);
 		// Each pill ends near its own coordinate (only a modest nudge was needed to part).
 		for (const n of nodes) expect(Math.hypot(n.ox, n.oy)).toBeLessThan(40);

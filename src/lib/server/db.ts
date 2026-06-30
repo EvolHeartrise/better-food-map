@@ -666,12 +666,16 @@ function gridCellSize(bounds: Bounds): number | null {
 	const span = Math.max(latSpan, lngSpan);
 	if (!(span > 0)) return null;
 	let cell = niceStep(span / GRID_DIVISIONS);
+	// Decide narrow-vs-grid on the BASE cell, so the boundary is the documented ~440 m cell (a
+	// neighbourhood returns everything). Coarsening below only ever grows the cell, so once we
+	// commit to the grid path it always stays at or above MIN_GRID_CELL_DEG.
+	if (cell < MIN_GRID_CELL_DEG) return null;
 	while ((Math.ceil(latSpan / cell) + 1) * (Math.ceil(lngSpan / cell) + 1) > GRID_REP_LIMIT) {
 		const next = niceStepUp(cell);
 		if (!(next > cell)) break;
 		cell = next;
 	}
-	return cell >= MIN_GRID_CELL_DEG ? cell : null;
+	return cell;
 }
 
 // The ids of the per-cell representative locations within `bounds`: partition the
