@@ -22,7 +22,8 @@ import {
 	insertBrand,
 	insertMenu,
 	insertMenuItems,
-	setLocationItemOverride
+	setLocationItemOverride,
+	MAP_RESULT_LIMIT
 } from '../src/lib/server/db';
 import { freshDb } from './test-d1';
 
@@ -203,6 +204,88 @@ test('getMapData downsamples a wide viewport to one representative per grid cell
 	const wide = await getMapData(db, WORLD);
 	// The clustered three collapse to the one with a menu; the far one survives alone.
 	expect(wide.locations.map((l) => l.id).toSorted()).toEqual([withMenu, far].toSorted());
+});
+
+// The wide path returns ALL occupied cells, not a top-N slice of them. The ids used to be
+// resolved through an `id IN (?, …)` list and so capped at 96 to stay under D1's per-query
+// parameter limit; panning then reshuffled which 96 cells won that cut, flickering labels
+// in and out. Passing the ids through a single json_each bind lifts the cap (now just
+// MAP_RESULT_LIMIT), so every occupied cell in view comes back regardless of the framing.
+test('a wide viewport returns every occupied cell, past the old 96-id cap', async () => {
+	const db = freshDb();
+	const addr = {
+		street: '1 Test St',
+		city: 'Toronto',
+		region: 'ON',
+		postcode: 'M5V 2T6',
+		country: 'CA',
+		phone: null,
+		website: null
+	};
+	// 120 venues, each alone in its own 5° grid cell within a square box (cell = niceStep(60/12)
+	// = 5°), so none collapse together and all 120 are distinct representatives — more than the
+	// old 96 cap would have allowed through.
+	const box = { minLat: 0, maxLat: 60, minLng: 0, maxLng: 60 };
+	const venues = Array.from({ length: 120 }, (_, i) => ({
+		name: `Venue ${i}`,
+		category: 'restaurant' as const,
+		latitude: 2.5 + 5 * Math.floor(i / 12),
+		longitude: 2.5 + 5 * (i % 12),
+		...addr
+	}));
+	await insertLocations(db, venues);
+
+	const wide = await getMapData(db, box);
+	expect(wide.locations.length).toBe(120); // all occupied cells, not a 96-cell slice
+	expect(new Set(wide.locations.map((l) => l.id)).size).toBe(120);
+});
+
+// When a dense view would hold MORE occupied cells than the cap, gridCellSize coarsens the
+// lattice (up the 1-2-5 ladder) so the count stays under the cap and the trailing LIMIT
+// never trims. That is what makes the wide path pan-stable: a top-N cut over the in-view
+// cells reshuffles as the box slides (the flicker), so we size the grid so there's no cut.
+test('a dense wide viewport coarsens under the cap, and its reps are pan-stable', async () => {
+	const db = freshDb();
+	const addr = {
+		street: '1 Test St',
+		city: 'Toronto',
+		region: 'ON',
+		postcode: 'M5V 2T6',
+		country: 'CA',
+		phone: null,
+		website: null
+	};
+	// A dense field: a venue on every integer degree across a 30°×30° box (961 venues). The
+	// base cell is niceStep(30/12) = 2° → ~256 geometric cells > the 200 cap, so without
+	// coarsening the LIMIT would trim to exactly 200 (and flicker on pan). gridCellSize
+	// coarsens to 5° (~49 cells), well under the cap.
+	const venues = Array.from({ length: 31 * 31 }, (_, k) => ({
+		name: `V ${Math.floor(k / 31)}-${k % 31}`,
+		category: 'restaurant' as const,
+		latitude: Math.floor(k / 31),
+		longitude: k % 31,
+		...addr
+	}));
+	await insertLocations(db, venues);
+
+	const box = { minLat: 0, maxLat: 30, minLng: 0, maxLng: 30 };
+	const a = await getMapData(db, box);
+	// Strictly under the cap proves coarsening engaged — without it this would be exactly 200.
+	expect(a.locations.length).toBeLessThan(MAP_RESULT_LIMIT);
+	expect(a.locations.length).toBeGreaterThan(0);
+
+	// Pan by +1° on both axes (same 30° span → same coarsened 5° cell). Representatives whose
+	// cell sits fully inside BOTH boxes must be identical — the "no flicker while panning"
+	// property. Restrict to the deep interior (≥1 cell inside both) so edge cells, which
+	// legitimately enter/leave, don't count.
+	const b = await getMapData(db, { minLat: 1, maxLat: 31, minLng: 1, maxLng: 31 });
+	const interiorIds = (data: Awaited<ReturnType<typeof getMapData>>) =>
+		data.locations
+			.filter((l) => l.latitude >= 6 && l.latitude <= 29 && l.longitude >= 6 && l.longitude <= 29)
+			.map((l) => l.id)
+			.toSorted();
+	expect(interiorIds(a)).toEqual(interiorIds(b));
+	expect(interiorIds(a).length).toBeGreaterThan(0); // the stable region isn't trivially empty
 });
 
 // The global search behind the `searchLocations` remote. Exercises the new

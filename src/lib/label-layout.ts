@@ -22,14 +22,17 @@
 //     two together: `recompute` re-picks the visible set, `tick` re-projects and
 //     advances it, and `attach`/`detach` bind the rendered DOM elements.
 
-/** A candidate label's projected origin and tie-break priority, for decluttering. */
+/** A candidate label's absolute-lattice cell and tie-break priority, for decluttering. */
 export type LabelAnchor = {
 	id: string;
-	// The projected origin in CSS pixels, relative to the map container.
-	ax: number;
-	ay: number;
-	// Higher wins when two anchors are too close for both to survive (the selected
-	// venue uses Infinity so it is never decluttered away).
+	// The venue's cell on the absolute geographic lattice — integer indices of its lng/lat
+	// quantized by the declutter cell size (see LabelEngine.recompute). Pan-invariant
+	// because the venue's coordinate doesn't move when the camera pans; only zoom (which
+	// resizes the cells) changes these.
+	cellX: number;
+	cellY: number;
+	// Higher wins when two anchors fall in the same cell and only some survive (the
+	// selected venue uses Infinity so it is never decluttered away).
 	priority: number;
 };
 
@@ -78,6 +81,37 @@ export type SimConfig = {
 // removes `separation` of any remaining box penetration, so a few converge to clear.
 const COLLISION_PASSES = 4;
 
+/**
+ * The geographic cell size, in DEGREES, whose on-screen width is ≈ `targetPx` CSS pixels
+ * at MapLibre `zoom`. MapLibre's world is `512 · 2^zoom` px around, so a full 360° of
+ * longitude spans that many pixels and `targetPx` of them subtend this many degrees. The
+ * declutter lattice is sized from the zoom this way, then bucketed in lng/lat (see
+ * {@link selectVisible}) — so at a fixed zoom the lattice is fixed and a pan never moves a
+ * venue between cells, while zooming rescales it for the progressive reveal. Feed it a
+ * jitter-held zoom ({@link holdZoom}), not the raw camera zoom: a globe pan wobbles the
+ * reported zoom by ~±0.0004, which would otherwise resize the cell every frame and flicker
+ * boundary labels. Approximate near the poles / on the curved globe, but that only nudges
+ * DENSITY; the absolute lat/lng lattice is what guarantees pan-stability, on any projection.
+ */
+export function geoCellDegrees(zoom: number, targetPx: number): number {
+	return (targetPx * 360) / (512 * 2 ** zoom);
+}
+
+/**
+ * Hold a zoom value steady against jitter: return `held` unchanged unless `live` has moved
+ * at least `threshold` from it, in which case adopt `live`. The zoom MapLibre reports during
+ * a globe pan micro-jitters (~±0.0004); sizing the declutter cell from the raw value would
+ * wobble the lattice and flip labels in and out at cell boundaries every frame (the data
+ * that diagnosed this showed the candidate set unchanged while the visible set churned with
+ * a ±0.0004 zoom wander). Sourcing the cell zoom through this — with a `threshold` far above
+ * the jitter but below a deliberate zoom step — keeps the lattice fixed through a pan and
+ * resizes only on a real zoom. Stateless: the caller holds the running value and passes it
+ * back in. Seed `held` at any value (a large first delta adopts the real zoom immediately).
+ */
+export function holdZoom(held: number, live: number, threshold: number): number {
+	return Math.abs(live - held) >= threshold ? live : held;
+}
+
 /** Deterministic value in [0, 1) hashed from an id, for a stable tie-break. */
 export function hashId(id: string): number {
 	let h = 2166136261;
@@ -89,14 +123,22 @@ export function hashId(id: string): number {
 }
 
 /**
- * Screen-space grid decluttering: tile the overlay into `cellSize`-px square cells,
- * drop each anchor into its cell, and keep the highest-`priority` `perCell` of them in
- * each — then, if more than `max` survive overall, keep the top `max` by priority. This
- * bounds label DENSITY uniformly across the screen (≈`perCell` per cell everywhere)
+ * Grid decluttering over a pre-computed cell assignment: drop each anchor into its cell
+ * (the integer `cellX`/`cellY` the caller stamped on it), keep the highest-`priority`
+ * `perCell` within each, then, if more than `max` survive overall, keep the top `max` by
+ * priority. This bounds label DENSITY uniformly (≈`perCell` per cell everywhere)
  * regardless of how the underlying venues clump, so a dense downtown shows the same
- * labels-per-area as a sparse suburb. Because the cells are in PROJECTED pixel space,
- * the thinning is zoom-invariant: as the user zooms in, anchors spread across more
- * cells and more labels clear the bar — the progressive reveal, with a hard density cap.
+ * labels-per-area as a sparse suburb.
+ *
+ * The cells are an absolute GEOGRAPHIC lattice (lng/lat quantized in {@link
+ * LabelEngine.recompute}), NOT a screen-space one. That is what makes the kept set
+ * pan-invariant on the GLOBE projection as well as flat Mercator: a venue's lng/lat never
+ * moves when the camera pans, so its cell — and whether it wins that cell — is unchanged
+ * as the map slides, and labels don't flicker in and out at cell boundaries. (A
+ * screen-space lattice is only pan-invariant under an affine projection; the globe, where
+ * a pan is a sphere rotation, is not affine — which is the trap an earlier version fell
+ * into.) Only ZOOM resizes the lattice, moving venues between cells — the progressive
+ * reveal, mirroring the server's absolute lattice in `getMapData`.
  *
  * Bucketing on a fixed grid is O(n) (one cell lookup per anchor) and, crucially, caps
  * the number of pills handed to the force simulation, so an over-dense viewport can't
@@ -104,16 +146,13 @@ export function hashId(id: string): number {
  * within-cell selection and the global trim are both by descending priority. Pass
  * `perCell: Infinity` to disable per-cell thinning entirely (bounded only by `max`).
  */
-export function selectVisible(
-	anchors: LabelAnchor[],
-	cellSize: number,
-	perCell: number,
-	max: number
-): Set<string> {
-	// Bucket anchors into screen-space cells.
+export function selectVisible(anchors: LabelAnchor[], perCell: number, max: number): Set<string> {
+	// Bucket anchors by their absolute geographic cell (stamped by the caller). The cell
+	// is a function of the venue's fixed coordinate only, so it doesn't move when the map
+	// pans (on any projection) — only zooming, which resizes the cells, reshuffles.
 	const cells = new Map<string, LabelAnchor[]>();
 	for (const a of anchors) {
-		const key = `${Math.floor(a.ax / cellSize)},${Math.floor(a.ay / cellSize)}`;
+		const key = `${a.cellX},${a.cellY}`;
 		let bucket = cells.get(key);
 		if (!bucket) cells.set(key, (bucket = []));
 		bucket.push(a);
@@ -259,9 +298,11 @@ export type RecomputeOptions = {
 	height: number;
 	margin: number;
 	selectedId: string | null;
-	// Screen-space declutter grid: cell size (px) and how many labels survive per cell
-	// (the density cap — see selectVisible), plus a hard cap on simultaneous pills.
-	cellSize: number;
+	// Geographic declutter grid: cell size in DEGREES (size it from the live zoom via
+	// geoCellDegrees so on-screen density stays ≈ a target px), how many labels survive per
+	// cell (the density cap — see selectVisible), and a hard cap on simultaneous pills.
+	// Degrees, not pixels, so the lattice is absolute and pan-invariant on the globe too.
+	cellDeg: number;
 	perCell: number;
 	max: number;
 };
@@ -284,25 +325,32 @@ export class LabelEngine {
 	 * candidate order for a stable key sequence.
 	 */
 	recompute(opts: RecomputeOptions): RenderItem[] {
-		const { candidates, project, width, height, margin, selectedId, cellSize, perCell, max } = opts;
+		const { candidates, project, width, height, margin, selectedId, cellDeg, perCell, max } = opts;
 
 		const anchors: LabelAnchor[] = [];
 		const candidateIds = new Set<string>();
 		for (const c of candidates) {
 			candidateIds.add(c.id);
+			// Project only to cull what's off screen — the visible window still has to be
+			// decided in screen space. The cull uses the live (globe-correct) per-point
+			// projection; only the DECLUTTER cell is moved out of screen space, below.
 			const p = project(c.lng, c.lat);
 			if (p.x < -margin || p.y < -margin || p.x > width + margin || p.y > height + margin) {
 				continue;
 			}
 			anchors.push({
 				id: c.id,
-				ax: p.x,
-				ay: p.y,
+				// Bucket on the absolute geographic lattice: the venue's coordinate, shifted
+				// non-negative before the floor so it floors consistently across the equator/
+				// prime-meridian (matching the server grid in getMapData). A pan doesn't move
+				// the coordinate, so the cell is pan-invariant on the globe as well as Mercator.
+				cellX: Math.floor((c.lng + 180) / cellDeg),
+				cellY: Math.floor((c.lat + 90) / cellDeg),
 				priority: c.id === selectedId ? Infinity : (c.priority ?? hashId(c.id))
 			});
 		}
 
-		const keep = selectVisible(anchors, cellSize, perCell, max);
+		const keep = selectVisible(anchors, perCell, max);
 
 		const items: RenderItem[] = [];
 		const visible: string[] = [];
