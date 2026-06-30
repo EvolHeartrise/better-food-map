@@ -4,6 +4,8 @@
 	import type { Map as MapLibreMap, StyleSpecification } from 'maplibre-gl';
 	import {
 		LabelEngine,
+		geoCellDegrees,
+		holdZoom,
 		hashId,
 		type Projector,
 		type RenderItem,
@@ -110,18 +112,32 @@
 	// names aren't worth drawing — the overlay renders nothing and the globe stays
 	// clean. Above it the declutter gap does the progressive reveal.
 	const MIN_OVERLAY_ZOOM = 6;
-	// Screen-space declutter grid for the name pills: keep at most NAME_PER_CELL pill
-	// per NAME_CELL_PX-square cell, so label density is UNIFORM across the screen at
-	// every zoom (a dense downtown thins to the same labels-per-area as a sparse
-	// suburb) and the count handed to the force sim stays bounded — and therefore
-	// settle-able. A cell a touch wider than a pill keeps survivors spaced enough to
-	// lay out without frustration; as the user zooms in, anchors spread across more
-	// cells and more names reveal. Larger cell = sparser map.
+	// Declutter grid for the name pills: keep at most NAME_PER_CELL pill per cell, sizing
+	// the cell so it's ≈ NAME_CELL_PX wide on screen at the current zoom. Density stays
+	// UNIFORM across the screen (a dense downtown thins to the same labels-per-area as a
+	// sparse suburb) and the count handed to the force sim stays bounded — and so
+	// settle-able. The cell is computed in DEGREES from the zoom (geoCellDegrees) and the
+	// bucketing is geographic, NOT screen-space: a venue's lng/lat doesn't move when the
+	// camera pans, so its cell — and which pill wins it — is pan-invariant on the globe
+	// projection as well as flat Mercator (a screen-space lattice is not, because a globe
+	// pan is a sphere rotation, not a translation — that was the zoomed-out flicker). As
+	// the user zooms in the cell shrinks in degrees, spreading anchors across more cells so
+	// more names reveal. Larger NAME_CELL_PX = sparser map.
 	const NAME_CELL_PX = 84;
 	const NAME_PER_CELL = 1;
-	// Hard ceiling on simultaneously-drawn pills, a backstop against a pathological
-	// frame; the declutter grid is the real limiter well before this bites.
-	const MAX_VISIBLE = 160;
+	// The cell SIZE is derived from the zoom, but MapLibre's reported zoom micro-jitters
+	// (~±0.0004) during a globe pan — enough to wobble the cell and flip boundary labels in
+	// and out every frame. So the cell's zoom is held steady (holdZoom) and only re-adopted
+	// when the camera zoom moves at least this much — far above the jitter, below a real zoom
+	// step — so a pure pan never resizes the lattice and only a deliberate zoom does.
+	const CELL_ZOOM_THRESHOLD = 0.25;
+	// Hard ceiling on simultaneously-drawn pills, a backstop against a pathological frame.
+	// The world-anchored declutter grid is the REAL limiter and must bind first, so this
+	// stays above the most labels a normal viewport yields — including a zoomed-out one,
+	// where the server sends up to its result cap (200) of grid-cell representatives at once.
+	// A global top-N trim isn't pan-stable (which labels survive the cut shifts as you pan),
+	// so letting it bite would reintroduce the very flicker the grid exists to prevent.
+	const MAX_VISIBLE = 240;
 	// How often (ms) to re-pick the visible set. Positions update every frame, but
 	// which labels are shown only needs refreshing a few times a second.
 	const DECLUTTER_INTERVAL_MS = 120;
@@ -317,10 +333,19 @@
 	}
 	const pill = pillAttach(engine);
 
+	// The zoom the declutter cell size is currently pinned to. Held steady through the
+	// per-frame zoom jitter of a globe pan (see CELL_ZOOM_THRESHOLD / holdZoom) so the
+	// lattice doesn't resize and flip boundary labels while panning.
+	let cellZoom = 0;
+
 	// Re-pick the visible labels for the current camera and reassign `render` — and
 	// thus touch the DOM — only when the set or selection actually changed, so a
 	// steady pan doesn't remount the same pills every interval.
-	function recomputeVisible(project: Projector) {
+	function recomputeVisible(project: Projector, zoom: number) {
+		// Pin the cell size to a jitter-held zoom: a pure pan (zoom wobbling within the
+		// threshold) keeps the same cell, so the lattice and the surviving labels stay put;
+		// only a deliberate zoom past the threshold resizes it.
+		cellZoom = holdZoom(cellZoom, zoom, CELL_ZOOM_THRESHOLD);
 		const next = engine.recompute({
 			candidates,
 			project,
@@ -328,7 +353,7 @@
 			height: overlayHeight,
 			margin: OVERLAY_MARGIN,
 			selectedId: selected?.id ?? null,
-			cellSize: NAME_CELL_PX,
+			cellDeg: geoCellDegrees(cellZoom, NAME_CELL_PX),
 			perCell: NAME_PER_CELL,
 			max: MAX_VISIBLE
 		});
@@ -425,7 +450,7 @@
 
 			if (time - lastDeclutter > DECLUTTER_INTERVAL_MS) {
 				lastDeclutter = time;
-				recomputeVisible(project);
+				recomputeVisible(project, m.getZoom());
 			}
 
 			// Re-project the name-pill anchors and advance the force model one step (each

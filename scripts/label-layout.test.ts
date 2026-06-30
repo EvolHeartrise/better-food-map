@@ -1,6 +1,7 @@
 import { expect, test, describe } from 'bun:test';
 import {
 	hashId,
+	holdZoom,
 	selectVisible,
 	stepSimulation,
 	LabelEngine,
@@ -79,77 +80,108 @@ describe('hashId', () => {
 	});
 });
 
+describe('holdZoom', () => {
+	test('ignores jitter (and small moves) below the threshold', () => {
+		expect(holdZoom(11, 11.0004, 0.25)).toBe(11);
+		expect(holdZoom(11, 10.9996, 0.25)).toBe(11);
+		expect(holdZoom(11, 11.2, 0.25)).toBe(11); // within threshold, still held
+	});
+
+	test('adopts a deliberate zoom at or beyond the threshold', () => {
+		expect(holdZoom(11, 11.25, 0.25)).toBe(11.25);
+		expect(holdZoom(11, 10.7, 0.25)).toBe(10.7);
+	});
+
+	test('adopts immediately from a seed value (large first delta)', () => {
+		expect(holdZoom(0, 11, 0.25)).toBe(11);
+	});
+
+	test('holds steady through the exact jitter wander seen in the wild', () => {
+		// The zoom samples captured while panning over Vancouver — a ±0.0004 wander that, fed
+		// straight to the cell size, flickered labels. Held, the cell zoom never budges.
+		let z = holdZoom(0, 10.93, 0.25); // first frame adopts the real zoom
+		for (const live of [10.9306, 10.9308, 10.9309, 10.9304, 10.9299, 10.9296, 10.9295, 10.9297]) {
+			z = holdZoom(z, live, 0.25);
+		}
+		expect(z).toBe(10.93);
+	});
+});
+
 describe('selectVisible', () => {
+	// Anchors carry their pre-computed absolute-lattice cell (cellX, cellY) — what
+	// LabelEngine.recompute stamps from each venue's quantized lng/lat. selectVisible is
+	// then pure cell bucketing: thin by priority within each cell, then a global max.
 	const anchors: LabelAnchor[] = [
-		{ id: 'a', ax: 100, ay: 100, priority: 0.9 },
-		{ id: 'b', ax: 110, ay: 105, priority: 0.5 }, // same 84px cell as a → loses
-		{ id: 'c', ax: 400, ay: 400, priority: 0.1 } // far → own cell, kept
+		{ id: 'a', cellX: 1, cellY: 1, priority: 0.9 },
+		{ id: 'b', cellX: 1, cellY: 1, priority: 0.5 }, // same cell as a → loses
+		{ id: 'c', cellX: 4, cellY: 4, priority: 0.1 } // own cell → kept
 	];
 
 	test('keeps the higher-priority pill when two share a cell', () => {
-		const keep = selectVisible(anchors, 84, 1, 100);
+		const keep = selectVisible(anchors, 1, 100);
 		expect(keep.has('a')).toBe(true);
 		expect(keep.has('b')).toBe(false);
 	});
 
 	test('keeps a pill alone in its cell', () => {
-		expect(selectVisible(anchors, 84, 1, 100).has('c')).toBe(true);
+		expect(selectVisible(anchors, 1, 100).has('c')).toBe(true);
 	});
 
 	test('honours the global max cap, keeping the highest priority', () => {
-		const keep = selectVisible(anchors, 84, 1, 1);
+		const keep = selectVisible(anchors, 1, 1);
 		expect(keep.size).toBe(1);
 		expect(keep.has('a')).toBe(true); // a (0.9) outranks c (0.1)
 	});
 
 	test('perCell caps how many survive within one cell', () => {
-		// Five anchors at one point; perCell 2 keeps the top two by priority.
+		// Five anchors in one cell; perCell 2 keeps the top two by priority.
 		const packed: LabelAnchor[] = Array.from({ length: 5 }, (_, i) => ({
 			id: `p${i}`,
-			ax: 200,
-			ay: 200,
+			cellX: 0,
+			cellY: 0,
 			priority: i / 10
 		}));
-		const keep = selectVisible(packed, 84, 2, 100);
+		const keep = selectVisible(packed, 2, 100);
 		expect(keep.size).toBe(2);
 		expect([...keep].toSorted()).toEqual(['p3', 'p4']); // priorities 0.4, 0.3
 	});
 
-	test('perCell Infinity keeps every co-located anchor, bounded only by max', () => {
-		// A venue's co-anchored menu: all share one point, none should be thinned out.
+	test('perCell Infinity keeps every co-celled anchor, bounded only by max', () => {
+		// A venue's co-anchored menu: all share one cell, none should be thinned out.
 		const packed: LabelAnchor[] = Array.from({ length: 6 }, (_, i) => ({
 			id: `q${i}`,
-			ax: 200,
-			ay: 200,
+			cellX: 0,
+			cellY: 0,
 			priority: i
 		}));
-		expect(selectVisible(packed, 1, Infinity, 100).size).toBe(6);
-		expect(selectVisible(packed, 1, Infinity, 4).size).toBe(4); // global cap still bites
+		expect(selectVisible(packed, Infinity, 100).size).toBe(6);
+		expect(selectVisible(packed, Infinity, 4).size).toBe(4); // global cap still bites
 	});
 
-	test('spreads density: one survivor per occupied cell across the screen', () => {
+	test('spreads density: one survivor per occupied cell', () => {
 		// A 3×3 lattice of cells, two anchors in each; perCell 1 keeps exactly one per cell.
 		const grid: LabelAnchor[] = [];
 		for (let cx = 0; cx < 3; cx++) {
 			for (let cy = 0; cy < 3; cy++) {
-				grid.push({ id: `${cx}-${cy}-hi`, ax: cx * 84 + 10, ay: cy * 84 + 10, priority: 1 });
-				grid.push({ id: `${cx}-${cy}-lo`, ax: cx * 84 + 20, ay: cy * 84 + 20, priority: 0 });
+				grid.push({ id: `${cx}-${cy}-hi`, cellX: cx, cellY: cy, priority: 1 });
+				grid.push({ id: `${cx}-${cy}-lo`, cellX: cx, cellY: cy, priority: 0 });
 			}
 		}
-		const keep = selectVisible(grid, 84, 1, 100);
+		const keep = selectVisible(grid, 1, 100);
 		expect(keep.size).toBe(9); // one per occupied cell
 		expect([...keep].every((id) => id.endsWith('-hi'))).toBe(true); // the higher-priority one
 	});
 
 	test('keeps a high-priority group intact while trimming a co-celled neighbour', () => {
 		// The item-label case: a selected venue's whole 10-item cluster (highest priority)
-		// shares a screen cell with a neighbour venue's 4 items. A perCell of 12 keeps the
-		// cluster intact — a venue's labels are contiguous in priority — and trims the rest.
+		// shares a cell with a neighbour venue's 4 items. A perCell of 12 keeps the cluster
+		// intact — a venue's labels are contiguous in priority — and trims the rest.
 		const labels: LabelAnchor[] = [];
 		for (let i = 0; i < 10; i++)
-			labels.push({ id: `sel-${i}`, ax: 200, ay: 200, priority: 100 - i });
-		for (let i = 0; i < 4; i++) labels.push({ id: `nb-${i}`, ax: 210, ay: 205, priority: 50 - i });
-		const keep = selectVisible(labels, 84, 12, 80);
+			labels.push({ id: `sel-${i}`, cellX: 2, cellY: 2, priority: 100 - i });
+		for (let i = 0; i < 4; i++)
+			labels.push({ id: `nb-${i}`, cellX: 2, cellY: 2, priority: 50 - i });
+		const keep = selectVisible(labels, 12, 80);
 		expect(keep.size).toBe(12);
 		for (let i = 0; i < 10; i++) expect(keep.has(`sel-${i}`)).toBe(true); // cluster intact
 		expect(keep.has('nb-0')).toBe(true); // plus the neighbour's top two
@@ -160,7 +192,7 @@ describe('selectVisible', () => {
 
 	test('does not mutate the input array', () => {
 		const copy = [...anchors];
-		selectVisible(anchors, 84, 1, 100);
+		selectVisible(anchors, 1, 100);
 		expect(anchors).toEqual(copy);
 	});
 });
@@ -248,8 +280,9 @@ describe('stepSimulation', () => {
 });
 
 describe('LabelEngine', () => {
-	// A fake projector: screen = anchor at (originX + lng*10, lat*10), so shifting
-	// originX mimics a horizontal pan of the whole camera.
+	// A fake projector: screen = anchor at (originX + lng*10, lat*10). `originX` mimics a
+	// horizontal pan; it now only moves where pills are CULLED (off-screen), since the
+	// declutter cell is bucketed from lng/lat, not the projected pixel.
 	const makeOpts = (candidates: Candidate[], selectedId: string | null, originX: number) => ({
 		candidates,
 		project: (lng: number, lat: number) => ({ x: originX + lng * 10, y: lat * 10 }),
@@ -257,7 +290,7 @@ describe('LabelEngine', () => {
 		height: 1000,
 		margin: 80,
 		selectedId,
-		cellSize: 42,
+		cellDeg: 42,
 		perCell: 1,
 		max: 100
 	});
@@ -291,6 +324,48 @@ describe('LabelEngine', () => {
 			.find((n) => n.id === 'b');
 		if (!second) throw new Error("node 'b' should be live");
 		expect(second.ax - before).toBeCloseTo(200, 5);
+	});
+
+	test('the kept set is pan-invariant under a NON-LINEAR (globe) projection', () => {
+		// The map renders on a globe when zoomed out, where a pan is a sphere ROTATION:
+		// points at different lng/lat shift on screen by different amounts, so a screen-space
+		// declutter lattice reshuffles mid-pan (the zoomed-out flicker). Bucketing on the
+		// absolute lat/lng lattice is immune — a venue's coordinate doesn't move when the
+		// camera pans. This models a globe pan with a deliberately non-affine projector and
+		// asserts the kept set never changes. `hi` and `lo` are 1° apart (so a screen lattice
+		// WOULD sometimes split them, sometimes merge them, as `rot` varies) but share one
+		// geographic cell, so exactly one survives at every rotation.
+		const crowd: Candidate[] = [
+			{ id: 'hi', name: 'Hi', lat: 0, lng: 10, priority: 1 },
+			{ id: 'lo', name: 'Lo', lat: 0, lng: 11, priority: 0 } // shares hi's geo cell
+		];
+		// Non-affine: screen x bends sinusoidally with longitude (a crude globe) and `rot`
+		// (the pan) enters inside the sine, so different lngs move by different screen amounts.
+		const globe = (rot: number) => (lng: number, lat: number) => ({
+			x: 500 + 400 * Math.sin(((lng - rot) * Math.PI) / 180),
+			y: 500 - 400 * Math.sin((lat * Math.PI) / 180)
+		});
+		const keptAt = (rot: number) =>
+			new LabelEngine()
+				.recompute({
+					candidates: crowd,
+					project: globe(rot),
+					width: 1000,
+					height: 1000,
+					margin: 200,
+					selectedId: null,
+					cellDeg: 2, // ~2° cells: hi & lo (1° apart) share one; far apart in screen px
+					perCell: 1,
+					max: 100
+				})
+				.map((i) => i.id)
+				.toSorted();
+
+		const baseline = keptAt(0);
+		expect(baseline).toEqual(['hi']); // one geo cell → only the higher-priority one
+		for (const rot of [5, 20, 95, -80, 150]) {
+			expect(keptAt(rot)).toEqual(baseline); // a screen lattice would have flickered here
+		}
 	});
 
 	test('prunes a candidate that has left the set', () => {
@@ -327,7 +402,7 @@ describe('LabelEngine', () => {
 			height: 1000,
 			margin: 80,
 			selectedId: null,
-			cellSize: 1,
+			cellDeg: 1,
 			perCell: Infinity,
 			max: 100
 		});
@@ -362,7 +437,7 @@ describe('LabelEngine', () => {
 			height: 1000,
 			margin: 80,
 			selectedId: null,
-			cellSize: 84,
+			cellDeg: 84,
 			perCell: 1,
 			max: 100
 		});

@@ -613,10 +613,18 @@ const GRID_DIVISIONS = 12;
 // start hiding genuinely distinct on-screen venues, and the box is small enough that
 // the flat cap suffices — so the grid is skipped and every venue in the box returned.
 const MIN_GRID_CELL_DEG = 0.004;
-// How many representatives the grid path returns. Kept well under D1's per-query
-// bound-parameter limit (the ids feed an `id IN (?, …)` filter in queryMapData) and a
-// sensible upper bound on legible labels for a zoomed-out view regardless.
-const GRID_REP_LIMIT = 96;
+// Hard ceiling on representatives the wide-viewport grid path returns. Set equal to
+// MAP_RESULT_LIMIT so the zoomed-out path never ships more than the zoomed-in one (and
+// queryMapData's default cap, also MAP_RESULT_LIMIT, never re-trims the set). The ids reach
+// queryMapData through a single `json_each(?)` bind, NOT an `id IN (?, …)` list, so this is
+// no longer bounded by D1's ~100 per-query parameter limit (the old reason it was pinned at
+// 96). Crucially this is NOT used as a top-N cut at runtime: `gridCellSize` coarsens the
+// lattice until a viewport can't hold more than this many cells, so the trailing `LIMIT`
+// never actually trims. That matters because a top-N cut over a pan-varying pool is NOT
+// pan-stable — as the box slides, which cells fall under the cut changes, flickering labels
+// in and out. Guaranteeing every occupied cell fits under the cap makes a venue's
+// visibility depend only on its absolute cell, never on the framing (see gridCellSize).
+const GRID_REP_LIMIT = MAP_RESULT_LIMIT;
 
 // Snap a raw degree span to a 1–2–5×10ⁿ ladder, so a small zoom change steps the
 // lattice discretely rather than continuously resizing it (and reshuffling reps).
@@ -627,12 +635,42 @@ function niceStep(raw: number): number {
 	return m * pow;
 }
 
-// The grid cell size (degrees) for a viewport, or null when the box is small enough
-// to skip downsampling and return everything in it (see MIN_GRID_CELL_DEG).
+// The next rung UP the 1–2–5×10ⁿ ladder from a {1,2,5,10}×10ⁿ `cell` (1→2→5→10…). Used by
+// gridCellSize to coarsen the lattice a discrete step at a time. The +1e-9 nudges log10 off
+// exact powers of ten (e.g. log10(0.1) landing at −1.0000000001) so the floor doesn't slip a
+// decade and stall the coarsening loop.
+function niceStepUp(cell: number): number {
+	const pow = 10 ** Math.floor(Math.log10(cell) + 1e-9);
+	const f = cell / pow;
+	if (f < 1.5) return 2 * pow;
+	if (f < 3.5) return 5 * pow;
+	return 10 * pow;
+}
+
+// The grid cell size (degrees) for a viewport, or null when the box is small enough to skip
+// downsampling and return everything in it (see MIN_GRID_CELL_DEG).
+//
+// The base size targets ~GRID_DIVISIONS cells across the longer span, but is then coarsened
+// up the ladder until the viewport's WORST-CASE cell count can't exceed GRID_REP_LIMIT. That
+// is what keeps the wide path pan-stable: gridRepresentativeIds' trailing `LIMIT` only causes
+// flicker when it actually trims (a top-N over the in-view cells shuffles as you pan), so we
+// size the lattice so it never has to. The bound `(⌈latSpan/cell⌉+1)·(⌈lngSpan/cell⌉+1)` is
+// the most absolute-lattice cells a box of this span can straddle — the +1 per axis is the
+// box-vs-lattice misalignment, and it must be there (omitting it under-counts and the cap
+// still bites). Because the bound depends only on the span (not the pan position), the chosen
+// cell is itself pan-stable. The loop converges fast (each rung ≥2× the cell, ≥4× fewer
+// cells) and the `next > cell` guard is a float-safety backstop against ever spinning.
 function gridCellSize(bounds: Bounds): number | null {
-	const span = Math.max(bounds.maxLat - bounds.minLat, bounds.maxLng - bounds.minLng);
+	const latSpan = bounds.maxLat - bounds.minLat;
+	const lngSpan = bounds.maxLng - bounds.minLng;
+	const span = Math.max(latSpan, lngSpan);
 	if (!(span > 0)) return null;
-	const cell = niceStep(span / GRID_DIVISIONS);
+	let cell = niceStep(span / GRID_DIVISIONS);
+	while ((Math.ceil(latSpan / cell) + 1) * (Math.ceil(lngSpan / cell) + 1) > GRID_REP_LIMIT) {
+		const next = niceStepUp(cell);
+		if (!(next > cell)) break;
+		cell = next;
+	}
 	return cell >= MIN_GRID_CELL_DEG ? cell : null;
 }
 
@@ -698,11 +736,13 @@ export async function getMapData(db: D1Like, bounds: Bounds): Promise<MapData> {
 		);
 	}
 	// Wide viewport: pick one representative per grid cell, then resolve those concrete
-	// ids (their menus, overrides, sources) the normal way via an `id IN (…)` filter.
+	// ids (their menus, overrides, sources) the normal way. The ids travel as a single
+	// JSON-array bind expanded with `json_each` rather than an `id IN (?, …)` list, so the
+	// representative count isn't capped by D1's ~100 per-query parameter limit — that cap
+	// is what used to force the flicker-inducing top-96 trim (see GRID_REP_LIMIT).
 	const ids = await gridRepresentativeIds(db, bounds, cell);
 	if (ids.length === 0) return { locations: [], menus: {}, menuMeta: {} };
-	const placeholders = ids.map(() => '?').join(', ');
-	return queryMapData(db, `id IN (${placeholders})`, ids);
+	return queryMapData(db, `id IN (SELECT value FROM json_each(?))`, [JSON.stringify(ids)]);
 }
 
 /**
