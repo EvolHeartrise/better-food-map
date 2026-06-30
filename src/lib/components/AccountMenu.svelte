@@ -96,12 +96,14 @@
 		position: relative;
 	}
 
-	/* Shared glass pill, matching the search controls' look. */
+	/* Shared glass pill, matching the search controls' look. The fixed height (shared
+	   via --control-height) keeps it level with the search and diet bubbles. */
 	.account__trigger,
 	.account__signin {
 		display: inline-flex;
 		align-items: center;
 		gap: 0.45rem;
+		height: var(--control-height);
 		padding: 0.4rem 0.7rem;
 		border: 1px solid rgba(255, 255, 255, 0.6);
 		border-radius: 0.7rem;
