@@ -103,6 +103,7 @@
 		display: inline-flex;
 		align-items: center;
 		gap: 0.4rem;
+		height: var(--control-height);
 		padding: 0.4rem 0.7rem;
 		font: inherit;
 		font-size: 0.9rem;

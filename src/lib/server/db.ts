@@ -762,21 +762,27 @@ export function getLocationMapData(db: D1Like, id: string): Promise<MapData> {
  * A global menu search, anchored to a point. Unlike {@link getMapData} — which is
  * bounded to a viewport — this searches the WHOLE table and returns the
  * {@link MAP_RESULT_LIMIT} matches NEAREST to (`lat`,`lng`), nearest first, so the
- * map can act as a result view rather than the query itself. All filters are
- * optional and AND together:
- *   • `place` — case-insensitive substring of the location name.
- *   • `item`  — the location's menu must hold an item whose name matches,
- *   • `dietTagId` — …that ALSO carries that one curated dietary tag (the SAME item
- *     must satisfy both, so a menu with a vegan soup and a separate plain cake
- *     doesn't match a "vegan" item search). This mirrors the client's per-item
- *     `itemMatches`.
- * Per-location overrides are not applied here (the shared menu is what's
- * searched); the client re-filters the resolved menu, so an item made unavailable
- * at one branch simply drops from that card.
+ * map can act as a result view rather than the query itself.
+ *
+ * The single `query` is one combined free-text term matched as an OR across two
+ * dimensions — the venue NAME and its item names — so one box finds both a place
+ * ("Chipotle") and a dish ("burrito"):
+ *   • the venue's `name` contains `query`  (→ the whole menu is relevant), OR
+ *   • the venue has an item whose name contains `query`.
+ * The `dietTagId` selector is a SEPARATE filter that always narrows: when set, the
+ * matching item must ALSO carry that one curated dietary tag (the SAME item must
+ * satisfy both name and diet), and a name-only match is kept only if the venue has
+ * a diet-carrying item. With no `query` and no `dietTagId` this returns nothing.
+ *
+ * This mirrors the client's `matchedItems`/`results` membership exactly so the two
+ * agree (the client re-filters the result set while a search is in flight). Per-
+ * location overrides are not applied here (the shared menu is what's searched); the
+ * client re-filters the resolved menu, so an item made unavailable at one branch
+ * simply drops from that card.
  */
 export interface SearchMapQuery {
-	place: string;
-	item: string;
+	/** Combined free-text: matched against the venue name OR its item names. */
+	query: string;
 	/** A single curated dietary tag id the item must carry, or `null` for no diet filter. */
 	dietTagId: string | null;
 	/** Anchor the "nearest" ranking is measured from (the map centre). */
@@ -785,54 +791,70 @@ export interface SearchMapQuery {
 }
 
 export function getSearchMapData(db: D1Like, q: SearchMapQuery): Promise<MapData> {
-	const conds: string[] = [];
+	const text = q.query.trim();
+	const hasText = text !== '';
+	const hasDiet = q.dietTagId !== null;
+
+	// With neither filter this would match every venue; the caller only searches when
+	// one is set, but guard so an empty query can't scan the whole table.
+	if (!hasText && !hasDiet) return Promise.resolve({ locations: [], menus: {}, menuMeta: {} });
+
+	const namePattern = hasText ? `%${escapeLikePattern(text)}%` : '';
+	// A correlated test that one of a venue's items carries the selected diet tag. The
+	// outer table is referenced as `locations.menu_id` (it is always the unaliased
+	// `locations` wherever `locFilter` is spliced in — see queryMapData), since `items`
+	// also has a `menu_id` column and a bare name would be ambiguous.
+	const dietExists = `EXISTS (SELECT 1 FROM item_tags it WHERE it.item_id = i.id AND it.tag_id = ?)`;
+
+	// Membership is an OR of independent disjuncts, built so each disjunct's `?`
+	// placeholders are pushed onto `params` in the exact left-to-right order they
+	// appear in the SQL (queryMapData binds locFilter params from the front, then the
+	// distance-anchor params from the end).
+	const disjuncts: string[] = [];
 	const params: (string | number)[] = [];
 
-	const place = q.place.trim();
-	if (place !== '') {
-		conds.push("name LIKE ? ESCAPE '\\'");
-		params.push(`%${escapeLikePattern(place)}%`);
+	// Name match with no diet active → the whole menu is relevant, so the venue is kept
+	// even with an empty menu (no item is required).
+	if (hasText && !hasDiet) {
+		disjuncts.push("name LIKE ? ESCAPE '\\'");
+		params.push(namePattern);
 	}
-
-	// The item-level predicate: a single correlated EXISTS over the location's menu
-	// items, so a venue matches only when ONE item satisfies both the name and the
-	// selected diet. The outer table is referenced as `locations.menu_id` (it is
-	// always the unaliased `locations` wherever `locFilter` is spliced in — see
-	// queryMapData), since `items` also has a `menu_id` column and a bare name would
-	// be ambiguous.
-	const item = q.item.trim();
-	const itemConds: string[] = [];
-	const itemParams: (string | number)[] = [];
-	if (item !== '') {
-		itemConds.push("i.item_name LIKE ? ESCAPE '\\'");
-		itemParams.push(`%${escapeLikePattern(item)}%`);
+	// Name match WITH a diet active → kept only if some item carries the diet tag
+	// (diet always narrows), so a name-only match with no diet-matching item drops.
+	if (hasText && hasDiet) {
+		disjuncts.push(
+			`(name LIKE ? ESCAPE '\\' AND EXISTS (SELECT 1 FROM items i WHERE i.menu_id = locations.menu_id AND ${dietExists}))`
+		);
+		params.push(namePattern, q.dietTagId as string);
 	}
-	if (q.dietTagId !== null) {
-		itemConds.push(`EXISTS (SELECT 1 FROM item_tags it WHERE it.item_id = i.id AND it.tag_id = ?)`);
-		itemParams.push(q.dietTagId);
-	}
-	if (itemConds.length > 0) {
-		conds.push(
+	// An item satisfying every active predicate: its name contains `query` (when set)
+	// AND it carries the diet tag (when set). The SAME item must satisfy both.
+	{
+		const itemConds: string[] = [];
+		if (hasText) {
+			itemConds.push("i.item_name LIKE ? ESCAPE '\\'");
+			params.push(namePattern);
+		}
+		if (hasDiet) {
+			itemConds.push(dietExists);
+			params.push(q.dietTagId as string);
+		}
+		disjuncts.push(
 			`EXISTS (SELECT 1 FROM items i WHERE i.menu_id = locations.menu_id AND ${itemConds.join(' AND ')})`
 		);
-		params.push(...itemParams);
 	}
-
-	// With no filter at all this would match every venue; the caller only searches
-	// when a filter is set, but guard so an empty query can't scan the whole table.
-	if (conds.length === 0) return Promise.resolve({ locations: [], menus: {}, menuMeta: {} });
 
 	// Rank by an approximate squared planar distance from the anchor: latitude in
 	// degrees, longitude scaled by cos²(lat) so a degree of longitude counts for
 	// its real (shrunk) width at this latitude. Exact enough to order matches
-	// within a region; the anchor params bind AFTER `conds` (see queryMapData).
+	// within a region; the anchor params bind AFTER the disjunct params (see queryMapData).
 	const lngScale = Math.cos((q.lat * Math.PI) / 180) ** 2;
 	const capClause =
 		`ORDER BY ((latitude - ?) * (latitude - ?) + (longitude - ?) * (longitude - ?) * ?) ASC, id ` +
 		`LIMIT ${MAP_RESULT_LIMIT}`;
 	params.push(q.lat, q.lat, q.lng, q.lng, lngScale);
 
-	return queryMapData(db, conds.join(' AND '), params, capClause);
+	return queryMapData(db, disjuncts.join(' OR '), params, capClause);
 }
 
 /**

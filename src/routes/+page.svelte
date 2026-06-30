@@ -29,14 +29,15 @@
 	let viewport = $state<Bounds | null>(null);
 
 	// --- Search filters --------------------------------------------------------
-	// Independent inputs. `place` filters venues by name; `item` (free text) and the
-	// dietary selector filter menu items; they combine with AND. With ANY of them set
-	// the search goes GLOBAL — the whole index, nearest first (see the search effect
-	// below) — rather than narrowing only what's on screen; cleared, the map returns
-	// to browsing the current viewport. The dietary selector is single-select: an
-	// item must carry the chosen dietary tag (vegan, gluten_free, …).
-	let place = $state('');
-	let item = $state('');
+	// One combined free-text box plus the dietary selector. `query` matches a venue by
+	// NAME *or* by an item name — a name match surfaces the whole menu, an item-only
+	// match surfaces just the matching items (see `matchedItems`). The dietary selector
+	// is a separate filter that always narrows the items shown (single-select: an item
+	// must carry the chosen tag — vegan, gluten_free, …). With either set the search
+	// goes GLOBAL — the whole index, nearest first (see the search effect below) —
+	// rather than narrowing only what's on screen; cleared, the map returns to browsing
+	// the current viewport.
+	let query = $state('');
 	// The chosen dietary tag id, or null for "any diet" (no diet filter).
 	let diet = $state<string | null>(null);
 
@@ -64,13 +65,11 @@
 		if (user) setDiet(id).catch(() => {});
 	}
 
-	// The filters, normalised once and shared by the map item labels, the selected-
-	// location menu and the global-search effect so they all agree on what
-	// "matches". `hasItemFilter` is true when any item/diet filter is active;
-	// `hasQuery` also counts the place filter and is what flips browse → search.
-	const itemTerm = $derived(item.trim().toLowerCase());
-	const hasItemFilter = $derived(itemTerm !== '' || diet !== null);
-	const hasQuery = $derived(place.trim() !== '' || hasItemFilter);
+	// The text query, normalised once and shared by the map item labels, the venue
+	// membership test and the global-search effect so they all agree on what "matches".
+	// `hasQuery` — text query or diet active — is what flips browse → search.
+	const queryTerm = $derived(query.trim().toLowerCase());
+	const hasQuery = $derived(queryTerm !== '' || diet !== null);
 
 	// --- Map data --------------------------------------------------------------
 	// Two payloads, each updated imperatively (rather than via an awaited $derived)
@@ -136,7 +135,7 @@
 	// search effect, so the map centre (read inside the timer) can change with a pan
 	// without re-running the search. Each distinct query runs (and flies) once; an
 	// unchanged query never re-fires the effect.
-	const querySignature = $derived(JSON.stringify({ place: place.trim(), item: itemTerm, diet }));
+	const querySignature = $derived(JSON.stringify({ query: queryTerm, diet }));
 
 	// Search mode: run a global, nearest-first search whenever the QUERY changes. On
 	// each query's result, fly to the nearest match unless it's already on screen.
@@ -153,8 +152,7 @@
 		const timer = setTimeout(() => {
 			const center = mapCenter();
 			searchLocations({
-				place: place.trim(),
-				item: itemTerm,
+				query: query.trim(),
 				dietTagId: diet,
 				lat: center.lat,
 				lng: center.lng
@@ -272,44 +270,43 @@
 		}));
 	}
 
-	function itemMatches(menuItem: Item): boolean {
-		if (itemTerm !== '' && !menuItem.item_name.toLowerCase().includes(itemTerm)) return false;
-		// Diet filter: the item must carry the chosen dietary tag. Mirrors the
-		// server's per-item predicate in getSearchMapData.
-		if (diet !== null && !menuItem.tags.some((tag) => tag.id === diet)) return false;
-		return true;
+	// Whether a venue's NAME matches the active text query. False when there's no text
+	// term (a diet-only filter never matches via the name — it acts on items).
+	function nameMatches(loc: LocationData): boolean {
+		return queryTerm !== '' && loc.name.toLowerCase().includes(queryTerm);
 	}
 
-	// One entry per location to show, paired with the menu items that matched. The
-	// candidate set is whatever is currently visible on the map (`locations`), so
-	// with no filter active every visible place is shown; the inputs only narrow it.
-	// Item-level inputs drive the per-venue matched list (used for the scattered item
-	// labels); with none active, `items` is empty.
-	const results = $derived.by(() => {
-		const placeTerm = place.trim().toLowerCase();
+	// The menu items to surface for a venue under the active search — the line its map
+	// label rotates through. The combined `query` is an OR across the venue name and its
+	// item names: when the name matches (or there's no text term) the text dimension is
+	// satisfied by the WHOLE menu; otherwise only items whose name contains the term. The
+	// dietary selector then narrows that set — it ALWAYS applies. With nothing active this
+	// is the whole menu (browse). Mirrors the server's membership in getSearchMapData.
+	function matchedItems(loc: LocationData): Item[] {
+		const textItems =
+			queryTerm === '' || nameMatches(loc)
+				? loc.menu
+				: loc.menu.filter((menuItem) => menuItem.item_name.toLowerCase().includes(queryTerm));
+		return diet === null
+			? textItems
+			: textItems.filter((menuItem) => menuItem.tags.some((tag) => tag.id === diet));
+	}
 
+	// One entry per location to show, paired with the items to tease under its marker.
+	// The candidate set is whatever is currently visible on the map (`locations`). With
+	// no query active every visible venue shows (its whole menu teased). Under a search a
+	// venue is kept when its NAME matches (show all its items) or at least one item
+	// matches; a name match with an active diet still requires a diet-matching item
+	// (diet always narrows) — that falls out of `matchedItems` being empty.
+	const results = $derived.by(() => {
 		const out: Array<{ loc: LocationData; items: Item[] }> = [];
 		for (const loc of locations) {
-			if (placeTerm !== '' && !loc.name.toLowerCase().includes(placeTerm)) continue;
-			if (!hasItemFilter) {
-				out.push({ loc, items: [] });
-				continue;
-			}
-			const items = loc.menu.filter(itemMatches);
-			if (items.length > 0) {
-				out.push({ loc, items });
-			}
+			const items = matchedItems(loc);
+			const keep = !hasQuery || (nameMatches(loc) && diet === null) || items.length > 0;
+			if (keep) out.push({ loc, items });
 		}
 		return out;
 	});
-
-	// The food-item names a venue's map label rotates through, shown one at a time under
-	// its name with a "+N more" count: the items matching an active item/diet filter, or
-	// — with no such filter — its whole menu (empty when the venue has no menu).
-	function rotationItems(loc: LocationData): string[] {
-		const source = hasItemFilter ? loc.menu.filter(itemMatches) : loc.menu;
-		return source.map((menuItem) => menuItem.item_name);
-	}
 
 	// The map plots EVERY matching location (the chain-branch grouping the old results
 	// list did is gone — the map itself is the result surface now). Each carries the item
@@ -320,7 +317,7 @@
 			name: result.loc.name,
 			latitude: result.loc.latitude,
 			longitude: result.loc.longitude,
-			items: rotationItems(result.loc)
+			items: result.items.map((menuItem) => menuItem.item_name)
 		}))
 	);
 
@@ -391,7 +388,7 @@
 					name: selectedLocation.name,
 					latitude: selectedLocation.latitude,
 					longitude: selectedLocation.longitude,
-					items: rotationItems(selectedLocation)
+					items: matchedItems(selectedLocation).map((menuItem) => menuItem.item_name)
 				}
 			: null
 	);
@@ -700,8 +697,9 @@
 				id="search-items"
 				class:searchbar__items--collapsed={!filtersOpen}
 			>
-				<!-- Place: a plain search pill, or — once a location is open — a tinted card
-			     standing in for it, with a clear (✕) that closes the detail. -->
+				<!-- The combined search: one pill matching a venue by name OR by an item
+			     name. Once a location is open it's replaced by a tinted card standing in
+			     for it, with a clear (✕) that closes the detail. -->
 				{#if selectedLocation}
 					{@const placeLabel = categoryLabel(selectedLocation.category)}
 					{@const placeMeta = [placeLabel, selectedLocation.address].filter(Boolean).join(' · ')}
@@ -724,28 +722,17 @@
 				{:else}
 					<!-- A label so a click anywhere in the pill (the search icon included)
 				     focuses the input; the input is the only control inside it. -->
-					<label class="searchpill">
+					<label class="searchpill searchpill--search">
 						<input
 							class="searchpill__input"
 							type="search"
-							placeholder="Place name…"
-							aria-label="Search by place name"
-							bind:value={place}
+							placeholder="Search places & dishes…"
+							aria-label="Search by place or dish name"
+							bind:value={query}
 						/>
 						<Search class="searchpill__icon" size={16} aria-hidden="true" />
 					</label>
 				{/if}
-
-				<label class="searchpill">
-					<input
-						class="searchpill__input"
-						type="search"
-						placeholder="Item name…"
-						aria-label="Search by item name"
-						bind:value={item}
-					/>
-					<Search class="searchpill__icon" size={16} aria-hidden="true" />
-				</label>
 
 				<!-- The dietary selector: single-select. Filters items to the chosen diet,
 			     and persists the choice for the signed-in user (see selectDiet). -->
@@ -866,14 +853,15 @@
 		background: var(--color-accent);
 	}
 
-	/* A plain search pill (Place / Item): a glassy floating field matching the tag
-	   pickers, so every floating control reads as one family. The input grows to fill
-	   the pill so the trailing search icon sits flush at the right edge. */
+	/* A plain search pill: a glassy floating field matching the tag pickers, so every
+	   floating control reads as one family. The input grows to fill the pill so the
+	   trailing search icon sits flush at the right edge. */
 	.searchpill {
 		display: flex;
 		align-items: center;
 		gap: 0.35rem;
 		width: 11rem;
+		height: var(--control-height);
 		padding: 0.3rem 0.5rem;
 		cursor: text;
 		border-radius: 0.7rem;
@@ -882,6 +870,12 @@
 		-webkit-backdrop-filter: blur(16px) saturate(180%);
 		border: 1px solid rgba(255, 255, 255, 0.6);
 		box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
+	}
+
+	/* The combined place+dish search now stands in for two old pills, so give it a touch
+	   more room for the longer placeholder. */
+	.searchpill--search {
+		width: 15rem;
 	}
 
 	.searchpill:focus-within {
