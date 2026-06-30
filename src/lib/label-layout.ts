@@ -12,22 +12,27 @@
 //     is how names reveal progressively without ever drawing a dot.
 //
 //   • `stepSimulation` advances the force model one frame: every pill is pulled
-//     toward its origin (a spring) and pushed off any overlapping neighbour (an
-//     axis-aligned separation), so a knot of nearby venues visibly fans out while
-//     each pill stays tethered to its point by a short leader line.
+//     strongly toward its origin (a spring), so it wants to sit centred on its venue's
+//     coordinate, and is pushed off a neighbour ONLY where their boxes would actually
+//     overlap (an axis-aligned collision), by the least amount that separates them — so a
+//     knot of nearby venues nudges just far enough apart to never overlap and otherwise
+//     stays put on its point. There are no connector/leader lines.
 //
 //   • `LabelEngine` owns the persistent per-pill state across frames and ties the
 //     two together: `recompute` re-picks the visible set, `tick` re-projects and
 //     advances it, and `attach`/`detach` bind the rendered DOM elements.
 
-/** A candidate label's projected origin and tie-break priority, for decluttering. */
+/** A candidate label's absolute-lattice cell and tie-break priority, for decluttering. */
 export type LabelAnchor = {
 	id: string;
-	// The projected origin in CSS pixels, relative to the map container.
-	ax: number;
-	ay: number;
-	// Higher wins when two anchors are too close for both to survive (the selected
-	// venue uses Infinity so it is never decluttered away).
+	// The venue's cell on the absolute geographic lattice — integer indices of its lng/lat
+	// quantized by the declutter cell size (see LabelEngine.recompute). Pan-invariant
+	// because the venue's coordinate doesn't move when the camera pans; only zoom (which
+	// resizes the cells) changes these.
+	cellX: number;
+	cellY: number;
+	// Higher wins when two anchors fall in the same cell and only some survive (the
+	// selected venue uses Infinity so it is never decluttered away).
 	priority: number;
 };
 
@@ -44,28 +49,68 @@ export type SimNode = {
 	// Anchor (origin) — refreshed every frame from the live projection.
 	ax: number;
 	ay: number;
-	// Pill-centre offset from the anchor, and the velocity of that offset.
+	// Pill-centre offset from the anchor.
 	ox: number;
 	oy: number;
+	// The net change in (ox, oy) on the last simulation step, written by stepSimulation.
+	// The caller reads vx²+vy² as the pill's movement to tell when the layout has settled.
 	vx: number;
 	vy: number;
-	// Half the measured pill width/height, for rectangular collision.
+	// Half the measured pill width/height, used as the pill's collision extent.
 	hw: number;
 	hh: number;
 };
 
 export type SimConfig = {
-	// Pull toward the anchor per tick, as a fraction of the remaining offset.
+	// How far a pill is eased back toward its origin each frame, as a fraction (0–1) of
+	// the remaining offset. Kept strong so an unobstructed pill hugs its venue's
+	// coordinate and only sits off it where a neighbour's collision holds it away.
 	spring: number;
-	// Fraction of velocity retained per tick (0–1); lower settles faster.
-	damping: number;
-	// Strength of the separation push applied when two pills overlap.
+	// Fraction of the box penetration each collision pass removes (0–1); a few passes
+	// (see COLLISION_PASSES) then converge so that, at rest, no two boxes overlap.
 	separation: number;
-	// Extra breathing room kept between pills, in px.
+	// Breathing room kept between pill boxes, in px: the collision treats each box as if
+	// grown by this much, so pills settle a hair apart rather than exactly edge-to-edge.
 	padding: number;
-	// How far a pill may drift from its origin before the leader is clamped, in px.
+	// Hard cap on how far a pill may be pushed from its origin, in px — a backstop so an
+	// over-constrained spot can't fling a pill far from its coordinate.
 	maxLeader: number;
 };
+
+// How many position-based collision passes stepSimulation runs per frame. Each pass
+// removes `separation` of any remaining box penetration, so a few converge to clear.
+const COLLISION_PASSES = 4;
+
+/**
+ * The geographic cell size, in DEGREES, whose on-screen width is ≈ `targetPx` CSS pixels
+ * at MapLibre `zoom`. MapLibre's world is `512 · 2^zoom` px around, so a full 360° of
+ * longitude spans that many pixels and `targetPx` of them subtend this many degrees. The
+ * declutter lattice is sized from the zoom this way, then bucketed in lng/lat (see
+ * {@link selectVisible}) — so at a fixed zoom the lattice is fixed and a pan never moves a
+ * venue between cells, while zooming rescales it for the progressive reveal. Feed it a
+ * jitter-held zoom ({@link holdZoom}), not the raw camera zoom: a globe pan wobbles the
+ * reported zoom by ~±0.0004, which would otherwise resize the cell every frame and flicker
+ * boundary labels. Approximate near the poles / on the curved globe, but that only nudges
+ * DENSITY; the absolute lat/lng lattice is what guarantees pan-stability, on any projection.
+ */
+export function geoCellDegrees(zoom: number, targetPx: number): number {
+	return (targetPx * 360) / (512 * 2 ** zoom);
+}
+
+/**
+ * Hold a zoom value steady against jitter: return `held` unchanged unless `live` has moved
+ * at least `threshold` from it, in which case adopt `live`. The zoom MapLibre reports during
+ * a globe pan micro-jitters (~±0.0004); sizing the declutter cell from the raw value would
+ * wobble the lattice and flip labels in and out at cell boundaries every frame (the data
+ * that diagnosed this showed the candidate set unchanged while the visible set churned with
+ * a ±0.0004 zoom wander). Sourcing the cell zoom through this — with a `threshold` far above
+ * the jitter but below a deliberate zoom step — keeps the lattice fixed through a pan and
+ * resizes only on a real zoom. Stateless: the caller holds the running value and passes it
+ * back in. Seed `held` at any value (a large first delta adopts the real zoom immediately).
+ */
+export function holdZoom(held: number, live: number, threshold: number): number {
+	return Math.abs(live - held) >= threshold ? live : held;
+}
 
 /** Deterministic value in [0, 1) hashed from an id, for a stable tie-break. */
 export function hashId(id: string): number {
@@ -78,32 +123,59 @@ export function hashId(id: string): number {
 }
 
 /**
- * Greedy decluttering: keep the highest-priority anchors that sit at least
- * `minGap` px from every already-kept anchor, up to `max` of them. Returns the set
- * of kept ids. Input order doesn't matter — selection is by descending priority.
+ * Grid decluttering over a pre-computed cell assignment: drop each anchor into its cell
+ * (the integer `cellX`/`cellY` the caller stamped on it), keep the highest-`priority`
+ * `perCell` within each, then, if more than `max` survive overall, keep the top `max` by
+ * priority. This bounds label DENSITY uniformly (≈`perCell` per cell everywhere)
+ * regardless of how the underlying venues clump, so a dense downtown shows the same
+ * labels-per-area as a sparse suburb.
+ *
+ * The cells are an absolute GEOGRAPHIC lattice (lng/lat quantized in {@link
+ * LabelEngine.recompute}), NOT a screen-space one. That is what makes the kept set
+ * pan-invariant on the GLOBE projection as well as flat Mercator: a venue's lng/lat never
+ * moves when the camera pans, so its cell — and whether it wins that cell — is unchanged
+ * as the map slides, and labels don't flicker in and out at cell boundaries. (A
+ * screen-space lattice is only pan-invariant under an affine projection; the globe, where
+ * a pan is a sphere rotation, is not affine — which is the trap an earlier version fell
+ * into.) Only ZOOM resizes the lattice, moving venues between cells — the progressive
+ * reveal, mirroring the server's absolute lattice in `getMapData`.
+ *
+ * Bucketing on a fixed grid is O(n) (one cell lookup per anchor) and, crucially, caps
+ * the number of pills handed to the force simulation, so an over-dense viewport can't
+ * hand it an unsatisfiable packing that never settles. Input order doesn't matter —
+ * within-cell selection and the global trim are both by descending priority. Pass
+ * `perCell: Infinity` to disable per-cell thinning entirely (bounded only by `max`).
  */
-export function selectVisible(anchors: LabelAnchor[], minGap: number, max: number): Set<string> {
-	const sorted = anchors.toSorted((a, b) => b.priority - a.priority);
+export function selectVisible(anchors: LabelAnchor[], perCell: number, max: number): Set<string> {
+	// Bucket anchors by their absolute geographic cell (stamped by the caller). The cell
+	// is a function of the venue's fixed coordinate only, so it doesn't move when the map
+	// pans (on any projection) — only zooming, which resizes the cells, reshuffles.
+	const cells = new Map<string, LabelAnchor[]>();
+	for (const a of anchors) {
+		const key = `${a.cellX},${a.cellY}`;
+		let bucket = cells.get(key);
+		if (!bucket) cells.set(key, (bucket = []));
+		bucket.push(a);
+	}
+
+	// Keep the top `perCell` (by priority) within each cell.
 	const kept: LabelAnchor[] = [];
-	const keptIds = new Set<string>();
-	const gapSq = minGap * minGap;
-	for (const a of sorted) {
-		if (kept.length >= max) break;
-		let ok = true;
-		for (const k of kept) {
-			const dx = a.ax - k.ax;
-			const dy = a.ay - k.ay;
-			if (dx * dx + dy * dy < gapSq) {
-				ok = false;
-				break;
-			}
-		}
-		if (ok) {
-			kept.push(a);
-			keptIds.add(a.id);
+	for (const bucket of cells.values()) {
+		if (bucket.length > perCell) {
+			bucket.sort((a, b) => b.priority - a.priority);
+			for (let i = 0; i < perCell; i++) kept.push(bucket[i]);
+		} else {
+			for (const a of bucket) kept.push(a);
 		}
 	}
-	return keptIds;
+
+	// Global density backstop: if still over `max`, keep the highest-priority `max`.
+	if (kept.length > max) {
+		kept.sort((a, b) => b.priority - a.priority);
+		kept.length = max;
+	}
+
+	return new Set(kept.map((a) => a.id));
 }
 
 /**
@@ -111,60 +183,97 @@ export function selectVisible(anchors: LabelAnchor[], minGap: number, max: numbe
  * operates on the anchor-relative offset (`ox`, `oy`): the spring pulls it toward
  * zero and collisions push it outward, so the rigid component of any camera motion
  * (a pan re-projecting every anchor by the same delta) never enters the dynamics.
+ *
+ * The model is a position-based relaxation with two parts, run each frame:
+ *   1. a STRONG spring that eases every pill a fraction of the way back onto its origin,
+ *      so an unobstructed pill homes right onto its venue's coordinate; and
+ *   2. a COLLISION pass that, wherever two padded boxes would overlap, moves the pair
+ *      directly apart along their least-penetration axis (the smallest nudge that clears
+ *      them) -- so once the layout settles NO two boxes overlap.
+ *
+ * There is no momentum and no extra spreading force: in open space a pill sits exactly on
+ * its point, and only where two would collide do they push each other just far enough to
+ * stop overlapping. There are no connector lines. Each pill's net movement this frame is
+ * recorded back into (vx, vy) so the caller's loop can read vx^2+vy^2 to tell when the
+ * layout has come to rest and park itself.
  */
 export function stepSimulation(nodes: SimNode[], cfg: SimConfig): void {
-	const { spring, damping, separation, padding, maxLeader } = cfg;
+	const { spring, separation, padding, maxLeader } = cfg;
 
-	// Spring each pill's offset back toward zero (its origin).
+	// Remember each offset so the net movement this frame can be reported as (vx, vy).
+	const prevOx = nodes.map((n) => n.ox);
+	const prevOy = nodes.map((n) => n.oy);
+
+	// 1. Spring: ease each pill's offset a fraction of the way back toward zero (its
+	//    origin / venue coordinate). An unobstructed pill converges onto its point.
 	for (const n of nodes) {
-		n.vx -= n.ox * spring;
-		n.vy -= n.oy * spring;
+		n.ox *= 1 - spring;
+		n.oy *= 1 - spring;
 	}
 
-	// Push apart any overlapping pair along their least-overlapping axis (the
-	// minimum-translation direction), comparing absolute screen positions
-	// (anchor + offset) so a venue's real on-screen spot drives the collision.
-	for (let i = 0; i < nodes.length; i++) {
-		const a = nodes[i];
-		const ax = a.ax + a.ox;
-		const ay = a.ay + a.oy;
-		for (let j = i + 1; j < nodes.length; j++) {
-			const b = nodes[j];
-			const dx = b.ax + b.ox - ax;
-			const dy = b.ay + b.oy - ay;
-			const overlapX = a.hw + b.hw + padding - Math.abs(dx);
-			const overlapY = a.hh + b.hh + padding - Math.abs(dy);
-			if (overlapX > 0 && overlapY > 0) {
-				if (overlapX < overlapY) {
-					const push = overlapX * 0.5 * (dx < 0 ? -1 : 1) * separation;
-					a.vx -= push;
-					b.vx += push;
+	// 2. Collision resolution: a few position-based passes that move any pair whose padded
+	//    boxes overlap directly apart (half the correction each) along their least-
+	//    penetration axis. `separation` is the fraction of the penetration each pass
+	//    removes; a handful of passes converges so that, at rest, no two boxes overlap.
+	//    Absolute screen positions (anchor + offset) drive the test, so a venue's real
+	//    on-screen spot is what collides.
+	for (let pass = 0; pass < COLLISION_PASSES; pass++) {
+		for (let i = 0; i < nodes.length; i++) {
+			const a = nodes[i];
+			const ax = a.ax + a.ox;
+			const ay = a.ay + a.oy;
+			for (let j = i + 1; j < nodes.length; j++) {
+				const b = nodes[j];
+				const dx = b.ax + b.ox - ax;
+				const dy = b.ay + b.oy - ay;
+				// Overlap of the padded boxes on each axis; both > 0 means they intersect.
+				const overlapX = a.hw + b.hw + padding - Math.abs(dx);
+				const overlapY = a.hh + b.hh + padding - Math.abs(dy);
+				if (overlapX <= 0 || overlapY <= 0) continue;
+				if (overlapX <= overlapY) {
+					// Cheaper to separate on x. A deterministic sign breaks the tie when the
+					// centres share an x, so the pair parts the same way every frame.
+					const sign = dx !== 0 ? Math.sign(dx) : hashId(a.id + ' ' + b.id) < 0.5 ? -1 : 1;
+					const shift = (separation * overlapX) / 2;
+					a.ox -= shift * sign;
+					b.ox += shift * sign;
 				} else {
-					const push = overlapY * 0.5 * (dy < 0 ? -1 : 1) * separation;
-					a.vy -= push;
-					b.vy += push;
+					const sign = dy !== 0 ? Math.sign(dy) : hashId(a.id + ' ' + b.id) < 0.5 ? -1 : 1;
+					const shift = (separation * overlapY) / 2;
+					a.oy -= shift * sign;
+					b.oy += shift * sign;
 				}
 			}
 		}
 	}
 
-	// Integrate, damp, and clamp how far a pill may stray from its origin.
-	for (const n of nodes) {
-		n.vx *= damping;
-		n.vy *= damping;
-		n.ox += n.vx;
-		n.oy += n.vy;
+	// 3. Hard-clamp each offset to `maxLeader`, then record the net movement this frame in
+	//    (vx, vy) — small movement everywhere means the layout has settled.
+	for (let k = 0; k < nodes.length; k++) {
+		const n = nodes[k];
 		const dist = Math.hypot(n.ox, n.oy);
 		if (dist > maxLeader) {
-			const k = maxLeader / dist;
-			n.ox *= k;
-			n.oy *= k;
+			const s = maxLeader / dist;
+			n.ox *= s;
+			n.oy *= s;
 		}
+		n.vx = n.ox - prevOx[k];
+		n.vy = n.oy - prevOy[k];
 	}
 }
 
-/** A venue eligible to be labelled, with the origin the pill anchors to. */
-export type Candidate = { id: string; name: string; lat: number; lng: number };
+/**
+ * A label candidate, with the geographic origin its pill anchors to. `priority`
+ * overrides the default declutter tie-break (a stable id hash) when a caller wants a
+ * specific ordering among labels that compete for the same screen cell.
+ */
+export type Candidate = {
+	id: string;
+	name: string;
+	lat: number;
+	lng: number;
+	priority?: number;
+};
 
 /** Projects a lng/lat to CSS-pixel screen coordinates (i.e. `map.project`). */
 export type Projector = (lng: number, lat: number) => { x: number; y: number };
@@ -189,8 +298,12 @@ export type RecomputeOptions = {
 	height: number;
 	margin: number;
 	selectedId: string | null;
-	// Min on-screen spacing between survivors, and a hard cap on simultaneous pills.
-	gap: number;
+	// Geographic declutter grid: cell size in DEGREES (size it from the live zoom via
+	// geoCellDegrees so on-screen density stays ≈ a target px), how many labels survive per
+	// cell (the density cap — see selectVisible), and a hard cap on simultaneous pills.
+	// Degrees, not pixels, so the lattice is absolute and pan-invariant on the globe too.
+	cellDeg: number;
+	perCell: number;
 	max: number;
 };
 
@@ -208,29 +321,36 @@ export class LabelEngine {
 	/**
 	 * Re-pick the visible labels for the current camera: project every candidate,
 	 * drop those off-screen, declutter the rest, sync the node map (seeding new
-	 * pills at their origin, pruning departed ones), and return the render list in
+	 * pills on their origin, pruning departed ones), and return the render list in
 	 * candidate order for a stable key sequence.
 	 */
 	recompute(opts: RecomputeOptions): RenderItem[] {
-		const { candidates, project, width, height, margin, selectedId, gap, max } = opts;
+		const { candidates, project, width, height, margin, selectedId, cellDeg, perCell, max } = opts;
 
 		const anchors: LabelAnchor[] = [];
 		const candidateIds = new Set<string>();
 		for (const c of candidates) {
 			candidateIds.add(c.id);
+			// Project only to cull what's off screen — the visible window still has to be
+			// decided in screen space. The cull uses the live (globe-correct) per-point
+			// projection; only the DECLUTTER cell is moved out of screen space, below.
 			const p = project(c.lng, c.lat);
 			if (p.x < -margin || p.y < -margin || p.x > width + margin || p.y > height + margin) {
 				continue;
 			}
 			anchors.push({
 				id: c.id,
-				ax: p.x,
-				ay: p.y,
-				priority: c.id === selectedId ? Infinity : hashId(c.id)
+				// Bucket on the absolute geographic lattice: the venue's coordinate, shifted
+				// non-negative before the floor so it floors consistently across the equator/
+				// prime-meridian (matching the server grid in getMapData). A pan doesn't move
+				// the coordinate, so the cell is pan-invariant on the globe as well as Mercator.
+				cellX: Math.floor((c.lng + 180) / cellDeg),
+				cellY: Math.floor((c.lat + 90) / cellDeg),
+				priority: c.id === selectedId ? Infinity : (c.priority ?? hashId(c.id))
 			});
 		}
 
-		const keep = selectVisible(anchors, gap, max);
+		const keep = selectVisible(anchors, perCell, max);
 
 		const items: RenderItem[] = [];
 		const visible: string[] = [];
@@ -243,6 +363,9 @@ export class LabelEngine {
 				node.lng = c.lng;
 			} else {
 				const p = project(c.lng, c.lat);
+				// Seed the offset at zero, so a new pill starts centred exactly on its
+				// venue's coordinate. The spring holds it there; the collision push is what
+				// nudges it off only when a neighbour would otherwise overlap it.
 				node = {
 					id: c.id,
 					name: c.name,
@@ -250,7 +373,6 @@ export class LabelEngine {
 					lng: c.lng,
 					ax: p.x,
 					ay: p.y,
-					// Seed at the origin (zero offset); it springs/spreads from there.
 					ox: 0,
 					oy: 0,
 					vx: 0,
@@ -321,7 +443,7 @@ export class LabelEngine {
 	/**
 	 * Advance one frame: refresh every visible node's anchor from the live
 	 * projection, step the force model, and return the active nodes so the caller
-	 * can write their transforms and draw the leader lines.
+	 * can write each pill's transform.
 	 */
 	tick(project: Projector, config: SimConfig): LabelNode[] {
 		const active: LabelNode[] = [];
