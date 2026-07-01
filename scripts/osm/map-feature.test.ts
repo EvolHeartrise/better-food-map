@@ -4,6 +4,7 @@ import {
 	classOf,
 	composeAddress,
 	dietMarkers,
+	isClosed,
 	mapFeature,
 	osmAddressParts,
 	osmUrl,
@@ -228,4 +229,44 @@ test('mapFeature rejects non-food and geometry-less features', () => {
 	).toBeNull();
 	expect(mapFeature({ properties: { '@id': 'n1', amenity: 'cafe' }, geometry: null })).toBeNull();
 	expect(mapFeature({ properties: null })).toBeNull();
+});
+
+test('isClosed flags closure signals, passes live venues', () => {
+	// opening_hours marking permanent/indefinite closure.
+	expect(isClosed({ amenity: 'restaurant', opening_hours: 'closed' })).toBe(true);
+	expect(isClosed({ amenity: 'restaurant', opening_hours: 'off' })).toBe(true);
+	// lifecycle yes-flags left on a still-primary-tagged venue.
+	expect(isClosed({ amenity: 'restaurant', disused: 'yes' })).toBe(true);
+	expect(isClosed({ shop: 'bakery', abandoned: 'yes' })).toBe(true);
+	// lifecycle-prefixed classification key alongside the live one.
+	expect(isClosed({ amenity: 'restaurant', 'disused:amenity': 'restaurant' })).toBe(true);
+	expect(isClosed({ shop: 'bakery', 'was:shop': 'bakery' })).toBe(true);
+	// a live venue with normal hours is not closed.
+	expect(isClosed({ amenity: 'restaurant', opening_hours: 'Mo-Fr 09:00-17:00' })).toBe(false);
+	expect(isClosed({ amenity: 'cafe' })).toBe(false);
+	// a lifecycle prefix on an UNRELATED feature must not flag the food POI.
+	expect(isClosed({ amenity: 'restaurant', 'disused:railway': 'station' })).toBe(false);
+});
+
+test('mapFeature drops closed/disused venues even when the food tag is live', () => {
+	const point = { type: 'Point', coordinates: [-123.1, 49.26] };
+	expect(
+		mapFeature({
+			properties: { '@id': 'n1', amenity: 'restaurant', disused: 'yes' },
+			geometry: point
+		})
+	).toBeNull();
+	expect(
+		mapFeature({
+			properties: { '@id': 'n2', amenity: 'restaurant', opening_hours: 'closed' },
+			geometry: point
+		})
+	).toBeNull();
+	// sanity: the same feature without the closure signal is kept.
+	assertPoi(
+		mapFeature({
+			properties: { '@id': 'n3', amenity: 'restaurant', name: 'Open Spot' },
+			geometry: point
+		})
+	);
 });
