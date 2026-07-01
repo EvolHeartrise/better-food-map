@@ -464,7 +464,9 @@ export async function getLocationsWithTags(
 	// bbox/category predicates (bound), shared verbatim by all three reads so the
 	// joined tag/source scans cover exactly the same rows. Aliased to `l` so the
 	// identical condition strings drop into every query.
-	const conds: string[] = [];
+	// Closed (soft-deleted) venues are hidden from the list overview (migration 0015);
+	// this literal carries no bind param, so `params` alignment is untouched.
+	const conds: string[] = ['l.closed_at IS NULL'];
 	const params: (string | number)[] = [];
 	if (filter.bbox) {
 		conds.push('l.latitude BETWEEN ? AND ?', 'l.longitude BETWEEN ? AND ?');
@@ -701,7 +703,7 @@ async function gridRepresentativeIds(db: D1Like, bounds: Bounds, cell: number): 
 					) AS rn
 				FROM locations l
 				LEFT JOIN likes lk ON lk.location_id = l.id
-				WHERE l.latitude BETWEEN ? AND ? AND l.longitude BETWEEN ? AND ?
+				WHERE l.closed_at IS NULL AND l.latitude BETWEEN ? AND ? AND l.longitude BETWEEN ? AND ?
 			)
 			SELECT id FROM ranked WHERE rn = 1
 			ORDER BY has_menu DESC, likes DESC, id
@@ -900,7 +902,10 @@ async function queryMapData(
 	// applied IDENTICALLY here in `inLocations` and in the main row read below, so
 	// both select the exact same rows — every scoped sub-read therefore covers
 	// precisely the returned set.
-	const inLocations = `SELECT id FROM locations WHERE ${locFilter} ${capClause}`;
+	// `closed_at IS NULL` hides soft-deleted (permanently-closed) venues from every
+	// map/detail/search read this powers (migration 0015). It carries no bind param, so
+	// the `.bind(...params)` alignment below is unchanged.
+	const inLocations = `SELECT id FROM locations WHERE closed_at IS NULL AND (${locFilter}) ${capClause}`;
 	const inMenus = `SELECT DISTINCT menu_id FROM locations WHERE menu_id IS NOT NULL AND id IN (${inLocations})`;
 	const inItems = `SELECT id FROM items WHERE menu_id IN (${inMenus})`;
 
@@ -915,7 +920,9 @@ async function queryMapData(
 		{ results: overrideRows }
 	] = await Promise.all([
 		db
-			.prepare(`SELECT ${LOCATION_FIELDS} FROM locations WHERE ${locFilter} ${capClause}`)
+			.prepare(
+				`SELECT ${LOCATION_FIELDS} FROM locations WHERE closed_at IS NULL AND (${locFilter}) ${capClause}`
+			)
 			.bind(...params)
 			.all<LocationRow>(),
 		db
@@ -1019,7 +1026,9 @@ async function queryMapData(
 export async function getLocationById(db: D1Like, id: string): Promise<Location | null> {
 	const [row, { results: sources }] = await Promise.all([
 		db
-			.prepare(`SELECT ${LOCATION_FIELDS} FROM locations WHERE id = ?`)
+			// Closed (soft-deleted) venues are hidden from get_location too (migration 0015);
+			// they remain in D1 for analysis and are reopenable via setLocationClosed.
+			.prepare(`SELECT ${LOCATION_FIELDS} FROM locations WHERE id = ? AND closed_at IS NULL`)
 			.bind(id)
 			.first<LocationRow>(),
 		db
@@ -1230,6 +1239,17 @@ export type LocationInsert = Omit<
 	menu_id?: string | null;
 	sources?: Source[];
 	/**
+	 * Unix-ms timestamp marking this venue PERMANENTLY CLOSED at import time (a
+	 * "born-closed" tombstone), or null/undefined for a normal live venue. A closed
+	 * row is hidden from every display/browse read but still blocks re-creation and
+	 * search_poi re-suggestion. Paired with {@link closed_reason}. Not combined with
+	 * `items` — a closed venue has no menu. To close a venue already on the map (and
+	 * keep its likes) use {@link setLocationClosed}, not a re-insert.
+	 */
+	closed_at?: number | null;
+	/** Short note with the closure evidence; null/undefined when open. */
+	closed_reason?: string | null;
+	/**
 	 * Currency (ISO-4217, default CAD) for the private menu created when `items` are
 	 * given. Ignored for a chain branch (which shares its menu's currency).
 	 */
@@ -1289,8 +1309,8 @@ export async function insertLocations(db: D1Like, locs: LocationInsert[]): Promi
 		stmts.push(
 			db
 				.prepare(
-					`INSERT INTO locations (id, name, category, latitude, longitude, street, city, region, postcode, country, phone, website, brand_id, menu_id)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+					`INSERT INTO locations (id, name, category, latitude, longitude, street, city, region, postcode, country, phone, website, brand_id, menu_id, closed_at, closed_reason)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 				)
 				.bind(
 					id,
@@ -1306,7 +1326,9 @@ export async function insertLocations(db: D1Like, locs: LocationInsert[]): Promi
 					loc.phone,
 					loc.website,
 					loc.brand_id ?? null,
-					loc.menu_id ?? privateMenuId
+					loc.menu_id ?? privateMenuId,
+					loc.closed_at ?? null,
+					loc.closed_reason ?? null
 				)
 		);
 		for (const source of loc.sources ?? []) {
@@ -1432,6 +1454,43 @@ export async function updateLocations(
 export async function deleteLocation(db: D1Like, id: string): Promise<boolean> {
 	const res = await db.prepare(`DELETE FROM locations WHERE id = ?`).bind(id).run();
 	return res.meta.changes > 0;
+}
+
+/**
+ * Soft-deletes (or reopens) an existing location by flipping its `closed_at`/
+ * `closed_reason`, WITHOUT touching the row's likes, menu or sources — the reason a
+ * permanently-closed venue is marked rather than {@link deleteLocation}'d (a delete
+ * would cascade `liked_locations` away; see migration 0015). Pass `closedAt = null`
+ * (and `reason = null`) to reopen. Any `addSources` are appended (deduped by url),
+ * e.g. the closure-evidence link. Returns false when no location has that id (nothing
+ * written, so a stray source can't be orphaned). For a venue NOT yet on the map, use
+ * {@link insertLocations} with `closed_at` set instead (a born-closed tombstone).
+ */
+export async function setLocationClosed(
+	db: D1Like,
+	id: string,
+	closedAt: number | null,
+	reason: string | null,
+	addSources?: Source[]
+): Promise<boolean> {
+	const exists = await db.prepare(`SELECT id FROM locations WHERE id = ?`).bind(id).first();
+	if (!exists) return false;
+	const stmts: D1PreparedLike[] = [
+		db
+			.prepare(`UPDATE locations SET closed_at = ?, closed_reason = ? WHERE id = ?`)
+			.bind(closedAt, reason, id)
+	];
+	for (const source of addSources ?? []) {
+		stmts.push(
+			db
+				.prepare(
+					`INSERT OR IGNORE INTO location_sources (location_id, url, label) VALUES (?, ?, ?)`
+				)
+				.bind(id, source.url, source.label ?? null)
+		);
+	}
+	await db.batch(stmts);
+	return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1640,10 +1699,12 @@ export interface MapStats {
 export async function getStats(db: D1Like): Promise<MapStats> {
 	const row = await db
 		.prepare(
+			// Closed (soft-deleted) venues are excluded so coverage totals reflect the live map
+			// (migration 0015). Item count is menu-level and left as-is.
 			`SELECT
-				(SELECT COUNT(*) FROM locations) AS locations,
+				(SELECT COUNT(*) FROM locations WHERE closed_at IS NULL) AS locations,
 				(SELECT COUNT(*) FROM items) AS items,
-				(SELECT COUNT(DISTINCT city || '|' || region || '|' || country) FROM locations) AS cities`
+				(SELECT COUNT(DISTINCT city || '|' || region || '|' || country) FROM locations WHERE closed_at IS NULL) AS cities`
 		)
 		.first<MapStats>();
 	return row ?? { locations: 0, items: 0, cities: 0 };
