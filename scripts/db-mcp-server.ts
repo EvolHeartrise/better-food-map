@@ -37,6 +37,7 @@ import {
 	insertFoods,
 	updateLocations,
 	deleteLocation,
+	setLocationClosed,
 	getBrands,
 	getBrandById,
 	insertBrand,
@@ -372,6 +373,34 @@ const idArgs = v.object({
 	id: v.pipe(v.string(), v.minLength(1), v.description('The record id (UUID).'))
 });
 
+const closeLocationArgs = v.object({
+	id: v.pipe(
+		v.string(),
+		v.minLength(1),
+		v.description('Id of the location to mark permanently closed (or to reopen).')
+	),
+	reason: v.optional(
+		v.pipe(
+			v.string(),
+			v.minLength(1),
+			v.description(
+				'Short note with the closure evidence, stored on the row (e.g. "Closed 2024 per Yelp + dead ' +
+					'site"). Strongly encouraged when closing; ignored when `reopen` is true.'
+			)
+		)
+	),
+	reopen: v.optional(
+		v.pipe(
+			v.boolean(),
+			v.description(
+				'Set true to REOPEN a venue previously marked closed — clears closed_at/closed_reason so it ' +
+					'reappears on the map. Omit (or false) to close it.'
+			)
+		)
+	),
+	sources: addSourcesSchema
+});
+
 // One menu item. Shared by create_items (the batch's location_id/menu_id is given
 // once), and by the inline `menu_items` of an independent venue created via
 // create_locations.
@@ -490,6 +519,20 @@ const createLocationArgs = v.object({
 		)
 	),
 	sources: createSourcesSchema,
+	closed_reason: v.optional(
+		v.pipe(
+			v.string(),
+			v.minLength(1),
+			v.description(
+				'Mark this venue PERMANENTLY CLOSED at import (a "born-closed" tombstone): a short reason WITH ' +
+					'the closure evidence, e.g. "Permanently closed — Yelp lists closed + website dead (2024)". Use ' +
+					'this ONLY for a venue not yet on the map that you have verified is closed: it records the closure ' +
+					'so search_poi never re-suggests the POI and the map hides it, WITHOUT spending time on a menu. ' +
+					'Must NOT be combined with `menu_items` (a closed venue has no menu). To close a venue ALREADY on ' +
+					"the map, use close_location instead — it preserves that venue's likes."
+			)
+		)
+	),
 	id: v.optional(
 		v.pipe(
 			v.string(),
@@ -1310,6 +1353,12 @@ const tools = [
 							`create_items with the menu_id, or set_location_item_override for a per-branch delta.`
 					);
 				}
+				if (it.closed_reason && it.menu_items?.length) {
+					throw new Error(
+						`"${it.name}" has both \`closed_reason\` and \`menu_items\` — a permanently-closed venue has ` +
+							`no menu. Drop the items to file it as a closed tombstone, or drop closed_reason to add it live.`
+					);
+				}
 				return { it, core: resolveLocationInsertCore(it) };
 			});
 			// Coordinate-exact de-dup: a location already on the map (OSM coords are stored
@@ -1370,6 +1419,9 @@ const tools = [
 					menu_id: it.menu_id ?? null,
 					currency: it.currency,
 					sources: core.sources,
+					// A born-closed tombstone: stamp closed_at now so it's hidden from the map yet
+					// still blocks re-creation / search_poi re-suggestion (migration 0015).
+					...(it.closed_reason ? { closed_at: Date.now(), closed_reason: it.closed_reason } : {}),
 					...(menuItems.length ? { items: menuItems } : {})
 				};
 			});
@@ -1428,9 +1480,40 @@ const tools = [
 		name: 'delete_location',
 		annotations: DESTRUCTIVE,
 		description:
-			'Delete a location and (by cascade) all of its menu items. Returns { deleted: true } if a row was removed.',
+			'HARD-delete a location row. Cascades its sources, per-item overrides, and any user LIKES of the ' +
+			'venue (liked_locations); its private menu + items are left orphaned, not removed. Returns ' +
+			'{ deleted: true } if a row was removed. Prefer close_location for a venue that has permanently ' +
+			'closed — that preserves the likes and keeps the record for analysis; reserve delete_location for ' +
+			'a mistaken/duplicate row that should never have existed.',
 		schema: idArgs,
 		handler: async ({ id }) => ({ deleted: await deleteLocation(getDb(), id) })
+	}),
+	defineTool({
+		name: 'close_location',
+		annotations: DESTRUCTIVE,
+		description:
+			'Mark a location that is ALREADY on the map as PERMANENTLY CLOSED (soft-delete), or reopen one. ' +
+			'The row is kept — so its user likes, menu and sources survive for analysis — and simply hidden ' +
+			'from the map, search, list_locations, get_location and the coverage stats; it still blocks ' +
+			're-creation and search_poi re-suggestion, so a closed venue never resurfaces to waste research ' +
+			'time. Pass `reason` (closure evidence) and optionally `sources` to cite it; pass `reopen: true` ' +
+			'to bring it back. Returns { closed: true } / { reopened: true }, or { not_found: true } if no ' +
+			'such id. For a venue NOT yet on the map that you have verified is closed, use create_locations ' +
+			'with `closed_reason` instead (a born-closed tombstone) rather than adding it and closing it.',
+		schema: closeLocationArgs,
+		handler: async ({ id, reason, reopen, sources }) => {
+			const ok = reopen
+				? await setLocationClosed(getDb(), id, null, null)
+				: await setLocationClosed(
+						getDb(),
+						id,
+						Date.now(),
+						reason ?? null,
+						normalizeSources(sources)
+					);
+			if (!ok) return { closed: false, not_found: true, id };
+			return reopen ? { reopened: true, id } : { closed: true, id };
+		}
 	}),
 	defineTool({
 		name: 'create_items',

@@ -93,6 +93,47 @@ export function classOf(props: Record<string, string>): string | null {
 	return null;
 }
 
+/** OSM lifecycle prefixes marking a feature as no longer in service. */
+const CLOSURE_PREFIXES = [
+	'disused',
+	'was',
+	'abandoned',
+	'razed',
+	'demolished',
+	'removed',
+	'closed'
+] as const;
+
+function isYes(v: string | undefined): boolean {
+	return v?.trim().toLowerCase() === 'yes';
+}
+
+/**
+ * True when a POI's tags mark it permanently closed / no longer operating, so it
+ * must be kept OUT of the staging store (a closed venue that still surfaces in
+ * search_poi wastes an agent's research time re-discovering the closure).
+ *
+ * Catches the cases osmium's `amenity=`/`shop=` tags-filter does NOT: a venue that
+ * keeps its primary `amenity`/`shop` tag but carries `disused=yes`/`abandoned=yes`,
+ * an `opening_hours` of `closed`/`off`, or a lifecycle-prefixed classification key
+ * (e.g. `disused:amenity`) left alongside the live one during a mapping transition.
+ * (A POI tagged ONLY `disused:amenity=…` never reaches here — it fails {@link classOf}
+ * and osmium's filter — so this is the belt-and-suspenders for mixed/legacy tagging.)
+ *
+ * Note: OSM lifecycle tags only cover venues OSM itself knows are closed. Venues that
+ * closed in reality but are still live-tagged in OSM (stale data) pass this filter and
+ * are caught downstream when an agent verifies closure and records it (mark_poi_closed).
+ */
+export function isClosed(props: Record<string, string>): boolean {
+	const oh = props.opening_hours?.trim().toLowerCase();
+	if (oh === 'closed' || oh === 'off') return true;
+	if (isYes(props.disused) || isYes(props.abandoned)) return true;
+	for (const prefix of CLOSURE_PREFIXES) {
+		if (props[`${prefix}:amenity`] || props[`${prefix}:shop`]) return true;
+	}
+	return false;
+}
+
 /** Maps a food class to the best-fit app category (null when none fits cleanly). */
 export function suggestedCategory(osmClass: string): SuggestedCategory | null {
 	switch (osmClass) {
@@ -340,6 +381,9 @@ export function mapFeature(feature: OsmFeature): PoiRow | null {
 
 	const osmClass = classOf(props);
 	if (!osmClass) return null;
+
+	// Drop venues OSM marks as closed/disused so they never reach search_poi.
+	if (isClosed(props)) return null;
 
 	const id = parseOsmId(props['@id'] ?? feature.id);
 	if (!id) return null;
