@@ -1069,6 +1069,31 @@ export async function getLocationById(db: D1Like, id: string): Promise<Location 
 	return { ...row, address: formatAddress(row), sources };
 }
 
+/**
+ * The lean projection behind `/sitemap.xml`: every open venue's id plus its
+ * menu's `last_verified` date, the honest `<lastmod>` signal — the menu IS the
+ * page's substance, so the date it was last checked against its source is when
+ * the page last meaningfully changed (NULL for a venue without a menu yet).
+ * Closed (soft-deleted) venues are excluded: their pages are hidden from the
+ * map (migration 0015), so listing them would only hand crawlers soft-404s.
+ * LIMIT 50000 is the sitemap protocol's per-file URL cap — growing past it
+ * means sharding this read behind a sitemap index file, not raising the cap.
+ */
+export async function getSitemapEntries(
+	db: D1Like
+): Promise<{ id: string; last_verified: string | null }[]> {
+	const { results } = await db
+		.prepare(
+			`SELECT l.id AS id, m.last_verified AS last_verified
+			 FROM locations l LEFT JOIN menus m ON m.id = l.menu_id
+			 WHERE l.closed_at IS NULL
+			 ORDER BY l.id
+			 LIMIT 50000`
+		)
+		.all<{ id: string; last_verified: string | null }>();
+	return results;
+}
+
 /** Returns all items of a menu, each with its tags and sources (item + menu-level). */
 async function getItemsByMenu(db: D1Like, menuId: string): Promise<Item[]> {
 	const [
