@@ -124,8 +124,8 @@ export async function findDuplicateLocations(
 		for (const j of grid.candidatesInBbox({
 			minLat: a.latitude - padDeg,
 			maxLat: a.latitude + padDeg,
-			minLon: a.longitude - padDeg,
-			maxLon: a.longitude + padDeg
+			minLng: a.longitude - padDeg,
+			maxLng: a.longitude + padDeg
 		})) {
 			if (j <= i) continue; // each unordered pair once
 			const b = locations[j];

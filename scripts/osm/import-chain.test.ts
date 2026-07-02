@@ -26,13 +26,13 @@ function fakeD1(locations: ExistingLoc[]): D1Like {
 					return results[0] ?? null;
 				},
 				async all<T>() {
-					const [minLat, maxLat, minLon, maxLon] = params as number[];
+					const [minLat, maxLat, minLng, maxLng] = params as number[];
 					const results = locations.filter(
 						(l) =>
 							l.latitude >= minLat &&
 							l.latitude <= maxLat &&
-							l.longitude >= minLon &&
-							l.longitude <= maxLon
+							l.longitude >= minLng &&
+							l.longitude <= maxLng
 					);
 					return { results: results as T[] };
 				},
@@ -74,7 +74,7 @@ function storeWith(rows: PoiRow[]): OsmPoiStore {
 	return store;
 }
 
-const AREA = { bbox: { minLat: 48, minLon: -125, maxLat: 51, maxLon: -120 } };
+const AREA = { bbox: { minLat: 48, minLng: -125, maxLat: 51, maxLng: -120 } };
 
 test('matches strictly by normalized name and histograms everything else', async () => {
 	const store = storeWith([
@@ -268,7 +268,7 @@ test('country scope drops foreign-signalled POIs and keeps unknowns', async () =
 		// No country signal at all → kept (can't be proven foreign).
 		row({ osm_id: 'unk1', latitude: 49.2, longitude: -123.2, name: 'Chain' })
 	]);
-	const area = { bbox: { minLat: 45, minLon: -125, maxLat: 51, maxLon: -60 } };
+	const area = { bbox: { minLat: 45, minLng: -125, maxLat: 51, maxLng: -60 } };
 	const scoped = await selectChainCandidates(store, fakeD1([]), {
 		area,
 		nameMatch: ['Chain'],

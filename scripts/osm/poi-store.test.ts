@@ -35,7 +35,7 @@ test('insertMany + count + searchBbox round-trips and filters by box', () => {
 	expect(store.count()).toBe(2);
 	expect(store.count('test')).toBe(2);
 
-	const hits = store.searchBbox({ minLat: 49.2, maxLat: 49.3, minLon: -123.2, maxLon: -123.0 });
+	const hits = store.searchBbox({ minLat: 49.2, maxLat: 49.3, minLng: -123.2, maxLng: -123.0 });
 	expect(hits.map((h) => h.osm_id)).toEqual(['n1']);
 	store.close();
 });
@@ -60,7 +60,7 @@ test('searchBbox applies category, name and cuisine filters', () => {
 			cuisine: 'coffee_shop'
 		})
 	]);
-	const box = { minLat: 49.2, maxLat: 49.3, minLon: -123.2, maxLon: -123.0 };
+	const box = { minLat: 49.2, maxLat: 49.3, minLng: -123.2, maxLng: -123.0 };
 
 	expect(store.searchBbox(box, { category: 'cafe' }).map((h) => h.osm_id)).toEqual(['n2']);
 	// name match is case-insensitive substring
@@ -75,7 +75,7 @@ test('searchBbox treats LIKE wildcards in the name literally', () => {
 		row({ osm_id: 'n1', latitude: 49.28, longitude: -123.12, name: 'Bar None' }),
 		row({ osm_id: 'n2', latitude: 49.28, longitude: -123.12, name: 'A100% Place' })
 	]);
-	const box = { minLat: 49.2, maxLat: 49.3, minLon: -123.2, maxLon: -123.0 };
+	const box = { minLat: 49.2, maxLat: 49.3, minLng: -123.2, maxLng: -123.0 };
 	// '%' must match a literal percent, not "anything".
 	expect(store.searchBbox(box, { name: '100%' }).map((h) => h.osm_id)).toEqual(['n2']);
 	store.close();
@@ -89,7 +89,7 @@ test('cap limits rows returned', () => {
 			row({ osm_id: `n${i}`, latitude: 49.28, longitude: -123.12 })
 		)
 	);
-	const box = { minLat: 49.2, maxLat: 49.3, minLon: -123.2, maxLon: -123.0 };
+	const box = { minLat: 49.2, maxLat: 49.3, minLng: -123.2, maxLng: -123.0 };
 	expect(store.searchBbox(box, { cap: 3 }).length).toBe(3);
 	store.close();
 });
@@ -117,7 +117,7 @@ test('diet_markers survive the JSON round-trip', () => {
 	store.insertMany('test', [
 		row({ osm_id: 'n1', latitude: 49.28, longitude: -123.12, diet_markers: ['vegan', 'halal'] })
 	]);
-	const [hit] = store.searchBbox({ minLat: 49, maxLat: 50, minLon: -124, maxLon: -123 });
+	const [hit] = store.searchBbox({ minLat: 49, maxLat: 50, minLng: -124, maxLng: -123 });
 	expect(hit.diet_markers).toEqual(['vegan', 'halal']);
 	store.close();
 });
@@ -166,7 +166,7 @@ test('searchBbox filters by brand:wikidata from tags_json', () => {
 		}),
 		row({ osm_id: 'n3', latitude: 49.3, longitude: -123.3 })
 	]);
-	const bbox = { minLat: 48, minLon: -124, maxLat: 50, maxLon: -122 };
+	const bbox = { minLat: 48, minLng: -124, maxLat: 50, maxLng: -122 };
 	const hits = store.searchBbox(bbox, { brand_wikidata: 'Q37158' });
 	expect(hits.map((p) => p.osm_id)).toEqual(['n1']);
 	// Composes with other filters (AND semantics).
