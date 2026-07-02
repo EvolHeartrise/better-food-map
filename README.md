@@ -1,50 +1,57 @@
-# sv
+# BetterFoodMaps
 
-Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
+An interactive map of food venues — [betterfoodmaps.com](https://betterfoodmaps.com).
+Browse restaurants, cafés and bakeries on a world map, search venues and menu
+items together, and filter every menu by diet (vegan, vegetarian, gluten-free,
+dairy-free, nut-free, halal). Built with SvelteKit (Svelte 5) on Cloudflare
+Workers, with the data in Cloudflare D1 and the map rendered by MapLibre GL.
 
-## Creating a project
+The map is public at the root `/` — the zoomed-out globe shows a landing overlay
+with coverage stats (`src/lib/components/MapStatsOverlay.svelte`) until you zoom
+in or hit "start". Signing in (Google) is optional and adds likes and a saved
+diet.
 
-If you're seeing this, you've probably already done this step. Congrats!
+To recreate the original scaffolding this project started from:
 
 ```sh
-# create a new project
-npx sv create my-app
-```
-
-To recreate this project with the same configuration:
-
-```sh
-# recreate this project
 bun x sv@0.16.1 create --template minimal --types ts --add prettier eslint mcp="ide:claude-code+setup:local" --install bun better-food-map
 ```
 
 ## Developing
 
-Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
+Install dependencies with `bun install`, then start a development server:
 
 ```sh
-npm run dev
+bun run dev
 
 # or start the server and open the app in a new browser tab
-npm run dev -- --open
+bun run dev -- --open
 ```
+
+The dev server runs on port **5050** (set in `vite.config.ts` — the Google OAuth
+callback URI is derived from it, so don't change it casually).
 
 ## Building
 
-To create a production version of your app:
+To create a production version of the app:
 
 ```sh
-npm run build
+bun run build
 ```
 
-You can preview the production build with `npm run preview`.
-
-> To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
+You can preview the production build with `bun run preview`. Tests live next to
+the scripts they cover; run them with `bun test scripts`.
 
 ## Database
 
-Data lives in a **Cloudflare D1** database (serverless SQLite). The schema is in
-`migrations/0001_init.sql`; the data-access layer in `src/lib/server/db.ts` is
+Data lives in a **Cloudflare D1** database (serverless SQLite). The schema
+evolves through the numbered files in `migrations/` (0001–0015): `0001` is the
+initial schema, `0002`/`0004` add and then unify the chain model (brands, shared
+menus, one `items` table), `0007` adds users/sessions/likes, `0008`/`0009` split
+addresses into structured parts, `0011` adds per-menu currency, `0012` requires
+`menus.last_verified`, `0013`/`0014` add then simplify the user dietary profile
+(and drop ingredient tags + search history), and `0015` adds soft-delete for
+permanently closed venues. The data-access layer in `src/lib/server/db.ts` is
 runtime-agnostic — every function is async and takes a D1 handle, so the same
 code runs against either the Worker's `platform.env.DB` binding (the deployed
 app) or the HTTP-backed client in `src/lib/server/d1-http.ts` (local tooling).
@@ -54,9 +61,10 @@ The deployed site reads D1 through its binding via the remote functions in
 
 Read and write data through the **MCP server** (`scripts/db-mcp-server.ts`) — a
 stdio Model Context Protocol server registered in `.mcp.json` as `food-db`. It
-exposes CRUD tools (`list_locations`, `create_locations`, `update_food`,
-`delete_location`, …) so an MCP client like Claude Code can read and
-mutate the database directly via tool calls. It now talks to the **same
+exposes CRUD tools over locations, brands, menus and items (`list_locations`,
+`create_locations`, `update_items`, `close_location`, …) plus the OSM tools
+`search_poi` and `audit_locations`, so an MCP client like Claude Code can read
+and mutate the database directly via tool calls. It talks to the **same
 production D1** the live site reads, over the D1 REST API, so edits go live
 immediately. Run it standalone with `bun run db:mcp`. It needs D1 credentials in
 `.env` (see `.env.example`). Inputs are validated with valibot, and the JSON
@@ -90,34 +98,47 @@ bun run osm:extract --region canada --input canada-latest.osm.pbf
 This filters the extract to food POIs only (`amenity=restaurant,cafe,fast_food,
 bar,pub,…` and `shop=bakery,…`), so the store stays small (single-digit MB for a
 province, low-GB even continent-wide) regardless of the source extract's size.
-Override the DB path with `--db` or the `OSM_POI_DB` env var.
+It also fills in missing addresses from the addressed OSM building each POI sits
+in; `bun run overture:enrich` can fill remaining gaps from an Overture Maps
+places cache (addresses only — coordinates always stay OSM). Override the DB
+path with `--db` or the `OSM_POI_DB` env var.
 
 Then, in an MCP client, discover venues still missing from the map:
 
 - `search_poi` takes a centre (`latitude` + `longitude` + `radius_km`) or a
   `bbox`. By default it omits POIs already in D1 (de-duplicated by proximity +
   name), so you only see what's missing.
-- Each candidate carries an `osm_url` to cite as the location's source, a
-  `suggested_category`, and OSM contact/cuisine/opening-hours fields. Add them in
-  batches with `create_locations` (passing each `osm_url` in `sources`).
+- Each candidate carries an `osm_id` and `osm_url`, a `suggested_category`,
+  structured `address_parts`, and OSM contact/cuisine/opening-hours fields. Add
+  them in batches with `create_locations`, passing each candidate's `osm_id` —
+  the coordinates and address then import verbatim from OSM and the `osm_url` is
+  cited automatically.
 - `diet_markers` are venue-level OSM `diet:*` markers — informational only;
   per-item dietary tags stay source-asserted (see the data policy in CLAUDE.md).
+- `audit_locations` checks existing rows against the staging store (coordinate
+  drift, missing addresses) and returns a work-list to fix with
+  `update_locations`.
 
 The store is regenerable, so refresh a region any time by re-running the
 extract; Geofabrik updates daily.
 
 ## Accounts & sign-in (Google OAuth)
 
-**The app requires sign-in.** The root `/` is a landing page
-(`src/routes/+page.svelte`); the map itself lives at `/map`
-(`src/routes/map/+page.svelte`) and is gated. A `requireAuth` hook in
-`src/hooks.server.ts` redirects unauthenticated requests for `/map` (and shared
-`/map/locations/<id>` deep links) to the landing page, carrying the requested URL
-in `?redirectTo` so the OAuth flow returns the user there after sign-in. The map's
-data is independently protected by `requireUser()` in `src/lib/data.remote.ts`.
-Signed-in users can also **like** locations and menu items, and their searches are
-auto-logged as history. Sign-in is **Google OAuth only** (no passwords),
-implemented directly with [Arctic](https://arcticjs.dev):
+**The map is public — sign-in is optional.** The map lives at the root `/`
+(`src/routes/+page.svelte`); there is no navigation gate (see the hook chain in
+`src/hooks.server.ts`: just a canonical-host redirect and session resolution).
+Selecting a venue updates the address bar to `/locations/<id>` via shallow
+routing; there is no real route at that path, so the `reroute` hook in
+`src/hooks.ts` maps shared/refreshed deep links back onto the map page, which
+reads the id from the URL and opens the detail panel.
+
+Signing in adds the user-owned features: **liking** locations and menu items
+(`src/lib/user.remote.ts`) and a **saved diet** — the dietary selector's choice
+persists as a single dietary tag in `user_dietary_profile.diet` and is
+pre-applied as the map's filter on the next visit (`src/lib/profile.remote.ts`).
+These remote functions guard themselves with `requireUser()`; the map data reads
+in `src/lib/data.remote.ts` are public. Sign-in is **Google OAuth only** (no
+passwords), implemented directly with [Arctic](https://arcticjs.dev):
 
 - `src/lib/server/oauth.ts` builds the Google client; `src/routes/auth/login/google`
   starts the flow and `src/routes/auth/callback/google` completes it. The login route
@@ -125,12 +146,13 @@ implemented directly with [Arctic](https://arcticjs.dev):
   cookie that the callback reads to land the user back where they started.
 - Sessions are **database-backed** (`sessions` table). The cookie holds an opaque
   token whose SHA-256 hash is the row key, so the raw token is never stored
-  (`src/lib/server/auth.ts`). The session hook in `src/hooks.server.ts` resolves it
-  into `locals.user` on every request.
+  (`src/lib/server/auth.ts`). The `authenticate` hook in `src/hooks.server.ts`
+  resolves it into `locals.user` on every request.
 - User-owned data lives in the tables added by
   `migrations/0007_users_likes_searches.sql` (`users`, `oauth_accounts`,
-  `sessions`, `liked_locations`, `liked_items`, `search_history`). Reads and
-  writes go through `src/lib/user.remote.ts`.
+  `sessions`, `liked_locations`, `liked_items` — the `search_history` table it
+  also created was dropped by migration 0014) plus `user_dietary_profile`
+  (migrations 0013/0014).
 
 It needs two secrets — `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` — from a
 Google Cloud **OAuth 2.0 Client** of type "Web application". Register these
@@ -180,8 +202,10 @@ one-time setup. Data is edited going forward through the MCP server.
 
 Deploy:
 
-- **Git-connected CI (recommended):** connect the repo in the Cloudflare
-  dashboard (Workers → Builds). Build command `bun run build`, deploy via
-  `wrangler deploy` (reads `wrangler.jsonc`). Note: Workers Builds does not apply
-  D1 migrations — run `bun run d1:migrate` yourself when you add a migration.
-- **Manual:** `bun run deploy` (builds, then `wrangler deploy`).
+- **Git-connected CI (the canonical path):** the repo is connected in the
+  Cloudflare dashboard (Workers → Builds); every push to `main` builds with
+  `bun run build` and deploys via `wrangler deploy` (reads `wrangler.jsonc`).
+  Note: Workers Builds does **not** apply D1 migrations — run
+  `bun run d1:migrate` yourself when you add a migration.
+- **Manual:** `bun run deploy` (builds, then `wrangler deploy`). Requires a
+  valid local `wrangler login`; prefer the CI path.
