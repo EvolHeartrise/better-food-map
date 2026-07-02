@@ -69,11 +69,15 @@ test('toSqlLiteral renders each bound type', () => {
 	expect(toSqlLiteral(null)).toBe('NULL');
 	expect(toSqlLiteral(undefined)).toBe('NULL');
 	expect(toSqlLiteral(42.5)).toBe('42.5');
-	expect(toSqlLiteral(Number.NaN)).toBe('NULL');
-	expect(toSqlLiteral(Infinity)).toBe('NULL');
 	expect(toSqlLiteral(9007199254740993n)).toBe('9007199254740993');
 	expect(toSqlLiteral(true)).toBe('1');
 	expect(toSqlLiteral(false)).toBe('0');
+});
+
+test('toSqlLiteral throws on non-finite numbers instead of degrading to NULL', () => {
+	expect(() => toSqlLiteral(Number.NaN)).toThrow('non-finite number cannot be bound');
+	expect(() => toSqlLiteral(Infinity)).toThrow('non-finite number cannot be bound');
+	expect(() => toSqlLiteral(-Infinity)).toThrow('non-finite number cannot be bound');
 });
 
 test('a bound string VALUE containing ? is spliced in, never re-scanned', () => {
