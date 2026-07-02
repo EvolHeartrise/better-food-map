@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { tick } from 'svelte';
 	import { resolve } from '$app/paths';
 	import { pushState, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
@@ -341,6 +342,36 @@
 		}
 		return out;
 	});
+
+	// --- Accessible results list -------------------------------------------------
+	// The map pills are aria-hidden and pointer-transparent (selection happens via
+	// the map canvas hit-test), so keyboard and assistive-tech users need a real
+	// DOM path to open a venue. `results` is re-rendered as a visually hidden list
+	// of genuine <button>s that call selectLocation; while focus is inside it the
+	// list expands into a visible panel, so sighted keyboard users aren't stepping
+	// through invisible controls. The map plots every match — the rendered list is
+	// capped so a country-wide chain search doesn't drop thousands of nodes in.
+	const RESULTS_LIST_MAX = 50;
+	const listedResults = $derived(results.slice(0, RESULTS_LIST_MAX));
+
+	// The count announced by the aria-live region. Only speaks once a SEARCH has
+	// settled (searchData stays null while browsing and until the first result set
+	// for a query returns), so pans and the pre-debounce fallback stay silent.
+	const resultsAnnouncement = $derived(
+		hasQuery && searchData !== null
+			? `${results.length} ${results.length === 1 ? 'place' : 'places'} found`
+			: ''
+	);
+
+	// Selecting from the results list hides the searchbar (the detail panel owns
+	// the page then), which would drop keyboard focus on <body> — so move it onto
+	// the panel's first control (its close button) once the panel has rendered.
+	let placecardEl = $state<HTMLElement | null>(null);
+	async function selectFromList(id: string): Promise<void> {
+		selectLocation(id);
+		await tick();
+		placecardEl?.querySelector('button')?.focus();
+	}
 
 	// The map plots EVERY matching location — the map itself is the result surface.
 	// Each carries the item names its label rotates through; a 30-branch chain
@@ -701,7 +732,12 @@
 	{#if selectedId && selectedLocation}
 		{@const loc = selectedLocation}
 		{@const label = categoryLabel(loc.category)}
-		<aside class="placecard" aria-label="Location details" transition:fly={panelFly}>
+		<aside
+			class="placecard"
+			aria-label="Location details"
+			bind:this={placecardEl}
+			transition:fly={panelFly}
+		>
 			<button
 				type="button"
 				class="placecard__close"
@@ -888,8 +924,44 @@
 			     and persists the choice for the signed-in user (see selectDiet). -->
 				<DietSelector value={diet} onSelect={selectDiet} />
 			</div>
+
+			<!-- The keyboard/screen-reader path to the venues (the map pills are
+			     aria-hidden and pointer-transparent): the same `results` the map plots,
+			     as real buttons. Visually hidden until focus enters it, then a compact
+			     panel below the search row (see .results). Capped — see listedResults. -->
+			{#if listedResults.length > 0}
+				<nav class="results" aria-label="Matching places">
+					<ul class="results__list">
+						{#each listedResults as result (result.loc.id)}
+							<li>
+								<button
+									type="button"
+									class="results__item"
+									onclick={() => selectFromList(result.loc.id)}
+								>
+									<span class="results__name">{result.loc.name}</span>
+									{#if result.loc.address}
+										<span class="results__address">{result.loc.address}</span>
+									{/if}
+								</button>
+							</li>
+						{/each}
+					</ul>
+					{#if results.length > listedResults.length}
+						<p class="results__cap">
+							Showing the first {RESULTS_LIST_MAX} of {results.length} places. Refine the search to narrow
+							the list.
+						</p>
+					{/if}
+				</nav>
+			{/if}
 		{/if}
 	</div>
+
+	<!-- Announces how many places a search matched, once each search settles.
+	     Always in the DOM (an aria-live region added on the fly isn't reliably
+	     picked up); empty while browsing, so pans announce nothing. -->
+	<div class="visually-hidden" role="status">{resultsAnnouncement}</div>
 
 	<!-- An item's DIETARY tags (vegan, gluten-free, halal, …) only, rendered inline on
 	     each menu row in the open venue's card so the diet markers are visible at a
@@ -1063,6 +1135,93 @@
 		flex-shrink: 0;
 		/* Decorative: let clicks fall through to the <label> so it focuses the input. */
 		pointer-events: none;
+		color: var(--color-text-muted);
+	}
+
+	/* Standard screen-reader-only box: present in the accessibility tree and the
+	   tab order, invisible on screen. Used by the live search-count region. */
+	.visually-hidden {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip-path: inset(50%);
+		white-space: nowrap;
+	}
+
+	/* --- Accessible results list ----------------------------------------------- */
+	/* Visually hidden by default — the map pills are the visual result surface —
+	   but real, focusable DOM. The moment focus lands inside (a keyboard user
+	   tabbing past the search field), it expands into a glass panel on its own
+	   row of the searchbar so the focused venue is visible. */
+	.results {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip-path: inset(50%);
+		white-space: nowrap;
+	}
+
+	.results:focus-within {
+		position: static;
+		width: 100%;
+		height: auto;
+		clip-path: none;
+		white-space: normal;
+		max-height: min(20rem, 45dvh);
+		overflow-y: auto;
+		padding: 0.35rem;
+		border: 1px solid rgba(255, 255, 255, 0.6);
+		border-radius: 0.7rem;
+		background: rgba(255, 255, 255, 0.9);
+		backdrop-filter: blur(16px) saturate(180%);
+		-webkit-backdrop-filter: blur(16px) saturate(180%);
+		box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
+	}
+
+	.results__list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+	}
+
+	.results__item {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 0.1rem;
+		width: 100%;
+		padding: 0.4rem 0.5rem;
+		font: inherit;
+		text-align: left;
+		color: var(--color-text);
+		background: none;
+		border: none;
+		border-radius: 0.5rem;
+		cursor: pointer;
+	}
+
+	.results__item:hover,
+	.results__item:focus-visible {
+		background: rgba(0, 0, 0, 0.06);
+	}
+
+	.results__name {
+		font-size: 0.85rem;
+		font-weight: 600;
+	}
+
+	.results__address {
+		font-size: 0.72rem;
+		color: var(--color-text-muted);
+	}
+
+	.results__cap {
+		margin: 0.25rem 0.5rem 0.15rem;
+		font-size: 0.72rem;
 		color: var(--color-text-muted);
 	}
 
