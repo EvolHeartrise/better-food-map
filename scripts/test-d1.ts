@@ -44,11 +44,14 @@ export class TestD1 implements D1Like {
 		return new TestStmt(this.db, sql);
 	}
 	async batch(statements: D1PreparedLike[]): Promise<unknown[]> {
-		const tx = this.db.transaction((stmts: TestStmt[]) => {
-			for (const s of stmts) this.db.query(s._sql).run(...(s._params as never[]));
-		});
-		tx(statements as TestStmt[]);
-		return [];
+		// Real D1 returns one `{ results }` object per statement, in statement order,
+		// and read-through-batch callers (queryMapData's sub-reads) consume them —
+		// so mirror that shape. `.all()` yields `[]` for a statement that returns no
+		// rows (writes included), matching D1's empty `results` there.
+		const tx = this.db.transaction((stmts: TestStmt[]) =>
+			stmts.map((s) => ({ results: this.db.query(s._sql).all(...(s._params as never[])) }))
+		);
+		return tx(statements as TestStmt[]);
 	}
 }
 
