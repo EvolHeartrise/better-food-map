@@ -1469,7 +1469,9 @@ export type LocationInsert = Omit<
  * every location is written or, on any error, none are. Pass a single location to
  * add just one. Ideal for backfilling a chain's branches — give each the same
  * `brand_id`/`menu_id` so they all serve the shared menu — or for adding an
- * independent venue and its menu at once via `items`.
+ * independent venue and its menu at once via `items`. One call is one db.batch
+ * (a single D1 HTTP request), so callers with unbounded input should split it
+ * with {@link chunkLocationInserts} first — atomicity then holds per chunk.
  */
 export async function insertLocations(db: D1Like, locs: LocationInsert[]): Promise<string[]> {
 	const ids: string[] = [];
@@ -1548,6 +1550,61 @@ export async function insertLocations(db: D1Like, locs: LocationInsert[]): Promi
 	}
 	await db.batch(stmts);
 	return ids;
+}
+
+/**
+ * How many statements {@link insertLocations} builds for one location: the
+ * private-menu row (when it has inline `items`), the location row, one per
+ * location source, and per item its row plus one per tag/optional-tag/source
+ * link. Kept next to insertLocations so the count and the statement builder
+ * stay in sync (see the parity test in create-locations.test.ts).
+ */
+export function locationInsertStatementCount(loc: LocationInsert): number {
+	const items = loc.items ?? [];
+	return (
+		(items.length ? 1 : 0) +
+		1 +
+		(loc.sources?.length ?? 0) +
+		items.reduce(
+			(n, item) =>
+				n +
+				1 +
+				(item.tags?.length ?? 0) +
+				(item.optionalTags?.length ?? 0) +
+				(item.sources?.length ?? 0),
+			0
+		)
+	);
+}
+
+/**
+ * Splits a {@link insertLocations} batch at LOCATION boundaries into chunks of
+ * at most `maxStatements` statements each (per {@link locationInsertStatementCount}),
+ * so no single db.batch call inlines an unbounded statement list into one D1
+ * HTTP request. A location's own statements are never split — its private menu
+ * and items must land in the same atomic batch — so one location over the cap
+ * by itself gets a chunk of its own. Order is preserved; concatenating the
+ * chunks reproduces the input.
+ */
+export function chunkLocationInserts<T extends LocationInsert>(
+	locs: T[],
+	maxStatements: number
+): T[][] {
+	const chunks: T[][] = [];
+	let current: T[] = [];
+	let count = 0;
+	for (const loc of locs) {
+		const n = locationInsertStatementCount(loc);
+		if (current.length && count + n > maxStatements) {
+			chunks.push(current);
+			current = [];
+			count = 0;
+		}
+		current.push(loc);
+		count += n;
+	}
+	if (current.length) chunks.push(current);
+	return chunks;
 }
 
 /** Mutable columns of `locations`. */
@@ -1734,7 +1791,12 @@ async function resolvePrivateMenus(
 					 WHERE l.id = ?`
 				)
 				.bind(locationId)
-				.first<{ id: string; name: string; menu_id: string | null; brand_id: string | null }>()
+				.first<{
+					id: string;
+					name: string;
+					menu_id: string | null;
+					brand_id: string | null;
+				}>()
 		)
 	);
 	owners.forEach((owner, i) => {
@@ -2655,7 +2717,11 @@ export async function getSessionWithUser(
 		}>();
 	if (!row) return null;
 	return {
-		session: { id: row.session_id, user_id: row.user_id, expires_at: row.expires_at },
+		session: {
+			id: row.session_id,
+			user_id: row.user_id,
+			expires_at: row.expires_at
+		},
 		user: toUser({
 			id: row.user_id,
 			email: row.email,

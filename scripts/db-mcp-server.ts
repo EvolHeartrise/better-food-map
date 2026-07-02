@@ -36,6 +36,7 @@ import {
 	updateItems,
 	deleteItem,
 	insertLocations,
+	chunkLocationInserts,
 	insertFoods,
 	updateLocations,
 	deleteLocation,
@@ -70,6 +71,7 @@ import {
 	type Bounds,
 	type D1Like,
 	type Item,
+	type LocationInsert,
 	type LocationWithTags
 } from '../src/lib/server/db';
 import { createHttpD1 } from '../src/lib/server/d1-http';
@@ -1430,6 +1432,14 @@ interface CreateLocationsResult {
 const NEAR_DUPLICATE_M = 150;
 
 /**
+ * Statement cap per insertLocations call (one D1 batch = one HTTP request whose
+ * body inlines every statement). Bounds the multi-location case; a single
+ * location whose inline menu alone exceeds this still ships as one atomic batch
+ * (its menu row must precede the location FK), which the cap cannot split.
+ */
+const MAX_BATCH_STATEMENTS = 200;
+
+/**
  * Warnings for new points that sit suspiciously close to a SAME-NAME venue —
  * either one already on the map, or another item in this very batch (OSM itself
  * sometimes carries two stale nodes for one venue; coordinate-exact dedup cannot
@@ -1493,7 +1503,9 @@ async function nearDuplicateWarnings(
  * The create_locations core, shared with import_chain: validates chain refs,
  * skips already-created ids, resolves coordinates/addresses (collecting EVERY
  * failure rather than dying on the first), de-dups by exact coordinates, warns
- * about near-duplicates, and inserts the remainder atomically.
+ * about near-duplicates, and inserts the remainder in bounded chunks — each
+ * location atomic with its own private menu/items, cross-location atomicity
+ * per chunk (a mid-run failure reports the committed part, see ToolPartialFailure).
  */
 async function createLocationsBatch(
 	items: CreateLocationItem[],
@@ -1593,10 +1605,12 @@ async function createLocationsBatch(
 		return true;
 	});
 	warnings.push(...(await nearDuplicateWarnings(toInsert)));
-	// Pre-assign ids to any inline menu_items so we can return them; the location,
-	// its private menu and these items all land in the one atomic batch.
-	const itemIds: string[] = [];
+	// Pre-assign ids to any inline menu_items so we can return them; a location,
+	// its private menu and its items all land in the same atomic batch. Per-insert
+	// item ids are kept aside so a partial failure below reports only committed ones.
+	const itemIdsByInsert = new Map<LocationInsert, string[]>();
 	const inserts = toInsert.map(({ it, core }) => {
+		const itemIds: string[] = [];
 		const menuItems = (it.menu_items ?? []).map((mi) => {
 			const id = mi.id ?? crypto.randomUUID();
 			itemIds.push(id);
@@ -1610,7 +1624,7 @@ async function createLocationsBatch(
 				sources: normalizeSources(mi.sources)
 			};
 		});
-		return {
+		const insert: LocationInsert = {
 			id: it.id,
 			name: it.name,
 			category: core.category,
@@ -1632,8 +1646,43 @@ async function createLocationsBatch(
 			...(it.closed_reason ? { closed_at: Date.now(), closed_reason: it.closed_reason } : {}),
 			...(menuItems.length ? { items: menuItems } : {})
 		};
+		itemIdsByInsert.set(insert, itemIds);
+		return insert;
 	});
-	const ids = inserts.length ? await insertLocations(getDb(), inserts) : [];
+	// One insertLocations call is one D1 batch — every statement inlined into a
+	// single HTTP request — and the schema allows 100 locations × 200 inline items,
+	// tens of thousands of statements (#89). Chunk at location boundaries so no
+	// request grows unbounded; each location stays atomic with its private menu +
+	// items, but cross-location atomicity is per CHUNK: a mid-run failure surfaces
+	// the committed chunks via ToolPartialFailure instead of losing them.
+	const ids: string[] = [];
+	const itemIds: string[] = [];
+	for (const chunk of chunkLocationInserts(inserts, MAX_BATCH_STATEMENTS)) {
+		try {
+			ids.push(...(await insertLocations(getDb(), chunk)));
+		} catch (err) {
+			if (!ids.length) throw err; // nothing committed — plain failure
+			const cause = err instanceof Error ? err.message : String(err);
+			throw new ToolPartialFailure(
+				`create_locations failed after creating ${ids.length} of ${inserts.length} location(s): ` +
+					`${cause}. The ${ids.length} created locations are committed — re-run the same call to ` +
+					`create the rest (explicit ids and coordinate dedup make the committed rows skip on retry).`,
+				{
+					created: ids.length,
+					location_ids: ids,
+					items_created: itemIds.length,
+					item_ids: itemIds,
+					skipped_existing_ids: skippedExistingIds,
+					...(skippedDuplicateLocations.length
+						? { skipped_duplicate_locations: skippedDuplicateLocations }
+						: {}),
+					...(skippedInvalid.length ? { skipped_invalid: skippedInvalid } : {}),
+					...(warnings.length ? { warnings } : {})
+				}
+			);
+		}
+		for (const insert of chunk) itemIds.push(...(itemIdsByInsert.get(insert) ?? []));
+	}
 	return {
 		created: ids.length,
 		location_ids: ids,
@@ -1911,6 +1960,9 @@ const tools = [
 			'batch items (skipped → `skipped_duplicate_locations`), so retries/re-imports are safe. By default ' +
 			'any invalid item fails the whole batch with EVERY failing item listed (nothing written); with ' +
 			'`skip_invalid: true` the valid items are created and the failures come back in `skipped_invalid`. ' +
+			'Large batches are written in bounded chunks (each location atomic with its inline menu); if a ' +
+			'later chunk fails, the error reports the committed part as a partial failure — re-running the ' +
+			'same call is safe (committed rows skip via id/coordinate dedup). ' +
 			'Returns { created, location_ids, items_created, item_ids, skipped_existing_ids, ' +
 			'skipped_duplicate_locations, skipped_invalid, warnings } — `warnings` flags dropped partial ' +
 			'postcodes and same-name venues within ~150 m (possible OSM double-mapping worth verifying); ' +
