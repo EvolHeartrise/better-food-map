@@ -75,6 +75,7 @@ import {
 import { createHttpD1 } from '../src/lib/server/d1-http';
 import { CATEGORIES } from '../src/lib/category';
 import { sourceInputSchema } from './mcp/source-input';
+import { ToolPartialFailure, partialFailureBody } from './mcp/partial-failure';
 import { normalizeRegion, normalizePostcode, normalizeCountry } from '../src/lib/address';
 import { searchPoi, normalizeName, namesMatch } from './osm/search-poi';
 import { selectChainCandidates, partitionImportable } from './osm/import-chain';
@@ -2456,7 +2457,10 @@ const osmTools = [
 			're-runs are safe (already-imported branches are excluded). ALWAYS call with `dry_run: true` ' +
 			'first to vet the allowlist. Returns { imported, location_ids, excluded_existing, ' +
 			'excluded_foreign?, matched_by_brand?, skipped_duplicate_locations, skipped_invalid, warnings, ' +
-			'name_buckets, remaining_beyond_max, scan_truncated }.',
+			'name_buckets, remaining_beyond_max, scan_truncated }. If a D1 failure interrupts the import ' +
+			'partway, the error reply still carries the committed partial state (`partial_failure: true` plus ' +
+			'imported/warnings/skipped so far) — read its `warnings` before re-running, since committed ' +
+			'branches count as excluded_existing on the re-run and those warnings never resurface.',
 		schema: importChainArgs,
 		handler: async (input) => {
 			await assertBrandMenuRefs(getDb(), input.brand_id, input.menu_id);
@@ -2533,7 +2537,32 @@ const osmTools = [
 						menu_id: input.menu_id
 					})
 				);
-				const res = await createLocationsBatch(items, { skipInvalid: true });
+				let res: CreateLocationsResult;
+				try {
+					res = await createLocationsBatch(items, { skipInvalid: true });
+				} catch (err) {
+					// Chunks 1..N-1 are committed; surface their results instead of
+					// discarding them with the error (see ToolPartialFailure). Chunk N
+					// is a single D1 batch (atomic), so its branches count as
+					// unprocessed alongside the tail.
+					const cause = err instanceof Error ? err.message : String(err);
+					throw new ToolPartialFailure(
+						`import_chain failed after importing ${created} of ${toImport.length} branches ` +
+							`(chunk starting at index ${i}): ${cause}. The ${created} imported branches are ` +
+							`committed — re-run the same call to import the rest (committed branches are ` +
+							`excluded as existing on re-runs).`,
+						{
+							imported: created,
+							...(input.include_location_ids ? { location_ids: locationIds } : {}),
+							...(skippedDuplicates.length
+								? { skipped_duplicate_locations: skippedDuplicates }
+								: {}),
+							...(skippedInvalid.length ? { skipped_invalid: skippedInvalid } : {}),
+							...(warnings.length ? { warnings } : {}),
+							remaining_beyond_max: remaining + (toImport.length - i)
+						}
+					);
+				}
 				created += res.created;
 				locationIds.push(...res.location_ids);
 				skippedDuplicates.push(...(res.skipped_duplicate_locations ?? []));
@@ -2692,6 +2721,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 			content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }]
 		};
 	} catch (err) {
+		// A partial failure stays an error (isError), but its body carries the
+		// state the tool committed before failing — see ToolPartialFailure.
+		if (err instanceof ToolPartialFailure) {
+			return {
+				content: [{ type: 'text' as const, text: partialFailureBody(err) }],
+				isError: true
+			};
+		}
 		const message =
 			err instanceof v.ValiError
 				? `Invalid arguments: ${err.issues.map((i) => `${i.path?.map((p) => p.key).join('.') ?? '(root)'}: ${i.message}`).join('; ')}`
