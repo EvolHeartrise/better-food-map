@@ -138,11 +138,17 @@ export async function selectChainCandidates(
 	const cap = params.scanCap ?? DEFAULT_SCAN_CAP;
 	const accepted = new Set(params.nameMatch.map(normalizeName).filter(Boolean));
 
-	// One indexed scan per accepted spelling; a POI matching several terms unions
-	// to one row. The SQL name filter is a literal substring match, so a term is
-	// also scanned with its apostrophes stripped — "Harvey's" must surface a POI
-	// mapped as "Harveys" (the dominant spelling variant), which the normalized
-	// equality below then accepts. Other variants need their own name_match entry.
+	// Candidate discovery is two scans per accepted name, unioned by osm_id.
+	// (1) A literal substring (LIKE) scan on the raw term — this is what feeds
+	// name_buckets with the variant/superstring names the vetting loop extends
+	// the allowlist from ("Harvey's Confectionery"); a term is also scanned with
+	// its apostrophes stripped, since "Harveys" is the dominant spelling variant.
+	// (2) An indexed equality scan on the store's pre-normalized name, using the
+	// SAME normalizeName as the match below — guaranteeing every POI the
+	// normalized-equality match WOULD accept is actually scanned, including
+	// spellings a substring scan can never reach ("A and W" for the term "A&W",
+	// "Tim-Hortons", "Café" vs "Cafe"). Without it those branches silently never
+	// surfaced, not even in name_buckets (issue #88).
 	const scanTerms = new Set<string>();
 	for (const term of params.nameMatch) {
 		scanTerms.add(term);
@@ -153,6 +159,11 @@ export async function selectChainCandidates(
 	let scanTruncated = false;
 	for (const term of scanTerms) {
 		const rows = store.searchBbox(bbox, { name: term, cap });
+		if (rows.length >= cap) scanTruncated = true;
+		for (const row of rows) byId.set(row.osm_id, row);
+	}
+	for (const norm of accepted) {
+		const rows = store.searchBbox(bbox, { normalized_name: norm, cap });
 		if (rows.length >= cap) scanTruncated = true;
 		for (const row of rows) byId.set(row.osm_id, row);
 	}
