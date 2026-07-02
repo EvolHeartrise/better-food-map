@@ -590,9 +590,10 @@
 
 	// --- Account & likes -------------------------------------------------------
 	// The signed-in user (null when signed out) drives the account control and gates
-	// the like buttons. Likes are read only when signed in.
+	// the like buttons. getLikes() itself returns empty lists when signed out, so it
+	// needn't wait on the user read.
 	const user = $derived(await getCurrentUser());
-	const serverLikes = $derived(user ? await getLikes() : { locationIds: [], itemIds: [] });
+	const serverLikes = $derived(await getLikes());
 
 	// Optimistic like state: a pending map of just-toggled ids layered over the
 	// server set, so a tap reflects instantly without waiting on the round trip (and
