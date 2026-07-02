@@ -1,5 +1,7 @@
-# allow crawling everything by default
+# allow crawling everything by default, except the OAuth endpoints:
+# a crawler hitting /auth/login/google kicks off a redirect to Google
+# (sets state cookies, burns Worker invocations) for no indexable content
 User-agent: *
-Disallow:
+Disallow: /auth/
 
 Sitemap: https://betterfoodmaps.com/sitemap.xml
