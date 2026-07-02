@@ -15,8 +15,10 @@ import type { Category } from '../../src/lib/category';
 import {
 	composeAddressLine,
 	composeStreet,
+	normalizeCountry,
 	normalizePostcode,
-	normalizeRegion
+	normalizeRegion,
+	regionCountry
 } from '../../src/lib/address';
 import { blankToNull } from '../../src/lib/text';
 
@@ -320,6 +322,26 @@ export function effectivePoiAddressParts(poi: {
 	if (postcode) out.postcode = postcode;
 	if (country) out.country = country;
 	return Object.keys(out).length ? out : undefined;
+}
+
+/**
+ * The ISO-2 country a staged POI's address signals, or null when nothing
+ * resolves. Precedence mirrors {@link effectivePoiAddressParts}: an explicit
+ * country part (own `addr:country` or the enriched line) wins; otherwise the
+ * region decides — CA province and US state codes are disjoint, so a border-area
+ * POI whose `addr:state` is "ME" resolves to US even inside a Canada-extract
+ * bbox. Null means "no signal", NOT "foreign" — country filters treat it as a
+ * keep (an unresolvable address can't prove the POI is out of scope).
+ */
+export function poiCountry(poi: {
+	tags_json: string;
+	address: string | null;
+	admin_city: string | null;
+	admin_region: string | null;
+}): string | null {
+	const parts = effectivePoiAddressParts(poi);
+	if (!parts) return null;
+	return normalizeCountry(parts.country) ?? regionCountry(parts.region);
 }
 
 /** Venue-level dietary markers OSM explicitly asserts (`diet:x=yes|only`), mapped to tag ids. */

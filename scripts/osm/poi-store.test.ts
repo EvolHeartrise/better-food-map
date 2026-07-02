@@ -148,3 +148,27 @@ test('openReadonly throws a helpful error when the file is missing', () => {
 		/osm:extract/
 	);
 });
+
+test('searchBbox filters by brand:wikidata from tags_json', () => {
+	const store = OsmPoiStore.open(':memory:');
+	store.insertMany('test', [
+		row({
+			osm_id: 'n1',
+			latitude: 49.1,
+			longitude: -123.1,
+			tags_json: JSON.stringify({ 'brand:wikidata': 'Q37158' })
+		}),
+		row({
+			osm_id: 'n2',
+			latitude: 49.2,
+			longitude: -123.2,
+			tags_json: JSON.stringify({ 'brand:wikidata': 'Q175106' })
+		}),
+		row({ osm_id: 'n3', latitude: 49.3, longitude: -123.3 })
+	]);
+	const bbox = { minLat: 48, minLon: -124, maxLat: 50, maxLon: -122 };
+	const hits = store.searchBbox(bbox, { brand_wikidata: 'Q37158' });
+	expect(hits.map((p) => p.osm_id)).toEqual(['n1']);
+	// Composes with other filters (AND semantics).
+	expect(store.searchBbox(bbox, { brand_wikidata: 'Q175106', name: 'nope' }).length).toBe(0);
+});

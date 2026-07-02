@@ -9,9 +9,10 @@
 // ---------------------------------------------------------------------------
 
 import type { D1Like } from '../../src/lib/server/db';
+import { normalizeCountry } from '../../src/lib/address';
 import { stripDiacritics } from '../../src/lib/text';
 import { bboxAround, haversineMeters, type Bbox } from './geo';
-import { effectivePoiAddressParts, osmUrl, type PoiAddressParts } from './map-feature';
+import { effectivePoiAddressParts, osmUrl, poiCountry, type PoiAddressParts } from './map-feature';
 import type { OsmPoiStore, StoredPoi } from './poi-store';
 
 export interface SearchPoiParams {
@@ -23,6 +24,15 @@ export interface SearchPoiParams {
 	category?: StoredPoi['suggested_category'];
 	name?: string;
 	cuisine?: string;
+	/**
+	 * ISO-2 country scope (e.g. "CA"). Drops POIs whose address SIGNALS a
+	 * different country (explicit addr:country, or a region code that belongs to
+	 * another country — CA province and US state codes are disjoint); POIs with
+	 * no country signal are kept, since an unresolvable address can't prove the
+	 * POI is out of scope. Guards border-spanning bboxes: a Canada extract
+	 * carries some US border-town POIs.
+	 */
+	country?: string;
 	/** Drop POIs already present in D1 (default true). */
 	exclude_existing?: boolean;
 	/**
@@ -77,6 +87,10 @@ export interface SearchPoiResult {
 	total_in_area: number;
 	/** How many were dropped as already-in-DB (0 when exclude_existing is false). */
 	excluded_existing: number;
+	/** POIs dropped because their address signals a different country (only with `country`). */
+	excluded_foreign?: number;
+	/** Up to 10 of the foreign-dropped POIs, so the drop is auditable, never silent. */
+	excluded_foreign_sample?: { osm_id: string; name: string | null; country: string }[];
 	/** Whether results were capped by `limit`. */
 	truncated: boolean;
 }
@@ -84,6 +98,43 @@ export interface SearchPoiResult {
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 const SCAN_CAP = 2000;
+const FOREIGN_SAMPLE = 10;
+
+/** One foreign-dropped POI, for the audit sample. */
+export interface ForeignDrop {
+	osm_id: string;
+	name: string | null;
+	/** The country the POI's address signalled (never the requested scope). */
+	country: string;
+}
+
+/**
+ * Splits POIs into those compatible with an ISO-2 country scope (matching
+ * signal, or no signal at all — an unresolvable address can't prove a POI
+ * foreign) and a sample-carrying summary of the dropped rest. The scope is
+ * folded through the same normalizeCountry as the per-POI signal, so spellings
+ * ("UK" vs "GB") can never disagree. Shared by search_poi and import_chain.
+ */
+export function partitionByCountry(
+	pois: StoredPoi[],
+	countryScope: string
+): { kept: StoredPoi[]; dropped: number; sample: ForeignDrop[] } {
+	const scope = normalizeCountry(countryScope) ?? countryScope.trim().toUpperCase();
+	const kept: StoredPoi[] = [];
+	let dropped = 0;
+	const sample: ForeignDrop[] = [];
+	for (const poi of pois) {
+		const c = poiCountry(poi);
+		if (c === null || c === scope) {
+			kept.push(poi);
+			continue;
+		}
+		dropped++;
+		if (sample.length < FOREIGN_SAMPLE)
+			sample.push({ osm_id: poi.osm_id, name: poi.name, country: c });
+	}
+	return { kept, dropped, sample };
+}
 
 // Dedup thresholds. A staging POI is considered already-present when an existing
 // location is essentially on the same spot, or close with a matching name.
@@ -225,6 +276,14 @@ export async function searchPoi(
 		const excluded = new Set(params.exclude_osm_ids);
 		rows = rows.filter((poi) => !excluded.has(poi.osm_id));
 	}
+	let excludedForeign = 0;
+	let excludedForeignSample: ForeignDrop[] = [];
+	if (params.country) {
+		const { kept, dropped, sample } = partitionByCountry(rows, params.country);
+		rows = kept;
+		excludedForeign = dropped;
+		excludedForeignSample = sample;
+	}
 
 	// Attach distance and trim to the exact circle for centre+radius queries.
 	let withDistance: { poi: StoredPoi; distance_m?: number }[];
@@ -258,5 +317,12 @@ export async function searchPoi(
 	const truncated = withDistance.length > limit;
 	const candidates = withDistance.slice(0, limit).map((x) => toCandidate(x.poi, x.distance_m));
 
-	return { candidates, total_in_area: totalInArea, excluded_existing: excluded, truncated };
+	return {
+		candidates,
+		total_in_area: totalInArea,
+		excluded_existing: excluded,
+		...(params.country === undefined ? {} : { excluded_foreign: excludedForeign }),
+		...(excludedForeignSample.length ? { excluded_foreign_sample: excludedForeignSample } : {}),
+		truncated
+	};
 }

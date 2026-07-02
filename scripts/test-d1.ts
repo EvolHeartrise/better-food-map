@@ -55,6 +55,9 @@ export class TestD1 implements D1Like {
 /** A fresh in-memory database with both migrations applied. */
 export function freshDb(): TestD1 {
 	const db = new Database(':memory:');
+	// Match production D1, which enforces foreign keys by default — otherwise the
+	// ON DELETE CASCADE behavior migrations advertise is never exercised in tests.
+	db.exec('PRAGMA foreign_keys = ON;');
 	db.exec(readFileSync('migrations/0001_init.sql', 'utf8'));
 	db.exec(readFileSync('migrations/0002_chains.sql', 'utf8'));
 	db.exec(readFileSync('migrations/0003_location_coords_index.sql', 'utf8'));
@@ -70,5 +73,7 @@ export function freshDb(): TestD1 {
 	db.exec(readFileSync('migrations/0014_remove_ingredient_tags.sql', 'utf8'));
 	db.exec(readFileSync('migrations/0015_location_closed.sql', 'utf8'));
 	db.exec(readFileSync('migrations/0016_search_fts.sql', 'utf8'));
+	db.exec(readFileSync('migrations/0018_location_pair_reviews.sql', 'utf8'));
+	db.exec(readFileSync('migrations/0019_menu_refresh_notes.sql', 'utf8'));
 	return new TestD1(db);
 }
