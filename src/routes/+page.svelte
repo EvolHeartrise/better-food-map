@@ -26,7 +26,7 @@
 	import { idFromPath } from '$lib/location-path';
 	import { DEFAULT_MAP_CENTER } from '$lib/map-defaults';
 	import { searchableQuery } from '$lib/search';
-	import type { MapData, MapLocation, Item, Bounds } from '$lib/server/db';
+	import type { MapData, MapItem, MapLocation, Item, Bounds } from '$lib/server/db';
 
 	// The visible map area, reported by <LocationMap> (debounced) as the user pans
 	// and zooms, plus once on load. This is the ONLY thing that decides which data
@@ -227,17 +227,25 @@
 	// location's menu (its own private menu, or a shared brand menu) with this
 	// location's per-item overrides applied — items marked unavailable dropped,
 	// overridden prices used — and attach the menu's `last_verified` freshness date.
-	// Shared by the in-view set below and the by-id detail fetch.
-	function resolveLocation(loc: MapLocation, data: MapData): LocationData {
-		const menu: Item[] = [];
+	// Generic over the item shape (#83): the viewport/search payloads carry lean
+	// MapItems (the map only renders names + tags), while the by-id detail fetch
+	// resolves full Items for the open venue's panel.
+	function resolveLocation<I extends MapItem>(
+		loc: MapLocation,
+		data: MapData<I>
+	): MapLocation & { menu: I[]; lastVerified: string | null } {
+		const menu: I[] = [];
 		if (loc.menu_id) {
 			const overrideByItem = new Map(loc.overrides.map((o) => [o.item_id, o]));
 			for (const menuItem of data.menus[loc.menu_id] ?? []) {
 				const override = overrideByItem.get(menuItem.id);
 				if (override?.available === false) continue; // not served at this branch
 				// Reuse the shared item object unless this branch overrides its price.
-				if (override !== undefined && override.price !== null) {
-					menu.push({ ...menuItem, price: override.price });
+				// A price override only applies to the full detail shape — the lean
+				// viewport items carry no price to override. The cast is sound: the
+				// spread copies I and rewrites `price`, which Item types number|null.
+				if (override !== undefined && override.price !== null && 'price' in menuItem) {
+					menu.push({ ...menuItem, price: override.price } as I);
 				} else {
 					menu.push(menuItem);
 				}
@@ -308,8 +316,10 @@
 		focusTarget = { latitude: target.lat, longitude: target.lng, key: String(focusNonce) };
 	}
 
-	// A location with its effective menu resolved (see resolveLocation), plus its
-	// menu's `last_verified` freshness date (null for unverified/private menus).
+	// A location with its FULL effective menu resolved (see resolveLocation), plus
+	// its menu's `last_verified` freshness date (null for unverified/private
+	// menus). This is the detail-panel shape — only the by-id fetch carries full
+	// Items; the in-view set resolves to lean MapItems (#83).
 	type LocationData = MapLocation & { menu: Item[]; lastVerified: string | null };
 
 	// On narrow (mobile) screens the row of floating search items collapses behind a
@@ -425,10 +435,11 @@
 	// floating landing pieces are all that show.
 	const landing = $derived(!selectedId && (zoomLevel === null || zoomLevel <= LANDING_MAX_ZOOM));
 
-	// The resolved record for the open location. Because we now load only the
-	// visible area, the selected place isn't always among `locations` — a shared
-	// `/locations/<id>` link, or one panned off screen, falls outside it. So we
-	// resolve it from the in-view set when present and otherwise fetch it by id.
+	// The resolved record for the open location, always fetched by id: the
+	// viewport/search payloads carry only the lean item shape (no description/
+	// price/sources — see #83), so the in-view record can't feed the detail panel.
+	// getLocationData dedupes by id, so only the FIRST open of a venue costs a
+	// round trip; re-opening it (and the landing venue, awaited above) is instant.
 	// Held in state (not a derived) and updated imperatively so the open detail
 	// stays put while a by-id fetch is in flight — panning the place off screen
 	// doesn't flash the panel closed. Seeded from the awaited landing venue so a
@@ -440,14 +451,7 @@
 	$effect(() => {
 		const id = selectedId;
 		if (!id) return;
-		const inView = locations.find((loc) => loc.id === id) ?? null;
-		if (inView) {
-			selectedLocation = inView;
-			return;
-		}
-		// Out of view: fetch it on its own. getLocationData dedupes by id, so a
-		// refetch triggered by a subsequent pan won't hit the network again. We
-		// leave any currently-shown detail in place until this resolves.
+		// We leave any currently-shown detail in place until this resolves.
 		let cancelled = false;
 		getLocationData(id)
 			.then((data) => {

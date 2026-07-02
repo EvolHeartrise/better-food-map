@@ -63,8 +63,10 @@ function venue(name: string, i = 0) {
 
 // Mirror of +page.svelte's resolveLocation, menu part only: the location's menu
 // items with its overrides applied — unavailable items dropped, overridden
-// prices used. (Freshness metadata plays no part in membership.)
-function resolveMenu(loc: MapLocation, data: MapData): Item[] {
+// prices used. (Freshness metadata plays no part in membership.) Fed the FULL
+// item shape (getLocationMapData) — the page's lean viewport shape carries the
+// same name+tags membership reads on, so parity over this shape covers both.
+function resolveMenu(loc: MapLocation, data: MapData<Item>): Item[] {
 	const menu: Item[] = [];
 	if (loc.menu_id) {
 		const overrideByItem = new Map(loc.overrides.map((o) => [o.item_id, o]));

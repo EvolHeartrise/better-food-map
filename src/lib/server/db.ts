@@ -109,13 +109,27 @@ export interface Location {
 }
 
 /**
- * A menu item. Belongs to a {@link Menu} — private to one venue, or shared
- * across a chain's branches.
+ * The LEAN item shape the viewport/search payloads carry (see {@link MapData}).
+ * The map UI renders only item names (the rotating label teasers) and re-filters
+ * by dietary tag client-side, so this is all a bulk payload needs; description,
+ * price and sources are read solely in the detail panel of the ONE open venue,
+ * which resolves through the by-id read (full {@link Item} shape). Shipping the
+ * full shape for every in-view menu made a dense-viewport pan serialize hundreds
+ * of KB that was never rendered (#83).
  */
-export interface Item {
+export interface MapItem {
 	id: string;
 	menu_id: string;
 	item_name: string;
+	/** Tags applied to this item (dietary and course), with `optional`. */
+	tags: ItemTag[];
+}
+
+/**
+ * A menu item, in full. Belongs to a {@link Menu} — private to one venue, or
+ * shared across a chain's branches.
+ */
+export interface Item extends MapItem {
 	/** Short free-text description of the item (may be null). */
 	description: string | null;
 	price: number | null;
@@ -125,8 +139,6 @@ export interface Item {
 	 * self-describing. Defaults to "CAD".
 	 */
 	currency: string;
-	/** Tags applied to this item (dietary and course), with `optional`. */
-	tags: ItemTag[];
 	/** Citations for where this item's data came from (may be empty). */
 	sources: Source[];
 }
@@ -149,15 +161,20 @@ export interface MapLocation extends Location {
 
 /**
  * Everything the map page needs in one payload. Each menu (private or shared) is
- * sent ONCE, keyed by `menu_id`, with its items resolved (tags + merged sources);
- * a 500-branch chain ships its menu a single time instead of 500. The client
+ * sent ONCE, keyed by `menu_id`, with its items resolved (tags attached); a
+ * 500-branch chain ships its menu a single time instead of 500. The client
  * joins each {@link MapLocation} to its `menus` entry, applying the location's
  * `overrides`, to reconstruct the effective menu (see `resolveLocation` in +page.svelte).
+ *
+ * The default item shape is the LEAN {@link MapItem} — what the bulk
+ * viewport/search reads return. Only the single-venue by-id read
+ * ({@link getLocationMapData}, backing the detail panel) instantiates this with
+ * the full {@link Item} (description, price, merged sources) — see #83.
  */
-export interface MapData {
+export interface MapData<I extends MapItem = MapItem> {
 	locations: MapLocation[];
 	/** Menus referenced by the returned locations, items resolved once, keyed by menu_id. */
-	menus: Record<string, Item[]>;
+	menus: Record<string, I[]>;
 	/**
 	 * Per-menu metadata for the referenced menus, keyed by menu_id — currently just
 	 * `last_verified` (the ISO date a menu was last checked against its source). Sent
@@ -277,7 +294,9 @@ export interface LocationItemOverride {
 /**
  * Internal raw shape of an `items` row before its tags, sources and (menu-derived)
  * currency are attached. `currency` is NOT a column on `items`; it is read from the
- * item's menu and attached when the {@link Item} is assembled.
+ * item's menu and attached when the {@link Item} is assembled. A LEAN read
+ * (queryMapData without `detail`) projects only the {@link MapItem} columns, so
+ * `description`/`price` are undefined at runtime there — the lean path never reads them.
  */
 type ItemRow = Omit<Item, 'tags' | 'sources' | 'currency'>;
 
@@ -379,6 +398,8 @@ function mergeSources(primary: Source[], secondary: Source[]): Source[] {
 
 const LOCATION_FIELDS = `id, name, category, latitude, longitude, street, city, region, postcode, country, phone, website, brand_id, menu_id`;
 const ITEM_FIELDS = `id, menu_id, item_name, description, price`;
+/** The lean {@link MapItem} projection the bulk viewport/search reads use (#83). */
+const MAP_ITEM_FIELDS = `id, menu_id, item_name`;
 /** Item-tag join projection (aliased to {@link ItemTagRow}). */
 const ITEM_TAG_SELECT = `t.id AS id, t.name AS name, t.tag_type AS tag_type, it.optional AS optional`;
 
@@ -745,9 +766,11 @@ async function gridRepresentativeIds(db: D1Like, bounds: Bounds, cell: number): 
  * Returns everything the map page needs for the given viewport in one payload
  * (see {@link MapData}): a set of locations inside `bounds` with their per-item
  * overrides, plus each menu those locations reference resolved ONCE (keyed by
- * menu_id, each item carrying its tags and merged sources). The client joins the
- * two — applying each location's overrides — to reconstruct the effective menu,
- * so a shared chain menu travels the wire a single time instead of once per branch.
+ * menu_id, each item in the lean {@link MapItem} shape — name + tags, no
+ * description/price/sources, which only the by-id detail read carries, #83). The
+ * client joins the two — applying each location's overrides — to reconstruct the
+ * effective menu, so a shared chain menu travels the wire a single time instead
+ * of once per branch.
  *
  * Scoping the read to the visible box keeps the payload bounded as the dataset grows
  * to whole countries. A WIDE viewport (zoomed out) is additionally downsampled to one
@@ -780,11 +803,14 @@ export async function getMapData(db: D1Like, bounds: Bounds): Promise<MapData> {
 
 /**
  * Like {@link getMapData} but for a single location by id, returned in the same
- * {@link MapData} shape. Used by the map's detail view to resolve a location that
- * isn't in the current viewport. Yields an empty payload if no location has that id.
+ * {@link MapData} shape — except its items carry the FULL {@link Item} detail
+ * (description, price, item sources merged with menu-level sources). This is the
+ * one read behind the detail panel, so it alone pays for the heavy fields; the
+ * bulk viewport/search reads stay lean (#83). Yields an empty payload if no
+ * location has that id.
  */
-export function getLocationMapData(db: D1Like, id: string): Promise<MapData> {
-	return queryMapData(db, `id = ?`, [id]);
+export function getLocationMapData(db: D1Like, id: string): Promise<MapData<Item>> {
+	return queryMapData(db, `id = ?`, [id], DEFAULT_MAP_CAP, true);
 }
 
 /**
@@ -970,12 +996,33 @@ const IMPORTANCE_MAP_CAP = `ORDER BY (menu_id IS NOT NULL) DESC, name, id LIMIT 
  *   • the batch is one D1 round trip instead of seven, executed as one atomic
  *     unit, so the sub-reads also see a single consistent snapshot rather than
  *     independently-raced reads.
+ *
+ * `detail` picks the item shape (#83): false (the bulk viewport/search reads)
+ * projects only the lean {@link MapItem} columns and skips the item/menu source
+ * reads entirely — the map UI never renders those fields; true (the single-venue
+ * by-id read behind the detail panel) returns full {@link Item}s with
+ * description, price and merged sources.
  */
 async function queryMapData(
 	db: D1Like,
 	locFilter: string,
 	params: (string | number)[],
-	capClause: string = DEFAULT_MAP_CAP
+	capClause: string,
+	detail: true
+): Promise<MapData<Item>>;
+async function queryMapData(
+	db: D1Like,
+	locFilter: string,
+	params: (string | number)[],
+	capClause?: string,
+	detail?: false
+): Promise<MapData>;
+async function queryMapData(
+	db: D1Like,
+	locFilter: string,
+	params: (string | number)[],
+	capClause: string = DEFAULT_MAP_CAP,
+	detail: boolean = false
 ): Promise<MapData> {
 	// The one evaluation of `locFilter`: the capped, `capClause`-ordered location
 	// rows themselves. `closed_at IS NULL` hides soft-deleted (permanently-closed)
@@ -1005,19 +1052,14 @@ async function queryMapData(
 	// The tuple cast mirrors each statement's projection 1:1 — `batch` itself is
 	// typed `unknown[]` on D1Like because the two backends (Worker binding,
 	// d1-http shim) type their per-statement results differently, though both
-	// return `{ results }` objects in statement order.
-	const [
-		{ results: itemRows },
-		{ results: menuCurrencyRows },
-		{ results: itemTagRows },
-		{ results: itemSourceRows },
-		{ results: menuSourceRows },
-		{ results: locationSourceRows },
-		{ results: overrideRows }
-	] = (await db.batch([
+	// return `{ results }` objects in statement order. The item/menu source reads
+	// run only in detail mode (they are per-item weight the lean payload exists to
+	// shed), appended after the fixed core statements so the destructuring holds
+	// in both modes — their slots are simply absent on a lean read.
+	const coreStatements = [
 		db
 			.prepare(
-				`SELECT ${ITEM_FIELDS} FROM items WHERE menu_id IN (${inMenus}) ORDER BY menu_id, item_name`
+				`SELECT ${detail ? ITEM_FIELDS : MAP_ITEM_FIELDS} FROM items WHERE menu_id IN (${inMenus}) ORDER BY menu_id, item_name`
 			)
 			.bind(menuIds),
 		db
@@ -1034,18 +1076,6 @@ async function queryMapData(
 			.bind(menuIds),
 		db
 			.prepare(
-				`SELECT item_id AS owner_id, url, label FROM item_sources
-				 WHERE item_id IN (${inItems}) ORDER BY rowid`
-			)
-			.bind(menuIds),
-		db
-			.prepare(
-				`SELECT menu_id AS owner_id, url, label FROM menu_sources
-				 WHERE menu_id IN (${inMenus}) ORDER BY rowid`
-			)
-			.bind(menuIds),
-		db
-			.prepare(
 				`SELECT location_id AS owner_id, url, label FROM location_sources
 				 WHERE location_id IN (${inLocations}) ORDER BY rowid`
 			)
@@ -1056,39 +1086,73 @@ async function queryMapData(
 				 WHERE location_id IN (${inLocations}) ORDER BY rowid`
 			)
 			.bind(locationIds)
-	])) as [
+	];
+	const detailStatements = detail
+		? [
+				db
+					.prepare(
+						`SELECT item_id AS owner_id, url, label FROM item_sources
+						 WHERE item_id IN (${inItems}) ORDER BY rowid`
+					)
+					.bind(menuIds),
+				db
+					.prepare(
+						`SELECT menu_id AS owner_id, url, label FROM menu_sources
+						 WHERE menu_id IN (${inMenus}) ORDER BY rowid`
+					)
+					.bind(menuIds)
+			]
+		: [];
+	const [
+		{ results: itemRows },
+		{ results: menuCurrencyRows },
+		{ results: itemTagRows },
+		{ results: locationSourceRows },
+		{ results: overrideRows },
+		itemSourceRes,
+		menuSourceRes
+	] = (await db.batch([...coreStatements, ...detailStatements])) as [
 		{ results: ItemRow[] },
 		{ results: { id: string; currency: string; last_verified: string | null }[] },
 		{ results: ItemTagRow[] },
 		{ results: SourceRow[] },
-		{ results: SourceRow[] },
-		{ results: SourceRow[] },
-		{ results: OverrideRow[] }
+		{ results: OverrideRow[] },
+		{ results: SourceRow[] }?,
+		{ results: SourceRow[] }?
 	];
 
-	// Resolve each menu item once (tags + item sources, with the menu-level source
-	// appended) and group by menu. The client applies the per-location price/
-	// availability deltas as it expands a menu onto each branch.
+	// Resolve each menu item once (tags, plus — in detail mode — item sources with
+	// the menu-level source appended) and group by menu. The client applies the
+	// per-location price/availability deltas as it expands a menu onto each branch.
 	const tagsByItem = groupItemTags(itemTagRows);
-	const sourcesByItem = groupSources(itemSourceRows);
-	const sourcesByMenu = groupSources(menuSourceRows);
+	const sourcesByItem = groupSources(itemSourceRes?.results ?? []);
+	const sourcesByMenu = groupSources(menuSourceRes?.results ?? []);
 	const sourcesByLocation = groupSources(locationSourceRows);
 	const currencyByMenu = new Map(menuCurrencyRows.map((r) => [r.id, r.currency]));
 	const menuMeta: MapData['menuMeta'] = {};
 	for (const row of menuCurrencyRows) menuMeta[row.id] = { last_verified: row.last_verified };
 
-	const menus: Record<string, Item[]> = {};
+	const menus: Record<string, MapItem[]> = {};
 	for (const row of itemRows) {
-		(menus[row.menu_id] ??= []).push({
+		const lean: MapItem = {
 			id: row.id,
 			menu_id: row.menu_id,
 			item_name: row.item_name,
-			description: row.description,
-			price: row.price,
-			currency: currencyByMenu.get(row.menu_id) ?? DEFAULT_CURRENCY,
-			tags: tagsByItem.get(row.id) ?? [],
-			sources: mergeSources(sourcesByItem.get(row.id) ?? [], sourcesByMenu.get(row.menu_id) ?? [])
-		});
+			tags: tagsByItem.get(row.id) ?? []
+		};
+		const full: Item | null = detail
+			? {
+					...lean,
+					description: row.description,
+					price: row.price,
+					currency: currencyByMenu.get(row.menu_id) ?? DEFAULT_CURRENCY,
+					sources: mergeSources(
+						sourcesByItem.get(row.id) ?? [],
+						sourcesByMenu.get(row.menu_id) ?? []
+					)
+				}
+			: null;
+		(menus[row.menu_id] ??= []).push(full ?? lean);
 	}
 
 	// Overrides grouped by location, with `available` as the public boolean|null.
