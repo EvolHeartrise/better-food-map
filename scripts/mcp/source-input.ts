@@ -10,13 +10,23 @@
 
 import * as v from 'valibot';
 
+import { safeHttpUrl } from '../../src/lib/safe-url';
+
+// valibot's v.url() accepts anything `new URL()` parses — including
+// `javascript:alert(1)` — and source URLs are rendered as anchor hrefs in the
+// placecard, so ingestion additionally requires an http(s) scheme (the render
+// side has its own allowlist covering rows already stored).
+const SOURCE_URL_MESSAGE = 'Each source must be an http(s) URL, e.g. https://example.com/menu.';
+const sourceUrlPipe = () =>
+	v.pipe(
+		v.string(),
+		v.url(SOURCE_URL_MESSAGE),
+		v.check((url) => safeHttpUrl(url) !== null, SOURCE_URL_MESSAGE)
+	);
+
 /** Canonical shape of one source citation, as stored. */
 export const sourceObjectSchema = v.object({
-	url: v.pipe(
-		v.string(),
-		v.url('Each source must be a valid URL, e.g. https://example.com/menu.'),
-		v.description('URL the data was obtained from.')
-	),
+	url: v.pipe(sourceUrlPipe(), v.description('URL the data was obtained from.')),
 	label: v.optional(
 		v.nullable(
 			v.pipe(v.string(), v.description("Optional human-readable label, e.g. 'Official menu'."))
@@ -31,8 +41,7 @@ export const sourceObjectSchema = v.object({
  */
 export const sourceInputSchema = v.union([
 	v.pipe(
-		v.string(),
-		v.url('Each source must be a valid URL, e.g. https://example.com/menu.'),
+		sourceUrlPipe(),
 		v.transform((url) => ({ url, label: null as string | null })),
 		v.description('Bare URL string — shorthand for { url } with no label.')
 	),
