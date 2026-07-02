@@ -245,6 +245,18 @@
 	const statsResource = getStats();
 	const stats = $derived(statsResource.current ?? null);
 
+	// Hydration fallback: when the SSR render raced the stats read and serialized
+	// no result, the client-side query instance has been observed to stay pending
+	// forever rather than issuing its own fetch (experimental remoteFunctions), so
+	// the overlay would sit on its placeholders. One explicit refresh() fills it.
+	// The effect re-runs only when `current` changes, so a persistent failure
+	// can't loop it, and once a value lands it never fires again.
+	$effect(() => {
+		if (statsResource.current === undefined) {
+			void statsResource.refresh().catch(() => {});
+		}
+	});
+
 	// "Start using the map": fly to the visitor's IP-detected location at city zoom, which
 	// leaves the landing (the zoom passes LANDING_MAX_ZOOM). getUserLocation is prompt-free
 	// edge geolocation — null under local dev or when unavailable, so we fall back to the

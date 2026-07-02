@@ -128,7 +128,25 @@ export const getBrands = query(async (): Promise<Brand[]> => {
  */
 const cachedStats = ttlMemo(5 * 60 * 1000, () => getStatsFromDb(db()));
 
-export const getStats = query((): Promise<MapStats> => cachedStats());
+export const getStats = query((): Promise<MapStats> => {
+	const promise = cachedStats();
+	// The landing page reads this resource non-suspending, so an SSR render can
+	// return before the COUNT scans settle. The Workers runtime then tears down
+	// the request's I/O and the memo is left holding a promise that NEVER settles
+	// — poisoning every stats consumer (SSR embeds and direct getStats calls
+	// alike) for the rest of the TTL window; the landing overlay sits on its
+	// placeholder figures the whole time. waitUntil keeps the request context
+	// alive until the read completes, so the cached promise always settles.
+	// Rejections are swallowed here only for waitUntil's sake — the memo already
+	// evicts a rejected entry, and awaiting callers still see the error.
+	getRequestEvent().platform?.ctx?.waitUntil(
+		promise.then(
+			() => undefined,
+			() => undefined
+		)
+	);
+	return promise;
+});
 
 /**
  * Best-effort opening location for the map, from Cloudflare's edge IP
