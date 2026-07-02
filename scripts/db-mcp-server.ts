@@ -65,6 +65,7 @@ import {
 	unmarkLocationsDistinct,
 	DEFAULT_CURRENCY,
 	TAGS,
+	type Bounds,
 	type D1Like,
 	type Item,
 	type LocationWithTags
@@ -757,6 +758,11 @@ const bboxSchema = v.object({
 	max_lat: latitudeSchema,
 	max_lon: longitudeSchema
 });
+
+/** MCP wire bbox (snake_case) → the shared {@link Bounds} shape everything internal uses. */
+function toBounds(b: v.InferOutput<typeof bboxSchema>): Bounds {
+	return { minLat: b.min_lat, maxLat: b.max_lat, minLng: b.min_lon, maxLng: b.max_lon };
+}
 
 const searchPoiArgs = v.pipe(
 	v.object({
@@ -1451,7 +1457,7 @@ async function nearDuplicateWarnings(
 	const worstLat = Math.max(...lats.map(Math.abs));
 	const pad = bboxAround(worstLat, 0, NEAR_DUPLICATE_M / 1000);
 	const padLat = pad.maxLat - worstLat; // degrees covering the threshold in latitude
-	const padLon = pad.maxLon; // and in longitude at the batch's worst latitude (centre lon 0)
+	const padLon = pad.maxLng; // and in longitude at the batch's worst latitude (centre lng 0)
 	const existing = await openLocationsInBbox(getDb(), {
 		minLat: Math.min(...lats) - padLat,
 		maxLat: Math.max(...lats) + padLat,
@@ -1803,9 +1809,8 @@ async function queryLocations(opts: {
 }) {
 	const { near, category, nameLike, brandId, limit, offset } = opts;
 	if (near) {
-		const box = bboxAround(near.latitude, near.longitude, near.radius_km);
 		const rows = await getLocationsWithTags(getDb(), {
-			bbox: { minLat: box.minLat, maxLat: box.maxLat, minLng: box.minLon, maxLng: box.maxLon },
+			bbox: bboxAround(near.latitude, near.longitude, near.radius_km),
 			category,
 			nameLike,
 			brandId
@@ -2353,7 +2358,7 @@ const chainTools = [
 		description:
 			'Record how ONE branch differs from its shared menu for ONE item: available=false hides the item ' +
 			'at that branch; price overrides it there. This is a PARTIAL patch — a field you OMIT keeps its ' +
-			'current stored value (so toggling just `available` no longer wipes a previously-set `price`); ' +
+			'current stored value (so toggling just `available` never wipes a previously-set `price`); ' +
 			'pass an explicit null for a field to reset it to inherit the menu default. Returns the resulting ' +
 			'merged override. Prefer this over editing the shared item when only one branch differs.',
 		schema: setOverrideArgs,
@@ -2403,14 +2408,7 @@ const osmTools = [
 		handler: async (input) => {
 			const db = input.exclude_existing === false ? null : getDb();
 			const result = await searchPoi(getOsmStore(), db, {
-				bbox: input.bbox
-					? {
-							minLat: input.bbox.min_lat,
-							minLon: input.bbox.min_lon,
-							maxLat: input.bbox.max_lat,
-							maxLon: input.bbox.max_lon
-						}
-					: undefined,
+				bbox: input.bbox ? toBounds(input.bbox) : undefined,
 				latitude: input.latitude,
 				longitude: input.longitude,
 				radius_km: input.radius_km,
@@ -2471,14 +2469,7 @@ const osmTools = [
 			await assertBrandMenuRefs(input.brand_id, input.menu_id);
 			const selection = await selectChainCandidates(getOsmStore(), getDb(), {
 				area: {
-					bbox: input.bbox
-						? {
-								minLat: input.bbox.min_lat,
-								minLon: input.bbox.min_lon,
-								maxLat: input.bbox.max_lat,
-								maxLon: input.bbox.max_lon
-							}
-						: undefined,
+					bbox: input.bbox ? toBounds(input.bbox) : undefined,
 					latitude: input.latitude,
 					longitude: input.longitude,
 					radius_km: input.radius_km

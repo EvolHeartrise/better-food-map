@@ -4,12 +4,10 @@
 // read more naturally that way than in km).
 // ---------------------------------------------------------------------------
 
-export interface Bbox {
-	minLat: number;
-	minLon: number;
-	maxLat: number;
-	maxLon: number;
-}
+// The one bounding-box shape the whole app shares (src/lib/bounds.ts, client-safe),
+// re-exported so the pipeline scripts can keep importing it from this geo module.
+import type { Bounds } from '../../src/lib/bounds';
+export type { Bounds };
 
 const EARTH_RADIUS_M = 6_371_000;
 const toRad = (deg: number): number => (deg * Math.PI) / 180;
@@ -31,7 +29,7 @@ export function haversineMeters(aLat: number, aLon: number, bLat: number, bLon: 
  * Latitude is clamped to the poles and longitude to [-180, 180]; the degenerate
  * wrap-around at the antimeridian is not handled (irrelevant for our regions).
  */
-export function bboxAround(lat: number, lon: number, radiusKm: number): Bbox {
+export function bboxAround(lat: number, lon: number, radiusKm: number): Bounds {
 	const dLat = radiusKm / 111.32;
 	// A degree of longitude shrinks toward the poles; guard the cos at very high
 	// latitudes so the box stays finite.
@@ -40,8 +38,8 @@ export function bboxAround(lat: number, lon: number, radiusKm: number): Bbox {
 	return {
 		minLat: Math.max(lat - dLat, -90),
 		maxLat: Math.min(lat + dLat, 90),
-		minLon: Math.max(lon - dLon, -180),
-		maxLon: Math.min(lon + dLon, 180)
+		minLng: Math.max(lon - dLon, -180),
+		maxLng: Math.min(lon + dLon, 180)
 	};
 }
 
@@ -71,18 +69,18 @@ export class SpatialGrid {
 	}
 
 	/** Yields the indices of every inserted point inside `bbox` (inclusive bounds). */
-	*candidatesInBbox(bbox: Bbox): Iterable<number> {
+	*candidatesInBbox(bbox: Bounds): Iterable<number> {
 		const minCy = Math.floor(bbox.minLat / this.cellDeg);
 		const maxCy = Math.floor(bbox.maxLat / this.cellDeg);
-		const minCx = Math.floor(bbox.minLon / this.cellDeg);
-		const maxCx = Math.floor(bbox.maxLon / this.cellDeg);
+		const minCx = Math.floor(bbox.minLng / this.cellDeg);
+		const maxCx = Math.floor(bbox.maxLng / this.cellDeg);
 		for (let cy = minCy; cy <= maxCy; cy++) {
 			for (let cx = minCx; cx <= maxCx; cx++) {
 				const bucket = this.cells.get(`${cy}:${cx}`);
 				if (!bucket) continue;
 				for (const p of bucket) {
 					if (p.lat < bbox.minLat || p.lat > bbox.maxLat) continue;
-					if (p.lon < bbox.minLon || p.lon > bbox.maxLon) continue;
+					if (p.lon < bbox.minLng || p.lon > bbox.maxLng) continue;
 					yield p.idx;
 				}
 			}

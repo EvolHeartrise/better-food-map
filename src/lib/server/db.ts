@@ -18,12 +18,17 @@
 //     marks a tag that can be added or left out (e.g. "can be made vegan").
 // ---------------------------------------------------------------------------
 
-// Type-only import (erased at build time, so it adds no runtime dependency and
-// keeps this module runtime-agnostic). `category.ts` is the canonical, client-safe
-// home of the category union; re-exported below as part of this module's contract.
+// Type-only imports (erased at build time, so they add no runtime dependency and
+// keep this module runtime-agnostic). `category.ts`, `tags.ts` and `bounds.ts` are
+// the canonical, client-safe homes of these shapes; re-exported below as part of
+// this module's contract.
 import type { Category } from '../category';
-// Value import (tiny, pure, client-safe): the canonical display-address formatter,
-// so the single-line `address` is composed identically wherever a location is read.
+import type { Bounds } from '../bounds';
+import type { Tag, TagId, TagType } from '../tags';
+// Value imports (tiny, pure, client-safe): the canonical display-address formatter,
+// so the single-line `address` is composed identically wherever a location is read,
+// and the canonical tag vocabulary.
+import { TAGS } from '../tags';
 import { formatAddress } from '../address';
 
 // ---------------------------------------------------------------------------
@@ -48,33 +53,8 @@ export interface D1Like {
 // Types (STABLE CONTRACT — other agents depend on these exact names)
 // ---------------------------------------------------------------------------
 
-export type { Category };
-
-// Canonical, app-defined tag identifiers (dietary + course). These are part of
-// the app contract and fixed — they are NOT user-authored, so this union is the
-// single source of truth.
-export type TagId =
-	| 'vegan'
-	| 'vegetarian'
-	| 'gluten_free'
-	| 'dairy_free'
-	| 'nut_free'
-	| 'halal'
-	| 'dessert'
-	| 'drink';
-
-/**
- * What a tag describes. `dietary` tags (vegan, halal, …) are source-asserted —
- * only applied when a source explicitly designates the item. `course` tags
- * (dessert, drink) describe what kind of item it is and are applied factually.
- */
-export type TagType = 'dietary' | 'course';
-
-export interface Tag {
-	id: string;
-	name: string;
-	tag_type: TagType;
-}
+export type { Category, Bounds, Tag, TagId, TagType };
+export { TAGS };
 
 /** A tag as applied to a specific item, carrying the per-edge `optional` flag. */
 export interface ItemTag extends Tag {
@@ -188,19 +168,6 @@ export interface MapData {
 	menuMeta: Record<string, { last_verified: string | null }>;
 }
 
-/**
- * A geographic bounding box (a map viewport), used to scope a {@link MapData}
- * read to just the visible area. Longitudes are treated as a simple `min..max`
- * range, so a box spanning the antimeridian is not supported (the same planar
- * assumption the rest of the app makes).
- */
-export interface Bounds {
-	minLat: number;
-	maxLat: number;
-	minLng: number;
-	maxLng: number;
-}
-
 // ---------------------------------------------------------------------------
 // Chain model: a brand owns regional menus; a menu owns items; a location
 // serves a menu (locations.menu_id) — a shared brand menu, or its own private one.
@@ -285,7 +252,7 @@ export function currentVerificationDate(): string {
  * Statements that stamp each given menu's `last_verified` to today. Every MCP write
  * that adds or changes a menu or its items runs this, so a menu's freshness date
  * always reflects the last time data flowed into it — agents never supply the date
- * by hand (it is no longer a tool parameter). Ids are de-duplicated, and the valid
+ * by hand (it is not a tool parameter). Ids are de-duplicated, and the valid
  * date satisfies migration 0012's non-empty-`last_verified` trigger. Returns `[]`
  * for an empty id set so callers can splice it into a batch unconditionally.
  */
@@ -305,21 +272,6 @@ export interface LocationItemOverride {
 	/** Overriding price here, or `null` to inherit the item's price. */
 	price: number | null;
 }
-
-// The canonical tag list (dietary first, then course) — the display/filter order
-// on the frontend. These are app-defined, never created from the UI, and seeded
-// into D1 by migrations/0001_init.sql (renamed to (name, tag_type) by 0004). This
-// is the WHOLE tag vocabulary: there are no data-created tags.
-export const TAGS: readonly Tag[] = [
-	{ id: 'vegan', name: 'Vegan', tag_type: 'dietary' },
-	{ id: 'vegetarian', name: 'Vegetarian', tag_type: 'dietary' },
-	{ id: 'gluten_free', name: 'Gluten-free', tag_type: 'dietary' },
-	{ id: 'dairy_free', name: 'Dairy-free', tag_type: 'dietary' },
-	{ id: 'nut_free', name: 'Nut-free', tag_type: 'dietary' },
-	{ id: 'halal', name: 'Halal', tag_type: 'dietary' },
-	{ id: 'dessert', name: 'Dessert', tag_type: 'course' },
-	{ id: 'drink', name: 'Drink', tag_type: 'course' }
-];
 
 /**
  * Internal raw shape of an `items` row before its tags, sources and (menu-derived)
@@ -431,7 +383,7 @@ const ITEM_TAG_SELECT = `t.id AS id, t.name AS name, t.tag_type AS tag_type, it.
 
 /**
  * Hard cap on how many locations a single {@link getMapData} viewport read
- * returns. The map page no longer gates fetching on a minimum zoom, so a fully
+ * returns. The map page fetches at every zoom, so a fully
  * zoomed-out box can cover the whole dataset; this bounds the payload — and the
  * markers drawn — to a sane size. For a wide viewport the survivors are spatially
  * downsampled to one importance-ranked representative per grid cell (see
@@ -445,13 +397,9 @@ export const MAP_RESULT_LIMIT = 200;
 // Reads
 // ---------------------------------------------------------------------------
 
-export function getAllTags(): Tag[] {
-	return TAGS.map((tag) => ({ ...tag }));
-}
-
 /**
  * Optional server-side filters for {@link getLocationsWithTags}, pushed into SQL
- * so a bounded list no longer reads (and ships) the whole table. `bbox` and
+ * so a bounded list doesn't read (and ship) the whole table. `bbox` and
  * `category` narrow the rows — and the joined tag/source scans with them; `limit`/
  * `offset` page the name-ordered result. A radius query is served by passing the
  * covering `bbox` and refining to the exact circle in the caller, so this layer
@@ -697,8 +645,8 @@ const MIN_GRID_CELL_DEG = 0.004;
 // MAP_RESULT_LIMIT so the zoomed-out path never ships more than the zoomed-in one (and
 // queryMapData's default cap, also MAP_RESULT_LIMIT, never re-trims the set). The ids reach
 // queryMapData through a single `json_each(?)` bind, NOT an `id IN (?, …)` list, so this is
-// no longer bounded by D1's ~100 per-query parameter limit (the old reason it was pinned at
-// 96). Crucially this is NOT used as a top-N cut at runtime: `gridCellSize` coarsens the
+// not bounded by D1's ~100 per-query parameter limit.
+// Crucially this is NOT used as a top-N cut at runtime: `gridCellSize` coarsens the
 // lattice until a viewport can't hold more than this many cells, so the trailing `LIMIT`
 // never actually trims. That matters because a top-N cut over a pan-varying pool is NOT
 // pan-stable — as the box slides, which cells fall under the cut changes, flickering labels
@@ -822,8 +770,8 @@ export async function getMapData(db: D1Like, bounds: Bounds): Promise<MapData> {
 	// Wide viewport: pick one representative per grid cell, then resolve those concrete
 	// ids (their menus, overrides, sources) the normal way. The ids travel as a single
 	// JSON-array bind expanded with `json_each` rather than an `id IN (?, …)` list, so the
-	// representative count isn't capped by D1's ~100 per-query parameter limit — that cap
-	// is what used to force the flicker-inducing top-96 trim (see GRID_REP_LIMIT).
+	// representative count isn't capped by D1's ~100 per-query parameter limit — a cap
+	// that would otherwise force a flicker-inducing top-N trim (see GRID_REP_LIMIT).
 	const ids = await gridRepresentativeIds(db, bounds, cell);
 	if (ids.length === 0) return { locations: [], menus: {}, menuMeta: {} };
 	return queryMapData(db, `id IN (SELECT value FROM json_each(?))`, [JSON.stringify(ids)]);
@@ -890,7 +838,7 @@ export function getSearchMapData(db: D1Like, q: SearchMapQuery): Promise<MapData
 	// FTS table, where the trigram index can serve it. The `ESCAPE` clause is appended
 	// ONLY when the query contains a `%`/`_`/`\` that must match literally: SQLite
 	// forwards only two-argument LIKEs to a virtual table, so LIKE+ESCAPE would force
-	// a full FTS scan (the lesson recorded on the old tags_fts, migration 0006) — and
+	// a full FTS scan — and
 	// when nothing was escaped the pattern carries no `\`, so the two forms match
 	// identically. Wildcard-carrying queries are rare and stay correct, just unindexed.
 	const escapedText = escapeLikePattern(text);
@@ -1750,8 +1698,8 @@ export async function insertFoods(
  * Statements that apply one item patch: the scalar SET (only the columns present
  * in `patch`), plus full-set replacements for the dietary/course tags and the
  * sources when those are provided (`tags: []`/`sources: []` clear; `addSources`
- * appends instead of replacing). No existence check — callers ({@link updateItem},
- * {@link updateItems}) resolve which ids exist up front so a whole batch stays a
+ * appends instead of replacing). No existence check — the caller
+ * ({@link updateItems}) resolves which ids exist up front so a whole batch stays a
  * single round trip.
  */
 function itemUpdateStmts(db: D1Like, id: string, patch: ItemUpdate): D1PreparedLike[] {
@@ -1772,7 +1720,7 @@ function itemUpdateStmts(db: D1Like, id: string, patch: ItemUpdate): D1PreparedL
 		);
 	}
 
-	// Replace the dietary/course tag set (every tag is dietary/course now, so this
+	// Replace the dietary/course tag set (every tag is dietary/course, so this
 	// clears all of an item's tag links before re-linking the new set).
 	if (patch.tags !== undefined || patch.optionalTags !== undefined) {
 		stmts.push(
@@ -1796,24 +1744,6 @@ function itemUpdateStmts(db: D1Like, id: string, patch: ItemUpdate): D1PreparedL
 	}
 
 	return stmts;
-}
-
-/**
- * Applies a partial update to an item (a row in `items`), returning the updated
- * item or `null` if no item has that id. See {@link itemUpdateStmts} for the
- * replace-set semantics; all sub-statements run as one atomic batch.
- */
-async function applyItemUpdate(db: D1Like, id: string, patch: ItemUpdate): Promise<Item | null> {
-	const before = await getItemById(db, id);
-	if (!before) return null;
-	const stmts = itemUpdateStmts(db, id, patch);
-	// Editing an item refreshes its menu; a move (patch.menu_id) also touches the
-	// destination menu, which just gained the item.
-	const affectedMenus = new Set([before.menu_id]);
-	if (patch.menu_id) affectedMenus.add(patch.menu_id);
-	stmts.push(...touchMenuStmts(db, affectedMenus));
-	await db.batch(stmts);
-	return getItemById(db, id);
 }
 
 // ---------------------------------------------------------------------------
@@ -2151,8 +2081,8 @@ export async function reviewedPairKeys(db: D1Like): Promise<Set<string>> {
 // ---------------------------------------------------------------------------
 // Shared menu items (belong to a menu — cf. the create_items location_id path, which adds
 // to a venue's own private menu). Both write to the same `items` table. Reading,
-// updating and deleting a single item are id-keyed and menu-agnostic, so they use
-// the generic getItemById / updateItem / deleteItem rather than a per-kind variant.
+// updating and deleting items are id-keyed and menu-agnostic, so they use the
+// generic getItemById / updateItems / deleteItem rather than a per-kind variant.
 // ---------------------------------------------------------------------------
 
 /** Arguments accepted by {@link insertMenuItems}. */
@@ -2207,7 +2137,7 @@ export async function itemNameCollisions(
 	// Single json_each bind (an exhaustive create_items menu can carry hundreds of
 	// names, past D1's ~100 per-query bound-parameter limit). SQLite's IN uses the
 	// LEFT operand's collating sequence, so COLLATE NOCASE on item_name keeps the
-	// subselect match case-insensitive just like the old placeholder list.
+	// subselect match case-insensitive.
 	const { results } = await db
 		.prepare(
 			`SELECT id, item_name FROM items WHERE menu_id = ? AND item_name COLLATE NOCASE IN (SELECT value FROM json_each(?))`
@@ -2229,7 +2159,7 @@ export async function itemNameCollisions(
 	return out;
 }
 
-/** Arguments accepted by {@link updateItem}. */
+/** The fields of one item patch (see {@link ItemPatch} / {@link updateItems}). */
 export type ItemUpdate = {
 	/** Move the item to a different menu (rare). */
 	menu_id?: string;
@@ -2240,25 +2170,18 @@ export type ItemUpdate = {
 	addSources?: Source[];
 } & ItemContent;
 
-/**
- * Partial update of an item by id. For a shared chain item the change applies to
- * EVERY branch serving its menu; for a venue's own item it applies to that venue.
- * See {@link applyItemUpdate} for the replace-set semantics of tags/sources.
- */
-export async function updateItem(db: D1Like, id: string, patch: ItemUpdate): Promise<Item | null> {
-	return applyItemUpdate(db, id, patch);
-}
-
 /** A partial update to one item, keyed by id (for {@link updateItems}). */
 export type ItemPatch = ItemUpdate & { id: string };
 
 /**
- * Applies many partial item updates in one atomic batch — the multi-item sibling of
- * {@link updateItem}, mirroring {@link updateLocations}. Each patch touches only the
- * fields it carries (same replace-set semantics; see {@link itemUpdateStmts}). Ids that
- * don't exist are skipped and reported in `notFoundIds` rather than aborting the batch.
- * Returns which ids were updated and which were not found — one round trip instead of a
- * call per item, for menu-wide corrections.
+ * Applies one or more partial item updates in one atomic batch, mirroring
+ * {@link updateLocations}. For a shared chain item the change applies to EVERY
+ * branch serving its menu; for a venue's own item it applies to that venue. Each
+ * patch touches only the fields it carries (replace-set semantics; see
+ * {@link itemUpdateStmts}). Ids that don't exist are skipped and reported in
+ * `notFoundIds` rather than aborting the batch. Returns which ids were updated and
+ * which were not found — one round trip instead of a call per item, for menu-wide
+ * corrections.
  */
 export async function updateItems(
 	db: D1Like,
@@ -2341,7 +2264,7 @@ export async function getLocationItemOverrides(
 /**
  * Creates or updates a location's override of one menu item as a PARTIAL PATCH:
  * only the fields PRESENT in `override` change. A field left `undefined` keeps its
- * currently-stored value (so toggling just `available` no longer wipes a previously
+ * currently-stored value (so toggling just `available` never wipes a previously
  * set `price`, and vice-versa); pass an explicit `null` to reset that field to
  * inherit the menu default. `available` `false` hides the item at this location;
  * `price` overrides its price here.

@@ -11,13 +11,13 @@
 import type { D1Like } from '../../src/lib/server/db';
 import { normalizeCountry } from '../../src/lib/address';
 import { stripDiacritics } from '../../src/lib/text';
-import { bboxAround, haversineMeters, type Bbox } from './geo';
+import { bboxAround, haversineMeters, type Bounds } from './geo';
 import { effectivePoiAddressParts, osmUrl, poiCountry, type PoiAddressParts } from './map-feature';
 import type { OsmPoiStore, StoredPoi } from './poi-store';
 
 export interface SearchPoiParams {
 	/** Explicit bounding box. Provide this OR latitude+longitude+radius_km. */
-	bbox?: Bbox;
+	bbox?: Bounds;
 	latitude?: number;
 	longitude?: number;
 	radius_km?: number;
@@ -157,7 +157,7 @@ export interface ExistingLocation {
 
 /** Resolves the query area to a bounding box, plus an optional centre for radius refine. */
 export function resolveArea(params: SearchPoiParams): {
-	bbox: Bbox;
+	bbox: Bounds;
 	centre?: { lat: number; lon: number; radiusKm: number };
 } {
 	if (params.bbox) return { bbox: params.bbox };
@@ -215,13 +215,13 @@ export function isExistingDuplicate(poi: StoredPoi, existing: ExistingLocation[]
 }
 
 /** Fetches existing locations whose point falls within `bbox` from D1. */
-export async function existingInBbox(db: D1Like, bbox: Bbox): Promise<ExistingLocation[]> {
+export async function existingInBbox(db: D1Like, bbox: Bounds): Promise<ExistingLocation[]> {
 	const { results } = await db
 		.prepare(
 			`SELECT id, name, latitude, longitude FROM locations
 			 WHERE latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ?`
 		)
-		.bind(bbox.minLat, bbox.maxLat, bbox.minLon, bbox.maxLon)
+		.bind(bbox.minLat, bbox.maxLat, bbox.minLng, bbox.maxLng)
 		.all<ExistingLocation>();
 	return results;
 }

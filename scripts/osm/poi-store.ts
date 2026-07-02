@@ -13,7 +13,7 @@
 
 import { Database } from 'bun:sqlite';
 import { existsSync } from 'node:fs';
-import type { Bbox } from './geo';
+import type { Bounds } from './geo';
 import type { PoiRow, SuggestedCategory } from './map-feature';
 
 /** A POI row read back from the store (diet_markers parsed from its JSON column). */
@@ -257,9 +257,9 @@ export class OsmPoiStore {
 	 * filters. Capped (default 2000) so a careless huge box can't load the world;
 	 * callers refine to an exact radius and de-duplicate afterwards.
 	 */
-	searchBbox(bbox: Bbox, query: BboxQuery = {}): StoredPoi[] {
+	searchBbox(bbox: Bounds, query: BboxQuery = {}): StoredPoi[] {
 		const where = ['latitude BETWEEN ? AND ?', 'longitude BETWEEN ? AND ?'];
-		const params: unknown[] = [bbox.minLat, bbox.maxLat, bbox.minLon, bbox.maxLon];
+		const params: unknown[] = [bbox.minLat, bbox.maxLat, bbox.minLng, bbox.maxLng];
 		if (query.category) {
 			where.push('suggested_category = ?');
 			params.push(query.category);

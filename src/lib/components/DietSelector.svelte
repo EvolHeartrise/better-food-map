@@ -4,8 +4,8 @@
 
 	// The dietary selector: a single floating pill that filters the map to items a
 	// source has marked with ONE chosen diet (vegan, gluten-free, halal, …), or to
-	// everything when none is chosen. It replaces the old include/exclude tag
-	// pickers — diet is the only filter now, and it is single-select.
+	// everything when none is chosen. Diet is the map's only menu filter, and it
+	// is single-select.
 	//
 	// Controlled by the parent: `value` is the current selection (a dietary tag id
 	// or null), and `onSelect` is called with the new value when the user picks one.
