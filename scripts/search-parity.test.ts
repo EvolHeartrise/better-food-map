@@ -11,6 +11,11 @@
 //   • parity is asserted in SEARCH MODE only (text and/or diet active) — client
 //     browse mode (keep everything) has no server counterpart (the server returns
 //     empty for no-query/no-diet), pinned in its own test below;
+//   • parity covers SEARCHABLE text only — a 3+ character wildcard-free run
+//     (searchableQuery, $lib/search), which is the only text the page ever
+//     sends. Shorter/wildcard-only text is filtered client-locally and the
+//     server treats it as absent (issues #103/#104), pinned in its own test
+//     below;
 //   • the client filter is fed the same RESOLVED menus the page builds — each
 //     location's menu with its per-item overrides applied (resolveLocation,
 //     +page.svelte). An availability:false override is a documented divergence
@@ -164,14 +169,10 @@ test('text-only queries: same membership through both halves', async () => {
 	await expectParity(db, ids, 'chow mein'); // shared menu → both branches
 	await expectParity(db, ids, 'empty'); // name match with an EMPTY menu is kept
 	await expectParity(db, ids, 'sushi'); // no match at all
-	// 1–2 character queries (below the trigram width on the server).
-	await expectParity(db, ids, 'jo'); // Joe Diner + Joe's 100% Beef
-	await expectParity(db, ids, 'k'); // single character, both dimensions
-	// LIKE wildcards stay literal on the server; the client's .includes() is
-	// literal by construction — both must agree.
+	// LIKE wildcards stay literal on the server (via the ESCAPE form, prefiltered
+	// by the '100' run's indexed LIKE); the client's .includes() is literal by
+	// construction — both must agree.
 	await expectParity(db, ids, '100%');
-	await expectParity(db, ids, '%');
-	await expectParity(db, ids, 'r_s');
 });
 
 test('diet queries: narrowing on the SAME item agrees through both halves', async () => {
@@ -203,4 +204,32 @@ test('browse mode is client-only: server returns empty, client keeps all', async
 	expect(kept.map((r) => r.loc.id).toSorted()).toEqual(ids.toSorted());
 	// Browse teases the whole (resolved) menu.
 	for (const r of kept) expect(r.items).toEqual(r.loc.menu);
+});
+
+// The other asymmetry by design (issues #103/#104): text the trigram index
+// cannot serve — no 3+ character wildcard-free run (searchableQuery,
+// $lib/search) — is CLIENT-LOCAL. The page never sends it (it keeps filtering
+// what's already on screen); the server, reached with such text only by a
+// forged request, treats it as absent rather than full-scanning the FTS
+// mirrors: empty with no diet, degraded to diet-only with one.
+test('unsearchable text is client-only: the server treats it as absent', async () => {
+	const db = freshDb();
+	const ids = await fixtures(db);
+	const [palace, , , joe, , wildcard] = ids;
+
+	for (const q of ['jo', 'k', '%', 'r_s']) {
+		const server = await getSearchMapData(db, { query: q, dietTagId: null, ...anchor });
+		expect(server.locations).toEqual([]);
+	}
+	// The client still filters short text over its candidates, exactly as before.
+	const candidates = await clientCandidates(db, ids);
+	const clientIds = searchResults(candidates, 'jo', null).map((r) => r.loc.id);
+	expect(clientIds.toSorted()).toEqual([joe, wildcard].toSorted());
+	// With a diet active the server degrades to diet-only rather than blanking.
+	const degraded = await getSearchMapData(db, { query: 'jo', dietTagId: 'vegan', ...anchor });
+	const dietOnly = await getSearchMapData(db, { query: '', dietTagId: 'vegan', ...anchor });
+	expect(degraded.locations.map((l) => l.id).toSorted()).toEqual(
+		dietOnly.locations.map((l) => l.id).toSorted()
+	);
+	expect(degraded.locations.map((l) => l.id)).toContain(palace);
 });

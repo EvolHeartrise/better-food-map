@@ -3,14 +3,17 @@
 // search's text matching now resolves through the locations_fts / items_fts
 // mirrors, so these tests pin down the two things that must hold forever:
 //
-//   1. SEMANTICS ARE UNCHANGED. The client mirrors the server's membership with
-//      case-insensitive substring `.includes()` (src/lib/search-match.ts, held
-//      to parity by search-parity.test.ts), so the FTS route must match exactly what a bare
+//   1. SEMANTICS MATCH THE CLIENT. The client mirrors the server's membership
+//      with case-insensitive substring `.includes()` (src/lib/search-match.ts,
+//      held to parity by search-parity.test.ts), so for every query the client
+//      actually sends — gated by searchableQuery ($lib/search) to text with a
+//      3+ char wildcard-free run — the FTS route must match exactly what a bare
 //      `LIKE '%q%' ESCAPE '\'` over the base tables matched: interior
 //      substrings, ASCII case-insensitivity, literal `%`/`_` wildcards in the
-//      query, 1–2 character queries (below the trigram width — correct, just
-//      unaccelerated), the venue-name OR item-name membership with the diet
-//      filter narrowing on the SAME item, and nearest-first ordering.
+//      query, the venue-name OR item-name membership with the diet filter
+//      narrowing on the SAME item, and nearest-first ordering. Text BELOW the
+//      gate (short/wildcard-only) is treated as absent — never full-scanned
+//      (issues #103/#104).
 //
 //   2. THE MIRRORS STAY IN SYNC. Every insert/rename/delete of a location or
 //      item flows through the 0016 triggers, so a renamed venue is found under
@@ -32,6 +35,7 @@ import {
 	deleteItem,
 	setLocationClosed
 } from '../src/lib/server/db';
+import { searchableQuery, longestLiteralRun } from '../src/lib/search';
 import { freshDb } from './test-d1';
 import type { TestD1 } from './test-d1';
 
@@ -81,22 +85,31 @@ test('search matches interior substrings of venue and item names, case-insensiti
 	expect(await searchIds(db, 'sushi')).toEqual([]);
 });
 
-// Queries shorter than a trigram can't use the index — FTS5 falls back to
-// scanning the table — but they must still MATCH exactly like a substring LIKE.
-test('1–2 character queries still match by substring', async () => {
+// Queries shorter than a trigram can't use the index — running them would full-
+// scan BOTH mirrors (issues #103/#104) — so the server treats them as absent.
+// The client applies the same gate and never sends them; it filters the venues
+// already on screen locally instead.
+test('text below the trigram width is treated as absent, never full-scanned', async () => {
 	const db = freshDb();
-	const [pho, zab] = await insertLocations(db, [venue('Pho King'), venue('Zab Zab', 1)]);
-	await insertFoods(db, [{ location_id: pho, item_name: 'Ox Tail Soup', price: 9 }]);
+	const [pho] = await insertLocations(db, [venue('Pho King')]);
+	await insertFoods(db, [
+		{ location_id: pho, item_name: 'Ox Tail Soup', tags: ['vegan'], price: 9 }
+	]);
 
-	expect(await searchIds(db, 'ph')).toEqual([pho]);
-	expect(await searchIds(db, 'za')).toEqual([zab]);
-	// Single character, matched through the ITEM dimension ('Ox Tail Soup').
-	expect(await searchIds(db, 'x')).toEqual([pho]);
-	expect(await searchIds(db, 'q')).toEqual([]);
+	// Short text with no diet: no searchable dimension at all → the empty guard.
+	expect(await searchIds(db, 'ph')).toEqual([]);
+	expect(await searchIds(db, 'x')).toEqual([]);
+	// With a diet active the search degrades to diet-only rather than blanking.
+	expect(await searchIds(db, 'ph', 'vegan')).toEqual([pho]);
+	// At the trigram width the text dimension kicks in.
+	expect(await searchIds(db, 'pho')).toEqual([pho]);
 });
 
 // `%` and `_` in the query are user text, not LIKE wildcards: escapeLikePattern
-// keeps them literal (and only then does the SQL carry an ESCAPE clause).
+// keeps them literal (and only then does the SQL carry an ESCAPE clause, paired
+// with an index-served prefilter on the longest wildcard-free run). A query
+// whose longest wildcard-free run is under the trigram width is unsearchable
+// text (see searchableQuery) and treated as absent, like short text above.
 test('LIKE wildcard characters in the query match literally', async () => {
 	const db = freshDb();
 	const [beef, kale, under] = await insertLocations(db, [
@@ -104,20 +117,23 @@ test('LIKE wildcard characters in the query match literally', async () => {
 		venue('100 Percent Kale', 1),
 		venue('Under_Score Cafe', 2)
 	]);
-	// Would match query 'r_s' if '_' leaked through as "any one character" ('Ros').
-	await insertLocations(db, [venue('Rose Diner', 3)]);
+	// Would match query 'under_score' if '_' leaked through as "any one character".
+	await insertLocations(db, [venue('UnderXScore Cafe', 3)]);
 	await insertFoods(db, [{ location_id: kale, item_name: '50% Off Wings', price: 6 }]);
 
-	// An unescaped LIKE '%100%%' would match BOTH venues; literal '100%' only one.
+	// An unescaped LIKE '%100%%' would match BOTH venues; literal '100%' only one
+	// (and the '100' run prefilter narrows, never widens, that match).
 	expect(await searchIds(db, '100%')).toEqual([beef]);
-	// A bare '%' means "a name containing a percent sign", not "everything".
-	expect((await searchIds(db, '%')).toSorted()).toEqual([beef, kale].toSorted());
 	// '_' is a literal underscore, not "any one character": 'Under_Score' matches,
-	// 'Rose Diner' (which r_s-as-wildcard WOULD match, via 'Ros') must not.
-	expect(await searchIds(db, 'r_s')).toEqual([under]);
+	// 'UnderXScore' (which under_score-as-wildcard WOULD match) must not.
+	expect(await searchIds(db, 'under_score')).toEqual([under]);
 	// Wildcards stay literal through the ITEM dimension too.
-	expect(await searchIds(db, '50%')).toEqual([kale]);
-	// A backslash is also literal (it is the escape character in the pattern).
+	expect(await searchIds(db, '50% off')).toEqual([kale]);
+	// Wildcard-only / wildcard-broken text has no run the index could serve:
+	// treated as absent, not full-scanned ('%' used to mean "a name containing a
+	// percent sign" — now it is simply not searchable).
+	expect(await searchIds(db, '%')).toEqual([]);
+	expect(await searchIds(db, 'r_s')).toEqual([]);
 	expect(await searchIds(db, '\\')).toEqual([]);
 });
 
@@ -242,4 +258,26 @@ test('closed venues stay out of search results, reopened ones return', async () 
 		.prepare(`SELECT id FROM locations_fts ORDER BY name`)
 		.all<{ id: string }>();
 	expect(mirror.map((r) => r.id).toSorted()).toEqual([open, tomb].toSorted());
+});
+
+// The pure gate itself ($lib/search) — the single definition of "searchable"
+// shared by the map page (skip the request) and getSearchMapData (ignore the
+// text). Pinned here so the two sides can't drift.
+test('searchableQuery gates on a 3+ character wildcard-free run', () => {
+	// Short text, however padded, is unsearchable.
+	expect(searchableQuery('')).toBe('');
+	expect(searchableQuery('  b ')).toBe('');
+	expect(searchableQuery('bu')).toBe('');
+	// Three characters (the trigram width) is enough — including interior spaces,
+	// which the trigram tokenizer indexes like any other character.
+	expect(searchableQuery('pho')).toBe('pho');
+	expect(searchableQuery(' a b ')).toBe('a b');
+	// Wildcards break runs: the text is searchable only if some unbroken run
+	// still reaches the width. The returned text is the WHOLE trimmed query —
+	// the gate never rewrites what is searched.
+	expect(searchableQuery('100%')).toBe('100%');
+	expect(searchableQuery('50% off')).toBe('50% off');
+	expect(searchableQuery('a%b_c\\d')).toBe('');
+	expect(searchableQuery('%%%')).toBe('');
+	expect(longestLiteralRun('a%burrito_x')).toBe('burrito');
 });

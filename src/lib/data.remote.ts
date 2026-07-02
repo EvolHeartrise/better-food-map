@@ -88,7 +88,12 @@ export const getLocationData = query(
  * because, like every remote query, the argument arrives untrusted over HTTP:
  * the length caps bound what reaches the FTS index (200 far exceeds any real
  * search term; diet tag ids are short fixed tokens), and the anchor reuses the
- * coordinate schemas — see their comment for why `lng` stays loose.
+ * coordinate schemas — see their comment for why `lng` stays loose. Text the
+ * trigram index cannot accelerate (no 3+ character wildcard-free run — see
+ * $lib/search) is treated as absent by getSearchMapData rather than rejected
+ * here, so a forged short/wildcard query degrades to the cheap diet-only or
+ * empty result instead of forcing a full FTS scan (#103/#104); the map page
+ * applies the same gate and never sends such text.
  */
 const SearchQuerySchema = v.object({
 	query: v.pipe(v.string(), v.maxLength(200)),
