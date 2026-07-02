@@ -30,6 +30,7 @@ import type { Tag, TagId, TagType } from '../tags';
 // and the canonical tag vocabulary.
 import { TAGS } from '../tags';
 import { formatAddress } from '../address';
+import { longestLiteralRun, searchableQuery } from '../search';
 
 // ---------------------------------------------------------------------------
 // Minimal D1 interface (the real `D1Database` binding and the HTTP shim in
@@ -811,9 +812,14 @@ export function getLocationMapData(db: D1Like, id: string): Promise<MapData> {
  *
  * Text matching resolves through the FTS5 trigram mirrors (locations_fts /
  * items_fts, migration 0016) using the SAME `LIKE '%q%'` patterns as before —
- * never MATCH — so membership stays substring-exact (including 1–2 character
- * queries, which just aren't index-accelerated) while the trigram index takes a
- * 3+-character query from a two-table crawl to an index lookup.
+ * never MATCH — so membership stays substring-exact while the trigram index
+ * takes the query from a two-table crawl to an index lookup. Text the index
+ * CANNOT serve — no run of 3+ wildcard-free characters (see
+ * {@link searchableQuery}) — is treated as absent rather than full-scanned:
+ * the map page applies the same gate (it filters short prefixes locally and
+ * never sends them), so only a forged request ever hits this floor, and it
+ * gets the diet-only result or, with no diet either, the empty guard below
+ * (issues #103/#104).
  */
 export interface SearchMapQuery {
 	/** Combined free-text: matched against the venue name OR its item names. */
@@ -826,30 +832,41 @@ export interface SearchMapQuery {
 }
 
 export function getSearchMapData(db: D1Like, q: SearchMapQuery): Promise<MapData> {
-	const text = q.query.trim();
+	// Text the trigram index can't serve is treated as ABSENT (searchableQuery
+	// returns ''): with a diet active the search degrades to diet-only, without
+	// one it falls through to the empty guard. Never full-scan the FTS mirrors.
+	const text = searchableQuery(q.query);
 	const hasText = text !== '';
 	const hasDiet = q.dietTagId !== null;
 
 	// With neither filter this would match every venue; the caller only searches when
-	// one is set, but guard so an empty query can't scan the whole table.
+	// one is set, but guard so an empty (or unsearchable) query can't scan the table.
 	if (!hasText && !hasDiet) return Promise.resolve({ locations: [], menus: {}, menuMeta: {} });
 
 	// Both text dimensions resolve through the FTS5 trigram mirrors (migration 0016):
 	// the pattern is the exact `%q%` substring LIKE as ever, but evaluated against the
 	// FTS table, where the trigram index can serve it. The `ESCAPE` clause is appended
-	// ONLY when the query contains a `%`/`_`/`\` that must match literally: SQLite
-	// forwards only two-argument LIKEs to a virtual table, so LIKE+ESCAPE would force
-	// a full FTS scan — and
-	// when nothing was escaped the pattern carries no `\`, so the two forms match
-	// identically. Wildcard-carrying queries are rare and stay correct, just unindexed.
+	// ONLY when the query contains a `%`/`_`/`\` that must match literally (when
+	// nothing was escaped the pattern carries no `\`, so the two forms match
+	// identically) — and SQLite forwards only two-argument LIKEs to a virtual table,
+	// so the LIKE+ESCAPE form alone would force a full FTS scan. That form is
+	// therefore prefixed with an index-served two-argument LIKE on the query's
+	// longest wildcard-free run (3+ chars, guaranteed by the searchableQuery gate
+	// above): the trigram index narrows to the run's matches and the ESCAPE LIKE
+	// refines them, keeping wildcard-carrying queries exact AND index-accelerated
+	// (a name matching the full literal text necessarily contains every run of it).
 	const escapedText = escapeLikePattern(text);
-	const namePattern = hasText ? `%${escapedText}%` : '';
-	const like = escapedText === text ? 'LIKE ?' : "LIKE ? ESCAPE '\\'";
+	const needsEscape = escapedText !== text;
+	const textCond = (col: string): string =>
+		needsEscape ? `${col} LIKE ? AND ${col} LIKE ? ESCAPE '\\'` : `${col} LIKE ?`;
+	const textParams: string[] = needsEscape
+		? [`%${longestLiteralRun(text)}%`, `%${escapedText}%`]
+		: [`%${escapedText}%`];
 	// The venue-name dimension, joined back to the outer row by id. `locations.id`
 	// names the outer table explicitly (it is always the unaliased `locations`
 	// where `locFilter` is spliced in — see queryMapData); a stale mirror row can
 	// only ever un-match, never invent a venue.
-	const nameMatch = `locations.id IN (SELECT f.id FROM locations_fts f WHERE f.name ${like})`;
+	const nameMatch = `locations.id IN (SELECT f.id FROM locations_fts f WHERE ${textCond('f.name')})`;
 	// Menus with at least one item carrying the selected diet tag, as an
 	// UNCORRELATED set (driven off idx_item_tags_tag_id, computed once). Every
 	// disjunct below tests `locations.menu_id IN (…such a set…)` rather than the
@@ -873,13 +890,13 @@ export function getSearchMapData(db: D1Like, q: SearchMapQuery): Promise<MapData
 	// even with an empty menu (no item is required).
 	if (hasText && !hasDiet) {
 		disjuncts.push(nameMatch);
-		params.push(namePattern);
+		params.push(...textParams);
 	}
 	// Name match WITH a diet active → kept only if some item carries the diet tag
 	// (diet always narrows), so a name-only match with no diet-matching item drops.
 	if (hasText && hasDiet) {
 		disjuncts.push(`(${nameMatch} AND locations.menu_id IN (${dietMenus}))`);
-		params.push(namePattern, q.dietTagId as string);
+		params.push(...textParams, q.dietTagId as string);
 	}
 	// An item satisfying every active predicate: its name contains `query` (when set)
 	// AND it carries the diet tag (when set). The SAME item `i` must satisfy both. The
@@ -891,8 +908,8 @@ export function getSearchMapData(db: D1Like, q: SearchMapQuery): Promise<MapData
 	// `dietMenus`, whose join drives off idx_item_tags_tag_id (measurably faster
 	// than scanning `items` and probing tags per row).
 	if (hasText) {
-		const itemConds = [`i.id IN (SELECT f.id FROM items_fts f WHERE f.item_name ${like})`];
-		params.push(namePattern);
+		const itemConds = [`i.id IN (SELECT f.id FROM items_fts f WHERE ${textCond('f.item_name')})`];
+		params.push(...textParams);
 		if (hasDiet) {
 			itemConds.push(
 				`EXISTS (SELECT 1 FROM item_tags it WHERE it.item_id = i.id AND it.tag_id = ?)`
