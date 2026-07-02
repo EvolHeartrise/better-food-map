@@ -662,8 +662,9 @@
 	<div class="map" bind:this={mapEl} role="application" aria-label="Map of food locations"></div>
 	<!-- Pills are presentational: pointer-transparent so map gestures pass through, with
 	     click-to-select handled by the map's hit-test (see onMount). Each pill shows the
-	     venue name and, beneath it, a rotating food-item line. The venue names are also
-	     reachable via search, the accessible path. -->
+	     venue name and, beneath it, a rotating food-item line. The accessible path to
+	     the same venues is the visually hidden results list in the map page
+	     (+page.svelte), which renders them as real focusable buttons. -->
 	<div class="labels" aria-hidden="true">
 		{#each render as item (item.id)}
 			{@const names = itemsById.get(item.id) ?? []}
