@@ -71,11 +71,15 @@ try {
 
 	// An FTS5 virtual table owns hidden shadow tables (`<name>_data`, `_idx`, …)
 	// that are created automatically with it — emitting their CREATEs would
-	// collide. Identify them by the virtual table's name prefix and drop them.
+	// collide. Match the exact FTS5 shadow suffixes rather than the bare name
+	// prefix: the `*_fts_map` rowid-map tables (migration 0020) share the prefix
+	// but are ordinary tables whose CREATEs must replay.
+	const FTS5_SHADOW_SUFFIXES = ['config', 'content', 'data', 'docsize', 'idx'];
 	const virtualTables = schema
 		.filter((o) => /^\s*CREATE VIRTUAL TABLE/i.test(o.sql))
 		.map((o) => o.name);
-	const isShadowTable = (name: string) => virtualTables.some((v) => name.startsWith(`${v}_`));
+	const isShadowTable = (name: string) =>
+		virtualTables.some((v) => FTS5_SHADOW_SUFFIXES.some((s) => name === `${v}_${s}`));
 	const keepObject = (o: SchemaObject) =>
 		!INTERNAL_TABLES.has(o.name) && !(o.type === 'table' && isShadowTable(o.name));
 
@@ -91,8 +95,19 @@ try {
 
 	// 2. Export prod row data (read-only). One --table per real table keeps the
 	//    exporter away from the virtual table; --no-schema yields INSERTs only.
+	//    Skip trigger-maintained tables alongside the virtual ones: replaying the
+	//    base rows re-fires the 0016/0020 insert triggers, which rebuild the FTS
+	//    mirrors AND their `*_fts_map` rowid maps — exported map rows would
+	//    collide with the trigger-written ones.
+	const isTriggerMaintained = (name: string) => name.endsWith('_fts_map');
 	const dataTables = schema
-		.filter((o) => o.type === 'table' && keepObject(o) && !virtualTables.includes(o.name))
+		.filter(
+			(o) =>
+				o.type === 'table' &&
+				keepObject(o) &&
+				!virtualTables.includes(o.name) &&
+				!isTriggerMaintained(o.name)
+		)
 		.map((o) => o.name);
 	console.error(`→ exporting prod data (${dataTables.length} tables, read-only)…`);
 	const tableArgs = dataTables.flatMap((t) => ['--table', t]);
