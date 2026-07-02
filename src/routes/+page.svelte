@@ -25,6 +25,7 @@
 	import { matchedItems, searchResults } from '$lib/search-match';
 	import { idFromPath } from '$lib/location-path';
 	import { DEFAULT_MAP_CENTER } from '$lib/map-defaults';
+	import { searchableQuery } from '$lib/search';
 	import type { MapData, MapLocation, Item, Bounds } from '$lib/server/db';
 
 	// The visible map area, reported by <LocationMap> (debounced) as the user pans
@@ -78,6 +79,16 @@
 	// `hasQuery` — text query or diet active — is what flips browse → search.
 	const queryTerm = $derived(query.trim().toLowerCase());
 	const hasQuery = $derived(queryTerm !== '' || diet !== null);
+	// The text actually sent to the global search: the trimmed query once (and only
+	// once) the server's trigram index can accelerate it — a 3+ character
+	// wildcard-free run ($lib/search). Below that floor a server search would full-
+	// scan both FTS mirrors for a result the local in-view filtering above already
+	// delivers instantly, so short/wildcard-only text stays client-side ('' here)
+	// and the server applies the same gate (getSearchMapData). `hasSearchText` is
+	// the boolean read by the search effect, so a case-only edit (which can't
+	// change the results — matching is case-insensitive) doesn't re-fire it.
+	const searchText = $derived(searchableQuery(query));
+	const hasSearchText = $derived(searchText !== '');
 
 	// --- Map data --------------------------------------------------------------
 	// Two payloads, each updated imperatively (rather than via an awaited $derived)
@@ -143,17 +154,28 @@
 	// Debounce before a global search hits the server, so a burst of keystrokes
 	// settles into one request.
 	const SEARCH_DEBOUNCE_MS = 250;
-	// The query, reduced to a stable string — the ONLY reactive trigger for the
-	// search effect, so the map centre (read inside the timer) can change with a pan
-	// without re-running the search. Each distinct query runs (and flies) once; an
-	// unchanged query never re-fires the effect.
-	const querySignature = $derived(JSON.stringify({ query: queryTerm, diet }));
+	// The query, reduced to a stable string — the reactive trigger for the search
+	// effect's server call, so the map centre (read inside the timer) can change
+	// with a pan without re-running the search. Built from the GATED text
+	// (`searchText`, lowercased to match the server's case-insensitive LIKE), so
+	// typing through the sub-searchable prefixes of a term ("b", "bu") never fires
+	// a request. Each distinct query runs (and flies) once; an unchanged query
+	// never re-fires the effect.
+	const querySignature = $derived(JSON.stringify({ query: searchText.toLowerCase(), diet }));
 
 	// Search mode: run a global, nearest-first search whenever the QUERY changes. On
 	// each query's result, fly to the nearest match unless it's already on screen.
 	// Clearing the query drops back to browse mode.
 	$effect(() => {
 		if (!hasQuery) {
+			searchData = null;
+			return;
+		}
+		// Text below the searchable floor with no diet active: there is nothing the
+		// server could do but full-scan (see $lib/search), and the in-view filtering
+		// already handles the short term instantly — so skip the call and stay on
+		// the viewport set (searchData null → activeData falls back).
+		if (!hasSearchText && diet === null) {
 			searchData = null;
 			return;
 		}
@@ -164,7 +186,7 @@
 		const timer = setTimeout(() => {
 			const center = mapCenter();
 			searchLocations({
-				query: query.trim(),
+				query: searchText,
 				dietTagId: diet,
 				lat: center.lat,
 				lng: center.lng
