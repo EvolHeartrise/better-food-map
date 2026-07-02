@@ -61,6 +61,8 @@ import {
 	findBrandIdsByName,
 	findMenuIdsByName,
 	itemNameCollisions,
+	markLocationsDistinct,
+	unmarkLocationsDistinct,
 	DEFAULT_CURRENCY,
 	TAGS,
 	type D1Like,
@@ -68,6 +70,7 @@ import {
 	type LocationWithTags
 } from '../src/lib/server/db';
 import { createHttpD1 } from '../src/lib/server/d1-http';
+import { sourceInputSchema } from './mcp/source-input';
 import { normalizeRegion, normalizePostcode, normalizeCountry } from '../src/lib/address';
 import { searchPoi, normalizeName, namesMatch } from './osm/search-poi';
 import { selectChainCandidates, partitionImportable } from './osm/import-chain';
@@ -156,11 +159,14 @@ const SERVER_INSTRUCTIONS =
 	'locations, and returns candidates each carrying an `osm_id` (pass it to create_locations to ' +
 	'import OSM coordinates + address verbatim) — then add each with create_locations. To import a ' +
 	"CHAIN's branches, do NOT loop search_poi/create_locations by hand: create the brand, its shared " +
-	'menu and the menu items, then call import_chain once (dry_run first to vet the name allowlist) — ' +
-	'it scans the whole area, filters by name, and imports every branch with OSM-verbatim ' +
-	'coordinates/addresses in one call. After bulk imports, audit_locations ' +
+	'menu and the menu items, then call import_chain once (dry_run first to vet the name allowlist; ' +
+	"pass `brand_wikidata` to catch name variants via OSM's brand tag, and `country` to keep " +
+	'neighbouring-country border POIs out) — it scans the whole area, filters by name, and imports ' +
+	'every branch with OSM-verbatim coordinates/addresses in one call. After bulk imports, ' +
+	'audit_locations ' +
 	'(check: "duplicate_locations") finds same-name pairs a few metres apart — OSM sometimes maps one ' +
-	`venue twice; verify against the venue's own locator, then delete_location the extra row.\n\n` +
+	`venue twice; verify against the venue's own locator, then delete_location the extra row, or ` +
+	'mark_not_duplicate a verified two-real-venues pair so it is never re-flagged.\n\n' +
 	`${MODEL_OVERVIEW}\n\nTag policy: ${TAG_POLICY}`;
 
 const latitudeSchema = v.pipe(v.number(), v.minValue(-90), v.maxValue(90));
@@ -178,6 +184,16 @@ const currencySchema = v.pipe(
 		`ISO 4217 currency code for this menu's prices, e.g. "CAD", "USD", "GBP". ` +
 			`Case-insensitive; stored upper-case. Defaults to ${DEFAULT_CURRENCY}.`
 	)
+);
+
+// An ISO-2 country scope for the POI tools (search_poi / import_chain). Distinct
+// from a location's stored `country` (which flows through normalizeCountry on
+// write) — this one is a query filter, so it only needs the 2-letter form.
+const countryScopeSchema = v.pipe(
+	v.string(),
+	v.trim(),
+	v.transform((s) => s.toUpperCase()),
+	v.regex(/^[A-Z]{2}$/, 'country must be a 2-letter ISO-3166-1 code, e.g. "CA", "US".')
 );
 
 // Addresses are stored as STRUCTURED parts (see src/lib/address.ts and migrations
@@ -327,26 +343,14 @@ function normalizeAddressPatch(patch: {
 }
 
 // A single citation: a URL the data came from, plus an optional human label.
-const sourceSchema = v.object({
-	url: v.pipe(
-		v.string(),
-		v.url('Each source must be a valid URL, e.g. https://example.com/menu.'),
-		v.description('URL the data was obtained from.')
-	),
-	label: v.optional(
-		v.nullable(
-			v.pipe(v.string(), v.description("Optional human-readable label, e.g. 'Official menu'."))
-		)
-	)
-});
-
 // Reused on create_* (append) and update_* (replace wholesale). The wording
-// nudges the scraping agent to cite where any added data came from.
+// nudges the scraping agent to cite where any added data came from. Each entry
+// is a bare URL string or a { url, label } object (see source-input.ts).
 const createSourcesSchema = v.optional(
 	v.pipe(
-		v.array(sourceSchema),
+		v.array(sourceInputSchema),
 		v.description(
-			'Source URLs documenting where this data came from (each: a url and optional label). ' +
+			'Source URLs documenting where this data came from (each: a URL string, or { url, label }). ' +
 				'Strongly encouraged whenever you add scraped data, so it stays verifiable. ' +
 				'May be omitted or [] when you genuinely have no source.'
 		)
@@ -355,10 +359,10 @@ const createSourcesSchema = v.optional(
 
 const updateSourcesSchema = v.optional(
 	v.pipe(
-		v.array(sourceSchema),
+		v.array(sourceInputSchema),
 		v.description(
-			'REPLACES the full source set (each: a url and optional label). Pass [] to clear all sources. ' +
-				'To ADD a citation without resending the existing ones, use `add_sources` instead. ' +
+			'REPLACES the full source set (each: a URL string, or { url, label }). Pass [] to clear all ' +
+				'sources. To ADD a citation without resending the existing ones, use `add_sources` instead. ' +
 				'Encouraged: keep at least one source documenting where the data came from.'
 		)
 	)
@@ -366,11 +370,11 @@ const updateSourcesSchema = v.optional(
 
 const addSourcesSchema = v.optional(
 	v.pipe(
-		v.array(sourceSchema),
+		v.array(sourceInputSchema),
 		v.description(
 			'APPENDS these sources to the existing set (de-duplicated by url); existing sources are kept. ' +
-				'Use this to add a citation without re-sending the full set. Mutually exclusive with `sources` ' +
-				'(which replaces) — passing both is rejected.'
+				'Each: a URL string, or { url, label }. Use this to add a citation without re-sending the full ' +
+				'set. Mutually exclusive with `sources` (which replaces) — passing both is rejected.'
 		)
 	)
 );
@@ -788,6 +792,17 @@ const searchPoiArgs = v.pipe(
 				v.description('Case-insensitive substring match on the OSM cuisine tag.')
 			)
 		),
+		country: v.optional(
+			v.pipe(
+				countryScopeSchema,
+				v.description(
+					'ISO-2 country scope, e.g. "CA". Drops POIs whose address SIGNALS a different country ' +
+						'(explicit addr:country, or a region code belonging to another country); POIs with no ' +
+						'country signal are kept. Recommended for border-spanning areas — a Canada extract carries ' +
+						'some US border-town POIs. Dropped count returned as `excluded_foreign`.'
+				)
+			)
+		),
 		exclude_existing: v.optional(
 			v.pipe(
 				v.boolean(),
@@ -869,7 +884,34 @@ const importChainArgs = v.pipe(
 					'punctuation and "&"/"and" folded) — e.g. ["Mary Brown\'s", "Mary Brown\'s Chicken", ' +
 					'"Mary Browns"]. POIs whose name is not an exact normalized match are NEVER imported; they ' +
 					'come back counted in `name_buckets`, so run dry_run first and extend this list from what ' +
-					'you see there.'
+					'you see there (also passing `brand_wikidata` catches most variants automatically).'
+			)
+		),
+		brand_wikidata: v.optional(
+			v.pipe(
+				v.string(),
+				v.trim(),
+				v.regex(/^Q\d+$/, 'brand_wikidata must be a Wikidata QID, e.g. "Q37158".'),
+				v.description(
+					"The chain's Wikidata QID, matched against each POI's OSM `brand:wikidata` tag (e.g. " +
+						'"Q37158" for Starbucks — dry_run first and read it off the main bucket\'s ' +
+						'`brand_wikidata` annotation). ALSO accepts name variants no allowlist entry anticipated ' +
+						'("Tim Hortons Express"), but only on TWO-SIGNAL agreement: the POI name must still ' +
+						'resemble an accepted name. A brand-tagged POI with a conflicting name (a real OSM mistag ' +
+						'pattern, e.g. a "Second Cup" carrying the Starbucks QID) is never imported — it stays in ' +
+						'`name_buckets` with its QID for explicit vetting.'
+				)
+			)
+		),
+		country: v.optional(
+			v.pipe(
+				countryScopeSchema,
+				v.description(
+					'ISO-2 country scope, e.g. "CA". Drops POIs whose address signals a different country before ' +
+						'matching (counted in `excluded_foreign`); POIs with no country signal are kept. ' +
+						'Recommended for country-wide imports — a Canada extract carries some US border-town POIs ' +
+						'that would otherwise fail (or worse, import) under the wrong country.'
+				)
 			)
 		),
 		latitude: v.optional(
@@ -1057,7 +1099,58 @@ const auditLocationsArgs = v.object({
 	)
 });
 
+const markNotDuplicateArgs = v.pipe(
+	v.object({
+		location_id_a: v.pipe(
+			v.string(),
+			v.minLength(1),
+			v.description('One half of the flagged pair (order does not matter).')
+		),
+		location_id_b: v.pipe(
+			v.string(),
+			v.minLength(1),
+			v.description('The other half of the flagged pair.')
+		),
+		reason: v.optional(
+			v.pipe(
+				v.string(),
+				v.minLength(1),
+				v.description(
+					'The verification evidence, stored on the verdict — e.g. "both branches listed separately ' +
+						'on restaurants.subway.com with distinct phone numbers". Required unless `revoke` is true.'
+				)
+			)
+		),
+		revoke: v.optional(
+			v.pipe(
+				v.boolean(),
+				v.description(
+					'Set true to WITHDRAW a previous verdict — the pair shows up in duplicate audits again.'
+				)
+			)
+		)
+	}),
+	v.check(
+		(input) => input.location_id_a !== input.location_id_b,
+		'location_id_a and location_id_b must be two different locations.'
+	),
+	v.check(
+		(input) => Boolean(input.revoke) || Boolean(input.reason?.trim()),
+		'A `reason` (the verification evidence) is required when recording a verdict.'
+	)
+);
+
 // --- Chains: brands, menus, menu items, per-location overrides ---
+
+// Written at research time, read before ANY re-verification — re-discovering how
+// to fetch a chain's menu (finding the API behind a client-rendered page) is the
+// dominant cost of a refresh, and this is where that knowledge is banked.
+const REFRESH_NOTES_DESC =
+	"HOW to refresh this menu's data, banked for the next verification pass: the machine-readable " +
+	'feed endpoint (ordering API, nutrition PDF, CMS query) plus fetch caveats — e.g. "menu page is ' +
+	'client-rendered; use https://www.starbucks.ca/apiproxy/v1/ordering/menu (unauthenticated JSON)". ' +
+	'RECORD it whenever menu research discovers a non-obvious source; CHECK it (get_menu) before ' +
+	're-researching a menu from scratch.';
 
 const createBrandArgs = v.object({
 	name: v.pipe(
@@ -1099,6 +1192,7 @@ const createMenuArgs = v.object({
 	),
 	currency: v.optional(currencySchema),
 	// last_verified is not accepted: it is auto-stamped to today on every write.
+	refresh_notes: v.optional(v.nullable(v.pipe(v.string(), v.description(REFRESH_NOTES_DESC)))),
 	sources: createSourcesSchema,
 	id: v.optional(
 		v.pipe(
@@ -1116,6 +1210,9 @@ const updateMenuArgs = v.object({
 	region: v.optional(v.nullable(v.string())),
 	currency: v.optional(currencySchema),
 	// last_verified is not accepted: any update re-stamps it to today automatically.
+	refresh_notes: v.optional(
+		v.nullable(v.pipe(v.string(), v.description(REFRESH_NOTES_DESC + ' Pass null to clear.')))
+	),
 	sources: updateSourcesSchema,
 	add_sources: addSourcesSchema
 });
@@ -2117,9 +2214,10 @@ const chainTools = [
 			'shared items with create_items (using this menu_id), then point each branch at it via ' +
 			'location.menu_id. Set ' +
 			`\`currency\` so item prices are unambiguous (defaults to ${DEFAULT_CURRENCY}). Optionally cite the ` +
-			"official menu once via `sources`. The menu's freshness date (last_verified) is set " +
-			'automatically to today here and on every later write — never pass it. Returns { id } — read ' +
-			'it back with get_menu.',
+			'official menu once via `sources`, and bank HOW to re-fetch it in `refresh_notes` (feed ' +
+			"endpoint + caveats) so the next verification skips source re-discovery. The menu's freshness " +
+			'date (last_verified) is set automatically to today here and on every later write — never pass ' +
+			'it. Returns { id } — read it back with get_menu.',
 		schema: createMenuArgs,
 		handler: async (input) => {
 			if (!(await getBrandById(getDb(), input.brand_id))) {
@@ -2137,6 +2235,7 @@ const chainTools = [
 				name: input.name,
 				region: input.region ?? null,
 				currency: input.currency,
+				refresh_notes: input.refresh_notes ?? null,
 				sources: normalizeSources(input.sources)
 			});
 			const warnings = dupIds.length
@@ -2161,7 +2260,8 @@ const chainTools = [
 		name: 'get_menu',
 		annotations: READ_ONLY,
 		description:
-			'Get a menu and the menu\'s own source URLs. `view` picks the payload size: "full" (default) — ' +
+			"Get a menu with its own source URLs and `refresh_notes` (HOW to re-fetch the menu's source — " +
+			'read these before re-researching a menu from scratch). `view` picks the payload size: "full" (default) — ' +
 			'every item with tags, description, price and sources; "names" — items as just { id, item_name, ' +
 			'price, tags } (menu-wide edits/scans without the prose); "summary" — no item list, just counts ' +
 			'(item_count, a per-tag histogram, how many items have a price / a source). A 100-item chain menu ' +
@@ -2210,7 +2310,8 @@ const chainTools = [
 		name: 'update_menu',
 		annotations: DESTRUCTIVE,
 		description:
-			'Update a menu (including its `currency`). Only provided fields change; if `sources` is given it ' +
+			'Update a menu (including its `currency` and `refresh_notes` — bank a newly discovered feed ' +
+			'endpoint here). Only provided fields change; if `sources` is given it ' +
 			'replaces the whole source set (pass [] to clear), or use `add_sources` to append one. Any update ' +
 			"also refreshes the menu's `last_verified` date to today automatically. Returns the updated menu, " +
 			'or null if the id does not exist.',
@@ -2306,6 +2407,7 @@ const osmTools = [
 				category: input.category,
 				name: input.name,
 				cuisine: input.cuisine,
+				country: input.country,
 				exclude_existing: input.exclude_existing,
 				exclude_osm_ids: input.exclude_osm_ids,
 				limit: input.limit
@@ -2347,10 +2449,13 @@ const osmTools = [
 			'resolve (e.g. no recoverable street) are reported in `skipped_invalid` with reasons, never ' +
 			'silently dropped; `warnings` flags same-name branches within ~150 m (possible OSM double-mapping ' +
 			"— verify against the chain's own locator before deleting). `name_buckets` histograms every POI " +
-			'name seen in the area so you can extend `name_match` and re-run; re-runs are safe (already-' +
-			'imported branches are excluded). ALWAYS call with `dry_run: true` first to vet the allowlist. ' +
-			'Returns { imported, location_ids, excluded_existing, skipped_duplicate_locations, skipped_invalid, ' +
-			'warnings, name_buckets, remaining_beyond_max, scan_truncated }.',
+			'name seen in the area — each bucket annotated with its dominant OSM `brand:wikidata` QID — so ' +
+			'you can vet variants and extend `name_match` (or pass `brand_wikidata` to accept brand-tagged ' +
+			'variants automatically, and `country` to keep border-town POIs of a neighbouring country out); ' +
+			're-runs are safe (already-imported branches are excluded). ALWAYS call with `dry_run: true` ' +
+			'first to vet the allowlist. Returns { imported, location_ids, excluded_existing, ' +
+			'excluded_foreign?, matched_by_brand?, skipped_duplicate_locations, skipped_invalid, warnings, ' +
+			'name_buckets, remaining_beyond_max, scan_truncated }.',
 		schema: importChainArgs,
 		handler: async (input) => {
 			await assertBrandMenuRefs(input.brand_id, input.menu_id);
@@ -2368,7 +2473,9 @@ const osmTools = [
 					longitude: input.longitude,
 					radius_km: input.radius_km
 				},
-				nameMatch: input.name_match
+				nameMatch: input.name_match,
+				brandWikidata: input.brand_wikidata,
+				country: input.country
 			});
 			// The cap applies to IMPORTABLE candidates only: slicing the raw matched
 			// list would let a long run of address-unresolvable POIs occupy the window
@@ -2385,6 +2492,8 @@ const osmTools = [
 					remaining_beyond_max: remaining,
 					skipped_unresolvable: unresolvable,
 					excluded_existing: selection.excluded_existing,
+					...(input.country ? { excluded_foreign: selection.excluded_foreign } : {}),
+					...(input.brand_wikidata ? { matched_by_brand: selection.matched_by_brand } : {}),
 					scan_truncated: selection.scan_truncated,
 					name_buckets: selection.name_buckets,
 					sample: toImport.slice(0, 10).map((poi) => ({
@@ -2429,6 +2538,8 @@ const osmTools = [
 				imported: created,
 				...(input.include_location_ids ? { location_ids: locationIds } : {}),
 				excluded_existing: selection.excluded_existing,
+				...(input.country ? { excluded_foreign: selection.excluded_foreign } : {}),
+				...(input.brand_wikidata ? { matched_by_brand: selection.matched_by_brand } : {}),
 				skipped_unresolvable: unresolvable,
 				...(skippedDuplicates.length ? { skipped_duplicate_locations: skippedDuplicates } : {}),
 				...(skippedInvalid.length ? { skipped_invalid: skippedInvalid } : {}),
@@ -2447,7 +2558,10 @@ const osmTools = [
 			"(stored coordinates that do NOT coincide with the location's OSM POI — fix with " +
 			'update_locations), "missing_address" (empty or streetless addresses, with the OSM address to ' +
 			'backfill where available), or "duplicate_locations" (same-name/same-brand pairs within a small ' +
-			'radius — probably one venue stored twice; verify, then delete_location the extra row). The first ' +
+			"radius — probably one venue stored twice; verify against the venue's own locator, then EITHER " +
+			'delete_location the extra row OR record a confirmed two-real-venues pair with ' +
+			'mark_not_duplicate so it stops being re-flagged — such pairs are counted in ' +
+			'`suppressed_reviewed`, never re-listed). The first ' +
 			'two compare against the LOCAL OSM staging store; duplicate_locations reads only the live D1. ' +
 			'Results are worst-first / actionable-first; `limit` caps how many are returned and `additional` ' +
 			"is how many more exist beyond it. See the `check` field for each mode's entry shape and which " +
@@ -2476,6 +2590,45 @@ const osmTools = [
 				include_incomplete: input.include_incomplete,
 				include_unfixable: input.include_unfixable
 			});
+		}
+	}),
+	defineTool({
+		name: 'mark_not_duplicate',
+		annotations: CREATE,
+		description:
+			'Record the verdict that two locations flagged by audit_locations (check: "duplicate_locations") ' +
+			'are in fact two REAL venues — not one venue double-mapped — so the pair is suppressed from every ' +
+			'future duplicate audit (counted in its `suppressed_reviewed`) and the verification work is never ' +
+			"re-paid. Use ONLY after verifying against the chain's/venue's own store locator or equally strong " +
+			'evidence, and put that evidence in `reason`. The verdict is per-pair and survives until either ' +
+			'location is deleted (it cascades away with the row). Idempotent: re-marking replaces the ' +
+			'reason/date. Pass `revoke: true` to withdraw a verdict so the pair audits normally again. For the ' +
+			'opposite verdict — one venue stored twice — do NOT use this; delete_location the redundant row.',
+		schema: markNotDuplicateArgs,
+		handler: async (input) => {
+			if (input.revoke) {
+				const revoked = await unmarkLocationsDistinct(
+					getDb(),
+					input.location_id_a,
+					input.location_id_b
+				);
+				return { revoked };
+			}
+			const reason = input.reason?.trim();
+			if (!reason) throw new Error('A `reason` (the verification evidence) is required.');
+			const [locA, locB] = await Promise.all([
+				getLocationById(getDb(), input.location_id_a),
+				getLocationById(getDb(), input.location_id_b)
+			]);
+			if (!locA) throw new Error(`No location with id "${input.location_id_a}".`);
+			if (!locB) throw new Error(`No location with id "${input.location_id_b}".`);
+			const res = await markLocationsDistinct(
+				getDb(),
+				input.location_id_a,
+				input.location_id_b,
+				reason
+			);
+			return { marked: true, already_reviewed: res.already_reviewed };
 		}
 	})
 ] as const;

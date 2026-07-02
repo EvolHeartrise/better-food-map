@@ -348,3 +348,46 @@ test('admin-boundary city/region fill address_parts when nothing else has them',
 	});
 	store.close();
 });
+
+test('country scope drops foreign-signalled POIs, keeps unknowns, and counts the drops', async () => {
+	const store = storeWith([
+		// Own addr:state = ME (Maine) → US-signalled → dropped under country "CA".
+		row({
+			osm_id: 'us1',
+			latitude: 47.25,
+			longitude: -68.6,
+			name: 'Subway',
+			tags_json: JSON.stringify({
+				'addr:housenumber': '100',
+				'addr:street': 'West Main Street',
+				'addr:state': 'ME'
+			})
+		}),
+		// Admin-joined Canadian province → kept.
+		row({
+			osm_id: 'ca1',
+			latitude: 49.1,
+			longitude: -123.1,
+			name: 'Subway',
+			admin_city: 'Vancouver',
+			admin_region: 'BC'
+		}),
+		// No country signal → kept (cannot be proven foreign).
+		row({ osm_id: 'unk1', latitude: 49.2, longitude: -123.2, name: 'Subway' })
+	]);
+	const bbox = { minLat: 45, minLon: -125, maxLat: 51, maxLon: -60 };
+
+	const scoped = await searchPoi(store, null, {
+		bbox,
+		country: 'CA',
+		exclude_existing: false
+	});
+	expect(scoped.candidates.map((c) => c.osm_id).toSorted()).toEqual(['ca1', 'unk1']);
+	expect(scoped.excluded_foreign).toBe(1);
+	expect(scoped.total_in_area).toBe(2); // foreign POIs are out before totals
+
+	// Without the scope the field is absent and nothing is dropped.
+	const unscoped = await searchPoi(store, null, { bbox, exclude_existing: false });
+	expect(unscoped.candidates.length).toBe(3);
+	expect('excluded_foreign' in unscoped).toBe(false);
+});

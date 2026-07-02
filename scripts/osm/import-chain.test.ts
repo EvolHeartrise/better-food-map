@@ -158,6 +158,135 @@ test('reports scan truncation at the cap', async () => {
 	expect(selection.scan_truncated).toBe(true);
 });
 
+test('brand_wikidata accepts variant names on two-signal agreement, never on QID alone', async () => {
+	const qidTags = (name?: string) =>
+		JSON.stringify({ 'brand:wikidata': 'Q175106', ...(name ? { brand: name } : {}) });
+	const store = storeWith([
+		row({
+			osm_id: 'n1',
+			latitude: 49.1,
+			longitude: -123.1,
+			name: 'Tim Hortons',
+			tags_json: qidTags()
+		}),
+		// Variant name + the chain's QID: two signals agree → imported.
+		row({
+			osm_id: 'n2',
+			latitude: 49.2,
+			longitude: -123.2,
+			name: 'Tim Hortons Express',
+			tags_json: qidTags()
+		}),
+		// Conflicting name carrying the chain's QID (real OSM mistag pattern) → NOT
+		// imported; surfaced in its bucket with the QID annotation instead.
+		row({
+			osm_id: 'n3',
+			latitude: 49.3,
+			longitude: -123.3,
+			name: 'Second Cup',
+			tags_json: qidTags()
+		}),
+		// Variant name WITHOUT the QID → not imported (single signal).
+		row({ osm_id: 'n4', latitude: 49.4, longitude: -123.4, name: 'Tim Hortons Express' })
+	]);
+	const selection = await selectChainCandidates(store, fakeD1([]), {
+		area: AREA,
+		nameMatch: ['Tim Hortons'],
+		brandWikidata: 'Q175106'
+	});
+	expect(selection.matched.map((p) => p.osm_id).toSorted()).toEqual(['n1', 'n2']);
+	expect(selection.matched_by_brand).toBe(1);
+	const byName = new Map(selection.name_buckets.map((b) => [b.name, b]));
+	expect(byName.get('Second Cup')?.matched).toBe(false);
+	expect(byName.get('Second Cup')?.brand_wikidata).toBe('Q175106');
+	// The QID-less variant shares a bucket with the QID-carrying one; the bucket is
+	// matched (one POI imported) and annotated with the dominant QID.
+	expect(byName.get('Tim Hortons Express')?.matched).toBe(true);
+	expect(byName.get('Tim Hortons Express')?.brand_wikidata_count).toBe(1);
+});
+
+test('name_buckets carry the dominant brand:wikidata annotation without brandWikidata set', async () => {
+	const store = storeWith([
+		row({
+			osm_id: 'n1',
+			latitude: 49.1,
+			longitude: -123.1,
+			name: 'Chain',
+			tags_json: JSON.stringify({ 'brand:wikidata': 'Q1' })
+		}),
+		row({
+			osm_id: 'n2',
+			latitude: 49.2,
+			longitude: -123.2,
+			name: 'Chain',
+			tags_json: JSON.stringify({ 'brand:wikidata': 'Q1' })
+		}),
+		row({
+			osm_id: 'n3',
+			latitude: 49.3,
+			longitude: -123.3,
+			name: 'Chain',
+			tags_json: JSON.stringify({ 'brand:wikidata': 'Q2' })
+		}),
+		row({ osm_id: 'n4', latitude: 49.4, longitude: -123.4, name: 'Chain' })
+	]);
+	const selection = await selectChainCandidates(store, fakeD1([]), {
+		area: AREA,
+		nameMatch: ['Chain']
+	});
+	const bucket = selection.name_buckets.find((b) => b.name === 'Chain');
+	expect(bucket?.count).toBe(4);
+	expect(bucket?.brand_wikidata).toBe('Q1');
+	expect(bucket?.brand_wikidata_count).toBe(2);
+	expect(selection.matched_by_brand).toBe(0);
+});
+
+test('country scope drops foreign-signalled POIs and keeps unknowns', async () => {
+	const store = storeWith([
+		// Own addr:state says Maine → US → dropped from a CA-scoped import.
+		row({
+			osm_id: 'us1',
+			latitude: 47.25,
+			longitude: -68.6,
+			name: 'Chain',
+			tags_json: JSON.stringify({
+				'addr:housenumber': '100',
+				'addr:street': 'West Main Street',
+				'addr:city': 'Fort Kent',
+				'addr:state': 'ME'
+			})
+		}),
+		// Canadian admin join → kept.
+		row({
+			osm_id: 'ca1',
+			latitude: 49.1,
+			longitude: -123.1,
+			name: 'Chain',
+			admin_city: 'Vancouver',
+			admin_region: 'BC'
+		}),
+		// No country signal at all → kept (can't be proven foreign).
+		row({ osm_id: 'unk1', latitude: 49.2, longitude: -123.2, name: 'Chain' })
+	]);
+	const area = { bbox: { minLat: 45, minLon: -125, maxLat: 51, maxLon: -60 } };
+	const scoped = await selectChainCandidates(store, fakeD1([]), {
+		area,
+		nameMatch: ['Chain'],
+		country: 'CA'
+	});
+	expect(scoped.matched.map((p) => p.osm_id).toSorted()).toEqual(['ca1', 'unk1']);
+	expect(scoped.excluded_foreign).toBe(1);
+	// The foreign POI is excluded before bucketing, so it doesn't pad the histogram.
+	expect(scoped.name_buckets.find((b) => b.name === 'Chain')?.count).toBe(2);
+
+	const unscoped = await selectChainCandidates(store, fakeD1([]), {
+		area,
+		nameMatch: ['Chain']
+	});
+	expect(unscoped.matched.length).toBe(3);
+	expect(unscoped.excluded_foreign).toBe(0);
+});
+
 test('partitionImportable separates street-less POIs so max cannot be blocked by them', async () => {
 	const { partitionImportable } = await import('./import-chain');
 	const pois = [

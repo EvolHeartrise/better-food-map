@@ -368,3 +368,28 @@ test('getMenus counts open branches per menu; countLocations filters by brand', 
 	expect(await countLocations(db, { brandId })).toBe(1);
 	void a;
 });
+
+test('menus bank refresh_notes: stored on create, patchable, clearable', async () => {
+	const db = freshDb();
+	const brandId = await insertBrand(db, { name: 'ChainCo', website: null, logo_url: null });
+	const menuId = await insertMenu(db, {
+		brand_id: brandId,
+		name: 'ChainCo Canada',
+		region: 'CA',
+		refresh_notes: 'menu page is client-rendered; use https://chainco.example/api/menu'
+	});
+	expect((await getMenuById(db, menuId))?.refresh_notes).toBe(
+		'menu page is client-rendered; use https://chainco.example/api/menu'
+	);
+	// Omitting the field on an unrelated patch leaves it untouched.
+	await updateMenu(db, menuId, { name: 'ChainCo CA' });
+	expect((await getMenuById(db, menuId))?.refresh_notes).toContain('client-rendered');
+	// Patching replaces it; explicit null clears it.
+	await updateMenu(db, menuId, { refresh_notes: 'use the v2 endpoint' });
+	expect((await getMenuById(db, menuId))?.refresh_notes).toBe('use the v2 endpoint');
+	await updateMenu(db, menuId, { refresh_notes: null });
+	expect((await getMenuById(db, menuId))?.refresh_notes).toBeNull();
+	// A menu created without notes reads null.
+	const bareId = await insertMenu(db, { brand_id: brandId, name: 'Bare', region: 'CA' });
+	expect((await getMenuById(db, bareId))?.refresh_notes).toBeNull();
+});

@@ -16,6 +16,15 @@
 // every non-matching name is reported with its count, so extending the
 // allowlist is one dry-run away and nothing is imported by surprise.
 //
+// `brandWikidata` complements that with OSM's own chain identity: most chain
+// POIs carry `brand:wikidata` (~99.7% for the big Canadian chains), which
+// catches name variants no allowlist anticipated ("Tim Hortons Express") AND
+// exposes mistags ("Second Cup" carrying the Starbucks QID — real data). A
+// brand-tagged POI is accepted only on TWO-SIGNAL agreement — its name must
+// also resemble an accepted name (normalized containment); when the signals
+// disagree the POI stays unimported in `name_buckets`, annotated with its QID,
+// for explicit vetting. Nothing is imported by surprise either way.
+//
 // The D1 insert (chunked through the same path as create_locations) stays in
 // scripts/db-mcp-server.ts; this module is pure selection and unit-tested in
 // import-chain.test.ts.
@@ -23,10 +32,11 @@
 
 import type { D1Like } from '../../src/lib/server/db';
 import { haversineMeters } from './geo';
-import { effectivePoiAddressParts } from './map-feature';
+import { effectivePoiAddressParts, poiCountry } from './map-feature';
 import {
 	existingInBbox,
 	isExistingDuplicate,
+	namesMatch,
 	normalizeName,
 	resolveArea,
 	type SearchPoiParams
@@ -43,6 +53,22 @@ export interface SelectChainCandidatesParams {
 	 */
 	nameMatch: string[];
 	/**
+	 * Wikidata QID accepted as this chain's OSM `brand:wikidata` tag (e.g.
+	 * "Q37158" for Starbucks). Also accepts POIs whose exact name is NOT in
+	 * `nameMatch`, but only on two-signal agreement: the POI's name must still
+	 * resemble an accepted name (normalized containment), so a mistagged POI
+	 * ("Second Cup" carrying the Starbucks QID) is never absorbed — it stays in
+	 * `name_buckets` with its QID annotation for explicit vetting.
+	 */
+	brandWikidata?: string;
+	/**
+	 * ISO-2 country scope (e.g. "CA"). Drops POIs whose address signals a
+	 * different country before matching/bucketing; POIs with no country signal
+	 * are kept. Guards border-spanning areas — a Canada extract carries some US
+	 * border-town POIs that would otherwise import under the wrong country.
+	 */
+	country?: string;
+	/**
 	 * Rows scanned from the store per accepted name (default 20000) — far above
 	 * any real chain's footprint, present only to bound a pathological scan.
 	 */
@@ -54,6 +80,15 @@ export interface NameBucket {
 	name: string;
 	count: number;
 	matched: boolean;
+	/**
+	 * Dominant OSM `brand:wikidata` QID among this bucket's POIs, when any carry
+	 * one — the vetting signal for unmatched buckets: a variant name carrying the
+	 * chain's own QID is almost certainly a real branch, a foreign QID almost
+	 * certainly is not.
+	 */
+	brand_wikidata?: string;
+	/** How many of the bucket's POIs carry that dominant QID. */
+	brand_wikidata_count?: number;
 }
 
 export interface ChainCandidateSelection {
@@ -63,6 +98,10 @@ export interface ChainCandidateSelection {
 	name_buckets: NameBucket[];
 	/** Matched POIs dropped because the venue is already on the map. */
 	excluded_existing: number;
+	/** POIs dropped because their address signals a different country (only with `country`). */
+	excluded_foreign: number;
+	/** POIs accepted via brand:wikidata agreement rather than an exact name match. */
+	matched_by_brand: number;
 	/** True when a scan hit `scanCap` — results may be incomplete; narrow the area. */
 	scan_truncated: boolean;
 }
@@ -102,6 +141,13 @@ export async function selectChainCandidates(
 		if (rows.length >= cap) scanTruncated = true;
 		for (const row of rows) byId.set(row.osm_id, row);
 	}
+	// The brand scan surfaces branches whose name no allowlist entry anticipated —
+	// a name scan cannot find a "Tim Hortons Express" when the term is "Tim Hortons".
+	if (params.brandWikidata) {
+		const rows = store.searchBbox(bbox, { brand_wikidata: params.brandWikidata, cap });
+		if (rows.length >= cap) scanTruncated = true;
+		for (const row of rows) byId.set(row.osm_id, row);
+	}
 
 	// Refine to the exact circle for a centre query, and order nearest-first so a
 	// capped import takes the closest branches.
@@ -118,15 +164,51 @@ export async function selectChainCandidates(
 			.map((x) => x.poi);
 	}
 
+	// Country scope: drop foreign-signalled POIs BEFORE bucketing, so a "Subway"
+	// in a US border town neither imports nor pads the matched bucket's count.
+	let excludedForeign = 0;
+	if (params.country) {
+		const scope = params.country.toUpperCase();
+		pois = pois.filter((poi) => {
+			const c = poiCountry(poi);
+			if (c === null || c === scope) return true;
+			excludedForeign++;
+			return false;
+		});
+	}
+
+	const acceptedList = [...accepted];
 	const buckets = new Map<string, NameBucket>();
+	const qidCounts = new Map<string, Map<string, number>>();
 	const matchedRaw: StoredPoi[] = [];
+	let matchedByBrand = 0;
 	for (const poi of pois) {
 		const name = poi.name ?? '(unnamed)';
-		const matched = accepted.has(normalizeName(poi.name));
+		const norm = normalizeName(poi.name);
+		const qid = brandWikidataOf(poi);
+		const nameMatched = accepted.has(norm);
+		// Two-signal acceptance: the chain's own QID plus a resembling name. A
+		// conflicting name (a mistagged POI) keeps the POI out of the import.
+		const brandMatched =
+			!nameMatched &&
+			params.brandWikidata !== undefined &&
+			qid === params.brandWikidata &&
+			acceptedList.some((a) => namesMatch(norm, a));
+		const matched = nameMatched || brandMatched;
 		const bucket = buckets.get(name);
-		if (bucket) bucket.count++;
-		else buckets.set(name, { name, count: 1, matched });
+		if (bucket) {
+			bucket.count++;
+			bucket.matched ||= matched;
+		} else {
+			buckets.set(name, { name, count: 1, matched });
+		}
+		if (qid) {
+			const counts = qidCounts.get(name) ?? new Map<string, number>();
+			counts.set(qid, (counts.get(qid) ?? 0) + 1);
+			qidCounts.set(name, counts);
+		}
 		if (matched) matchedRaw.push(poi);
+		if (brandMatched) matchedByBrand++;
 	}
 
 	const existing = matchedRaw.length ? await existingInBbox(db, bbox) : [];
@@ -137,12 +219,32 @@ export async function selectChainCandidates(
 		else matched.push(poi);
 	}
 
+	const annotated = [...buckets.values()].map((bucket) => {
+		const counts = qidCounts.get(bucket.name);
+		if (!counts?.size) return bucket;
+		const [qid, n] = [...counts.entries()].toSorted((x, y) => y[1] - x[1])[0];
+		return { ...bucket, brand_wikidata: qid, brand_wikidata_count: n };
+	});
+
 	return {
 		matched,
-		name_buckets: [...buckets.values()].toSorted((a, b) => b.count - a.count),
+		name_buckets: annotated.toSorted((a, b) => b.count - a.count),
 		excluded_existing: excludedExisting,
+		excluded_foreign: excludedForeign,
+		matched_by_brand: matchedByBrand,
 		scan_truncated: scanTruncated
 	};
+}
+
+/** The POI's OSM `brand:wikidata` QID, from its stored tag blob (null when absent/corrupt). */
+function brandWikidataOf(poi: StoredPoi): string | null {
+	try {
+		const tags = JSON.parse(poi.tags_json) as Record<string, string>;
+		const qid = tags['brand:wikidata'];
+		return typeof qid === 'string' && qid.trim() ? qid.trim() : null;
+	} catch {
+		return null;
+	}
 }
 
 /** Summary of the matched POIs a chain import cannot resolve an address for. */

@@ -285,6 +285,21 @@ export function normalizeRegion(
 	return null;
 }
 
+/**
+ * The country a province/state belongs to, from a raw region value (code or
+ * full name, any of the spellings {@link normalizeRegion} accepts). The CA and
+ * US code sets are disjoint, so a resolvable region uniquely determines its
+ * country. Returns null when the region cannot be resolved — the caller decides
+ * whether "unknown" is a match or a miss.
+ */
+export function regionCountry(value: string | null | undefined): 'CA' | 'US' | null {
+	const code = normalizeRegion(value);
+	if (!code) return null;
+	if (CA_REGION_CODES.has(code)) return 'CA';
+	if (US_REGION_CODES.has(code)) return 'US';
+	return null;
+}
+
 const CA_POSTCODE = /^([A-Za-z]\d[A-Za-z])\s*(\d[A-Za-z]\d)$/;
 const US_ZIP = /^(\d{5})(?:-(\d{4}))?$/;
 
