@@ -11,12 +11,7 @@
 import type { D1Like } from '../../src/lib/server/db';
 import { stripDiacritics } from '../../src/lib/text';
 import { bboxAround, haversineMeters, type Bbox } from './geo';
-import {
-	addressPartsFromLine,
-	osmOwnAddressParts,
-	osmUrl,
-	type PoiAddressParts
-} from './map-feature';
+import { effectivePoiAddressParts, osmUrl, type PoiAddressParts } from './map-feature';
 import type { OsmPoiStore, StoredPoi } from './poi-store';
 
 export interface SearchPoiParams {
@@ -30,6 +25,12 @@ export interface SearchPoiParams {
 	cuisine?: string;
 	/** Drop POIs already present in D1 (default true). */
 	exclude_existing?: boolean;
+	/**
+	 * osm_ids to drop from the results — e.g. known false name matches that would
+	 * otherwise resurface on every re-search of the same area. Applied before
+	 * `limit`, so excluded candidates never crowd out real ones.
+	 */
+	exclude_osm_ids?: string[];
 	/** Max candidates to return (default 50). */
 	limit?: number;
 }
@@ -48,12 +49,12 @@ export interface PoiCandidate {
 	longitude: number;
 	/**
 	 * Structured address parts (street/city/region/postcode/country, absent parts
-	 * dropped) — pass straight to create_locations, which normalizes region/postcode/
-	 * country. Taken from the POI's OWN `addr:*` tags when it has them, else recovered
-	 * from the address an enrichment feed (a containing OSM building, or Overture)
-	 * supplied. Omitted only when the POI has no address at all; then supply street/
-	 * city/region from the POI's admin context (never geocode). `country` is often
-	 * absent — create_locations defaults it to CA.
+	 * dropped), merged per part from the POI's OWN `addr:*` tags, the address an
+	 * enrichment feed (containing OSM building / Overture) supplied, and the
+	 * extract-time admin-boundary join for city/region — exactly what an `osm_id`
+	 * import stores, so there is nothing to copy through. Omitted only when no
+	 * source has any part. `country` is often absent — create_locations defaults
+	 * it to CA.
 	 */
 	address_parts?: PoiAddressParts;
 	/**
@@ -96,7 +97,7 @@ const SAME_POINT_M = 10;
 const SAME_NAME_M = 150;
 const MIN_NAME_OVERLAP = 4;
 
-interface ExistingLocation {
+export interface ExistingLocation {
 	id: string;
 	name: string;
 	latitude: number;
@@ -104,7 +105,7 @@ interface ExistingLocation {
 }
 
 /** Resolves the query area to a bounding box, plus an optional centre for radius refine. */
-function resolveArea(params: SearchPoiParams): {
+export function resolveArea(params: SearchPoiParams): {
 	bbox: Bbox;
 	centre?: { lat: number; lon: number; radiusKm: number };
 } {
@@ -149,7 +150,7 @@ function namesConflict(a: string, b: string): boolean {
 }
 
 /** True if `poi` is essentially the same venue as one already in `existing`. */
-function isExistingDuplicate(poi: StoredPoi, existing: ExistingLocation[]): boolean {
+export function isExistingDuplicate(poi: StoredPoi, existing: ExistingLocation[]): boolean {
 	const poiName = normalizeName(poi.name);
 	for (const loc of existing) {
 		const locName = normalizeName(loc.name);
@@ -163,7 +164,7 @@ function isExistingDuplicate(poi: StoredPoi, existing: ExistingLocation[]): bool
 }
 
 /** Fetches existing locations whose point falls within `bbox` from D1. */
-async function existingInBbox(db: D1Like, bbox: Bbox): Promise<ExistingLocation[]> {
+export async function existingInBbox(db: D1Like, bbox: Bbox): Promise<ExistingLocation[]> {
 	const { results } = await db
 		.prepare(
 			`SELECT id, name, latitude, longitude FROM locations
@@ -175,10 +176,10 @@ async function existingInBbox(db: D1Like, bbox: Bbox): Promise<ExistingLocation[
 }
 
 function toCandidate(poi: StoredPoi, distance_m?: number): PoiCandidate {
-	// Prefer the POI's own addr:* tags; otherwise recover parts from the single-line
-	// address an enrichment feed (containing building / Overture) gave it, so dropping
-	// the raw single line from the output costs no address coverage.
-	const addressParts = osmOwnAddressParts(poi.tags_json) ?? addressPartsFromLine(poi.address);
+	// The same merged parts create_locations resolves an osm_id import against
+	// (own addr:* tags → enriched line → admin-boundary city/region), so what a
+	// candidate advertises is exactly what an import would store.
+	const addressParts = effectivePoiAddressParts(poi);
 	return {
 		osm_id: poi.osm_id,
 		osm_type: poi.osm_type,
@@ -214,12 +215,16 @@ export async function searchPoi(
 	const excludeExisting = params.exclude_existing ?? true;
 	const limit = Math.min(Math.max(1, params.limit ?? DEFAULT_LIMIT), MAX_LIMIT);
 
-	const rows = store.searchBbox(bbox, {
+	let rows = store.searchBbox(bbox, {
 		category: params.category ?? undefined,
 		name: params.name,
 		cuisine: params.cuisine,
 		cap: SCAN_CAP
 	});
+	if (params.exclude_osm_ids?.length) {
+		const excluded = new Set(params.exclude_osm_ids);
+		rows = rows.filter((poi) => !excluded.has(poi.osm_id));
+	}
 
 	// Attach distance and trim to the exact circle for centre+radius queries.
 	let withDistance: { poi: StoredPoi; distance_m?: number }[];

@@ -64,6 +64,8 @@ function row(over: Partial<PoiRow> & Pick<PoiRow, 'osm_id' | 'latitude' | 'longi
 		website: null,
 		opening_hours: null,
 		diet_markers: [],
+		admin_city: null,
+		admin_region: null,
 		tags_json: '{}',
 		...over
 	};
@@ -298,6 +300,51 @@ test('address_parts is recovered from an enrichment-supplied single-line address
 		city: 'Halifax',
 		region: 'Nova Scotia',
 		postcode: 'B3M 3W8'
+	});
+	store.close();
+});
+
+test('exclude_osm_ids drops candidates before the limit fills', async () => {
+	const store = storeWith([
+		row({ osm_id: 'n1', latitude: 49.2827, longitude: -123.1207, name: 'Keep' }),
+		row({ osm_id: 'n2', latitude: 49.2828, longitude: -123.1207, name: 'Known false match' }),
+		row({ osm_id: 'n3', latitude: 49.2829, longitude: -123.1207, name: 'Also keep' })
+	]);
+	const res = await searchPoi(store, null, {
+		latitude: CENTRE.lat,
+		longitude: CENTRE.lon,
+		radius_km: 1,
+		exclude_existing: false,
+		exclude_osm_ids: ['n2'],
+		limit: 2
+	});
+	// n2 is gone and does NOT count against the limit — both keepers fit.
+	expect(res.candidates.map((c) => c.osm_id)).toEqual(['n1', 'n3']);
+	store.close();
+});
+
+test('admin-boundary city/region fill address_parts when nothing else has them', async () => {
+	const store = storeWith([
+		row({
+			osm_id: 'n1',
+			latitude: 49.2827,
+			longitude: -123.1207,
+			name: 'Kiosk',
+			address: '465 Merecroft Road', // street-only enrichment line
+			admin_city: 'Campbell River',
+			admin_region: 'BC'
+		})
+	]);
+	const res = await searchPoi(store, null, {
+		latitude: CENTRE.lat,
+		longitude: CENTRE.lon,
+		radius_km: 1,
+		exclude_existing: false
+	});
+	expect(res.candidates[0].address_parts).toEqual({
+		street: '465 Merecroft Road',
+		city: 'Campbell River',
+		region: 'BC'
 	});
 	store.close();
 });

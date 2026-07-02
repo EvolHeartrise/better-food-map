@@ -250,21 +250,28 @@ export interface MenuSummary {
 	currency: string;
 	last_verified: string | null;
 	item_count: number;
+	/** OPEN branches currently serving this menu (closed ones are excluded). */
+	location_count: number;
 }
 
 /** Default currency for a menu when none is specified (the Canada-first dataset). */
 export const DEFAULT_CURRENCY = 'CAD';
 
 /**
- * Today's date as an ISO `YYYY-MM-DD` string (UTC). Used as the default
- * {@link Menu.last_verified} when a menu is created without one — every menu must
- * carry a verification date (enforced by the triggers in migration 0012), and a
- * just-created menu is "verified as of now". The app supplies this rather than a
- * SQLite `DEFAULT (date('now'))`, matching the convention of keeping time out of
- * the schema (see migration 0007).
+ * Today's date as an ISO `YYYY-MM-DD` string in the LOCAL timezone. Used as the
+ * default {@link Menu.last_verified} when a menu is created without one — every
+ * menu must carry a verification date (enforced by the triggers in migration
+ * 0012), and a just-created menu is "verified as of now". Local (not UTC) so an
+ * evening write from the MCP server doesn't stamp tomorrow's date; on the Worker
+ * (whose runtime timezone is UTC) the two are identical. The app supplies this
+ * rather than a SQLite `DEFAULT (date('now'))`, matching the convention of
+ * keeping time out of the schema (see migration 0007).
  */
 export function currentVerificationDate(): string {
-	return new Date().toISOString().slice(0, 10);
+	const now = new Date();
+	const month = String(now.getMonth() + 1).padStart(2, '0');
+	const day = String(now.getDate()).padStart(2, '0');
+	return `${now.getFullYear()}-${month}-${day}`;
 }
 
 /**
@@ -448,6 +455,8 @@ export interface LocationListFilter {
 	category?: Category;
 	/** Case-insensitive substring match on the location name (LIKE %query%). */
 	nameLike?: string;
+	/** Only branches of this chain (exact brand_id match). */
+	brandId?: string;
 	limit?: number;
 	offset?: number;
 }
@@ -463,15 +472,17 @@ function escapeLikePattern(value: string): string {
 	return value.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
 
-export async function getLocationsWithTags(
-	db: D1Like,
-	filter: LocationListFilter = {}
-): Promise<LocationWithTags[]> {
-	// bbox/category predicates (bound), shared verbatim by all three reads so the
-	// joined tag/source scans cover exactly the same rows. Aliased to `l` so the
-	// identical condition strings drop into every query.
-	// Closed (soft-deleted) venues are hidden from the list overview (migration 0015);
-	// this literal carries no bind param, so `params` alignment is untouched.
+/**
+ * Builds the WHERE predicates (aliased to `l`) + bind params for a
+ * {@link LocationListFilter}. Closed (soft-deleted) venues are always excluded
+ * (migration 0015); that literal carries no bind param, so `params` alignment is
+ * untouched. Shared by {@link getLocationsWithTags} and {@link countLocations}
+ * so a list and its count always agree on which rows qualify.
+ */
+function locationFilterConds(filter: LocationListFilter): {
+	conds: string[];
+	params: (string | number)[];
+} {
 	const conds: string[] = ['l.closed_at IS NULL'];
 	const params: (string | number)[] = [];
 	if (filter.bbox) {
@@ -486,6 +497,30 @@ export async function getLocationsWithTags(
 		conds.push("l.name LIKE ? ESCAPE '\\'");
 		params.push(`%${escapeLikePattern(filter.nameLike.trim())}%`);
 	}
+	if (filter.brandId) {
+		conds.push('l.brand_id = ?');
+		params.push(filter.brandId);
+	}
+	return { conds, params };
+}
+
+/** How many OPEN locations match `filter` — the cheap companion to a paged list. */
+export async function countLocations(db: D1Like, filter: LocationListFilter = {}): Promise<number> {
+	const { conds, params } = locationFilterConds(filter);
+	const row = await db
+		.prepare(`SELECT COUNT(*) AS n FROM locations l WHERE ${conds.join(' AND ')}`)
+		.bind(...params)
+		.first<{ n: number }>();
+	return row?.n ?? 0;
+}
+
+export async function getLocationsWithTags(
+	db: D1Like,
+	filter: LocationListFilter = {}
+): Promise<LocationWithTags[]> {
+	// bbox/category predicates (bound), shared verbatim by all three reads so the
+	// joined tag/source scans cover exactly the same rows.
+	const { conds, params } = locationFilterConds(filter);
 	const whereSql = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
 	const tagExtra = conds.length ? ` AND ${conds.join(' AND ')}` : '';
 	// LIMIT/OFFSET are trusted integers → interpolated (matching MAP_RESULT_LIMIT),
@@ -602,6 +637,25 @@ export async function existingLocationsAtCoords(
 		if (!out.has(key)) out.set(key, { id: r.id, name: r.name });
 	}
 	return out;
+}
+
+/**
+ * Every OPEN location whose point falls inside `bbox`, as the minimal shape the
+ * proximity checks need (near-duplicate warnings on create, the duplicate audit).
+ * Callers refine by exact distance/name — this is just the indexed box read.
+ */
+export async function openLocationsInBbox(
+	db: D1Like,
+	bbox: Bounds
+): Promise<{ id: string; name: string; latitude: number; longitude: number }[]> {
+	const { results } = await db
+		.prepare(
+			`SELECT id, name, latitude, longitude FROM locations
+			 WHERE closed_at IS NULL AND latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ?`
+		)
+		.bind(bbox.minLat, bbox.maxLat, bbox.minLng, bbox.maxLng)
+		.all<{ id: string; name: string; latitude: number; longitude: number }>();
+	return results;
 }
 
 // --- Viewport grid downsampling -------------------------------------------
@@ -1844,9 +1898,16 @@ const MENU_FIELDS = `id, brand_id, name, region, currency, last_verified`;
  * venue menus (brand_id NULL) are an implementation detail and excluded.
  */
 export async function getMenus(db: D1Like, brandId?: string): Promise<MenuSummary[]> {
+	// location_count = OPEN branches serving the menu, so an audit can see each
+	// menu's live footprint without paging list_locations (closed branches keep
+	// their menu_id but are off the map — counting them would overstate coverage).
 	const sql =
-		`SELECT m.id, m.brand_id, m.name, m.region, m.currency, m.last_verified, COUNT(i.id) AS item_count
-		 FROM menus m LEFT JOIN items i ON i.menu_id = m.id` +
+		`SELECT m.id, m.brand_id, m.name, m.region, m.currency, m.last_verified,
+			COUNT(DISTINCT i.id) AS item_count,
+			COUNT(DISTINCT l.id) AS location_count
+		 FROM menus m
+		 LEFT JOIN items i ON i.menu_id = m.id
+		 LEFT JOIN locations l ON l.menu_id = m.id AND l.closed_at IS NULL` +
 		(brandId ? ` WHERE m.brand_id = ?` : ` WHERE m.brand_id IS NOT NULL`) +
 		` GROUP BY m.id ORDER BY m.name`;
 	const stmt = brandId ? db.prepare(sql).bind(brandId) : db.prepare(sql);

@@ -38,6 +38,14 @@ export interface StoredPoi {
 	 * external feed, to be cited as a distinct source when backfilling.
 	 */
 	address_source: string | null;
+	/**
+	 * Municipality this POI sits in, from a point-in-polygon join against OSM
+	 * admin boundaries at extract time (see osm/enrich-admin.ts) — the "OSM admin
+	 * context" fallback for POIs whose own tags/enrichment carry no city.
+	 */
+	admin_city: string | null;
+	/** Province/state from the same admin-boundary join (2-letter code when resolvable). */
+	admin_region: string | null;
 	diet_markers: string[];
 	/** Full original OSM tag set, JSON-encoded — the source of the POI's own `addr:*` parts. */
 	tags_json: string;
@@ -73,6 +81,8 @@ CREATE TABLE IF NOT EXISTS osm_poi (
 	diet_markers TEXT NOT NULL DEFAULT '[]',
 	tags_json TEXT NOT NULL DEFAULT '{}',
 	address_source TEXT,
+	admin_city TEXT,
+	admin_region TEXT,
 	region TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_osm_poi_lat ON osm_poi (latitude);
@@ -99,7 +109,11 @@ export class OsmPoiStore {
 		// CREATE TABLE IF NOT EXISTS above won't add columns to an existing table.
 		// `ALTER TABLE ADD COLUMN` throws "duplicate column name" once applied, which
 		// we ignore — making this idempotent across re-opens.
-		for (const ddl of ['ALTER TABLE osm_poi ADD COLUMN address_source TEXT']) {
+		for (const ddl of [
+			'ALTER TABLE osm_poi ADD COLUMN address_source TEXT',
+			'ALTER TABLE osm_poi ADD COLUMN admin_city TEXT',
+			'ALTER TABLE osm_poi ADD COLUMN admin_region TEXT'
+		]) {
 			try {
 				db.run(ddl);
 			} catch {
@@ -130,9 +144,11 @@ export class OsmPoiStore {
 		const insert = this.db.prepare(
 			`INSERT OR REPLACE INTO osm_poi
 				(osm_id, osm_type, numeric_id, name, osm_class, suggested_category, cuisine,
-				 latitude, longitude, address, phone, website, opening_hours, diet_markers, tags_json, region)
+				 latitude, longitude, address, phone, website, opening_hours, diet_markers, tags_json,
+				 admin_city, admin_region, region)
 			 VALUES ($osm_id, $osm_type, $numeric_id, $name, $osm_class, $suggested_category, $cuisine,
-				 $latitude, $longitude, $address, $phone, $website, $opening_hours, $diet_markers, $tags_json, $region)`
+				 $latitude, $longitude, $address, $phone, $website, $opening_hours, $diet_markers, $tags_json,
+				 $admin_city, $admin_region, $region)`
 		);
 		const run = this.db.transaction((items: Iterable<PoiRow>) => {
 			let n = 0;
@@ -153,6 +169,8 @@ export class OsmPoiStore {
 					$opening_hours: r.opening_hours,
 					$diet_markers: JSON.stringify(r.diet_markers ?? []),
 					$tags_json: r.tags_json,
+					$admin_city: r.admin_city,
+					$admin_region: r.admin_region,
 					$region: region
 				});
 				n++;
@@ -255,7 +273,8 @@ export class OsmPoiStore {
 		const rows = this.db
 			.query(
 				`SELECT osm_id, osm_type, numeric_id, name, osm_class, suggested_category, cuisine,
-					latitude, longitude, address, phone, website, opening_hours, address_source, diet_markers, tags_json, region
+					latitude, longitude, address, phone, website, opening_hours, address_source,
+					admin_city, admin_region, diet_markers, tags_json, region
 				 FROM osm_poi
 				 WHERE ${where.join(' AND ')}
 				 LIMIT ?`
@@ -275,7 +294,8 @@ export class OsmPoiStore {
 		const row = this.db
 			.query(
 				`SELECT osm_id, osm_type, numeric_id, name, osm_class, suggested_category, cuisine,
-					latitude, longitude, address, phone, website, opening_hours, address_source, diet_markers, tags_json, region
+					latitude, longitude, address, phone, website, opening_hours, address_source,
+					admin_city, admin_region, diet_markers, tags_json, region
 				 FROM osm_poi WHERE osm_id = ?`
 			)
 			.get(osmId) as RawStoredRow | null;
