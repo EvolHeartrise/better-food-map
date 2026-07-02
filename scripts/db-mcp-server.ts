@@ -598,40 +598,47 @@ const createLocationsArgs = v.object({
 
 // One location patch within an update_locations batch. Every field but `id` is
 // optional; only the fields present are changed.
-const updateLocationItemArgs = v.object({
-	id: v.pipe(v.string(), v.minLength(1), v.description('Id of the location to update.')),
-	name: v.optional(
-		v.pipe(v.string(), v.minLength(1), v.description(`Replace the name. ${NAME_DESC}`))
-	),
-	category: v.optional(v.nullable(categorySchema)),
-	latitude: v.optional(latitudeSchema),
-	longitude: v.optional(longitudeSchema),
-	street: v.optional(v.pipe(streetSchema, v.description(`Replace the street. ${STREET_DESC}`))),
-	city: v.optional(v.pipe(citySchema, v.description(`Replace the city. ${CITY_DESC}`))),
-	region: v.optional(v.pipe(regionSchema, v.description(`Replace the region. ${REGION_DESC}`))),
-	postcode: v.optional(v.nullable(v.pipe(postcodeSchema, v.description(POSTCODE_DESC)))),
-	country: v.optional(
-		v.pipe(countryPartSchema, v.description(`Replace the country. ${COUNTRY_DESC}`))
-	),
-	phone: v.optional(v.nullable(v.string())),
-	website: v.optional(v.nullable(v.string())),
-	brand_id: v.optional(
-		v.nullable(
-			v.pipe(v.string(), v.minLength(1), v.description('Reassign to a chain; null detaches it.'))
-		)
-	),
-	menu_id: v.optional(
-		v.nullable(
-			v.pipe(
-				v.string(),
-				v.minLength(1),
-				v.description('Assign/replace the shared menu this branch serves; null detaches it.')
+const updateLocationItemArgs = v.pipe(
+	v.object({
+		id: v.pipe(v.string(), v.minLength(1), v.description('Id of the location to update.')),
+		name: v.optional(
+			v.pipe(v.string(), v.minLength(1), v.description(`Replace the name. ${NAME_DESC}`))
+		),
+		category: v.optional(v.nullable(categorySchema)),
+		latitude: v.optional(latitudeSchema),
+		longitude: v.optional(longitudeSchema),
+		street: v.optional(v.pipe(streetSchema, v.description(`Replace the street. ${STREET_DESC}`))),
+		city: v.optional(v.pipe(citySchema, v.description(`Replace the city. ${CITY_DESC}`))),
+		region: v.optional(v.pipe(regionSchema, v.description(`Replace the region. ${REGION_DESC}`))),
+		postcode: v.optional(v.nullable(v.pipe(postcodeSchema, v.description(POSTCODE_DESC)))),
+		country: v.optional(
+			v.pipe(countryPartSchema, v.description(`Replace the country. ${COUNTRY_DESC}`))
+		),
+		phone: v.optional(v.nullable(v.string())),
+		website: v.optional(v.nullable(v.string())),
+		brand_id: v.optional(
+			v.nullable(
+				v.pipe(v.string(), v.minLength(1), v.description('Reassign to a chain; null detaches it.'))
 			)
-		)
-	),
-	sources: updateSourcesSchema,
-	add_sources: addSourcesSchema
-});
+		),
+		menu_id: v.optional(
+			v.nullable(
+				v.pipe(
+					v.string(),
+					v.minLength(1),
+					v.description('Assign/replace the shared menu this branch serves; null detaches it.')
+				)
+			)
+		),
+		sources: updateSourcesSchema,
+		add_sources: addSourcesSchema
+	}),
+	v.check(
+		(p) => (p.latitude === undefined) === (p.longitude === undefined),
+		'Pass `latitude` and `longitude` together (copied verbatim from the OSM POI) or neither — ' +
+			'a single-axis patch would move the venue to a point no OSM POI occupies.'
+	)
+);
 
 const updateLocationsArgs = v.object({
 	items: v.pipe(
