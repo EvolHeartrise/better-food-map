@@ -173,6 +173,82 @@ test('getMapData sends each menu once, with per-branch overrides and a private m
 	expect(missing.menus).toEqual({});
 });
 
+// The viewport payload is LEAN (#83): the map UI renders only item names (plus
+// tags for the client diet re-filter), so the bulk reads (getMapData, and
+// getSearchMapData via the same path) must not ship description/price/sources —
+// only the by-id detail read (getLocationMapData, behind the open venue's panel)
+// carries the full item shape, its sources merged with the menu-level sources.
+test('viewport items are lean; the by-id detail read keeps the full shape', async () => {
+	const db = freshDb();
+
+	const brandId = await insertBrand(db, { name: 'Pita Pit', website: null, logo_url: null });
+	const menuId = await insertMenu(db, {
+		brand_id: brandId,
+		name: 'Pita Pit Canada',
+		region: 'CA',
+		sources: [{ url: 'https://pitapit.ca/menu', label: 'Menu' }]
+	});
+	await insertMenuItems(db, [
+		{
+			menu_id: menuId,
+			item_name: 'Falafel Pita',
+			description: 'Chickpea falafel with veg',
+			price: 9,
+			tags: ['vegan'],
+			sources: [{ url: 'https://pitapit.ca/menu/falafel', label: 'Item page' }]
+		}
+	]);
+	const [branch] = await insertLocations(db, [
+		{
+			name: 'Pita Pit Downtown',
+			category: 'fast_food',
+			latitude: 43.6,
+			longitude: -79.4,
+			street: '1 Test St',
+			city: 'Toronto',
+			region: 'ON',
+			postcode: 'M5V 2T6',
+			country: 'CA',
+			phone: null,
+			website: null,
+			brand_id: brandId,
+			menu_id: menuId
+		}
+	]);
+
+	// The viewport read: lean items — name + tags only, none of the detail fields.
+	const viewport = await getMapData(db, { minLat: 43, maxLat: 44, minLng: -80, maxLng: -79 });
+	expect(viewport.locations.map((l) => l.id)).toEqual([branch]);
+	const leanItem = viewport.menus[menuId][0];
+	expect(leanItem.item_name).toBe('Falafel Pita');
+	expect(leanItem.tags.map((t) => t.id)).toEqual(['vegan']);
+	expect('description' in leanItem).toBe(false);
+	expect('price' in leanItem).toBe(false);
+	expect('sources' in leanItem).toBe(false);
+	// Menu freshness metadata still travels with the lean payload.
+	expect(viewport.menuMeta[menuId].last_verified).not.toBeNull();
+
+	// The search read shares the lean shape.
+	const search = await getSearchMapData(db, {
+		query: 'falafel',
+		dietTagId: null,
+		lat: 43.6,
+		lng: -79.4
+	});
+	expect('price' in search.menus[menuId][0]).toBe(false);
+
+	// The by-id detail read: the full item, its own source first, menu source appended.
+	const detail = await getLocationMapData(db, branch);
+	const fullItem = detail.menus[menuId][0];
+	expect(fullItem.description).toBe('Chickpea falafel with veg');
+	expect(fullItem.price).toBe(9);
+	expect(fullItem.currency).toBe('CAD');
+	expect(fullItem.sources.map((s) => s.url)).toEqual([
+		'https://pitapit.ca/menu/falafel',
+		'https://pitapit.ca/menu'
+	]);
+});
+
 // A wide (zoomed-out) viewport is spatially downsampled: the box is tiled into a grid
 // and only ONE representative per cell is returned, so the map ships a uniform spread
 // rather than thousands of rows it can't legibly draw. The representative is the most
