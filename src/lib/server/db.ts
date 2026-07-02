@@ -1076,8 +1076,11 @@ export async function getLocationById(db: D1Like, id: string): Promise<Location 
  * the page last meaningfully changed (NULL for a venue without a menu yet).
  * Closed (soft-deleted) venues are excluded: their pages are hidden from the
  * map (migration 0015), so listing them would only hand crawlers soft-404s.
- * LIMIT 50000 is the sitemap protocol's per-file URL cap — growing past it
- * means sharding this read behind a sitemap index file, not raising the cap.
+ * LIMIT 250000 is a Worker-memory bound, not a protocol one: the sitemap
+ * index (src/routes/sitemap.xml) pages past the protocol's 50k-per-file cap,
+ * but sitemap-cache.ts holds the whole result as one in-memory array — at
+ * ~150 B per entry that's tens of MB at this cap. Growing past it means
+ * per-page keyset-paginated reads instead of one cached full read.
  */
 export async function getSitemapEntries(
 	db: D1Like
@@ -1088,7 +1091,7 @@ export async function getSitemapEntries(
 			 FROM locations l LEFT JOIN menus m ON m.id = l.menu_id
 			 WHERE l.closed_at IS NULL
 			 ORDER BY l.id
-			 LIMIT 50000`
+			 LIMIT 250000`
 		)
 		.all<{ id: string; last_verified: string | null }>();
 	return results;
