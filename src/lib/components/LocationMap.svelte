@@ -1,6 +1,6 @@
 <script lang="ts">
 	import 'maplibre-gl/dist/maplibre-gl.css';
-	import { onMount, type Snippet } from 'svelte';
+	import { onMount } from 'svelte';
 	import type { Map as MapLibreMap, StyleSpecification } from 'maplibre-gl';
 	import {
 		LabelEngine,
@@ -43,10 +43,16 @@
 		// Called with a location id when the user clicks a name label, so the parent
 		// can open that location (selecting it).
 		onselect,
-		// The selected venue's detail card. Rendered as an overlay element the map
-		// keeps positioned at the venue's projected point; the parent supplies the
-		// content (and all its app state) via this snippet.
-		detailCard,
+		// Called when the user clicks bare map (no label under the pointer), so the
+		// parent can close an open location. Fires on every bare click; the parent
+		// decides whether anything is open to close.
+		ondeselect,
+		// The screen space the parent's detail panel covers while a location is open,
+		// as pixel insets from the right/bottom edges. Applied as camera padding: the
+		// fly on selection centres the venue in the REMAINING (visible) map area, and
+		// clearing the selection eases the padding back out so the venue re-centres in
+		// the full viewport as the panel leaves. Null when nothing is open.
+		detailInset = null,
 		// Where the map opens, as `[lat, lng]`. Falls back to DEFAULT_CENTER when absent.
 		// The camera otherwise only moves when the user pans/zooms or selects a place —
 		// search/filter changes never move it.
@@ -71,7 +77,8 @@
 		locations: Location[];
 		selected?: Location | null;
 		onselect?: (id: string) => void;
-		detailCard?: Snippet;
+		ondeselect?: () => void;
+		detailInset?: { right: number; bottom: number } | null;
 		initialCenter?: [number, number] | null;
 		initialZoom?: number | null;
 		onzoom?: (zoom: number) => void;
@@ -164,11 +171,6 @@
 	// staggers WHICH item each shows so they don't all display the same position.
 	const ROTATE_INTERVAL_MS = 3000;
 
-	// Where the detail card sits relative to the selected venue's point: up and to
-	// the right, clamped to the viewport (see positionDetailCard).
-	const DETAIL_OFFSET_X = 16;
-	const DETAIL_OFFSET_Y = 12;
-
 	// Inflate each pill's clickable/hover box by this many px so a small pill stays a
 	// comfortable tap target (the pills themselves are pointer-transparent; this is
 	// the slop used by the map-level hit-test).
@@ -186,9 +188,6 @@
 	const SIM_MAX_SETTLE_FRAMES = 240;
 
 	let mapEl: HTMLDivElement;
-	// The overlay element wrapping the detail-card snippet; the frame loop writes its
-	// transform to keep it pinned to the selected venue's point.
-	let detailCardEl = $state<HTMLDivElement | undefined>();
 
 	// MapLibre's JS is imported dynamically inside onMount (client-only) because it
 	// touches `window` at module load; the types are erased at compile time so
@@ -227,7 +226,7 @@
 	let settleFrames = 0;
 	let lastDeclutter = 0;
 	// The overlay's CSS size, tracked from the map container so the layout knows which
-	// labels are on screen and the detail card can be clamped to it.
+	// labels are on screen and the camera padding can be clamped to it.
 	let overlayWidth = 0;
 	let overlayHeight = 0;
 
@@ -390,23 +389,6 @@
 		return maxMovement;
 	}
 
-	// Keep the detail card pinned to the selected venue's projected point (the stable
-	// geographic anchor, not the jittering name pill), offset up-and-right and clamped
-	// to stay on screen. A no-op when nothing is selected or the card isn't mounted.
-	function positionDetailCard(project: Projector) {
-		const el = detailCardEl;
-		if (!el || !selected) return;
-		const p = project(selected.longitude, selected.latitude);
-		const cw = el.offsetWidth;
-		const ch = el.offsetHeight;
-		const margin = 10;
-		let left = p.x + DETAIL_OFFSET_X;
-		let top = p.y - ch - DETAIL_OFFSET_Y;
-		left = Math.max(margin, Math.min(left, overlayWidth - cw - margin));
-		top = Math.max(margin, Math.min(top, overlayHeight - ch - margin));
-		el.style.transform = `translate(${left}px, ${top}px)`;
-	}
-
 	// Start (or restart) the rAF loop if it isn't already running. Called on load and
 	// whenever something that needs re-laying-out happens — a camera move/resize or a
 	// data/selection change — so the loop only spins while there's work to do.
@@ -420,7 +402,7 @@
 	}
 
 	// One animation frame: refresh anchors from the live projection, advance the
-	// force model, write each pill's transform, and keep the detail card on its venue.
+	// force model, and write each pill's transform.
 	// The loop keeps going only while the camera is moving or the pills are still
 	// settling; once everything is at rest it parks itself (see `wake`), so an idle map
 	// costs nothing per frame.
@@ -461,8 +443,6 @@
 			const names = engine.tick(project, SIM_CONFIG);
 			// Write each pill's transform; keep going while any is still moving enough to see.
 			if (writeTransforms(names) > SETTLE_KE_EPS) simMoving = true;
-
-			positionDetailCard(project);
 		}
 
 		// Settle backstop: count consecutive frames the camera is still but the sim is
@@ -480,13 +460,29 @@
 		}
 	}
 
-	// Smoothly zoom in on the selected location. Its pill is force-kept visible
+	// The camera padding for the current detail inset. MapLibre treats padding as part
+	// of the camera state (it persists until changed), so the padded centre — where a
+	// selected venue is placed — is the middle of the map area the panel leaves
+	// visible. Clamped so a panel covering most of a small screen can't squeeze the
+	// usable viewport away entirely.
+	function cameraPadding(): { top: number; bottom: number; left: number; right: number } {
+		return {
+			top: 0,
+			left: 0,
+			right: Math.min(detailInset?.right ?? 0, overlayWidth * 0.7),
+			bottom: Math.min(detailInset?.bottom ?? 0, overlayHeight * 0.7)
+		};
+	}
+
+	// Smoothly zoom in on the selected location, centred within the map area the
+	// detail panel leaves visible (see cameraPadding). Its pill is force-kept visible
 	// (Infinity priority) and highlighted via the render flag.
 	function flyToSelected() {
 		if (!map || !selected) return;
 		map.flyTo({
 			center: [selected.longitude, selected.latitude],
 			zoom: SELECTED_ZOOM,
+			padding: cameraPadding(),
 			duration: FLY_DURATION_MS
 		});
 	}
@@ -555,10 +551,12 @@
 			// selection and the hover cursor can't come from DOM events on the pills, so we
 			// resolve them here by hit-testing the click/hover point against the pill boxes
 			// the engine is laying out. A tap anywhere on a venue's label — its name or the
-			// rotating food-item line beneath it — selects that venue.
+			// rotating food-item line beneath it — selects that venue; a tap on bare map
+			// reports a deselect so the parent can close an open location.
 			map.on('click', (e) => {
 				const id = engine.hitTest(e.point.x, e.point.y, HIT_SLOP);
 				if (id) onselect?.(id);
+				else ondeselect?.();
 			});
 			map.on('mousemove', (e) => {
 				const m = map;
@@ -621,22 +619,24 @@
 		wake();
 	});
 
-	// Place the detail card the moment it mounts (or the selection changes), so it
-	// doesn't flash at (0,0) for a frame before the loop repositions it.
-	$effect(() => {
-		const m = map;
-		if (!ready || !m || !detailCardEl || !selected) return;
-		positionDetailCard((lng, lat) => m.project([lng, lat]));
-	});
-
 	// Centre on a newly-selected location. Guarded by `lastSelectedId` so a data
 	// re-sync (e.g. data refetched after the fly's own move) doesn't re-trigger it —
-	// only an actual change of selection flies the camera. Wakes the loop so the new
-	// pill's highlight repaints even if the camera doesn't move.
+	// only an actual change of selection flies the camera. Clearing the selection
+	// eases the camera padding back out: the geographic centre is kept, so the venue
+	// glides from the panel-inset centre to the middle of the full viewport as the
+	// panel leaves. Wakes the loop so the new pill's highlight repaints even if the
+	// camera doesn't move.
 	$effect(() => {
 		if (!ready) return;
 		const id = selected?.id ?? null;
-		if (id && id !== lastSelectedId) flyToSelected();
+		if (id && id !== lastSelectedId) {
+			flyToSelected();
+		} else if (!id && lastSelectedId) {
+			map?.easeTo({
+				padding: { top: 0, bottom: 0, left: 0, right: 0 },
+				duration: FLY_DURATION_MS
+			});
+		}
 		lastSelectedId = id;
 		wake();
 	});
@@ -696,15 +696,6 @@
 			</div>
 		{/each}
 	</div>
-
-	<!-- The selected venue's detail card, kept positioned at its point by the frame
-	     loop. Sits outside `.labels` so it isn't clipped, and opts back into pointer
-	     events so its links/buttons work. -->
-	{#if selected && detailCard}
-		<div class="detail-card" bind:this={detailCardEl}>
-			{@render detailCard()}
-		</div>
-	{/if}
 </div>
 
 <style>
@@ -821,18 +812,6 @@
 
 	.pill--selected .pill__more {
 		color: rgba(255, 255, 255, 0.7);
-	}
-
-	/* The selected venue's detail card. The wrapper only positions it (the frame loop
-	   writes its transform) and re-enables pointer events; its surface styling is
-	   supplied by the page through the snippet. */
-	.detail-card {
-		position: absolute;
-		top: 0;
-		left: 0;
-		z-index: 3;
-		pointer-events: auto;
-		will-change: transform;
 	}
 
 	/* Keep the zoom control and attribution clear of notches and the home indicator
