@@ -14,16 +14,39 @@ import {
 } from '$lib/server/db';
 
 /**
+ * Latitude/longitude schemas shared by the viewport and search-anchor inputs.
+ * `v.finite()` rejects `NaN` AND `±Infinity` (plain `v.number()` lets Infinity
+ * through), so a malformed coordinate can't reach a D1 range query.
+ *
+ * Latitude is bounded to [-90, 90]: `currentView()` (LocationMap.svelte) clamps
+ * it there even after padding. Longitude is deliberately NOT bounded to
+ * [-180, 180] — `currentView()` pads the visible box by 20% per side and leaves
+ * longitude unclamped, and MapLibre's `getBounds()` reports unwrapped longitudes
+ * beyond ±180 on a zoomed-out globe or an antimeridian-spanning view (the search
+ * anchor, a padded-viewport midpoint, inherits the same range). [-540, 540]
+ * covers any view the client can produce while still capping hostile input; do
+ * not "fix" it to ±180 or world-zoom fetches and searches start 400ing.
+ */
+const LatitudeSchema = v.pipe(v.number(), v.finite(), v.minValue(-90), v.maxValue(90));
+const LongitudeSchema = v.pipe(v.number(), v.finite(), v.minValue(-540), v.maxValue(540));
+
+/**
  * A map viewport (bounding box) the client asks for data within. Validated
  * because `getLocations` is exposed as an HTTP endpoint — the argument arrives
- * untrusted. `v.number()` rejects `NaN`, so a malformed box can't slip through.
+ * untrusted. Ordering is checked too: `currentView()` always emits min <= max
+ * (MapLibre's `getBounds()` guarantees south <= north and west <= east, padding
+ * is >= 0, and the lat clamp preserves the order), so an inverted box can only
+ * be forged input, never a real view.
  */
-const BoundsSchema = v.object({
-	minLat: v.number(),
-	maxLat: v.number(),
-	minLng: v.number(),
-	maxLng: v.number()
-});
+const BoundsSchema = v.pipe(
+	v.object({
+		minLat: LatitudeSchema,
+		maxLat: LatitudeSchema,
+		minLng: LongitudeSchema,
+		maxLng: LongitudeSchema
+	}),
+	v.check((b) => b.minLat <= b.maxLat && b.minLng <= b.maxLng, 'Inverted bounds')
+);
 
 /**
  * Returns everything the map page needs for the given viewport (see
@@ -47,10 +70,14 @@ export const getLocations = query(BoundsSchema, async (bounds): Promise<MapData>
  * {@link getLocations}. Backs the detail view when the open location isn't in the
  * current viewport — a shared `/locations/<id>` link, or one panned off screen —
  * so it always resolves. Yields an empty payload if no location has that id.
+ * Ids are UUIDs or short slugs; the length cap only rejects hostile payloads.
  */
-export const getLocationData = query(v.string(), async (id): Promise<MapData> => {
-	return getLocationMapData(db(), id);
-});
+export const getLocationData = query(
+	v.pipe(v.string(), v.maxLength(128)),
+	async (id): Promise<MapData> => {
+		return getLocationMapData(db(), id);
+	}
+);
 
 /**
  * A GLOBAL menu search, anchored to the current map centre. Whereas
@@ -60,13 +87,16 @@ export const getLocationData = query(v.string(), async (id): Promise<MapData> =>
  * only what's on screen. `query` is one combined free-text term matched against the
  * venue name OR its item names; the `dietTagId` selector narrows it further. Both
  * mirror the client's own filtering; see {@link getSearchMapData}. Validated
- * because, like every remote query, the argument arrives untrusted over HTTP.
+ * because, like every remote query, the argument arrives untrusted over HTTP:
+ * the length caps bound what reaches the FTS index (200 far exceeds any real
+ * search term; diet tag ids are short fixed tokens), and the anchor reuses the
+ * coordinate schemas — see their comment for why `lng` stays loose.
  */
 const SearchQuerySchema = v.object({
-	query: v.string(),
-	dietTagId: v.nullable(v.string()),
-	lat: v.number(),
-	lng: v.number()
+	query: v.pipe(v.string(), v.maxLength(200)),
+	dietTagId: v.nullable(v.pipe(v.string(), v.maxLength(64))),
+	lat: LatitudeSchema,
+	lng: LongitudeSchema
 });
 
 export const searchLocations = query(SearchQuerySchema, async (q): Promise<MapData> => {
