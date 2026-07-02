@@ -5,7 +5,8 @@
 // D1. Imported by the db-layer test files; not a test file itself.
 
 import { Database } from 'bun:sqlite';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import type { D1Like, D1PreparedLike } from '../src/lib/server/db';
 
 class TestStmt implements D1PreparedLike {
@@ -55,28 +56,14 @@ export class TestD1 implements D1Like {
 	}
 }
 
-/** A fresh in-memory database with both migrations applied. */
+/** A fresh in-memory database with every migration in migrations/ applied. */
 export function freshDb(): TestD1 {
 	const db = new Database(':memory:');
 	// Match production D1, which enforces foreign keys by default — otherwise the
 	// ON DELETE CASCADE behavior migrations advertise is never exercised in tests.
 	db.exec('PRAGMA foreign_keys = ON;');
-	db.exec(readFileSync('migrations/0001_init.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0002_chains.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0003_location_coords_index.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0004_unify_items_and_tags.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0005_require_address.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0006_tag_search_index.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0007_users_likes_searches.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0008_location_address_parts.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0009_require_address_parts.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0010_ingredient_aliases.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0011_menu_currency.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0013_user_dietary_profile.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0014_remove_ingredient_tags.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0015_location_closed.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0016_search_fts.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0018_location_pair_reviews.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0019_menu_refresh_notes.sql', 'utf8'));
+	for (const f of readdirSync('migrations').toSorted()) {
+		if (f.endsWith('.sql')) db.exec(readFileSync(join('migrations', f), 'utf8'));
+	}
 	return new TestD1(db);
 }
