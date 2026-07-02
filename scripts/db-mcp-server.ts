@@ -2409,6 +2409,9 @@ const osmTools = [
 			"(the POI's own OSM tags, enrichment feeds, and admin-boundary city/region merged — exactly " +
 			'what an import stores). Pass `compact: true` for large sweeps (minimal shape, fits 200 ' +
 			'candidates well under output caps) and `exclude_osm_ids` to silence known false matches. ' +
+			'If `scan_truncated` is true the box exceeded the internal scan cap: `total_in_area` is only a ' +
+			'lower bound and re-sweeping the same box will NOT surface the uncounted POIs — narrow the bbox ' +
+			'or lower radius_km until it clears. ' +
 			"Workflow: call this, then pass each candidate's `osm_id` to create_locations to import it " +
 			'(coordinates + address come from OSM verbatim, auto-cited) — or, for a chain, use ' +
 			'import_chain to do the whole loop in one call.',

@@ -198,8 +198,44 @@ test('bbox query path works and respects limit + truncated flag', async () => {
 	});
 	expect(res.candidates.length).toBe(2);
 	expect(res.truncated).toBe(true);
+	// The 5-row store is nowhere near the scan cap.
+	expect(res.scan_truncated).toBe(false);
 	// bbox query has no centre, so no distance is attached
 	expect(res.candidates[0].distance_m).toBeUndefined();
+	store.close();
+});
+
+test('scan_truncated reports a saturated scan even when exclusions empty the results', async () => {
+	const rows = Array.from({ length: 4 }, (_, i) =>
+		row({ osm_id: `n${i}`, latitude: 49.28 + i * 0.0001, longitude: -123.12, name: `Spot ${i}` })
+	);
+	const store = storeWith(rows);
+	const bbox = { minLat: 49.2, maxLat: 49.3, minLng: -123.2, maxLng: -123.0 };
+
+	// Cap of 3 < 4 rows in the box: the scan is truncated regardless of filters.
+	const res = await searchPoi(store, null, {
+		bbox,
+		exclude_existing: false,
+		scanCap: 3
+	});
+	expect(res.scan_truncated).toBe(true);
+	expect(res.total_in_area).toBe(3); // pinned at the cap — a lower bound
+
+	// The fill-the-map failure mode: everything scanned is excluded, yet the box
+	// is NOT exhausted — scan_truncated must still say so while truncated is false.
+	const excluded = await searchPoi(store, null, {
+		bbox,
+		exclude_existing: false,
+		exclude_osm_ids: ['n0', 'n1', 'n2', 'n3'],
+		scanCap: 3
+	});
+	expect(excluded.candidates.length).toBe(0);
+	expect(excluded.truncated).toBe(false);
+	expect(excluded.scan_truncated).toBe(true);
+
+	// With the cap clear of the row count, the flag stays off.
+	const clear = await searchPoi(store, null, { bbox, exclude_existing: false, scanCap: 10 });
+	expect(clear.scan_truncated).toBe(false);
 	store.close();
 });
 
