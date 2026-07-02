@@ -20,7 +20,9 @@ declare global {
 		 * in wrangler.jsonc; it is present in production and emulated locally by
 		 * the Cloudflare adapter during `vite dev`. `GOOGLE_CLIENT_ID` /
 		 * `GOOGLE_CLIENT_SECRET` are the Google OAuth credentials, supplied as
-		 * Worker secrets in production and via `.dev.vars` in local dev.
+		 * Worker secrets in production and via `.dev.vars` in local dev. `ctx` is
+		 * the Worker's ExecutionContext, whose `waitUntil` lets the auth hook run
+		 * the expired-session purge past the response.
 		 */
 		interface Platform {
 			env: {

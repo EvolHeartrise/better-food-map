@@ -6,6 +6,7 @@ import {
 	setSessionCookie,
 	validateSessionToken
 } from '$lib/server/auth';
+import { deleteExpiredSessions } from '$lib/server/db';
 
 // betterfoodmaps.com is the canonical domain. The legacy bare domain
 // betterfoodmap.com is also routed to this Worker (see wrangler.jsonc) purely so
@@ -35,6 +36,16 @@ const authenticate: Handle = async ({ event, resolve }) => {
 	const db = event.platform?.env?.DB;
 	event.locals.user = null;
 	event.locals.session = null;
+
+	// Opportunistically sweep expired session rows on ~1% of requests, in the
+	// background via waitUntil so it adds zero request latency. validateSessionToken
+	// only deletes an expired row when that same cookie returns, so sessions of
+	// users who never come back would pile up forever. Sampling ties the purge
+	// cadence to traffic, and the table is small enough that occasional passes
+	// suffice. Errors are swallowed — a failed purge must never affect the request.
+	if (db && Math.random() < 0.01) {
+		event.platform?.ctx?.waitUntil(deleteExpiredSessions(db, Date.now()).catch(() => {}));
+	}
 
 	if (token && db) {
 		const result = await validateSessionToken(db, token);
