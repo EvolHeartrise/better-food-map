@@ -597,10 +597,12 @@ export async function existingIds(
 	// runtime (the TS union is erased and can't stop a future dynamic caller).
 	if (!EXISTING_IDS_TABLES.has(table)) throw new Error(`existingIds: invalid table "${table}".`);
 	if (ids.length === 0) return new Set();
-	const placeholders = ids.map(() => '?').join(', ');
+	// One JSON-array bind expanded with json_each, never an `IN (?, …)` list: the MCP
+	// create tools batch well past D1's ~100 per-query bound-parameter limit (an
+	// exhaustive create_items menu can carry hundreds of explicit ids).
 	const { results } = await db
-		.prepare(`SELECT id FROM ${table} WHERE id IN (${placeholders})`)
-		.bind(...ids)
+		.prepare(`SELECT id FROM ${table} WHERE id IN (SELECT value FROM json_each(?))`)
+		.bind(JSON.stringify(ids))
 		.all<{ id: string }>();
 	return new Set(results.map((r) => r.id));
 }
@@ -625,11 +627,20 @@ export async function existingLocationsAtCoords(
 		...new Map(coords.map((c) => [coordinateKey(c.latitude, c.longitude), c])).values()
 	];
 	if (distinct.length === 0) return new Map();
-	const conds = distinct.map(() => '(latitude = ? AND longitude = ?)').join(' OR ');
-	const binds = distinct.flatMap((c) => [c.latitude, c.longitude]);
+	// The pairs travel as ONE JSON array of [lat, lng] tuples expanded with json_each —
+	// per-pair `(latitude = ? AND longitude = ?)` conditions cost two bound parameters
+	// each, so a 100-location create_locations batch would blow D1's ~100 per-query
+	// parameter limit. json_extract parses a JSON.stringify'd JS double back to the
+	// bit-identical REAL, so the equality stays float-EXACT — the coordinate-identical
+	// dedup invariant this function exists for is untouched.
+	const pairs = JSON.stringify(distinct.map((c) => [c.latitude, c.longitude]));
 	const { results } = await db
-		.prepare(`SELECT id, name, latitude, longitude FROM locations WHERE ${conds}`)
-		.bind(...binds)
+		.prepare(
+			`SELECT l.id, l.name, l.latitude, l.longitude FROM locations l
+			 JOIN json_each(?) j
+			   ON l.latitude = json_extract(j.value, '$[0]') AND l.longitude = json_extract(j.value, '$[1]')`
+		)
+		.bind(pairs)
 		.all<{ id: string; name: string; latitude: number; longitude: number }>();
 	const out = new Map<string, { id: string; name: string }>();
 	for (const r of results) {
@@ -1540,10 +1551,11 @@ export async function updateLocations(
 ): Promise<{ updatedIds: string[]; notFoundIds: string[] }> {
 	if (patches.length === 0) return { updatedIds: [], notFoundIds: [] };
 	const ids = patches.map((p) => p.id);
-	const placeholders = ids.map(() => '?').join(', ');
+	// Single json_each bind: update_locations batches up to 100 patches, at the edge of
+	// D1's ~100 per-query bound-parameter limit as an `IN (?, …)` list.
 	const { results } = await db
-		.prepare(`SELECT id FROM locations WHERE id IN (${placeholders})`)
-		.bind(...ids)
+		.prepare(`SELECT id FROM locations WHERE id IN (SELECT value FROM json_each(?))`)
+		.bind(JSON.stringify(ids))
 		.all<{ id: string }>();
 	const existing = new Set(results.map((r) => r.id));
 
@@ -2101,12 +2113,15 @@ export async function itemNameCollisions(
 ): Promise<{ item_name: string; existing_ids: string[] }[]> {
 	const distinct = [...new Set(names)];
 	if (distinct.length === 0) return [];
-	const placeholders = distinct.map(() => '?').join(', ');
+	// Single json_each bind (an exhaustive create_items menu can carry hundreds of
+	// names, past D1's ~100 per-query bound-parameter limit). SQLite's IN uses the
+	// LEFT operand's collating sequence, so COLLATE NOCASE on item_name keeps the
+	// subselect match case-insensitive just like the old placeholder list.
 	const { results } = await db
 		.prepare(
-			`SELECT id, item_name FROM items WHERE menu_id = ? AND item_name COLLATE NOCASE IN (${placeholders})`
+			`SELECT id, item_name FROM items WHERE menu_id = ? AND item_name COLLATE NOCASE IN (SELECT value FROM json_each(?))`
 		)
-		.bind(menuId, ...distinct)
+		.bind(menuId, JSON.stringify(distinct))
 		.all<{ id: string; item_name: string }>();
 	const idsByLowerName = new Map<string, string[]>();
 	for (const r of results) {
@@ -2160,10 +2175,11 @@ export async function updateItems(
 ): Promise<{ updatedIds: string[]; notFoundIds: string[] }> {
 	if (patches.length === 0) return { updatedIds: [], notFoundIds: [] };
 	const ids = patches.map((p) => p.id);
-	const placeholders = ids.map(() => '?').join(', ');
+	// Single json_each bind: update_items batches up to 200 patches, double D1's ~100
+	// per-query bound-parameter limit as an `IN (?, …)` list.
 	const { results } = await db
-		.prepare(`SELECT id, menu_id FROM items WHERE id IN (${placeholders})`)
-		.bind(...ids)
+		.prepare(`SELECT id, menu_id FROM items WHERE id IN (SELECT value FROM json_each(?))`)
+		.bind(JSON.stringify(ids))
 		.all<{ id: string; menu_id: string }>();
 	const menuByItem = new Map(results.map((r) => [r.id, r.menu_id]));
 
