@@ -1117,6 +1117,23 @@ async function queryMapData(
 	return { locations: mapLocations, menus, menuMeta };
 }
 
+/**
+ * Whether an OPEN location with this id exists. The existence probe behind the
+ * map page's `/locations/<id>` 404 gate (src/routes/+page.server.ts): it runs
+ * on every hard load of a venue URL, so it deliberately reads one column of one
+ * row rather than paying {@link getLocationById}'s two-statement row+sources
+ * read whose result the gate would throw away. Closed (soft-deleted) venues
+ * count as absent, matching every display read (migration 0015) — their pages
+ * should 404, not render.
+ */
+export async function locationExists(db: D1Like, id: string): Promise<boolean> {
+	const row = await db
+		.prepare(`SELECT 1 AS one FROM locations WHERE id = ? AND closed_at IS NULL`)
+		.bind(id)
+		.first<{ one: number }>();
+	return row !== null;
+}
+
 export async function getLocationById(db: D1Like, id: string): Promise<Location | null> {
 	const [row, { results: sources }] = await Promise.all([
 		db

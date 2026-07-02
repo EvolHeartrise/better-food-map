@@ -21,6 +21,7 @@
 	import LikeButton from '$lib/components/LikeButton.svelte';
 	import Search from '@lucide/svelte/icons/search';
 	import { categoryLabel } from '$lib/category';
+	import { idFromPath } from '$lib/location-path';
 	import { DEFAULT_MAP_CENTER } from '$lib/map-defaults';
 	import type { MapData, MapLocation, Item, Bounds } from '$lib/server/db';
 
@@ -496,11 +497,6 @@
 			? { y: '100%', duration: 300, opacity: 1 }
 			: { x: '100%', duration: 300, opacity: 1 }
 	);
-
-	function idFromPath(pathname: string): string | null {
-		const match = pathname.match(/\/locations\/([^/]+)$/);
-		return match ? decodeURIComponent(match[1]) : null;
-	}
 
 	function selectLocation(id: string): void {
 		// Selecting a place (e.g. tapping a name pill on the map) sets `selectedId`,
