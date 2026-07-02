@@ -15,6 +15,7 @@ import {
 	insertMenu,
 	insertMenuItems,
 	getMenuById,
+	getMenus,
 	getMenuWithItems,
 	getItemById,
 	getFoodByLocation,
@@ -27,6 +28,8 @@ import {
 	updateMenu,
 	updateLocations,
 	deleteItem,
+	setLocationClosed,
+	countLocations,
 	currentVerificationDate,
 	existingLocationsAtCoords,
 	coordinateKey,
@@ -329,4 +332,39 @@ test('itemNameCollisions reports existing names case-insensitively', async () =>
 		{ item_name: 'bucket', existing_ids: [bucketId] }
 	]);
 	expect(await itemNameCollisions(db, menuId, [])).toEqual([]);
+});
+
+// --- chain-audit reads (menu location_count, countLocations) ----------------
+
+test('getMenus counts open branches per menu; countLocations filters by brand', async () => {
+	const db = freshDb();
+	const brandId = await insertBrand(db, { name: 'ChainCo', website: null, logo_url: null });
+	const menuId = await insertMenu(db, {
+		brand_id: brandId,
+		name: 'ChainCo Canada',
+		region: 'CA',
+		currency: 'CAD'
+	});
+	const [a, b] = await insertLocations(db, [
+		indieLocation({ name: 'ChainCo', brand_id: brandId, menu_id: menuId }),
+		indieLocation({
+			name: 'ChainCo',
+			brand_id: brandId,
+			menu_id: menuId,
+			latitude: 50.1,
+			longitude: -120.5
+		})
+	]);
+	await insertLocations(db, [indieLocation({ latitude: 51.0, longitude: -114.0 })]);
+
+	const menus = await getMenus(db, brandId);
+	expect(menus[0].location_count).toBe(2);
+	expect(await countLocations(db, { brandId })).toBe(2);
+	expect(await countLocations(db)).toBe(3);
+
+	// A closed branch drops out of both counts.
+	await setLocationClosed(db, b, Date.now(), 'closed for test');
+	expect((await getMenus(db, brandId))[0].location_count).toBe(1);
+	expect(await countLocations(db, { brandId })).toBe(1);
+	void a;
 });

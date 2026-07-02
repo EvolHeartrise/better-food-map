@@ -50,6 +50,19 @@ describe('normalizeRegion', () => {
 		expect(normalizeRegion('Newfoundland and Labrador', 'CA')).toBe('NL');
 	});
 
+	test('folds ampersands, dotted abbreviations and PEI', () => {
+		expect(normalizeRegion('Newfoundland & Labrador', 'CA')).toBe('NL');
+		expect(normalizeRegion('PEI', 'CA')).toBe('PE');
+		expect(normalizeRegion('P.E.I.')).toBe('PE');
+		expect(normalizeRegion('pei')).toBe('PE');
+	});
+
+	test('resolves bilingual OSM boundary labels', () => {
+		expect(normalizeRegion('New Brunswick / Nouveau-Brunswick', 'CA')).toBe('NB');
+		expect(normalizeRegion('ᓄᓇᕗᑦ Nunavut', 'CA')).toBe('NU');
+		expect(normalizeRegion('Yukon / Le Yukon')).toBe('YT');
+	});
+
 	test('maps full US state names to codes', () => {
 		expect(normalizeRegion('Washington', 'US')).toBe('WA');
 		expect(normalizeRegion('New York')).toBe('NY');
