@@ -8,15 +8,17 @@
 	import type { User } from '$lib/server/db';
 
 	// The account control: a "Sign in" pill when signed out, or an avatar that opens
-	// a popover (name, sign out) when signed in. It owns only its open/closed state
-	// and the sign-out call; the parent supplies the user.
+	// a popover (name, sign out) when signed in. It owns its open/closed state and
+	// the sign-out call; the parent supplies the user. `open` is bindable so the
+	// page can layer its own window-level Escape handling under the popover's
+	// (Escape closes only the topmost layer) without probing this component's DOM.
 	let {
-		user
+		user,
+		open = $bindable(false)
 	}: {
 		user: User | null;
+		open?: boolean;
 	} = $props();
-
-	let open = $state(false);
 
 	const displayName = $derived(user?.name ?? user?.email ?? 'Account');
 	const initial = $derived(
