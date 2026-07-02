@@ -28,6 +28,9 @@ export interface DuplicateHalf {
 	longitude: number;
 	street: string;
 	city: string;
+	postcode: string | null;
+	phone: string | null;
+	website: string | null;
 }
 
 export interface DuplicatePair {
@@ -37,6 +40,15 @@ export interface DuplicatePair {
 	names_match: boolean;
 	/** True when both carry the same non-null brand_id. */
 	same_brand: boolean;
+	/** True when both carry the same non-null phone (digits compared) — strong same-store evidence. */
+	same_phone: boolean;
+	/**
+	 * "high" = almost certainly one venue stored twice (matching names within
+	 * ~30 m, or a shared phone number) — verify against the venue's own locator,
+	 * then delete_location the half with the weaker address. "review" = plausible
+	 * but needs judgment (two real branches can sit this close).
+	 */
+	confidence: 'high' | 'review';
 	a: DuplicateHalf;
 	b: DuplicateHalf;
 }
@@ -52,25 +64,40 @@ export interface FindDuplicateLocationsResult {
 
 const DEFAULT_RADIUS_M = 150;
 const DEFAULT_LIMIT = 50;
+// Pairs closer than this with matching names are near-certain double-mappings —
+// two real branches of one chain essentially never share a wall.
+const HIGH_CONFIDENCE_M = 30;
 // Grid cells comfortably larger than any plausible radius (≤1 km), so a probe
 // touches at most a 3×3 neighbourhood.
 const CELL_DEG = 0.02;
 
 /**
+ * Phone comparison key: digits only, trimmed to the last 10 — so formatting
+ * ("(604) 555 0100") and a +1 country-code prefix don't hide a match. Ten
+ * digits is the NANP national number, which is what this dataset carries.
+ */
+function phoneKey(phone: string | null): string {
+	const digits = phone?.replace(/\D/g, '') ?? '';
+	return digits.length >= 10 ? digits.slice(-10) : digits;
+}
+
+/**
  * Flags every pair of OPEN locations within `radius_m` of each other whose
  * names match (normalized) or that share a brand. Nearest pairs first;
  * `limit` caps the returned list with the remainder counted in `additional`.
+ * `brand_id` scopes the audit to pairs where at least one half belongs to that
+ * chain (e.g. a post-import sweep).
  */
 export async function findDuplicateLocations(
 	db: D1Like,
-	opts: { radius_m?: number; limit?: number } = {}
+	opts: { radius_m?: number; limit?: number; brand_id?: string } = {}
 ): Promise<FindDuplicateLocationsResult> {
 	const radiusM = opts.radius_m ?? DEFAULT_RADIUS_M;
 	const limit = opts.limit ?? DEFAULT_LIMIT;
 
 	const { results: locations } = await db
 		.prepare(
-			`SELECT id, name, brand_id, latitude, longitude, street, city
+			`SELECT id, name, brand_id, latitude, longitude, street, city, postcode, phone, website
 			 FROM locations WHERE closed_at IS NULL`
 		)
 		.all<DuplicateHalf>();
@@ -93,15 +120,19 @@ export async function findDuplicateLocations(
 		})) {
 			if (j <= i) continue; // each unordered pair once
 			const b = locations[j];
+			if (opts.brand_id && a.brand_id !== opts.brand_id && b.brand_id !== opts.brand_id) continue;
 			const distance = haversineMeters(a.latitude, a.longitude, b.latitude, b.longitude);
 			if (distance > radiusM) continue;
 			const nameHit = namesMatch(normalized[i], normalized[j]);
 			const brandHit = Boolean(a.brand_id) && a.brand_id === b.brand_id;
 			if (!nameHit && !brandHit) continue;
+			const phoneHit = phoneKey(a.phone).length > 0 && phoneKey(a.phone) === phoneKey(b.phone);
 			pairs.push({
 				distance_m: Math.round(distance),
 				names_match: nameHit,
 				same_brand: brandHit,
+				same_phone: phoneHit,
+				confidence: (nameHit && distance <= HIGH_CONFIDENCE_M) || phoneHit ? 'high' : 'review',
 				a,
 				b
 			});

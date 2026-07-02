@@ -8,7 +8,7 @@ import {
 } from './match-overture';
 import { normalizeName } from '../osm/search-poi';
 
-test('nameRelated handles short brand tokens and rejects unrelated names', () => {
+test('nameRelated handles short brand tokens and rejects unrelated names', async () => {
 	const n = normalizeName;
 	expect(nameRelated(n('KFC'), n('KFC'))).toBe(true);
 	expect(nameRelated(n('KFC'), n('Taco Bell / KFC'))).toBe(true); // short token contained
@@ -17,7 +17,7 @@ test('nameRelated handles short brand tokens and rejects unrelated names', () =>
 	expect(nameRelated(n(''), n('KFC'))).toBe(false);
 });
 
-test('composeOvertureAddress joins present parts and returns null when all empty', () => {
+test('composeOvertureAddress joins present parts and returns null when all empty', async () => {
 	expect(
 		composeOvertureAddress({
 			freeform: '8737 120 St',
@@ -42,7 +42,7 @@ function place(
 	return { name: 'KFC', address: '1 Test Rd', ...over };
 }
 
-test('matches each POI to the nearest name-related place within radius, with provenance', () => {
+test('matches each POI to the nearest name-related place within radius, with provenance', async () => {
 	const places: OverturePlace[] = [
 		// ~16 m from n1 — the correct match
 		place({
@@ -69,7 +69,10 @@ test('matches each POI to the nearest name-related place within radius, with pro
 			address: '5 Sub Lane, Burnaby, BC'
 		})
 	];
-	const matches = matchOverturePlaces(pois, places, { radiusM: 100, releaseLabel: '2026-06-17.0' });
+	const matches = await matchOverturePlaces(pois, places, {
+		radiusM: 100,
+		releaseLabel: '2026-06-17.0'
+	});
 	const byId = Object.fromEntries(matches.map((m) => [m.osm_id, m]));
 
 	expect(matches.length).toBe(2); // n3 has no nearby place
@@ -80,7 +83,7 @@ test('matches each POI to the nearest name-related place within radius, with pro
 	expect(byId['n3']).toBeUndefined();
 });
 
-test('does not match a different brand even when it is the closest place', () => {
+test('does not match a different brand even when it is the closest place', async () => {
 	const places: OverturePlace[] = [
 		place({
 			id: 'ov-x',
@@ -90,11 +93,11 @@ test('does not match a different brand even when it is the closest place', () =>
 			address: '1 Sandwich Way'
 		})
 	];
-	const matches = matchOverturePlaces(pois, places, { radiusM: 100, releaseLabel: 'r' });
+	const matches = await matchOverturePlaces(pois, places, { radiusM: 100, releaseLabel: 'r' });
 	expect(matches.find((m) => m.osm_id === 'n1')).toBeUndefined(); // KFC must not take Subway's address
 });
 
-test('respects the radius — a far same-brand place is not matched', () => {
+test('respects the radius — a far same-brand place is not matched', async () => {
 	const places: OverturePlace[] = [
 		place({
 			id: 'ov-far',
@@ -104,6 +107,10 @@ test('respects the radius — a far same-brand place is not matched', () => {
 			address: 'Too Far Rd'
 		}) // ~167 m from n1
 	];
-	expect(matchOverturePlaces(pois, places, { radiusM: 100, releaseLabel: 'r' }).length).toBe(0);
-	expect(matchOverturePlaces(pois, places, { radiusM: 300, releaseLabel: 'r' }).length).toBe(1);
+	expect(
+		(await matchOverturePlaces(pois, places, { radiusM: 100, releaseLabel: 'r' })).length
+	).toBe(0);
+	expect(
+		(await matchOverturePlaces(pois, places, { radiusM: 300, releaseLabel: 'r' })).length
+	).toBe(1);
 });
