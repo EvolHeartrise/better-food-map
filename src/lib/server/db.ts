@@ -1933,6 +1933,58 @@ export async function findMenuIdsByName(
 	return results.map((r) => r.id);
 }
 
+/** Number of items on a menu (0 for a missing menu). */
+export async function countMenuItems(db: D1Like, menuId: string): Promise<number> {
+	const row = await db
+		.prepare(`SELECT COUNT(*) AS n FROM items WHERE menu_id = ?`)
+		.bind(menuId)
+		.first<{ n: number }>();
+	return row?.n ?? 0;
+}
+
+/**
+ * Validates a brand/menu pair before linking a location (or a whole chain import)
+ * to it. `null`/`undefined` ids are skipped (detaching is always allowed), but a
+ * non-null `menuId` is only accepted as a SHARED brand menu with its owning brand
+ * passed alongside: a private venue menu (brand_id NULL) is an implementation
+ * detail that must never be shared — attaching one would make every linked
+ * location display (and edit) that venue's items — and requiring
+ * `menu.brand_id === brandId` stops a location from silently joining another
+ * brand's menu.
+ */
+export async function assertBrandMenuRefs(
+	db: D1Like,
+	brandId: string | null | undefined,
+	menuId: string | null | undefined
+): Promise<void> {
+	if (brandId) {
+		if (!(await getBrandById(db, brandId))) throw new Error(`No brand with id "${brandId}".`);
+	}
+	if (menuId) {
+		const menu = await getMenuById(db, menuId);
+		if (!menu) throw new Error(`No menu with id "${menuId}".`);
+		if (menu.brand_id === null) {
+			throw new Error(
+				`Menu "${menuId}" is an independent venue's private menu — it cannot be attached to ` +
+					`another location or used as a chain menu. Create a shared menu with create_menu ` +
+					`(after create_brand) instead.`
+			);
+		}
+		if (!brandId) {
+			throw new Error(
+				`Menu "${menuId}" is brand "${menu.brand_id}"'s shared menu — pass that brand_id ` +
+					`together with menu_id so the branch is linked to its chain.`
+			);
+		}
+		if (menu.brand_id !== brandId) {
+			throw new Error(
+				`Menu "${menuId}" belongs to brand "${menu.brand_id}", not "${brandId}". ` +
+					`Pass the menu's own brand_id.`
+			);
+		}
+	}
+}
+
 export async function getMenuWithItems(db: D1Like, id: string): Promise<MenuWithItems | null> {
 	const menu = await getMenuById(db, id);
 	if (!menu) return null;

@@ -27,6 +27,8 @@ import * as v from 'valibot';
 import { toJsonSchema } from '@valibot/to-json-schema';
 
 import {
+	assertBrandMenuRefs,
+	countMenuItems,
 	getLocationsWithTags,
 	getLocationById,
 	getFoodByLocation,
@@ -519,8 +521,8 @@ const createLocationArgs = v.object({
 				v.minLength(1),
 				v.description(
 					'Shared brand menu this branch serves; its items then appear here automatically. ' +
-						'Leave unset for an independent venue (use create_items, or inline `menu_items`, ' +
-						'for its own menu).'
+						'Pass the owning `brand_id` with it. Leave unset for an independent venue ' +
+						'(use create_items, or inline `menu_items`, for its own menu).'
 				)
 			)
 		)
@@ -626,7 +628,10 @@ const updateLocationItemArgs = v.pipe(
 				v.pipe(
 					v.string(),
 					v.minLength(1),
-					v.description('Assign/replace the shared menu this branch serves; null detaches it.')
+					v.description(
+						'Assign/replace the shared menu this branch serves (pass the owning `brand_id` ' +
+							'with it); null detaches it.'
+					)
 				)
 			)
 		),
@@ -1399,30 +1404,6 @@ function assertSourcesNotBoth(sources: unknown, addSources: unknown, label?: str
 	}
 }
 
-/**
- * Validates that any referenced brand/menu exists (and, when both are given,
- * that the menu belongs to that brand) before linking a location to them.
- * `null`/`undefined` ids are skipped (detaching is always allowed).
- */
-async function assertBrandMenuRefs(
-	brandId: string | null | undefined,
-	menuId: string | null | undefined
-): Promise<void> {
-	if (brandId) {
-		if (!(await getBrandById(getDb(), brandId))) throw new Error(`No brand with id "${brandId}".`);
-	}
-	if (menuId) {
-		const menu = await getMenuById(getDb(), menuId);
-		if (!menu) throw new Error(`No menu with id "${menuId}".`);
-		if (brandId && menu.brand_id && menu.brand_id !== brandId) {
-			throw new Error(
-				`Menu "${menuId}" belongs to brand "${menu.brand_id}", not "${brandId}". ` +
-					`Pass a matching brand_id or omit it.`
-			);
-		}
-	}
-}
-
 type CreateLocationItem = v.InferOutput<typeof createLocationArgs>;
 
 /** One item that failed to resolve in a skip_invalid batch (or a combined error). */
@@ -1524,7 +1505,7 @@ async function createLocationsBatch(
 		const key = `${it.brand_id ?? ''}|${it.menu_id ?? ''}`;
 		if (checkedPairs.has(key)) continue;
 		checkedPairs.add(key);
-		await assertBrandMenuRefs(it.brand_id, it.menu_id);
+		await assertBrandMenuRefs(getDb(), it.brand_id, it.menu_id);
 	}
 	// Idempotency: skip items whose explicit id already exists, so retrying a batch
 	// that already landed is a no-op rather than a primary-key collision.
@@ -1943,7 +1924,7 @@ const tools = [
 			'Update one or more existing locations in a single atomic batch — pass a one-item `items` array to ' +
 			'edit one place. Each patch carries an `id` plus only the fields to change; a given `sources` array ' +
 			"replaces that location's whole source set (pass [] to clear), or use `add_sources` to append a " +
-			'citation without resending the rest. Set `menu_id`/`brand_id` to attach a ' +
+			'citation without resending the rest. Set `menu_id`/`brand_id` (together) to attach a ' +
 			'branch to a chain menu, or null to detach it. region/postcode/country are normalized for you. ' +
 			'Ideal for mass backfills from audit_locations. Ids that do not exist ' +
 			'are skipped and listed in `not_found_ids`. Returns { updated, updated_ids, not_found_ids }.',
@@ -1956,7 +1937,7 @@ const tools = [
 				const key = `${it.brand_id ?? ''}|${it.menu_id ?? ''}`;
 				if (checkedPairs.has(key)) continue;
 				checkedPairs.add(key);
-				await assertBrandMenuRefs(it.brand_id, it.menu_id);
+				await assertBrandMenuRefs(getDb(), it.brand_id, it.menu_id);
 			}
 			const patches = items.map(
 				({ id, sources, add_sources, street, city, region, postcode, country, ...patch }) => {
@@ -2457,7 +2438,8 @@ const osmTools = [
 		description:
 			'Import EVERY branch of a chain from the OSM staging store in one call — the preferred way to ' +
 			'add chain locations (it replaces the search_poi → filter → create_locations loop). Prerequisites: ' +
-			'the brand, its shared menu and the menu items already exist. Given an area and the source names ' +
+			'the brand, its shared menu and the menu items already exist (a non-dry-run import fails if the ' +
+			'menu has no items). Given an area and the source names ' +
 			'accepted as this chain (`name_match`, strict normalized equality), it scans the store, drops ' +
 			'venues already on the map, and creates each remaining branch pointed at `brand_id`/`menu_id` — ' +
 			'coordinates + structured address come from OSM verbatim per branch (own addr:* tags, enrichment ' +
@@ -2474,7 +2456,16 @@ const osmTools = [
 			'name_buckets, remaining_beyond_max, scan_truncated }.',
 		schema: importChainArgs,
 		handler: async (input) => {
-			await assertBrandMenuRefs(input.brand_id, input.menu_id);
+			await assertBrandMenuRefs(getDb(), input.brand_id, input.menu_id);
+			// The documented prerequisite ("brand, shared menu and menu items already
+			// exist") is enforced here: importing hundreds of branches onto an empty
+			// menu (a forgotten create_items) would put menu-less venues on the map.
+			if (!input.dry_run && (await countMenuItems(getDb(), input.menu_id)) === 0) {
+				throw new Error(
+					`Menu "${input.menu_id}" has no items yet — add the chain's shared items with ` +
+						`create_items (menu_id) before importing branches, or run with dry_run: true.`
+				);
+			}
 			const selection = await selectChainCandidates(getOsmStore(), getDb(), {
 				area: {
 					bbox: input.bbox ? toBounds(input.bbox) : undefined,
