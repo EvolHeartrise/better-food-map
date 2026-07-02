@@ -11,10 +11,14 @@ import {
 	FULL_CELL_DEG,
 	FULL_LEVEL_MAX_CELLS,
 	GRID_REP_LIMIT,
+	MAX_CACHED_BLOCKS,
 	MAX_GRID_LEVEL,
 	MIN_GRID_CELL_DEG,
 	MIN_REP_LEVEL,
 	REP_LEVEL_MAX_CELLS,
+	blockCells,
+	blockOf,
+	blockSpan,
 	cellKey,
 	cellsCoverBounds,
 	cellsForBounds,
@@ -147,4 +151,49 @@ test('cellsCoverBounds contains every coordinate that lands in the covered cells
 
 test('cellKey formats as the SQL-mirrored i:j string', () => {
 	expect(cellKey(2784, 1137)).toBe('2784:1137');
+});
+
+// --- Cache blocks -----------------------------------------------------------
+// The server cache stores cells in aligned blocks so per-request Cache API
+// traffic stays O(10) at every zoom (the Workers Free plan allows only 50
+// subrequests per request, shared with D1). These hold the block math and the
+// budget invariant the cache layer's bypass threshold leans on.
+
+test('blockCells enumerates exactly the domain-valid cells of a block', () => {
+	// An interior 8×8 block at the 20° rung... except the domain only has 10
+	// rows (i 0..9) and 19 columns (j 0..18), so edge blocks clamp.
+	expect(blockCells(0, 0, 8, 20).length).toBe(64);
+	// Block row 1 holds only i 8..9 of the 10-row domain; column block 2 only
+	// j 16..18 of the 19-column domain.
+	expect(blockCells(1, 0, 8, 20).length).toBe(2 * 8);
+	expect(blockCells(1, 2, 8, 20).length).toBe(2 * 3);
+	// Fully out-of-domain blocks are empty.
+	expect(blockCells(5, 0, 8, 20)).toEqual([]);
+	// Every cell of a block maps back to that block.
+	for (const [i, j] of blockCells(3, 7, 8, 0.1)) {
+		expect(blockOf(i, j, 8)).toEqual([3, 7]);
+	}
+});
+
+test('every real viewport touches at most MAX_CACHED_BLOCKS blocks', () => {
+	// Sweep spans from block zoom to (padded, unwrapped) world views across many
+	// pan positions: the number of DISTINCT blocks the enumerated cells group
+	// into must stay within the cache layer's budget at every level, else the
+	// bypass threshold would kick real traffic off the cache.
+	const spans = [0.01, 0.03, 0.05, 0.11, 0.3, 0.7, 1, 3, 7, 13, 30, 61, 100, 179, 360, 520, 1000];
+	for (const span of spans) {
+		for (const offset of [0, 0.137, 3.7, 41.3]) {
+			const bounds = {
+				minLat: Math.max(-90, -25 + offset),
+				maxLat: Math.min(90, -25 + offset + Math.min(span, 180)),
+				minLng: -170 + offset,
+				maxLng: -170 + offset + span
+			};
+			const level = levelForBounds(bounds);
+			const cells = cellsForBounds(bounds, levelCell(level));
+			const span_ = blockSpan(level);
+			const blocks = new Set(cells.map(([i, j]) => blockOf(i, j, span_).join(':')));
+			expect(blocks.size).toBeLessThanOrEqual(MAX_CACHED_BLOCKS);
+		}
+	}
 });

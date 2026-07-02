@@ -73,12 +73,16 @@ export const MAX_GRID_LEVEL = CELL_LADDER.length;
 /**
  * How many cells one getMapCells request may carry. Rep levels are bounded by
  * the coarsening invariant ({@link GRID_REP_LIMIT}); the full level by the
- * narrow-viewport geometry (a padded narrow box spans < 0.05°, touching ≤ 16
- * FULL_CELL_DEG cells — 64 leaves generous slack) so a forged request can't
- * fan a full-detail read across hundreds of cells.
+ * narrow-viewport geometry — a padded narrow box spans < 0.05°, touching ≤ 16
+ * FULL_CELL_DEG cells, so 24 covers every real client with slack while denying
+ * a forged request the old 64-cell allowance (64 × the 100/cell cap = a 6,400-
+ * venue resolve; 24 keeps the forgeable worst within ~1.5× the legitimate one).
+ * The bound is enforced on the INPUT only — never as an output trim, which
+ * would make a cell's contents depend on its batch-mates and break the purity
+ * both cache layers are built on.
  */
 export const REP_LEVEL_MAX_CELLS = GRID_REP_LIMIT;
-export const FULL_LEVEL_MAX_CELLS = 64;
+export const FULL_LEVEL_MAX_CELLS = 24;
 
 /** The cell size (degrees) of a grid level. */
 export function levelCell(level: number): number {
@@ -193,4 +197,60 @@ export function cellsCoverBounds(cells: [number, number][], cell: number): Bound
 		minLng: minJ * cell - 180 - EPS,
 		maxLng: (maxJ + 1) * cell - 180 + EPS
 	};
+}
+
+// --- Cache blocks ------------------------------------------------------------
+// The server's colo cache does NOT store one entry per cell: the Workers Cache
+// API costs one subrequest per match/put against a hard per-request budget (50
+// on the Free plan, shared with D1 calls), and a world-zoom viewport touches
+// ~190 cells — per-cell entries would blow the budget on the very landing fetch
+// the cache exists to serve. Entries are instead keyed on aligned BLOCKS of
+// cells; a viewport's worst case is a handful of blocks (asserted in
+// grid.test.ts), keeping cache traffic O(10) per request at every zoom. The
+// block math lives here — pure and client-safe — so it can be unit-tested; only
+// $lib/server/cell-cache consumes it.
+
+/**
+ * Cells per block side. Representative cells are tiny (one venue each), so 8×8
+ * blocks stay small; full-level cells carry whole neighbourhoods, so 4×4 bounds
+ * the venues a single block miss must compute (≤ 16 × FULL_CELL_CAP).
+ */
+export function blockSpan(level: number): number {
+	return level === 0 ? 4 : 8;
+}
+
+/**
+ * The most blocks one request is served through the server cache for. Real
+ * viewports top out around a dozen blocks — grid.test.ts sweeps the viewport
+ * space to hold that — so a request scattering its cells more widely is forged,
+ * and the cache layer bypasses it straight to the D1 read. Worst-case cache
+ * traffic is ≤ 2× this (matches + puts), comfortably inside the Workers Free
+ * plan's 50-subrequest budget alongside the request's D1 calls.
+ */
+export const MAX_CACHED_BLOCKS = 16;
+
+/** The block a cell belongs to, as [bi, bj] block-lattice indices. */
+export function blockOf(i: number, j: number, span: number): [number, number] {
+	return [Math.floor(i / span), Math.floor(j / span)];
+}
+
+/**
+ * Every domain-valid cell of a block, in the same [i, j] form the cell reads
+ * use. A block straddling the domain edge (the pole rows, the antimeridian
+ * columns) yields only its in-domain cells, mirroring cellsForBounds' clamp —
+ * so a cached block always answers exactly the cells a client can legally ask
+ * for, and nothing else.
+ */
+export function blockCells(bi: number, bj: number, span: number, cell: number): [number, number][] {
+	const maxI = Math.floor(180 / cell);
+	const maxJ = Math.floor(360 / cell);
+	const cells: [number, number][] = [];
+	for (let i = bi * span; i < (bi + 1) * span; i++) {
+		if (i < 0 || i > maxI) continue;
+		for (let j = bj * span; j < (bj + 1) * span; j++) {
+			if (j < 0 || j > maxJ) continue;
+			cells.push([i, j]);
+		}
+	}
+	return cells;
 }

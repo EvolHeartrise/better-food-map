@@ -38,9 +38,13 @@ export function splitCellSlices(data: MapCellsData): Map<string, CellSlice> {
 			const loc = locById.get(id);
 			if (!loc) continue;
 			locations.push(loc);
-			if (loc.menu_id !== null && data.menus[loc.menu_id] !== undefined) {
-				menus[loc.menu_id] = data.menus[loc.menu_id];
-				menuMeta[loc.menu_id] = data.menuMeta[loc.menu_id] ?? { last_verified: null };
+			if (loc.menu_id !== null) {
+				// Copied independently: a menu with zero items has a menuMeta entry
+				// (the menus-table read) but no menus entry (built from item rows),
+				// and its "Verified" date must survive the slicing all the same.
+				if (data.menus[loc.menu_id] !== undefined) menus[loc.menu_id] = data.menus[loc.menu_id];
+				if (data.menuMeta[loc.menu_id] !== undefined)
+					menuMeta[loc.menu_id] = data.menuMeta[loc.menu_id];
 			}
 		}
 		slices.set(key, { locations, menus, menuMeta });

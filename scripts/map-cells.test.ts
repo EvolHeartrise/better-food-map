@@ -12,8 +12,10 @@ import { test, expect } from 'bun:test';
 import {
 	FULL_CELL_CAP,
 	getMapCellsData,
+	insertBrand,
 	insertFoods,
 	insertLocations,
+	insertMenu,
 	setLocationLike,
 	type LocationInsert,
 	type MapCellsData
@@ -263,4 +265,33 @@ test('cell payloads survive a JSON round trip', async () => {
 	});
 	const roundTripped = JSON.parse(JSON.stringify(data)) as MapCellsData;
 	expect(roundTripped).toEqual(data);
+});
+
+// A menu with zero items still has a menuMeta row (the menus-table read) even
+// though `menus` (built from item rows) has no entry — the per-cell slicing
+// must keep that meta so the venue's "Verified" footer survives.
+test('an item-less menu keeps its menuMeta through slicing', async () => {
+	const db = freshDb();
+	const brandId = await insertBrand(db, { name: 'Empty Menu Co', website: null, logo_url: null });
+	const menuId = await insertMenu(db, { brand_id: brandId, name: 'Empty Menu CA', region: 'CA' });
+	await insertLocations(db, [
+		venue({
+			name: 'Branch One',
+			latitude: 49.28,
+			longitude: -123.12,
+			brand_id: brandId,
+			menu_id: menuId
+		})
+	]);
+	const { data } = await fetchViewport(db, {
+		minLat: 49.27,
+		maxLat: 49.29,
+		minLng: -123.13,
+		maxLng: -123.11
+	});
+	expect(data.menuMeta[menuId]).toBeDefined();
+	expect(data.menus[menuId]).toBeUndefined();
+	const slices = splitCellSlices(data);
+	const withLoc = [...slices.values()].find((slice) => slice.locations.length > 0);
+	expect(withLoc?.menuMeta[menuId]).toBeDefined();
 });

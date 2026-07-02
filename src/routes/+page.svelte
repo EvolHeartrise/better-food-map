@@ -143,15 +143,20 @@
 		const level = levelForBounds(bounds);
 		const cells = cellsForBounds(bounds, levelCell(level));
 		const storeKey = ([i, j]: [number, number]) => `${level}/${cellKey(i, j)}`;
-		const missing = cells.filter((c) => cellStore.get(storeKey(c)) === null);
-		const inViewSlices = () =>
-			cells
-				.map((c) => cellStore.get(storeKey(c)))
-				.filter((slice): slice is CellSlice => slice !== null);
+		// SNAPSHOT the store hits now rather than re-reading the store when the
+		// fetch settles: a hit can TTL-expire mid-flight, and a second read would
+		// silently drop its (still on-screen) markers from a successful merge.
+		const hits: CellSlice[] = [];
+		const missing: [number, number][] = [];
+		for (const c of cells) {
+			const slice = cellStore.get(storeKey(c));
+			if (slice !== null) hits.push(slice);
+			else missing.push(c);
+		}
 		if (missing.length === 0) {
 			// Everything in view is already local — the "known empty" negative
 			// entries included — so render without a round trip.
-			viewportData = mergeCellSlices(inViewSlices());
+			viewportData = mergeCellSlices(hits);
 			viewportFailed = false;
 			return;
 		}
@@ -161,11 +166,14 @@
 				// Bank every returned cell BEFORE the cancellation check: a cell's
 				// contents don't depend on the viewport, so a superseded response
 				// still warms the store for the run that replaced this one.
-				for (const [key, slice] of splitCellSlices(data)) {
+				const fresh = splitCellSlices(data);
+				for (const [key, slice] of fresh) {
 					cellStore.set(`${level}/${key}`, slice);
 				}
 				if (cancelled) return;
-				viewportData = mergeCellSlices(inViewSlices());
+				// The effect-time hits plus the fetched cells cover the whole view;
+				// the two sets are disjoint by construction.
+				viewportData = mergeCellSlices([...hits, ...fresh.values()]);
 				viewportFailed = false;
 			})
 			// A failed fetch must not blank the map — keep the markers already on
