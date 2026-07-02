@@ -33,9 +33,17 @@
 		)}`
 	);
 
-	// Close the popover when a pointer goes down outside the control. The handler is
-	// a no-op unless it's open, and `closest('.account')` keeps clicks on the
-	// trigger/popover from closing it.
+	// Escape closes the popover from anywhere (the trigger or the sign-out button may
+	// hold focus); a pointerdown outside the control closes it too. Both are handled on
+	// the window — mirroring DietSelector — and `closest('.account')` keeps clicks on
+	// the trigger/popover from closing it.
+	function handleWindowKeydown(event: KeyboardEvent) {
+		if (event.key === 'Escape' && open) {
+			event.preventDefault();
+			open = false;
+		}
+	}
+
 	function handleWindowPointerDown(event: PointerEvent) {
 		if (!open) return;
 		if (!(event.target as HTMLElement | null)?.closest('.account')) open = false;
@@ -48,7 +56,7 @@
 	}
 </script>
 
-<svelte:window onpointerdown={handleWindowPointerDown} />
+<svelte:window onkeydown={handleWindowKeydown} onpointerdown={handleWindowPointerDown} />
 
 <div class="account">
 	{#if user}
@@ -56,7 +64,6 @@
 			type="button"
 			class="account__trigger"
 			aria-expanded={open}
-			aria-haspopup="menu"
 			onclick={() => (open = !open)}
 		>
 			{#if user.picture}
@@ -68,7 +75,10 @@
 		</button>
 
 		{#if open}
-			<div class="account__popover" role="menu">
+			<!-- A plain disclosure popover (name + sign-out), not a menu: the trigger's
+			     aria-expanded already conveys the open state, and role="menu" would
+			     require menuitem children these aren't. -->
+			<div class="account__popover">
 				<div class="account__header">
 					<span class="account__header-name">{user.name ?? 'Signed in'}</span>
 					{#if user.email}
