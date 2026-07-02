@@ -43,6 +43,8 @@ export interface SearchPoiParams {
 	exclude_osm_ids?: string[];
 	/** Max candidates to return (default 50). */
 	limit?: number;
+	/** Override the staging-store scan cap (testing only). */
+	scanCap?: number;
 }
 
 /** One POI returned to the caller, ready to hand to create_locations. */
@@ -93,6 +95,14 @@ export interface SearchPoiResult {
 	excluded_foreign_sample?: { osm_id: string; name: string | null; country: string }[];
 	/** Whether results were capped by `limit`. */
 	truncated: boolean;
+	/**
+	 * Whether the staging-store scan hit its row cap BEFORE any exclusion, so the
+	 * box holds more food POIs than were even considered. When set, `total_in_area`
+	 * is a lower bound, and re-sweeping the same box after imports will keep
+	 * returning the same capped slice — narrow the bbox / lower the radius instead
+	 * of concluding the area is exhausted. Mirrors import_chain's `scan_truncated`.
+	 */
+	scan_truncated: boolean;
 }
 
 const DEFAULT_LIMIT = 50;
@@ -266,12 +276,16 @@ export async function searchPoi(
 	const excludeExisting = params.exclude_existing ?? true;
 	const limit = Math.min(Math.max(1, params.limit ?? DEFAULT_LIMIT), MAX_LIMIT);
 
+	const scanCap = params.scanCap ?? SCAN_CAP;
 	let rows = store.searchBbox(bbox, {
 		category: params.category ?? undefined,
 		name: params.name,
 		cuisine: params.cuisine,
-		cap: SCAN_CAP
+		cap: scanCap
 	});
+	// Captured before any exclusion/partition shrinks `rows`: truncation is a
+	// property of the raw scan, not of what survives the filters.
+	const scanTruncated = rows.length >= scanCap;
 	if (params.exclude_osm_ids?.length) {
 		const excluded = new Set(params.exclude_osm_ids);
 		rows = rows.filter((poi) => !excluded.has(poi.osm_id));
@@ -323,6 +337,7 @@ export async function searchPoi(
 		excluded_existing: excluded,
 		...(params.country === undefined ? {} : { excluded_foreign: excludedForeign }),
 		...(excludedForeignSample.length ? { excluded_foreign_sample: excludedForeignSample } : {}),
-		truncated
+		truncated,
+		scan_truncated: scanTruncated
 	};
 }
