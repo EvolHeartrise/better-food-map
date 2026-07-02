@@ -2373,6 +2373,18 @@ export async function deleteSession(db: D1Like, sessionId: string): Promise<void
 	await db.prepare(`DELETE FROM sessions WHERE id = ?`).bind(sessionId).run();
 }
 
+/**
+ * Deletes every session whose expiry has passed. The lazy cleanup in
+ * validateSessionToken removes an expired row only when that same cookie token
+ * comes back, so sessions of users who never return would accumulate forever —
+ * this sweep (fired opportunistically from the auth hook) catches them. Uses
+ * the same boundary as validateSessionToken (`now >= expires_at` is expired),
+ * so a row with expires_at exactly equal to `now` is deleted.
+ */
+export async function deleteExpiredSessions(db: D1Like, now: number): Promise<void> {
+	await db.prepare(`DELETE FROM sessions WHERE expires_at <= ?`).bind(now).run();
+}
+
 /** Returns a user's liked location and item ids, newest first. */
 export async function getUserLikes(db: D1Like, userId: string): Promise<UserLikes> {
 	const [{ results: locs }, { results: items }] = await Promise.all([
