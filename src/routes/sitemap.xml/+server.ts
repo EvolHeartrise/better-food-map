@@ -4,23 +4,17 @@
 // can ever find a venue page. A deliberate exception to the remote-functions-
 // over-API-routes convention (CLAUDE.md): crawlers fetch a plain, well-known
 // URL, not a SvelteKit remote endpoint, so `/sitemap.xml` must be a real route.
-import { requireDb } from '$lib/server/context';
-import { getSitemapEntries } from '$lib/server/db';
-import { buildSitemapXml } from '$lib/server/sitemap';
-import { ttlMemo } from '$lib/server/memo';
+//
+// The well-known URL now serves a sitemap INDEX referencing the paginated
+// urlsets at `/sitemaps/<n>.xml` — the protocol caps a single sitemap file at
+// 50k URLs, and swapping an index in at the same address robots.txt has always
+// pointed at means scaling past that cap without any crawler-facing URL change.
+import { buildSitemapIndexXml } from '$lib/server/sitemap';
+import { cachedSitemapEntries } from '$lib/server/sitemap-cache';
 import type { RequestHandler } from './$types';
 
-// Memoised for 24h so the full-table read behind the sitemap can't eat D1
-// usage: crawlers may refetch this URL as often as they like, but each isolate
-// scans the venue table at most once a day. Like `cachedStats` (data.remote.ts)
-// the cache is per-isolate, and `requireDb()` reads the request-scoped event so
-// it must be resolved INSIDE the memoised fn — safe, because a cache miss only
-// ever happens while a request is being served. A day of staleness merely
-// delays a new venue's first crawl.
-const cachedEntries = ttlMemo(24 * 60 * 60 * 1000, () => getSitemapEntries(requireDb()));
-
 export const GET: RequestHandler = async () => {
-	return new Response(buildSitemapXml(await cachedEntries()), {
+	return new Response(buildSitemapIndexXml(await cachedSitemapEntries()), {
 		headers: {
 			'Content-Type': 'application/xml; charset=utf-8',
 			// Second caching layer: lets the Cloudflare edge (and crawlers) reuse the
