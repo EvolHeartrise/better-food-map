@@ -33,6 +33,7 @@ import {
 	updateItems,
 	deleteLocation,
 	deleteItem,
+	deleteMenu,
 	setLocationClosed
 } from '../src/lib/server/db';
 import { searchableQuery, longestLiteralRun } from '../src/lib/search';
@@ -280,4 +281,100 @@ test('searchableQuery gates on a 3+ character wildcard-free run', () => {
 	expect(searchableQuery('a%b_c\\d')).toBe('');
 	expect(searchableQuery('%%%')).toBe('');
 	expect(longestLiteralRun('a%burrito_x')).toBe('burrito');
+});
+
+// --- migration 0020: mirror maintenance keyed by rowid via *_fts_map --------
+//
+// The 0016 triggers filtered the mirrors on their UNINDEXED id — FTS5 offers
+// no pushdown for that, so every UPDATE/DELETE trigger firing scanned the
+// whole mirror (issue #91). 0020 adds id→rowid map tables and re-keys the
+// triggers on the mirror's own rowid. Pinned here: (a) the maps stay in
+// perfect lockstep through every write path, cascades included, and (b) the
+// trigger's WHERE shape actually reaches FTS5's rowid-equality plan.
+
+/** Zero-desync check: map ↔ mirror agree row-for-row and track the base table. */
+async function mapDesync(db: TestD1, base: 'locations' | 'items') {
+	const count = async (sql: string) =>
+		((await db.prepare(sql).first<{ n: number }>()) ?? { n: -1 }).n;
+	return {
+		// fts rows whose exact (rowid, id) pair is missing from the map…
+		orphans: await count(
+			`SELECT COUNT(*) AS n FROM ${base}_fts f
+			 LEFT JOIN ${base}_fts_map m ON m.fts_rowid = f.rowid AND m.id = f.id
+			 WHERE m.id IS NULL`
+		),
+		// …and map rows pointing at no fts row.
+		strays: await count(
+			`SELECT COUNT(*) AS n FROM ${base}_fts_map m
+			 LEFT JOIN ${base}_fts f ON f.rowid = m.fts_rowid AND f.id = m.id
+			 WHERE f.id IS NULL`
+		),
+		drift:
+			(await count(`SELECT COUNT(*) AS n FROM ${base}_fts_map`)) -
+			(await count(`SELECT COUNT(*) AS n FROM ${base}`))
+	};
+}
+
+test('rowid maps stay in lockstep with the mirrors through every write path', async () => {
+	const db = freshDb();
+	const clean = { orphans: 0, strays: 0, drift: 0 };
+	const expectClean = async () => {
+		expect(await mapDesync(db, 'locations')).toEqual(clean);
+		expect(await mapDesync(db, 'items')).toEqual(clean);
+	};
+
+	// Inserts: independent venue with private-menu items, plus a chain menu.
+	const [indie, spare] = await insertLocations(db, [venue('Indie Cafe'), venue('Spare Venue', 1)]);
+	const [soupId, saladId] = await insertFoods(db, [
+		{ location_id: indie, item_name: 'Mushroom Soup', price: 7 },
+		{ location_id: indie, item_name: 'Garden Salad', price: 6 }
+	]);
+	const brandId = await insertBrand(db, { name: 'Wok Stop', website: null, logo_url: null });
+	const menuId = await insertMenu(db, { brand_id: brandId, name: 'Wok Stop CA', region: 'CA' });
+	await insertMenuItems(db, [
+		{ menu_id: menuId, item_name: 'Chow Mein', price: 10 },
+		{ menu_id: menuId, item_name: 'Spring Rolls', price: 5 }
+	]);
+	await expectClean();
+
+	// Renames rewrite the mirror row in place — same rowid, same map row.
+	await updateLocations(db, [{ id: indie, name: 'Indie Bistro' }]);
+	await updateItems(db, [{ id: soupId, item_name: 'Truffle Pasta' }]);
+	await expectClean();
+	expect(await searchIds(db, 'truffle')).toEqual([indie]);
+
+	// Single deletes and the menu→items cascade (deleting a location leaves its
+	// private menu's rows behind, so the items go one by one here).
+	await deleteItem(db, soupId);
+	await expectClean();
+	await deleteMenu(db, menuId);
+	await expectClean();
+	await deleteItem(db, saladId);
+	await deleteLocation(db, indie);
+	await deleteLocation(db, spare);
+	await expectClean();
+	expect((await db.prepare(`SELECT COUNT(*) AS n FROM items_fts`).first<{ n: number }>())?.n).toBe(
+		0
+	);
+});
+
+test('mirror maintenance reaches the FTS5 rowid-equality plan, not a full scan', async () => {
+	const db = freshDb();
+	const plan = async (sql: string) =>
+		(await db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all<{ detail: string }>()).results
+			.map((r) => r.detail)
+			.join(' | ');
+
+	// The pre-0020 shape — filtering the UNINDEXED id — is a bare virtual-table
+	// scan: idxStr '0:' with no constraint after the colon.
+	const old = await plan(`DELETE FROM items_fts WHERE id = 'x'`);
+	expect(old).toContain('VIRTUAL TABLE INDEX 0:');
+	expect(old).not.toContain('INDEX 0:=');
+
+	// The trigger shape: FTS5 rowid equality ('0:=') fed by an indexed map lookup.
+	const fixed = await plan(
+		`DELETE FROM items_fts WHERE rowid = (SELECT fts_rowid FROM items_fts_map WHERE id = 'x')`
+	);
+	expect(fixed).toContain('VIRTUAL TABLE INDEX 0:=');
+	expect(fixed).toContain('COVERING INDEX');
 });
