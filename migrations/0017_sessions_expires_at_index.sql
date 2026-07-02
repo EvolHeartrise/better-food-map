@@ -1,0 +1,21 @@
+-- Migration 0017: index `sessions.expires_at` for the expiry purge sweep.
+-- Applied with: wrangler d1 migrations apply better-food-map --remote (or --local).
+--
+-- WHY: the auth hook (src/hooks.server.ts) opportunistically purges expired
+-- sessions on ~1% of requests via deleteExpiredSessions (src/lib/server/db.ts),
+-- which runs `DELETE FROM sessions WHERE expires_at <= ?`. The table (migration
+-- 0007) carries only its PK and idx_sessions_user_id — neither helps an
+-- expires_at range predicate — so every sweep is a full table scan of `sessions`.
+-- Harmless at today's size, but the table grows with users, and the sweep's whole
+-- point is to run cheaply in the background forever. This index turns each sweep
+-- into an index range scan that touches only the already-expired rows.
+--
+-- Not partial: unlike idx_locations_closed_at (migration 0015), there is no
+-- static predicate that isolates the interesting rows — every session's
+-- expires_at eventually passes `now`, so the full column is indexed.
+--
+-- ADDITIVE and backward-compatible: the live Worker's queries are unchanged in
+-- meaning either way, so this can be applied before or after any deploy.
+-- Idempotent: CREATE INDEX IF NOT EXISTS, so re-applying is a no-op.
+
+CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions (expires_at);
