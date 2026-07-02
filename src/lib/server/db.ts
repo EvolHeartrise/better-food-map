@@ -1891,15 +1891,17 @@ export async function getMenus(db: D1Like, brandId?: string): Promise<MenuSummar
 	// location_count = OPEN branches serving the menu, so an audit can see each
 	// menu's live footprint without paging list_locations (closed branches keep
 	// their menu_id but are off the map — counting them would overstate coverage).
+	// Correlated subqueries, not LEFT JOINs: two independent joins would fan out
+	// to item_count × location_count rows per menu before GROUP BY collapses them
+	// (~1M+ rows_read for a large chain menu); each subquery is a linear index scan.
 	const sql =
 		`SELECT m.id, m.brand_id, m.name, m.region, m.currency, m.last_verified,
-			COUNT(DISTINCT i.id) AS item_count,
-			COUNT(DISTINCT l.id) AS location_count
-		 FROM menus m
-		 LEFT JOIN items i ON i.menu_id = m.id
-		 LEFT JOIN locations l ON l.menu_id = m.id AND l.closed_at IS NULL` +
+			(SELECT COUNT(*) FROM items i WHERE i.menu_id = m.id) AS item_count,
+			(SELECT COUNT(*) FROM locations l WHERE l.menu_id = m.id AND l.closed_at IS NULL)
+				AS location_count
+		 FROM menus m` +
 		(brandId ? ` WHERE m.brand_id = ?` : ` WHERE m.brand_id IS NOT NULL`) +
-		` GROUP BY m.id ORDER BY m.name`;
+		` ORDER BY m.name`;
 	const stmt = brandId ? db.prepare(sql).bind(brandId) : db.prepare(sql);
 	const { results } = await stmt.all<MenuSummary>();
 	return results;
