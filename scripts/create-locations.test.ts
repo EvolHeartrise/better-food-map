@@ -5,7 +5,13 @@
 // the production D1.
 
 import { test, expect } from 'bun:test';
-import { insertLocations, getLocationById, getFoodByLocation } from '../src/lib/server/db';
+import {
+	insertLocations,
+	getLocationById,
+	getFoodByLocation,
+	insertBrand,
+	insertMenu
+} from '../src/lib/server/db';
 import { freshDb } from './test-d1';
 
 /** Structured address parts shared by fixtures (all required parts present). */
@@ -19,6 +25,9 @@ const ADDR = {
 
 test('insertLocations writes a batch with sources and chain links', async () => {
 	const db = freshDb();
+	// Real parent rows: the harness enforces foreign keys like production D1.
+	await insertBrand(db, { id: 'brand-1', name: 'KFC', website: null, logo_url: null });
+	await insertMenu(db, { id: 'menu-1', brand_id: 'brand-1', name: 'KFC Canada', region: 'CA' });
 	const ids = await insertLocations(db, [
 		{
 			name: 'Independent Spot',

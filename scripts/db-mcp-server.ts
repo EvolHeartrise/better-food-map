@@ -186,14 +186,19 @@ const currencySchema = v.pipe(
 	)
 );
 
-// An ISO-2 country scope for the POI tools (search_poi / import_chain). Distinct
-// from a location's stored `country` (which flows through normalizeCountry on
-// write) — this one is a query filter, so it only needs the 2-letter form.
+// An ISO-2 country scope for the POI tools (search_poi / import_chain). Folded
+// through the SAME normalizeCountry the write path and poiCountry use, so the
+// scope and the per-POI signal can never disagree on spelling: "UK"/"uk"/
+// "United Kingdom" all become "GB". A raw string compare here would silently
+// invert the filter (scope "UK" vs signal "GB" drops every UK POI).
 const countryScopeSchema = v.pipe(
 	v.string(),
 	v.trim(),
-	v.transform((s) => s.toUpperCase()),
-	v.regex(/^[A-Z]{2}$/, 'country must be a 2-letter ISO-3166-1 code, e.g. "CA", "US".')
+	v.check(
+		(s) => normalizeCountry(s) !== null,
+		'country must be an ISO-3166-1 code or a recognized country name, e.g. "CA", "US", "GB"/"UK".'
+	),
+	v.transform((s) => normalizeCountry(s) as string)
 );
 
 // Addresses are stored as STRUCTURED parts (see src/lib/address.ts and migrations
@@ -891,15 +896,20 @@ const importChainArgs = v.pipe(
 			v.pipe(
 				v.string(),
 				v.trim(),
+				v.transform((s) => s.toUpperCase()),
 				v.regex(/^Q\d+$/, 'brand_wikidata must be a Wikidata QID, e.g. "Q37158".'),
 				v.description(
 					"The chain's Wikidata QID, matched against each POI's OSM `brand:wikidata` tag (e.g. " +
 						'"Q37158" for Starbucks — dry_run first and read it off the main bucket\'s ' +
 						'`brand_wikidata` annotation). ALSO accepts name variants no allowlist entry anticipated ' +
 						'("Tim Hortons Express"), but only on TWO-SIGNAL agreement: the POI name must still ' +
-						'resemble an accepted name. A brand-tagged POI with a conflicting name (a real OSM mistag ' +
-						'pattern, e.g. a "Second Cup" carrying the Starbucks QID) is never imported — it stays in ' +
-						'`name_buckets` with its QID for explicit vetting.'
+						'contain (or be contained by) an accepted name. A brand-tagged POI with a conflicting ' +
+						'name (a real OSM mistag pattern, e.g. a "Second Cup" carrying the Starbucks QID) is ' +
+						'never imported, and neither is a co-branded unit name ("Wendy\'s / Tim Hortons" — ' +
+						"importing it under one chain would block the other chain's import of that venue) — both " +
+						'stay in `name_buckets` with their QID for explicit vetting. Buckets whose POIs were ' +
+						'accepted via this path are flagged `matched_via_brand: true` in the dry run — review ' +
+						'them like any allowlist extension.'
 				)
 			)
 		),
@@ -2493,6 +2503,9 @@ const osmTools = [
 					skipped_unresolvable: unresolvable,
 					excluded_existing: selection.excluded_existing,
 					...(input.country ? { excluded_foreign: selection.excluded_foreign } : {}),
+					...(selection.excluded_foreign_sample.length
+						? { excluded_foreign_sample: selection.excluded_foreign_sample }
+						: {}),
 					...(input.brand_wikidata ? { matched_by_brand: selection.matched_by_brand } : {}),
 					scan_truncated: selection.scan_truncated,
 					name_buckets: selection.name_buckets,
@@ -2539,6 +2552,9 @@ const osmTools = [
 				...(input.include_location_ids ? { location_ids: locationIds } : {}),
 				excluded_existing: selection.excluded_existing,
 				...(input.country ? { excluded_foreign: selection.excluded_foreign } : {}),
+				...(selection.excluded_foreign_sample.length
+					? { excluded_foreign_sample: selection.excluded_foreign_sample }
+					: {}),
 				...(input.brand_wikidata ? { matched_by_brand: selection.matched_by_brand } : {}),
 				skipped_unresolvable: unresolvable,
 				...(skippedDuplicates.length ? { skipped_duplicate_locations: skippedDuplicates } : {}),

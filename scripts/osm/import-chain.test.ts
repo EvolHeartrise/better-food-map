@@ -332,3 +332,73 @@ test('partitionImportable separates street-less POIs so max cannot be blocked by
 	expect(unresolvable.missing_city_or_region).toBe(0);
 	expect(unresolvable.sample_osm_ids).toEqual(['n3', 'n4']);
 });
+
+test('brand path: co-branded names are never absorbed, short names skip the overlap floor, QID case folds', async () => {
+	const kfcQid = JSON.stringify({ 'brand:wikidata': 'Q524757' });
+	const store = storeWith([
+		row({ osm_id: 'n1', latitude: 49.1, longitude: -123.1, name: 'KFC', tags_json: kfcQid }),
+		// "KFC Express" ⊃ "KFC" is below namesMatch's 4-char overlap floor — the
+		// brand path must accept it anyway (the QID is the second signal), even
+		// with the QID tagged lower-case in OSM.
+		row({
+			osm_id: 'n2',
+			latitude: 49.2,
+			longitude: -123.2,
+			name: 'KFC Express',
+			tags_json: JSON.stringify({ 'brand:wikidata': 'q524757' })
+		}),
+		// A co-branded unit carrying the QID: containment holds, but importing it
+		// as bare "KFC" would block the other chain — must stay a vetting bucket.
+		row({
+			osm_id: 'n3',
+			latitude: 49.3,
+			longitude: -123.3,
+			name: 'KFC / Taco Bell',
+			tags_json: kfcQid
+		})
+	]);
+	const selection = await selectChainCandidates(store, fakeD1([]), {
+		area: AREA,
+		nameMatch: ['KFC'],
+		brandWikidata: 'Q524757'
+	});
+	expect(selection.matched.map((p) => p.osm_id).toSorted()).toEqual(['n1', 'n2']);
+	expect(selection.matched_by_brand).toBe(1);
+	const byName = new Map(selection.name_buckets.map((b) => [b.name, b]));
+	expect(byName.get('KFC Express')?.matched_via_brand).toBe(true);
+	expect(byName.get('KFC')?.matched_via_brand).toBeUndefined(); // exact allowlist match
+	expect(byName.get('KFC / Taco Bell')?.matched).toBe(false);
+	expect(byName.get('KFC / Taco Bell')?.brand_wikidata).toBe('Q524757');
+});
+
+test('country scope folds spelling variants through normalizeCountry and samples the drops', async () => {
+	const store = storeWith([
+		row({
+			osm_id: 'gb1',
+			latitude: 49.1,
+			longitude: -123.1,
+			name: 'Chain',
+			tags_json: JSON.stringify({ 'addr:country': 'UK' })
+		}),
+		row({
+			osm_id: 'ca1',
+			latitude: 49.2,
+			longitude: -123.2,
+			name: 'Chain',
+			admin_city: 'Vancouver',
+			admin_region: 'BC'
+		})
+	]);
+	// Scope "UK" must fold to GB and keep the UK-signalled POI (whose own signal
+	// also folds to GB) — a raw string compare would drop it.
+	const selection = await selectChainCandidates(store, fakeD1([]), {
+		area: AREA,
+		nameMatch: ['Chain'],
+		country: 'UK'
+	});
+	expect(selection.matched.map((p) => p.osm_id)).toEqual(['gb1']);
+	expect(selection.excluded_foreign).toBe(1);
+	expect(selection.excluded_foreign_sample).toEqual([
+		{ osm_id: 'ca1', name: 'Chain', country: 'CA' }
+	]);
+});
