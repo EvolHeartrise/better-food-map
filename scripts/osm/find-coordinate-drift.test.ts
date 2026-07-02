@@ -9,12 +9,16 @@ interface Loc {
 	name: string;
 	latitude: number;
 	longitude: number;
+	closed_at?: string | null;
 }
 
-/** Minimal D1Like that returns the whole location list for the (param-less) scan query. */
+/** Minimal D1Like that returns the location list for the (param-less) scan query, honouring a `closed_at IS NULL` filter. */
 function fakeD1(locations: Loc[]): D1Like {
 	return {
-		prepare(): D1PreparedLike {
+		prepare(sql: string): D1PreparedLike {
+			const rows = sql.includes('closed_at IS NULL')
+				? locations.filter((l) => !l.closed_at)
+				: locations;
 			const stmt: D1PreparedLike = {
 				bind() {
 					return stmt;
@@ -24,7 +28,7 @@ function fakeD1(locations: Loc[]): D1Like {
 					return results[0] ?? null;
 				},
 				async all<T>() {
-					return { results: locations as T[] };
+					return { results: rows as T[] };
 				},
 				async run() {
 					return { meta: { changes: 0 } };
@@ -113,6 +117,25 @@ test('include_unmatched=false drops no_osm_match locations from the result', asy
 	expect(res.total_mismatches).toBe(1);
 	expect(res.mismatches.map((m) => m.id)).toEqual(['B']);
 	expect(res.counts.no_osm_match).toBe(1); // still reported in the breakdown
+	store.close();
+});
+
+test('closed (soft-deleted) locations are excluded from the scan', async () => {
+	const { store } = fixture();
+	const db = fakeD1([
+		{ id: 'A', name: 'Joe Coffee', latitude: 49.28, longitude: -123.12 },
+		// Closed tombstone with no staging POI — must not surface as no_osm_match.
+		{
+			id: 'Z',
+			name: 'Departed Diner',
+			latitude: 49.3,
+			longitude: -123.12,
+			closed_at: '2026-01-01T00:00:00Z'
+		}
+	]);
+	const res = await findCoordinateDrift(store, db, {});
+	expect(res.scanned).toBe(1);
+	expect(res.counts).toEqual({ drifted: 0, no_osm_match: 0 });
 	store.close();
 });
 
