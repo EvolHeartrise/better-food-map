@@ -452,7 +452,13 @@ export interface LocationListFilter {
 	offset?: number;
 }
 
-/** Escapes LIKE wildcards in user input (paired with `ESCAPE '\'`). */
+/**
+ * Escapes LIKE wildcards in user input (paired with `ESCAPE '\'`). When the
+ * result equals the input, nothing needed escaping — the pattern then carries no
+ * escape character, so the `ESCAPE` clause may be omitted without changing what
+ * the LIKE matches (getSearchMapData relies on this to keep the FTS5 trigram
+ * pushdown, which an ESCAPE clause would disable — see migration 0016).
+ */
 function escapeLikePattern(value: string): string {
 	return value.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
@@ -781,6 +787,12 @@ export function getLocationMapData(db: D1Like, id: string): Promise<MapData> {
  * location overrides are not applied here (the shared menu is what's searched); the
  * client re-filters the resolved menu, so an item made unavailable at one branch
  * simply drops from that card.
+ *
+ * Text matching resolves through the FTS5 trigram mirrors (locations_fts /
+ * items_fts, migration 0016) using the SAME `LIKE '%q%'` patterns as before —
+ * never MATCH — so membership stays substring-exact (including 1–2 character
+ * queries, which just aren't index-accelerated) while the trigram index takes a
+ * 3+-character query from a two-table crawl to an index lookup.
  */
 export interface SearchMapQuery {
 	/** Combined free-text: matched against the venue name OR its item names. */
@@ -801,10 +813,24 @@ export function getSearchMapData(db: D1Like, q: SearchMapQuery): Promise<MapData
 	// one is set, but guard so an empty query can't scan the whole table.
 	if (!hasText && !hasDiet) return Promise.resolve({ locations: [], menus: {}, menuMeta: {} });
 
-	const namePattern = hasText ? `%${escapeLikePattern(text)}%` : '';
+	// Both text dimensions resolve through the FTS5 trigram mirrors (migration 0016):
+	// the pattern is the exact `%q%` substring LIKE as ever, but evaluated against the
+	// FTS table, where the trigram index can serve it. The `ESCAPE` clause is appended
+	// ONLY when the query contains a `%`/`_`/`\` that must match literally: SQLite
+	// forwards only two-argument LIKEs to a virtual table, so LIKE+ESCAPE would force
+	// a full FTS scan (the lesson recorded on the old tags_fts, migration 0006) — and
+	// when nothing was escaped the pattern carries no `\`, so the two forms match
+	// identically. Wildcard-carrying queries are rare and stay correct, just unindexed.
+	const escapedText = escapeLikePattern(text);
+	const namePattern = hasText ? `%${escapedText}%` : '';
+	const like = escapedText === text ? 'LIKE ?' : "LIKE ? ESCAPE '\\'";
+	// The venue-name dimension, joined back to the outer row by id. `locations.id`
+	// names the outer table explicitly (it is always the unaliased `locations`
+	// wherever `locFilter` is spliced in — see queryMapData); a stale mirror row can
+	// only ever un-match, never invent a venue.
+	const nameMatch = `locations.id IN (SELECT f.id FROM locations_fts f WHERE f.name ${like})`;
 	// A correlated test that one of a venue's items carries the selected diet tag. The
-	// outer table is referenced as `locations.menu_id` (it is always the unaliased
-	// `locations` wherever `locFilter` is spliced in — see queryMapData), since `items`
+	// outer table is referenced as `locations.menu_id` (see above), since `items`
 	// also has a `menu_id` column and a bare name would be ambiguous.
 	const dietExists = `EXISTS (SELECT 1 FROM item_tags it WHERE it.item_id = i.id AND it.tag_id = ?)`;
 
@@ -818,23 +844,26 @@ export function getSearchMapData(db: D1Like, q: SearchMapQuery): Promise<MapData
 	// Name match with no diet active → the whole menu is relevant, so the venue is kept
 	// even with an empty menu (no item is required).
 	if (hasText && !hasDiet) {
-		disjuncts.push("name LIKE ? ESCAPE '\\'");
+		disjuncts.push(nameMatch);
 		params.push(namePattern);
 	}
 	// Name match WITH a diet active → kept only if some item carries the diet tag
 	// (diet always narrows), so a name-only match with no diet-matching item drops.
 	if (hasText && hasDiet) {
 		disjuncts.push(
-			`(name LIKE ? ESCAPE '\\' AND EXISTS (SELECT 1 FROM items i WHERE i.menu_id = locations.menu_id AND ${dietExists}))`
+			`(${nameMatch} AND EXISTS (SELECT 1 FROM items i WHERE i.menu_id = locations.menu_id AND ${dietExists}))`
 		);
 		params.push(namePattern, q.dietTagId as string);
 	}
 	// An item satisfying every active predicate: its name contains `query` (when set)
-	// AND it carries the diet tag (when set). The SAME item must satisfy both.
+	// AND it carries the diet tag (when set). The SAME item `i` must satisfy both. The
+	// text side resolves through items_fts (an uncorrelated subquery — SQLite
+	// materializes it once per statement) and joins back to `items` by id, so menu
+	// membership always comes from `items`, never the mirror.
 	{
 		const itemConds: string[] = [];
 		if (hasText) {
-			itemConds.push("i.item_name LIKE ? ESCAPE '\\'");
+			itemConds.push(`i.id IN (SELECT f.id FROM items_fts f WHERE f.item_name ${like})`);
 			params.push(namePattern);
 		}
 		if (hasDiet) {
