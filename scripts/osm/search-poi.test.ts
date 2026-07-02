@@ -29,13 +29,13 @@ function fakeD1(locations: ExistingLoc[]): D1Like {
 					return results[0] ?? null;
 				},
 				async all<T>() {
-					const [minLat, maxLat, minLon, maxLon] = params as number[];
+					const [minLat, maxLat, minLng, maxLng] = params as number[];
 					const results = locations.filter(
 						(l) =>
 							l.latitude >= minLat &&
 							l.latitude <= maxLat &&
-							l.longitude >= minLon &&
-							l.longitude <= maxLon
+							l.longitude >= minLng &&
+							l.longitude <= maxLng
 					);
 					return { results: results as T[] };
 				},
@@ -192,7 +192,7 @@ test('bbox query path works and respects limit + truncated flag', async () => {
 	);
 	const store = storeWith(rows);
 	const res = await searchPoi(store, null, {
-		bbox: { minLat: 49.2, maxLat: 49.3, minLon: -123.2, maxLon: -123.0 },
+		bbox: { minLat: 49.2, maxLat: 49.3, minLng: -123.2, maxLng: -123.0 },
 		exclude_existing: false,
 		limit: 2
 	});
@@ -375,7 +375,7 @@ test('country scope drops foreign-signalled POIs, keeps unknowns, and counts the
 		// No country signal → kept (cannot be proven foreign).
 		row({ osm_id: 'unk1', latitude: 49.2, longitude: -123.2, name: 'Subway' })
 	]);
-	const bbox = { minLat: 45, minLon: -125, maxLat: 51, maxLon: -60 };
+	const bbox = { minLat: 45, minLng: -125, maxLat: 51, maxLng: -60 };
 
 	const scoped = await searchPoi(store, null, {
 		bbox,

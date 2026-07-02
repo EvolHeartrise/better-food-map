@@ -4,9 +4,9 @@
 //
 // Pure and runtime-agnostic (no node/bun/Worker APIs), so every layer shares
 // ONE definition of "what a normalized address looks like":
-//   • the Worker/app  — src/lib/server/db.ts derives the display line from parts
-//   • the MCP server  — scripts/db-mcp-server.ts canonicalizes agent-supplied parts
-//   • the backfill    — scripts/backfill-address-parts.ts re-derives parts from OSM
+//   • the Worker/app   — src/lib/server/db.ts derives the display line from parts
+//   • the MCP server   — scripts/db-mcp-server.ts canonicalizes agent-supplied parts
+//   • the OSM pipeline — scripts/osm/map-feature.ts composes each POI's address parts
 //
 // A location stores `street`, `city`, `region`, `country` (all required) and an
 // optional `postcode`. `region` is a 2-letter province/state code and `country`

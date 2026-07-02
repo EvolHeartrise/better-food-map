@@ -23,7 +23,6 @@ import {
 	setLocationItemOverride,
 	deleteLocationItemOverride,
 	getLocationItemOverrides,
-	updateItem,
 	updateItems,
 	updateMenu,
 	updateLocations,
@@ -167,7 +166,7 @@ test('editing and deleting items refresh the parent menu', async () => {
 	]);
 
 	await staleMenu(db, menuId);
-	await updateItem(db, a, { price: 9 });
+	await updateItems(db, [{ id: a, price: 9 }]);
 	expect(await menuDate(db, menuId)).toBe(currentVerificationDate());
 
 	await staleMenu(db, menuId);
@@ -224,25 +223,25 @@ test('setLocationItemOverride is a partial patch (omitted field is preserved)', 
 
 // --- add_sources append -----------------------------------------------------
 
-test('updateItem add_sources appends and de-dupes; sources replaces', async () => {
+test('updateItems add_sources appends and de-dupes; sources replaces', async () => {
 	const db = freshDb();
 	const [locId] = await insertLocations(db, [indieLocation()]);
 	const [itemId] = await insertFoods(db, [
 		{ location_id: locId, item_name: 'X', sources: [{ url: 'https://a', label: null }] }
 	]);
 
-	await updateItem(db, itemId, { addSources: [{ url: 'https://b', label: 'B' }] });
+	await updateItems(db, [{ id: itemId, addSources: [{ url: 'https://b', label: 'B' }] }]);
 	expect((await getItemById(db, itemId))?.sources.map((s) => s.url)).toEqual([
 		'https://a',
 		'https://b'
 	]);
 
 	// Re-appending an existing url is a no-op (de-duped by url).
-	await updateItem(db, itemId, { addSources: [{ url: 'https://b', label: 'B' }] });
+	await updateItems(db, [{ id: itemId, addSources: [{ url: 'https://b', label: 'B' }] }]);
 	expect((await getItemById(db, itemId))?.sources).toHaveLength(2);
 
 	// `sources` replaces the whole set.
-	await updateItem(db, itemId, { sources: [{ url: 'https://c', label: null }] });
+	await updateItems(db, [{ id: itemId, sources: [{ url: 'https://c', label: null }] }]);
 	expect((await getItemById(db, itemId))?.sources.map((s) => s.url)).toEqual(['https://c']);
 });
 

@@ -17,8 +17,8 @@ test('bboxAround contains the centre and is roughly symmetric', () => {
 	const box = bboxAround(lat, lon, 1); // 1 km
 	expect(box.minLat).toBeLessThan(lat);
 	expect(box.maxLat).toBeGreaterThan(lat);
-	expect(box.minLon).toBeLessThan(lon);
-	expect(box.maxLon).toBeGreaterThan(lon);
+	expect(box.minLng).toBeLessThan(lon);
+	expect(box.maxLng).toBeGreaterThan(lon);
 	// ~1 km north of centre should sit inside the box's latitude span.
 	const northEdge = haversineMeters(lat, lon, box.maxLat, lon);
 	expect(northEdge).toBeGreaterThan(950);
@@ -27,7 +27,7 @@ test('bboxAround contains the centre and is roughly symmetric', () => {
 
 test('bboxAround clamps longitude span at high latitude without blowing up', () => {
 	const box = bboxAround(89.9, 0, 10);
-	expect(Number.isFinite(box.minLon)).toBe(true);
-	expect(Number.isFinite(box.maxLon)).toBe(true);
+	expect(Number.isFinite(box.minLng)).toBe(true);
+	expect(Number.isFinite(box.maxLng)).toBe(true);
 	expect(box.maxLat).toBeLessThanOrEqual(90);
 });
