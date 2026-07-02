@@ -1,6 +1,7 @@
 import * as v from 'valibot';
 import { query, getRequestEvent } from '$app/server';
 import { requireDb as db } from '$lib/server/context';
+import { ttlMemo } from '$lib/server/memo';
 import {
 	getMapData,
 	getLocationMapData,
@@ -85,8 +86,19 @@ export const getBrands = query(async (): Promise<Brand[]> => {
  * Aggregate coverage totals (locations, items, cities) for the zoomed-out landing
  * overlay. Public — no sign-in required, and it returns only counts, never any row
  * data.
+ *
+ * Memoised for 5 minutes: the query behind it is three full-table COUNT scans run
+ * for every landing-page visitor, yet the totals only move when data is ingested,
+ * so minutes of staleness is invisible on the overlay. The cache is per-isolate
+ * (module scope in a Worker isolate — each isolate warms its own copy, eviction
+ * resets it), which is fine here: the worst case is one extra scan per isolate
+ * per window. `db()` reads the request-scoped event, so it must be resolved
+ * inside the memoised fn — safe, because a cache miss only ever happens while a
+ * request is being served.
  */
-export const getStats = query((): Promise<MapStats> => getStatsFromDb(db()));
+const cachedStats = ttlMemo(5 * 60 * 1000, () => getStatsFromDb(db()));
+
+export const getStats = query((): Promise<MapStats> => cachedStats());
 
 /**
  * Best-effort opening location for the map, from Cloudflare's edge IP
