@@ -1,4 +1,8 @@
 import { test, expect } from 'bun:test';
+import { Database } from 'bun:sqlite';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { rmSync } from 'node:fs';
 import { OsmPoiStore } from './poi-store';
 import type { PoiRow } from './map-feature';
 
@@ -147,6 +151,52 @@ test('openReadonly throws a helpful error when the file is missing', () => {
 	expect(() => OsmPoiStore.openReadonly('/tmp/does-not-exist-osm-poi.sqlite')).toThrow(
 		/osm:extract/
 	);
+});
+
+test('searchBbox filters by normalized_name with exact equality', () => {
+	const store = freshStore();
+	store.insertMany('test', [
+		row({ osm_id: 'n1', latitude: 49.1, longitude: -123.1, name: 'A&W' }),
+		row({ osm_id: 'n2', latitude: 49.2, longitude: -123.2, name: 'A and W' }),
+		row({ osm_id: 'n3', latitude: 49.3, longitude: -123.3, name: 'A and W Restaurant' }),
+		row({ osm_id: 'n4', latitude: 49.4, longitude: -123.4, name: null })
+	]);
+	const bbox = { minLat: 48, minLng: -124, maxLat: 50, maxLng: -122 };
+	// Both "&" and "and" spellings share the pre-normalized value; superstrings
+	// and nameless rows do not.
+	const hits = store.searchBbox(bbox, { normalized_name: 'aandw' });
+	expect(hits.map((p) => p.osm_id).toSorted()).toEqual(['n1', 'n2']);
+	store.close();
+});
+
+test('openReadonly self-heals a store built before normalized_name existed', () => {
+	const path = join(tmpdir(), `poi-store-legacy-${process.pid}-${Math.random()}.sqlite`);
+	// A legacy store: pre-normalized_name schema, one row inserted raw.
+	const legacy = new Database(path, { create: true });
+	legacy.run(`CREATE TABLE osm_poi (
+		osm_id TEXT PRIMARY KEY, osm_type TEXT NOT NULL, numeric_id INTEGER NOT NULL,
+		name TEXT, osm_class TEXT NOT NULL, suggested_category TEXT, cuisine TEXT,
+		latitude REAL NOT NULL, longitude REAL NOT NULL, address TEXT, phone TEXT,
+		website TEXT, opening_hours TEXT, diet_markers TEXT NOT NULL DEFAULT '[]',
+		tags_json TEXT NOT NULL DEFAULT '{}', address_source TEXT, admin_city TEXT,
+		admin_region TEXT, region TEXT NOT NULL
+	)`);
+	legacy.run(
+		`INSERT INTO osm_poi (osm_id, osm_type, numeric_id, name, osm_class, latitude, longitude, region)
+		 VALUES ('n1', 'node', 1, 'A and W', 'fast_food', 49.1, -123.1, 'test')`
+	);
+	legacy.close();
+	try {
+		const store = OsmPoiStore.openReadonly(path);
+		const bbox = { minLat: 48, minLng: -124, maxLat: 50, maxLng: -122 };
+		// The one-time migration backfilled the column, so the equality scan works.
+		expect(store.searchBbox(bbox, { normalized_name: 'aandw' }).map((p) => p.osm_id)).toEqual([
+			'n1'
+		]);
+		store.close();
+	} finally {
+		for (const suffix of ['', '-wal', '-shm']) rmSync(path + suffix, { force: true });
+	}
 });
 
 test('searchBbox filters by brand:wikidata from tags_json', () => {
