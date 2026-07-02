@@ -517,8 +517,8 @@
 	// restores focus — the ✕ button, Escape, a bare-map click, and browser Back
 	// (popstate), which never goes through `closeDetail`. The searchbar unmounts
 	// while a detail is open, so the pre-open element is often gone by close time;
-	// then focus falls back to the search input, or the map canvas when the
-	// landing overlay is up (no searchbar to return to).
+	// the close branch below picks a fallback that keeps keyboard users placed
+	// without yanking focus (or a software keyboard) at pointer users.
 	let detailReturnFocus: HTMLElement | null = null;
 	// Effect-local bookkeeping (which transition just happened), not UI state.
 	let detailWasOpen = false;
@@ -536,23 +536,47 @@
 			if (!panel.contains(active)) panel.focus();
 		} else if (!open && detailWasOpen) {
 			detailWasOpen = false;
-			const fallback =
-				document.querySelector<HTMLElement>('.searchpill__input') ??
-				document.querySelector<HTMLElement>('.map canvas');
-			const target = detailReturnFocus?.isConnected ? detailReturnFocus : fallback;
+			const saved = detailReturnFocus;
 			detailReturnFocus = null;
-			target?.focus();
+			if (saved?.isConnected) {
+				saved.focus();
+			} else if (saved) {
+				// The pre-open element unmounted with the searchbar (a keyboard user
+				// selected from the results list): hand focus to the freshly remounted
+				// search input — unless it's display:none behind the collapsed narrow-
+				// screen filters toggle (offsetParent is null then; focus() would
+				// silently no-op) — else the map canvas (MapLibre gives it a tabindex).
+				const input = document.querySelector<HTMLElement>('.searchpill__input');
+				const target = input?.offsetParent
+					? input
+					: document.querySelector<HTMLElement>('.map canvas');
+				target?.focus();
+			} else if (panel?.contains(document.activeElement)) {
+				// Nothing held focus before the open (a pointer user — taps don't focus
+				// on iOS), but focus since landed inside the closing panel (its ✕
+				// button): park it on the map canvas so it isn't dropped to <body>
+				// when the panel unmounts. The canvas, unlike the search input, never
+				// summons a software keyboard.
+				document.querySelector<HTMLElement>('.map canvas')?.focus();
+			}
+			// Otherwise leave focus alone: a pointer-driven close never moved focus,
+			// and grabbing the search input here would pop the on-screen keyboard.
 		}
 	});
 
+	// Whether the account popover is open (bound below): while a detail is open
+	// it's the only other window-level Escape consumer still mounted (the diet
+	// selector unmounts with the searchbar), and Escape should close only the
+	// topmost layer.
+	let accountMenuOpen = $state(false);
+
 	// Escape closes the open detail — the keyboard counterpart to the bare-map
-	// click. It yields to the window-level popovers (account menu, diet selector),
-	// which handle Escape themselves: one press closes only the topmost layer. The
-	// DOM check covers whichever registration order their window listeners got;
-	// `defaultPrevented` covers a popover whose handler already ran.
+	// click. It yields to the account popover, which handles Escape itself; the
+	// `defaultPrevented` check additionally covers any Escape consumer whose
+	// window handler happened to run first.
 	function onWindowKeydown(event: KeyboardEvent): void {
 		if (event.key !== 'Escape' || !selectedId || event.defaultPrevented) return;
-		if (document.querySelector('.account__popover, .diet .menu')) return;
+		if (accountMenuOpen) return;
 		event.preventDefault();
 		closeDetail();
 	}
@@ -902,7 +926,7 @@
 	     free over the map, laid out as a horizontal row. On narrow screens the row
 	     collapses behind the "Filters" toggle. -->
 	<div class="searchbar" role="search" aria-label="Search and filters">
-		<AccountMenu {user} />
+		<AccountMenu {user} bind:open={accountMenuOpen} />
 
 		<!-- Search and filter controls are hidden while the landing overlay is up (the
 		     globe is just a backdrop then) AND while a location is open (its detail
