@@ -66,7 +66,12 @@ export function resolveConfig(overrides: Partial<D1HttpConfig> = {}): D1HttpConf
  */
 export function toSqlLiteral(value: unknown): string {
 	if (value === null || value === undefined) return 'NULL';
-	if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'NULL';
+	if (typeof value === 'number') {
+		// SQL has no literal for NaN/Infinity; degrading to NULL would silently
+		// drop the value, so refuse the bind instead.
+		if (!Number.isFinite(value)) throw new Error(`non-finite number cannot be bound: ${value}`);
+		return String(value);
+	}
 	if (typeof value === 'bigint') return value.toString();
 	if (typeof value === 'boolean') return value ? '1' : '0';
 	// Remaining values are strings; single-quote and double up embedded quotes.

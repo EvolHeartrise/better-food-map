@@ -175,7 +175,7 @@ const SERVER_INSTRUCTIONS =
 
 const latitudeSchema = v.pipe(v.number(), v.minValue(-90), v.maxValue(90));
 const longitudeSchema = v.pipe(v.number(), v.minValue(-180), v.maxValue(180));
-const priceSchema = v.pipe(v.number(), v.minValue(0));
+const priceSchema = v.pipe(v.number(), v.finite(), v.minValue(0));
 
 // Currency is a property of the MENU (one region → one currency), so prices on it
 // are unambiguous. Stored upper-case; accepted as any case. Defaults to CAD.
