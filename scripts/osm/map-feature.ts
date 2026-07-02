@@ -57,6 +57,14 @@ export interface PoiRow {
 	diet_markers: string[];
 	/** Full original OSM tag set, JSON-encoded, for reference/debugging. */
 	tags_json: string;
+	/**
+	 * Municipality from the extract-time OSM admin-boundary join (enrich-admin.ts);
+	 * null until enriched. The "OSM admin context" city fallback for POIs whose own
+	 * tags carry none.
+	 */
+	admin_city: string | null;
+	/** Province/state from the same join, as a 2-letter code when resolvable. */
+	admin_region: string | null;
 }
 
 /** `amenity` values we treat as food POIs. */
@@ -282,6 +290,38 @@ export function addressPartsFromLine(line: string | null | undefined): PoiAddres
 	return Object.keys(out).length ? out : undefined;
 }
 
+/**
+ * The best structured address parts a staged POI can offer, merged per part in
+ * provenance order: the POI's own `addr:*` tags, then parts recovered from its
+ * enriched single-line address (containing building / Overture), then the
+ * extract-time admin-boundary join for city/region (see osm/enrich-admin.ts).
+ * This is what create_locations/import_chain resolve an `osm_id` import against,
+ * and what search_poi advertises — so a candidate's `address_parts` always show
+ * exactly what an import would store. Undefined when no source has any part.
+ * Values are raw (as the source wrote them); the MCP server normalizes them.
+ */
+export function effectivePoiAddressParts(poi: {
+	tags_json: string;
+	address: string | null;
+	admin_city: string | null;
+	admin_region: string | null;
+}): PoiAddressParts | undefined {
+	const own = osmOwnAddressParts(poi.tags_json) ?? {};
+	const line = addressPartsFromLine(poi.address) ?? {};
+	const out: PoiAddressParts = {};
+	const street = own.street ?? line.street;
+	const city = own.city ?? line.city ?? poi.admin_city ?? undefined;
+	const region = own.region ?? line.region ?? poi.admin_region ?? undefined;
+	const postcode = own.postcode ?? line.postcode;
+	const country = own.country ?? line.country;
+	if (street) out.street = street;
+	if (city) out.city = city;
+	if (region) out.region = region;
+	if (postcode) out.postcode = postcode;
+	if (country) out.country = country;
+	return Object.keys(out).length ? out : undefined;
+}
+
 /** Venue-level dietary markers OSM explicitly asserts (`diet:x=yes|only`), mapped to tag ids. */
 export function dietMarkers(props: Record<string, string>): string[] {
 	const out: string[] = [];
@@ -407,7 +447,9 @@ export function mapFeature(feature: OsmFeature): PoiRow | null {
 		website: blankToNull(props.website ?? props['contact:website']),
 		opening_hours: blankToNull(props.opening_hours),
 		diet_markers: dietMarkers(props),
-		tags_json: JSON.stringify(props)
+		tags_json: JSON.stringify(props),
+		admin_city: null,
+		admin_region: null
 	};
 }
 
