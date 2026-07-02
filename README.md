@@ -45,13 +45,14 @@ the scripts they cover; run them with `bun test scripts`.
 ## Database
 
 Data lives in a **Cloudflare D1** database (serverless SQLite). The schema
-evolves through the numbered files in `migrations/` (0001–0015): `0001` is the
+evolves through the numbered files in `migrations/` (0001–0017): `0001` is the
 initial schema, `0002`/`0004` add and then unify the chain model (brands, shared
 menus, one `items` table), `0007` adds users/sessions/likes, `0008`/`0009` split
 addresses into structured parts, `0011` adds per-menu currency, `0012` requires
 `menus.last_verified`, `0013`/`0014` add then simplify the user dietary profile
-(and drop ingredient tags + search history), and `0015` adds soft-delete for
-permanently closed venues. The data-access layer in `src/lib/server/db.ts` is
+(and drop ingredient tags + search history), `0015` adds soft-delete for
+permanently closed venues, `0016` adds FTS5 trigram search mirrors for venue and
+item names, and `0017` indexes session expiry for the purge sweep. The data-access layer in `src/lib/server/db.ts` is
 runtime-agnostic — every function is async and takes a D1 handle, so the same
 code runs against either the Worker's `platform.env.DB` binding (the deployed
 app) or the HTTP-backed client in `src/lib/server/d1-http.ts` (local tooling).
