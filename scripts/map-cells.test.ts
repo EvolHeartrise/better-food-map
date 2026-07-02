@@ -20,7 +20,12 @@ import {
 	type LocationInsert,
 	type MapCellsData
 } from '../src/lib/server/db';
-import { assembleCellsData, mergeCellSlices, splitCellSlices } from '../src/lib/map-cells';
+import {
+	assembleCellsData,
+	mergeCellSlices,
+	mergeMapData,
+	splitCellSlices
+} from '../src/lib/map-cells';
 import { cellKey, cellsForBounds, levelCell, levelForBounds, MIN_REP_LEVEL } from '../src/lib/grid';
 import { CellStore, CELL_STORE_MAX, CELL_TTL_MS } from '../src/lib/cell-store';
 import { freshDb } from './test-d1';
@@ -294,4 +299,47 @@ test('an item-less menu keeps its menuMeta through slicing', async () => {
 	const slices = splitCellSlices(data);
 	const withLoc = [...slices.values()].find((slice) => slice.locations.length > 0);
 	expect(withLoc?.menuMeta[menuId]).toBeDefined();
+});
+
+// The page renders the union of the global search set and the viewport's
+// browse cells while a query/diet is active (see +page.svelte activeData) —
+// the two payloads OVERLAP wherever a search match is also on screen, so the
+// merge must dedupe by venue id (keeping the primary set's copy and order)
+// and collapse a menu carried by both.
+test('mergeMapData unions overlapping payloads, primary-first and deduped', async () => {
+	const db = freshDb();
+	const [a, b, c] = await insertLocations(db, [
+		venue({ name: 'Green Spot', latitude: 49.28, longitude: -123.12 }),
+		venue({ name: 'Plain Diner', latitude: 49.281, longitude: -123.121 }),
+		venue({ name: 'Far Cafe', latitude: 49.4, longitude: -123.3 })
+	]);
+	await insertFoods(db, [
+		{ location_id: a, item_name: 'Tofu Bowl', tags: ['vegan'], price: 10 },
+		{ location_id: b, item_name: 'Burger', price: 9 },
+		{ location_id: c, item_name: 'Vegan Cookie', tags: ['vegan'], price: 4 }
+	]);
+	// "Viewport" payload: what's on screen (a and b). "Search" payload: the
+	// nearest matches (a again, plus the off-screen c) with the menus they
+	// reference — the same self-contained shape getSearchMapData returns.
+	const view = (
+		await fetchViewport(db, { minLat: 49.27, maxLat: 49.29, minLng: -123.13, maxLng: -123.11 })
+	).data;
+	const far = (
+		await fetchViewport(db, { minLat: 49.39, maxLat: 49.41, minLng: -123.31, maxLng: -123.29 })
+	).data;
+	const search = {
+		locations: [...view.locations.filter((l) => l.id === a), ...far.locations],
+		menus: { [`pm-${a}`]: view.menus[`pm-${a}`], [`pm-${c}`]: far.menus[`pm-${c}`] },
+		menuMeta: { [`pm-${a}`]: view.menuMeta[`pm-${a}`], [`pm-${c}`]: far.menuMeta[`pm-${c}`] }
+	};
+
+	const merged = mergeMapData(search, view);
+	// Primary (search) order leads; the viewport-only venue appends; the shared
+	// venue appears exactly once.
+	expect(merged.locations.map((l) => l.id)).toEqual([a, c, b]);
+	// Menus from both sides survive under their ids, the shared one collapsed.
+	expect(Object.keys(merged.menus).toSorted()).toEqual(
+		[`pm-${a}`, `pm-${b}`, `pm-${c}`].toSorted()
+	);
+	expect(merged.menuMeta[`pm-${a}`]).toBeDefined();
 });
