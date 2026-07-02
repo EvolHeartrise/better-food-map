@@ -846,13 +846,20 @@ export function getSearchMapData(db: D1Like, q: SearchMapQuery): Promise<MapData
 	const like = escapedText === text ? 'LIKE ?' : "LIKE ? ESCAPE '\\'";
 	// The venue-name dimension, joined back to the outer row by id. `locations.id`
 	// names the outer table explicitly (it is always the unaliased `locations`
-	// wherever `locFilter` is spliced in — see queryMapData); a stale mirror row can
+	// where `locFilter` is spliced in — see queryMapData); a stale mirror row can
 	// only ever un-match, never invent a venue.
 	const nameMatch = `locations.id IN (SELECT f.id FROM locations_fts f WHERE f.name ${like})`;
-	// A correlated test that one of a venue's items carries the selected diet tag. The
-	// outer table is referenced as `locations.menu_id` (see above), since `items`
-	// also has a `menu_id` column and a bare name would be ambiguous.
-	const dietExists = `EXISTS (SELECT 1 FROM item_tags it WHERE it.item_id = i.id AND it.tag_id = ?)`;
+	// Menus with at least one item carrying the selected diet tag, as an
+	// UNCORRELATED set (driven off idx_item_tags_tag_id, computed once). Every
+	// disjunct below tests `locations.menu_id IN (…such a set…)` rather than the
+	// correlated `EXISTS (… i.menu_id = locations.menu_id …)` it used to be: the
+	// correlated form forced a full scan of `locations` that re-probed a chain's
+	// SHARED menu once per branch — the cost that made searches crawl once whole
+	// chains were imported — while the IN-of-uncorrelated-set form lets SQLite
+	// serve the whole OR as a MULTI-INDEX OR union over the locations PK and
+	// idx_locations_menu_id, touching only the matching rows. (`NULL IN (…)` is
+	// never true, so a venue with no menu is excluded exactly as EXISTS did.)
+	const dietMenus = `SELECT i.menu_id FROM items i JOIN item_tags it ON it.item_id = i.id WHERE it.tag_id = ?`;
 
 	// Membership is an OR of independent disjuncts, built so each disjunct's `?`
 	// placeholders are pushed onto `params` in the exact left-to-right order they
@@ -870,29 +877,33 @@ export function getSearchMapData(db: D1Like, q: SearchMapQuery): Promise<MapData
 	// Name match WITH a diet active → kept only if some item carries the diet tag
 	// (diet always narrows), so a name-only match with no diet-matching item drops.
 	if (hasText && hasDiet) {
-		disjuncts.push(
-			`(${nameMatch} AND EXISTS (SELECT 1 FROM items i WHERE i.menu_id = locations.menu_id AND ${dietExists}))`
-		);
+		disjuncts.push(`(${nameMatch} AND locations.menu_id IN (${dietMenus}))`);
 		params.push(namePattern, q.dietTagId as string);
 	}
 	// An item satisfying every active predicate: its name contains `query` (when set)
 	// AND it carries the diet tag (when set). The SAME item `i` must satisfy both. The
 	// text side resolves through items_fts (an uncorrelated subquery — SQLite
 	// materializes it once per statement) and joins back to `items` by id, so menu
-	// membership always comes from `items`, never the mirror.
-	{
-		const itemConds: string[] = [];
-		if (hasText) {
-			itemConds.push(`i.id IN (SELECT f.id FROM items_fts f WHERE f.item_name ${like})`);
-			params.push(namePattern);
-		}
+	// membership always comes from `items`, never the mirror. With text active the
+	// menu set is driven off the (small) trigram match list, so the per-item diet
+	// test is a cheap covering-PK probe; the text-free variant instead uses
+	// `dietMenus`, whose join drives off idx_item_tags_tag_id (measurably faster
+	// than scanning `items` and probing tags per row).
+	if (hasText) {
+		const itemConds = [`i.id IN (SELECT f.id FROM items_fts f WHERE f.item_name ${like})`];
+		params.push(namePattern);
 		if (hasDiet) {
-			itemConds.push(dietExists);
+			itemConds.push(
+				`EXISTS (SELECT 1 FROM item_tags it WHERE it.item_id = i.id AND it.tag_id = ?)`
+			);
 			params.push(q.dietTagId as string);
 		}
 		disjuncts.push(
-			`EXISTS (SELECT 1 FROM items i WHERE i.menu_id = locations.menu_id AND ${itemConds.join(' AND ')})`
+			`locations.menu_id IN (SELECT i.menu_id FROM items i WHERE ${itemConds.join(' AND ')})`
 		);
+	} else {
+		disjuncts.push(`locations.menu_id IN (${dietMenus})`);
+		params.push(q.dietTagId as string);
 	}
 
 	// Rank by an approximate squared planar distance from the anchor: latitude in
@@ -926,17 +937,21 @@ const IMPORTANCE_MAP_CAP = `ORDER BY (menu_id IS NOT NULL) DESC, name, id LIMIT 
 /**
  * Shared implementation of {@link getMapData} / {@link getLocationMapData} /
  * {@link getSearchMapData}. `locFilter` is a predicate over the `locations` table
- * (its `?` placeholders bound from the front of `params`); every sub-row read is
- * scoped to the locations it selects — and the menus those locations reference —
- * so neither a viewport box, a single-id lookup nor a search ever pulls an
- * unscoped table.
+ * (its `?` placeholders bound from the front of `params`); `capClause` is the
+ * trailing `ORDER BY … LIMIT …` that both bounds and orders the location set,
+ * any `?` placeholders it carries (e.g. a distance anchor) bound from the END of
+ * `params`, AFTER the `locFilter` ones.
  *
- * `capClause` is the trailing `ORDER BY … LIMIT …` that both bounds and orders the
- * location set. It is applied IDENTICALLY in `inLocations` and the main row read,
- * so both select the exact same rows. Any `?` placeholders it carries (e.g. a
- * distance anchor) are bound from the END of `params`, AFTER the `locFilter` ones
- * — the two clauses appear in that fixed order in every statement, so one
- * `.bind(...params)` is correct everywhere.
+ * The filter is evaluated EXACTLY ONCE — the main row read. Every sub-row read
+ * is keyed by the location/menu ids that read returned (one JSON-array bind
+ * each), and the whole set of sub-reads travels as a single `db.batch()`. Both
+ * halves of that shape matter at scale:
+ *   • an expensive `locFilter` (the search disjuncts, a viewport box) is never
+ *     re-evaluated per sub-read — it used to be spliced into every statement as
+ *     a nested subquery, multiplying its cost by the statement count;
+ *   • the batch is one D1 round trip instead of seven, executed as one atomic
+ *     unit, so the sub-reads also see a single consistent snapshot rather than
+ *     independently-raced reads.
  */
 async function queryMapData(
 	db: D1Like,
@@ -944,22 +959,36 @@ async function queryMapData(
 	params: (string | number)[],
 	capClause: string = DEFAULT_MAP_CAP
 ): Promise<MapData> {
-	// Sub-selects that resolve, from `locFilter`, the in-scope location ids, the
-	// menus they reference, and the items on those menus.
-	//
-	// The location set is capped via `capClause`'s deterministic `ORDER BY … LIMIT`
-	// applied IDENTICALLY here in `inLocations` and in the main row read below, so
-	// both select the exact same rows — every scoped sub-read therefore covers
-	// precisely the returned set.
-	// `closed_at IS NULL` hides soft-deleted (permanently-closed) venues from every
-	// map/detail/search read this powers (migration 0015). It carries no bind param, so
-	// the `.bind(...params)` alignment below is unchanged.
-	const inLocations = `SELECT id FROM locations WHERE closed_at IS NULL AND (${locFilter}) ${capClause}`;
-	const inMenus = `SELECT DISTINCT menu_id FROM locations WHERE menu_id IS NOT NULL AND id IN (${inLocations})`;
-	const inItems = `SELECT id FROM items WHERE menu_id IN (${inMenus})`;
+	// The one evaluation of `locFilter`: the capped, `capClause`-ordered location
+	// rows themselves. `closed_at IS NULL` hides soft-deleted (permanently-closed)
+	// venues from every map/detail/search read this powers (migration 0015). It
+	// carries no bind param, so the `.bind(...params)` alignment is untouched.
+	const { results: locations } = await db
+		.prepare(
+			`SELECT ${LOCATION_FIELDS} FROM locations WHERE closed_at IS NULL AND (${locFilter}) ${capClause}`
+		)
+		.bind(...params)
+		.all<LocationRow>();
+	if (locations.length === 0) return { locations: [], menus: {}, menuMeta: {} };
 
+	// Everything else is scoped by the materialized ids: the returned locations,
+	// the menus they reference, and the items on those menus. Each id set is ONE
+	// JSON-array bind expanded with json_each — never an `IN (?, …)` list, which
+	// would blow D1's ~100 per-query bound-parameter cap at MAP_RESULT_LIMIT-sized
+	// result sets.
+	const locationIds = JSON.stringify(locations.map((l) => l.id));
+	const menuIds = JSON.stringify([
+		...new Set(locations.map((l) => l.menu_id).filter((m): m is string => m !== null))
+	]);
+	const inLocations = `SELECT value FROM json_each(?)`;
+	const inMenus = `SELECT value FROM json_each(?)`;
+	const inItems = `SELECT id FROM items WHERE menu_id IN (SELECT value FROM json_each(?))`;
+
+	// The tuple cast mirrors each statement's projection 1:1 — `batch` itself is
+	// typed `unknown[]` on D1Like because the two backends (Worker binding,
+	// d1-http shim) type their per-statement results differently, though both
+	// return `{ results }` objects in statement order.
 	const [
-		{ results: locations },
 		{ results: itemRows },
 		{ results: menuCurrencyRows },
 		{ results: itemTagRows },
@@ -967,23 +996,15 @@ async function queryMapData(
 		{ results: menuSourceRows },
 		{ results: locationSourceRows },
 		{ results: overrideRows }
-	] = await Promise.all([
-		db
-			.prepare(
-				`SELECT ${LOCATION_FIELDS} FROM locations WHERE closed_at IS NULL AND (${locFilter}) ${capClause}`
-			)
-			.bind(...params)
-			.all<LocationRow>(),
+	] = (await db.batch([
 		db
 			.prepare(
 				`SELECT ${ITEM_FIELDS} FROM items WHERE menu_id IN (${inMenus}) ORDER BY menu_id, item_name`
 			)
-			.bind(...params)
-			.all<ItemRow>(),
+			.bind(menuIds),
 		db
 			.prepare(`SELECT id, currency, last_verified FROM menus WHERE id IN (${inMenus})`)
-			.bind(...params)
-			.all<{ id: string; currency: string; last_verified: string | null }>(),
+			.bind(menuIds),
 		db
 			.prepare(
 				`SELECT it.item_id AS owner_id, ${ITEM_TAG_SELECT}
@@ -992,37 +1013,40 @@ async function queryMapData(
 				 WHERE it.item_id IN (${inItems})
 				 ORDER BY t.rowid`
 			)
-			.bind(...params)
-			.all<ItemTagRow>(),
+			.bind(menuIds),
 		db
 			.prepare(
 				`SELECT item_id AS owner_id, url, label FROM item_sources
 				 WHERE item_id IN (${inItems}) ORDER BY rowid`
 			)
-			.bind(...params)
-			.all<SourceRow>(),
+			.bind(menuIds),
 		db
 			.prepare(
 				`SELECT menu_id AS owner_id, url, label FROM menu_sources
 				 WHERE menu_id IN (${inMenus}) ORDER BY rowid`
 			)
-			.bind(...params)
-			.all<SourceRow>(),
+			.bind(menuIds),
 		db
 			.prepare(
 				`SELECT location_id AS owner_id, url, label FROM location_sources
 				 WHERE location_id IN (${inLocations}) ORDER BY rowid`
 			)
-			.bind(...params)
-			.all<SourceRow>(),
+			.bind(locationIds),
 		db
 			.prepare(
 				`SELECT location_id, item_id, available, price FROM location_item_overrides
 				 WHERE location_id IN (${inLocations}) ORDER BY rowid`
 			)
-			.bind(...params)
-			.all<OverrideRow>()
-	]);
+			.bind(locationIds)
+	])) as [
+		{ results: ItemRow[] },
+		{ results: { id: string; currency: string; last_verified: string | null }[] },
+		{ results: ItemTagRow[] },
+		{ results: SourceRow[] },
+		{ results: SourceRow[] },
+		{ results: SourceRow[] },
+		{ results: OverrideRow[] }
+	];
 
 	// Resolve each menu item once (tags + item sources, with the menu-level source
 	// appended) and group by menu. The client applies the per-location price/
