@@ -100,6 +100,26 @@
 	let viewportData = $state<MapData>(EMPTY_MAP_DATA);
 	let searchData = $state<MapData | null>(null);
 
+	// --- Fetch status ----------------------------------------------------------
+	// Both fetches below keep the previous markers on screen while a request is in
+	// flight or after it fails — right for the map, but invisible to the user.
+	// `searching` is true from the moment the debounced search request fires until
+	// it settles and drives a spinner in the search pill; the two failure flags
+	// feed the floating status line (plus its always-mounted aria-live twin) so a
+	// failed fetch says so instead of silently showing old data. Imperative flags
+	// rather than $effect.pending(): these are .then() chains inside a setTimeout,
+	// not awaits a boundary could count.
+	let searching = $state(false);
+	let searchFailed = $state(false);
+	let viewportFailed = $state(false);
+	const fetchStatus = $derived(
+		searchFailed
+			? 'Search failed — showing previous results.'
+			: viewportFailed
+				? 'Couldn’t load places for this area — showing previous results.'
+				: ''
+	);
+
 	// Browse mode only: load the visible box. Skipped while a query is active — the
 	// search effect below owns the data then — and resumed (against wherever the map
 	// now sits) the moment the query is cleared.
@@ -109,11 +129,17 @@
 		let cancelled = false;
 		getLocations(bounds)
 			.then((data) => {
-				if (!cancelled) viewportData = data;
+				if (cancelled) return;
+				viewportData = data;
+				viewportFailed = false;
 			})
 			// A failed fetch must not blank the map — keep the markers already on
-			// screen; the next pan/zoom issues a fresh request anyway.
-			.catch((err) => console.error('viewport locations fetch failed', bounds, err));
+			// screen (the next pan/zoom issues a fresh request anyway) — but flag it
+			// so the status line can say the visible markers are stale.
+			.catch((err) => {
+				console.error('viewport locations fetch failed', bounds, err);
+				if (!cancelled) viewportFailed = true;
+			});
 		return () => {
 			cancelled = true;
 		};
@@ -169,6 +195,8 @@
 	$effect(() => {
 		if (!hasQuery) {
 			searchData = null;
+			searching = false;
+			searchFailed = false;
 			return;
 		}
 		// Text below the searchable floor with no diet active: there is nothing the
@@ -177,6 +205,8 @@
 		// the viewport set (searchData null → activeData falls back).
 		if (!hasSearchText && diet === null) {
 			searchData = null;
+			searching = false;
+			searchFailed = false;
 			return;
 		}
 		// Read the signature so the effect re-runs when (and only when) the query
@@ -185,6 +215,10 @@
 		let cancelled = false;
 		const timer = setTimeout(() => {
 			const center = mapCenter();
+			// A superseded request's settle handlers bail on `cancelled` below, so
+			// only the request that owns the current query ever clears these.
+			searching = true;
+			searchFailed = false;
 			searchLocations({
 				query: searchText,
 				dietTagId: diet,
@@ -193,6 +227,7 @@
 			})
 				.then((data) => {
 					if (cancelled) return;
+					searching = false;
 					searchData = data;
 					// The server returns nearest-first, so [0] is the closest match.
 					const nearest = data.locations[0];
@@ -206,8 +241,14 @@
 					}
 				})
 				// A failed search keeps the previous result set (or the viewport
-				// fallback) on screen rather than blanking the map mid-search.
-				.catch((err) => console.error('search failed', querySignature, err));
+				// fallback) on screen rather than blanking the map mid-search — but
+				// flags the failure so the status line surfaces it.
+				.catch((err) => {
+					console.error('search failed', querySignature, err);
+					if (cancelled) return;
+					searching = false;
+					searchFailed = true;
+				});
 		}, SEARCH_DEBOUNCE_MS);
 		return () => {
 			cancelled = true;
@@ -1004,7 +1045,13 @@
 						aria-label="Search by place or dish name"
 						bind:value={query}
 					/>
-					<Search class="searchpill__icon" size={16} aria-hidden="true" />
+					{#if searching}
+						<!-- Replaces the search glyph while the global search round trip is
+						     in flight, so latency is visible right where the user typed. -->
+						<span class="searchpill__spinner" aria-hidden="true"></span>
+					{:else}
+						<Search class="searchpill__icon" size={16} aria-hidden="true" />
+					{/if}
 				</label>
 
 				<!-- The dietary selector: single-select. Filters items to the chosen diet,
@@ -1042,6 +1089,15 @@
 					{/if}
 				</nav>
 			{/if}
+
+			<!-- A failed search/viewport fetch keeps the previous markers on screen (see
+			     the fetch effects), so say so here rather than leaving the map looking
+			     silently stale or empty. Announced via the always-mounted live region
+			     below (regions added on the fly aren't reliably picked up), so this
+			     visible copy is hidden from assistive tech to avoid a double read. -->
+			{#if fetchStatus}
+				<p class="searchstatus" aria-hidden="true">{fetchStatus}</p>
+			{/if}
 		{/if}
 	</div>
 
@@ -1049,6 +1105,10 @@
 	     Always in the DOM (an aria-live region added on the fly isn't reliably
 	     picked up); empty while browsing, so pans announce nothing. -->
 	<div class="visually-hidden" role="status">{resultsAnnouncement}</div>
+
+	<!-- The aria-live twin of the visible status line above: announces a failed
+	     search/viewport fetch. Same always-in-the-DOM rule as the count region. -->
+	<div class="visually-hidden" role="status">{fetchStatus}</div>
 
 	<!-- An item's DIETARY tags (vegan, gluten-free, halal, …) only, rendered inline on
 	     each menu row in the open venue's card so the diet markers are visible at a
@@ -1223,6 +1283,48 @@
 		/* Decorative: let clicks fall through to the <label> so it focuses the input. */
 		pointer-events: none;
 		color: var(--color-text-muted);
+	}
+
+	/* The in-flight search indicator, swapped in for the search glyph. Same 16px
+	   footprint as the icon so the pill doesn't shift when it appears. */
+	.searchpill__spinner {
+		flex-shrink: 0;
+		width: 16px;
+		height: 16px;
+		border: 2px solid rgba(0, 0, 0, 0.12);
+		border-top-color: var(--color-accent);
+		border-radius: 50%;
+		animation: searchpill-spin 0.7s linear infinite;
+	}
+
+	@keyframes searchpill-spin {
+		to {
+			transform: rotate(360deg);
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.searchpill__spinner {
+			animation-duration: 2s;
+		}
+	}
+
+	/* Fetch-failure status: its own full row under the search pills (the searchbar
+	   wraps), in the same glass family but tinted so it reads as a warning. */
+	.searchstatus {
+		width: 100%;
+		align-self: stretch;
+		margin: 0;
+		padding: 0.4rem 0.7rem;
+		font-size: 0.78rem;
+		font-weight: 600;
+		color: #9a3412;
+		background: rgba(255, 247, 237, 0.92);
+		border: 1px solid rgba(154, 52, 18, 0.25);
+		border-radius: 0.7rem;
+		backdrop-filter: blur(16px) saturate(180%);
+		-webkit-backdrop-filter: blur(16px) saturate(180%);
+		box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
 	}
 
 	/* Standard screen-reader-only box: present in the accessibility tree and the
