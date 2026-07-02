@@ -65,6 +65,9 @@
 	// For an anonymous visitor the choice is session-local — the selector still applies
 	// it, but there's no profile to save it to, so the persist call is skipped.
 	function selectDiet(id: string | null): void {
+		// A user's explicit pick must win over the saved diet even if getDiet() hasn't
+		// resolved yet — arm the seed guard so a late-arriving value can't clobber it.
+		dietSeeded = true;
 		diet = id;
 		if (user) setDiet(id).catch(() => {});
 	}
