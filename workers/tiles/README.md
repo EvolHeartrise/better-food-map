@@ -17,4 +17,4 @@ This Worker is deployed manually, not by the repo's CI (Workers Builds only buil
 cd workers/tiles && bun install && env -u CLOUDFLARE_API_TOKEN bunx wrangler deploy
 ```
 
-After the first deploy, attach the custom domain `tiles.betterfoodmaps.com` in the dashboard (Worker → Settings → Domains & Routes); `workers_dev` is disabled, so the Worker is unreachable until then.
+The custom domain `tiles.betterfoodmaps.com` is declared as a `custom_domain` route in `wrangler.jsonc`, so the deploy attaches it (and its DNS record) automatically; `workers_dev` is disabled, so that domain is the Worker's only address.
