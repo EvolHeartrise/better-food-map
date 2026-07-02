@@ -422,8 +422,8 @@ export const MAP_RESULT_LIMIT = 200;
 /**
  * Optional server-side filters for {@link getLocationsWithTags}, pushed into SQL
  * so a bounded list doesn't read (and ship) the whole table. `bbox` and
- * `category` narrow the rows — and the joined tag/source scans with them; `limit`/
- * `offset` page the name-ordered result. A radius query is served by passing the
+ * `category` narrow the rows; `limit`/`offset` page the name-ordered result, and
+ * the joined tag/source reads are keyed to the returned page's ids. A radius query is served by passing the
  * covering `bbox` and refining to the exact circle in the caller, so this layer
  * stays geo-free. With no filter the behaviour is unchanged (every location).
  */
@@ -495,56 +495,55 @@ export async function getLocationsWithTags(
 	db: D1Like,
 	filter: LocationListFilter = {}
 ): Promise<LocationWithTags[]> {
-	// bbox/category predicates (bound), shared verbatim by all three reads so the
-	// joined tag/source scans cover exactly the same rows.
+	// The filter (and its paging) is evaluated exactly once — the location-row
+	// read; the tag/source sub-reads are then keyed by the ids that read returned,
+	// so their cost is bounded by the PAGE size, not the full filter-match set
+	// (the same id-first shape queryMapData uses, #80/#92).
 	const { conds, params } = locationFilterConds(filter);
-	const whereSql = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
-	const tagExtra = conds.length ? ` AND ${conds.join(' AND ')}` : '';
-	// LIMIT/OFFSET are trusted integers → interpolated (matching MAP_RESULT_LIMIT),
-	// so the one bound `params` set stays identical across all three statements.
+	const whereSql = `WHERE ${conds.join(' AND ')}`;
+	// LIMIT/OFFSET are trusted integers → interpolated (matching MAP_RESULT_LIMIT).
 	let pagingSql = '';
 	if (filter.limit !== undefined) pagingSql = ` LIMIT ${Math.max(0, Math.trunc(filter.limit))}`;
 	else if (filter.offset) pagingSql = ' LIMIT -1';
 	if (filter.offset) pagingSql += ` OFFSET ${Math.max(0, Math.trunc(filter.offset))}`;
 
-	const [{ results: locations }, { results: tagRows }, { results: sourceRows }] = await Promise.all(
-		[
-			db
-				.prepare(
-					`SELECT ${LOCATION_FIELDS} FROM locations l ${whereSql} ORDER BY l.name${pagingSql}`
-				)
-				.bind(...params)
-				.all<LocationRow>(),
-			// Distinct dietary/course tags offered across a location's menu, excluding
-			// items it has overridden to unavailable.
-			db
-				.prepare(
-					`SELECT DISTINCT l.id AS owner_id, t.id AS id, t.name AS name, t.tag_type AS tag_type
+	const { results: locations } = await db
+		.prepare(`SELECT ${LOCATION_FIELDS} FROM locations l ${whereSql} ORDER BY l.name${pagingSql}`)
+		.bind(...params)
+		.all<LocationRow>();
+	if (locations.length === 0) return [];
+
+	// One JSON-array bind expanded with json_each — never an `IN (?, …)` list,
+	// which would blow D1's ~100 per-query bound-parameter cap on an unpaged read
+	// (the `near` path calls this with no limit). Both sub-reads travel as a
+	// single db.batch, so id-first costs one extra round trip, not two.
+	const idsJson = JSON.stringify(locations.map((l) => l.id));
+	const [{ results: tagRows }, { results: sourceRows }] = (await db.batch([
+		// Distinct dietary/course tags offered across a location's menu, excluding
+		// items it has overridden to unavailable.
+		db
+			.prepare(
+				`SELECT DISTINCT l.id AS owner_id, t.id AS id, t.name AS name, t.tag_type AS tag_type
 				 FROM locations l
 				 JOIN items i ON i.menu_id = l.menu_id
 				 JOIN item_tags it ON it.item_id = i.id
 				 JOIN tags t ON t.id = it.tag_id
 				 LEFT JOIN location_item_overrides o
 					ON o.location_id = l.id AND o.item_id = i.id
-				 WHERE l.menu_id IS NOT NULL
+				 WHERE l.id IN (SELECT value FROM json_each(?))
+					AND l.menu_id IS NOT NULL
 					AND t.tag_type IN ('dietary', 'course')
-					AND (o.available IS NULL OR o.available <> 0)${tagExtra}
+					AND (o.available IS NULL OR o.available <> 0)
 				 ORDER BY l.id, t.rowid`
-				)
-				.bind(...params)
-				.all<LocationTagRow>(),
-			db
-				.prepare(
-					`SELECT location_id AS owner_id, url, label FROM location_sources` +
-						(conds.length
-							? ` WHERE location_id IN (SELECT l.id FROM locations l ${whereSql})`
-							: '') +
-						` ORDER BY rowid`
-				)
-				.bind(...(conds.length ? params : []))
-				.all<SourceRow>()
-		]
-	);
+			)
+			.bind(idsJson),
+		db
+			.prepare(
+				`SELECT location_id AS owner_id, url, label FROM location_sources
+				 WHERE location_id IN (SELECT value FROM json_each(?)) ORDER BY rowid`
+			)
+			.bind(idsJson)
+	])) as [{ results: LocationTagRow[] }, { results: SourceRow[] }];
 
 	const tagsByLocation = groupLocationTagsDistinct(tagRows);
 	const sourcesByLocation = groupSources(sourceRows);
