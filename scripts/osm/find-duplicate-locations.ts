@@ -15,7 +15,7 @@
 // find-duplicate-locations.test.ts against the real migration schema.
 // ---------------------------------------------------------------------------
 
-import type { D1Like } from '../../src/lib/server/db';
+import { orderedPair, reviewedPairKeys, type D1Like } from '../../src/lib/server/db';
 import { SpatialGrid, haversineMeters } from './geo';
 import { namesMatch, normalizeName } from './search-poi';
 
@@ -57,6 +57,11 @@ export interface FindDuplicateLocationsResult {
 	pairs: DuplicatePair[];
 	/** Flagged pairs beyond `limit`. */
 	additional: number;
+	/**
+	 * Pairs that WOULD have been flagged but carry a reviewed-distinct verdict
+	 * (mark_not_duplicate) — verified as two real venues, so not re-flagged.
+	 */
+	suppressed_reviewed: number;
 	/** Open locations examined. */
 	scanned: number;
 	radius_m: number;
@@ -95,12 +100,15 @@ export async function findDuplicateLocations(
 	const radiusM = opts.radius_m ?? DEFAULT_RADIUS_M;
 	const limit = opts.limit ?? DEFAULT_LIMIT;
 
-	const { results: locations } = await db
-		.prepare(
-			`SELECT id, name, brand_id, latitude, longitude, street, city, postcode, phone, website
-			 FROM locations WHERE closed_at IS NULL`
-		)
-		.all<DuplicateHalf>();
+	const [{ results: locations }, reviewed] = await Promise.all([
+		db
+			.prepare(
+				`SELECT id, name, brand_id, latitude, longitude, street, city, postcode, phone, website
+				 FROM locations WHERE closed_at IS NULL`
+			)
+			.all<DuplicateHalf>(),
+		reviewedPairKeys(db)
+	]);
 
 	const grid = new SpatialGrid(CELL_DEG);
 	locations.forEach((loc, i) => grid.insert(i, loc.latitude, loc.longitude));
@@ -111,6 +119,7 @@ export async function findDuplicateLocations(
 	const padDeg = (radiusM / 111_320) * 4;
 
 	const pairs: DuplicatePair[] = [];
+	let suppressed = 0;
 	locations.forEach((a, i) => {
 		for (const j of grid.candidatesInBbox({
 			minLat: a.latitude - padDeg,
@@ -126,6 +135,12 @@ export async function findDuplicateLocations(
 			const nameHit = namesMatch(normalized[i], normalized[j]);
 			const brandHit = Boolean(a.brand_id) && a.brand_id === b.brand_id;
 			if (!nameHit && !brandHit) continue;
+			// A reviewed-distinct verdict means this exact pair was already verified
+			// as two real venues — suppress it instead of re-flagging forever.
+			if (reviewed.has(orderedPair(a.id, b.id).join('|'))) {
+				suppressed++;
+				continue;
+			}
 			const phoneHit = phoneKey(a.phone).length > 0 && phoneKey(a.phone) === phoneKey(b.phone);
 			pairs.push({
 				distance_m: Math.round(distance),
@@ -143,6 +158,7 @@ export async function findDuplicateLocations(
 	return {
 		pairs: pairs.slice(0, limit),
 		additional: Math.max(0, pairs.length - limit),
+		suppressed_reviewed: suppressed,
 		scanned: locations.length,
 		radius_m: radiusM
 	};
