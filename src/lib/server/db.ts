@@ -802,8 +802,9 @@ export function getLocationMapData(db: D1Like, id: string): Promise<MapData> {
  * satisfy both name and diet), and a name-only match is kept only if the venue has
  * a diet-carrying item. With no `query` and no `dietTagId` this returns nothing.
  *
- * This mirrors the client's `matchedItems`/`results` membership exactly so the two
- * agree (the client re-filters the result set while a search is in flight). Per-
+ * This mirrors the client's membership (src/lib/search-match.ts) exactly so the two
+ * agree (the client re-filters the result set while a search is in flight); the
+ * scripts/search-parity.test.ts suite holds the two halves to identical membership. Per-
  * location overrides are not applied here (the shared menu is what's searched); the
  * client re-filters the resolved menu, so an item made unavailable at one branch
  * simply drops from that card.

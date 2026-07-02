@@ -4,8 +4,8 @@
 // mirrors, so these tests pin down the two things that must hold forever:
 //
 //   1. SEMANTICS ARE UNCHANGED. The client mirrors the server's membership with
-//      case-insensitive substring `.includes()` (+page.svelte matchedItems/
-//      results), so the FTS route must match exactly what a bare
+//      case-insensitive substring `.includes()` (src/lib/search-match.ts, held
+//      to parity by search-parity.test.ts), so the FTS route must match exactly what a bare
 //      `LIKE '%q%' ESCAPE '\'` over the base tables matched: interior
 //      substrings, ASCII case-insensitivity, literal `%`/`_` wildcards in the
 //      query, 1–2 character queries (below the trigram width — correct, just
