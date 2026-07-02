@@ -9,14 +9,21 @@
 //   2. osmium export       — emit one GeoJSON feature per line (geojsonseq)
 //   3. osmium tags-filter  — keep addressed building footprints (wr/addr:housenumber)
 //   4. osmium export       — emit those as geojsonseq too
-//   5. load                — map each food feature to a row, fill any missing
+//   5. osmium tags-filter  — keep administrative boundaries (r/boundary=administrative)
+//   6. osmium export       — emit those as geojsonseq too
+//   7. load                — map each food feature to a row, fill any missing
 //                            address from the building that CONTAINS it (point-in-
-//                            polygon, see osm/enrich-address.ts), and REPLACE the
+//                            polygon, see osm/enrich-address.ts), stamp every row's
+//                            admin_city/admin_region from the admin boundaries that
+//                            contain it (see osm/enrich-admin.ts), and REPLACE the
 //                            region in the staging DB (default data/osm-poi.sqlite)
 //
-// Steps 3–4 (and the enrichment) are skipped with --no-enrich. About half of OSM
-// food POIs carry no addr:* of their own; enrichment recovers the civic address of
-// those sitting inside an addressed building — verbatim OSM data, never geocoded.
+// Steps 3–6 (and both enrichments) are skipped with --no-enrich. About half of OSM
+// food POIs carry no addr:* of their own; building enrichment recovers the civic
+// address of those sitting inside an addressed footprint, and the admin join gives
+// EVERY row its municipality + province from OSM admin context — verbatim OSM
+// data, never geocoded — so create_locations/import_chain can always resolve
+// city/region for an osm_id-only import.
 //
 // Requires the `osmium` CLI (osmium-tool). Download region extracts from
 // https://download.geofabrik.de/ (e.g. north-america/canada-latest.osm.pbf).
@@ -29,6 +36,7 @@ import { dirname, join } from 'node:path';
 import { FOOD_AMENITIES, FOOD_SHOPS, type PoiRow } from './osm/map-feature';
 import { parseFeatureLine } from './osm/load-geojson';
 import { AddressEnricher, parseAddressedBuilding } from './osm/enrich-address';
+import { AdminEnricher, parseAdminBoundary } from './osm/enrich-admin';
 import { OsmPoiStore } from './osm/poi-store';
 
 interface Args {
@@ -138,8 +146,10 @@ async function main(): Promise<void> {
 	const geojsonl = join(tmpDir, `${args.region}.food.geojsonl`);
 	const addressedPbf = join(tmpDir, `${args.region}.addressed.osm.pbf`);
 	const addressedGeojsonl = join(tmpDir, `${args.region}.addressed.geojsonl`);
+	const adminPbf = join(tmpDir, `${args.region}.admin.osm.pbf`);
+	const adminGeojsonl = join(tmpDir, `${args.region}.admin.geojsonl`);
 
-	const totalSteps = args.enrich ? 5 : 3;
+	const totalSteps = args.enrich ? 7 : 3;
 	let step = 0;
 	const phase = (msg: string): void => console.error(`[${++step}/${totalSteps}] ${msg}`);
 
@@ -199,6 +209,31 @@ async function main(): Promise<void> {
 			addressedGeojsonl,
 			'--overwrite'
 		]);
+		// 5 & 6. Filter + export administrative boundaries (used to stamp every
+		//        row's admin_city/admin_region by containment).
+		phase('Filtering administrative boundaries ...');
+		await run([
+			'osmium',
+			'tags-filter',
+			args.input,
+			'r/boundary=administrative',
+			'-o',
+			adminPbf,
+			'--overwrite'
+		]);
+		phase('Exporting administrative boundaries to GeoJSON ...');
+		await run([
+			'osmium',
+			'export',
+			adminPbf,
+			'-f',
+			'geojsonseq',
+			'-u',
+			'type_id',
+			'-o',
+			adminGeojsonl,
+			'--overwrite'
+		]);
 	}
 
 	// 5. Load: parse every food feature into rows, fill missing addresses from the
@@ -213,6 +248,7 @@ async function main(): Promise<void> {
 	}
 
 	let enriched = 0;
+	let adminStats = { cities: 0, regions: 0 };
 	if (args.enrich) {
 		const enricher = new AddressEnricher(rows);
 		for await (const line of readLines(addressedGeojsonl)) {
@@ -220,6 +256,13 @@ async function main(): Promise<void> {
 			if (building) enricher.apply(building);
 		}
 		enriched = enricher.finalize();
+
+		const adminEnricher = new AdminEnricher(rows);
+		for await (const line of readLines(adminGeojsonl)) {
+			const boundary = parseAdminBoundary(line);
+			if (boundary) adminEnricher.apply(boundary);
+		}
+		adminStats = adminEnricher.finalize();
 	}
 
 	const store = OsmPoiStore.open(args.db);
@@ -237,7 +280,10 @@ async function main(): Promise<void> {
 	console.error(
 		`\nDone. Loaded ${inserted} food POIs for "${args.region}" ` +
 			`(${skipped} features skipped` +
-			(args.enrich ? `, ${enriched} addresses enriched from buildings` : '') +
+			(args.enrich
+				? `, ${enriched} addresses enriched from buildings, ` +
+					`${adminStats.cities} cities + ${adminStats.regions} regions from admin boundaries`
+				: '') +
 			`). Store now holds ${total} POIs across regions. DB: ${args.db}`
 	);
 }

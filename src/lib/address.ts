@@ -101,6 +101,7 @@ const CA_REGION_NAMES: Record<string, string> = {
 	nunavut: 'NU',
 	ontario: 'ON',
 	'prince edward island': 'PE',
+	pei: 'PE',
 	quebec: 'QC',
 	saskatchewan: 'SK',
 	yukon: 'YT'
@@ -222,6 +223,21 @@ function foldName(value: string): string {
 }
 
 /**
+ * Folds the spelling variants sources use for region names: "&" for "and"
+ * ("Newfoundland & Labrador"), dotted abbreviations ("P.E.I."), and non-Latin
+ * co-names in bilingual OSM labels ("ᓄᓇᕗᑦ Nunavut"). Applied only on the
+ * full-name path of {@link normalizeRegion} — codes never carry any of these.
+ */
+function foldRegionName(value: string): string {
+	return foldName(
+		stripDiacritics(value)
+			.replace(/&/g, ' and ')
+			.replace(/\./g, '')
+			.replace(/[^\x20-\x7e]+/g, ' ')
+	);
+}
+
+/**
  * Normalizes a province/state to its 2-letter code. Accepts an existing code
  * (any case) or a full name (CA or US). `countryCode` (ISO-2) disambiguates and
  * scopes the lookup when known. Returns null when it cannot be resolved — the
@@ -246,11 +262,20 @@ export function normalizeRegion(
 		return null;
 	}
 
-	// Full name → code.
-	const key = foldName(raw);
-	if (cc === 'CA') return CA_REGION_NAMES[key] ?? null;
-	if (cc === 'US') return US_REGION_NAMES[key] ?? null;
-	return CA_REGION_NAMES[key] ?? US_REGION_NAMES[key] ?? null;
+	// Full name → code. A bilingual OSM label ("New Brunswick / Nouveau-Brunswick")
+	// is tried whole first, then one slash-separated segment at a time.
+	const keys = [raw, ...(raw.includes('/') ? raw.split('/') : [])].map(foldRegionName);
+	for (const key of keys) {
+		if (!key) continue;
+		const code =
+			cc === 'CA'
+				? CA_REGION_NAMES[key]
+				: cc === 'US'
+					? US_REGION_NAMES[key]
+					: (CA_REGION_NAMES[key] ?? US_REGION_NAMES[key]);
+		if (code) return code;
+	}
+	return null;
 }
 
 const CA_POSTCODE = /^([A-Za-z]\d[A-Za-z])\s*(\d[A-Za-z]\d)$/;
