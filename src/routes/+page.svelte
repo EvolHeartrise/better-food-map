@@ -569,11 +569,22 @@
 	// A menu carries a `last_verified` ISO date (the day it was last checked against
 	// its source). We surface it as a relative phrase so a stale chain menu reads as
 	// such; past this many days it's flagged as possibly out of date.
+	//
+	// The stored value is a plain calendar day, not an instant, so we compare
+	// calendar dates in the user's LOCAL timezone. `new Date('YYYY-MM-DD')` would
+	// parse as UTC midnight, and diffing that against Date.now() makes a menu
+	// verified today read "Verified yesterday" for part of the day anywhere west
+	// of UTC (at 5pm PDT the clock is already ≥24h past UTC midnight). So we pull
+	// the y/m/d out ourselves, build both sides as local midnights, and Math.round
+	// the difference to absorb the ±1h a DST boundary injects.
 	const VERIFIED_STALE_DAYS = 180;
 	function verifiedDaysAgo(iso: string): number | null {
-		const then = new Date(iso).getTime();
-		if (Number.isNaN(then)) return null;
-		return Math.floor((Date.now() - then) / 86_400_000);
+		const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+		if (!match) return null;
+		const then = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+		const now = new Date();
+		const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+		return Math.round((today.getTime() - then.getTime()) / 86_400_000);
 	}
 	function formatVerified(iso: string): string {
 		const days = verifiedDaysAgo(iso);
