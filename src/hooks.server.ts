@@ -1,3 +1,4 @@
+import { dev } from '$app/environment';
 import type { Handle } from '@sveltejs/kit';
 import { sequence } from '@sveltejs/kit/hooks';
 import {
@@ -61,7 +62,55 @@ const authenticate: Handle = async ({ event, resolve }) => {
 	return resolve(event);
 };
 
+// Content-Security-Policy, sent in production only: under `vite dev` the HMR
+// websocket and Vite's injected style/script tags would violate the policy and
+// break live reload, so the dev server runs without it. Each directive mirrors
+// a piece of the app's actual runtime surface:
+// • script/style allow 'unsafe-inline' because SvelteKit hydrates via inline
+//   scripts and Svelte injects component styles inline — a nonce-based strict
+//   CSP would be a separate, riskier change.
+// • MapLibre GL spawns its worker from a blob: URL (worker-src blob:) and may
+//   materialize tile/sprite images as blob:/data: URLs (img-src blob: data:).
+// • Raster tiles are FETCHED by MapLibre (XHR/fetch, not <img>) from the
+//   openstreetmap.org tile hosts (see mapStyle in LocationMap.svelte), so those
+//   hosts live in connect-src; they're also in img-src as a safety net should
+//   MapLibre ever load one via an Image element instead.
+// • Signed-in users' Google avatars (`user.picture`, AccountMenu.svelte) are
+//   served from *.googleusercontent.com.
+const CSP = [
+	"default-src 'self'",
+	"script-src 'self' 'unsafe-inline'",
+	"style-src 'self' 'unsafe-inline'",
+	"img-src 'self' blob: data: https://*.tile.openstreetmap.org https://*.googleusercontent.com",
+	"connect-src 'self' https://*.tile.openstreetmap.org",
+	"worker-src 'self' blob:",
+	"object-src 'none'",
+	"base-uri 'self'",
+	"form-action 'self'",
+	"frame-ancestors 'none'"
+].join('; ');
+
+// Stamps browser security headers onto every response the Worker serves —
+// pages, remote functions, and the sitemap XML alike (which is why this lives
+// here rather than in SvelteKit's `csp` config, which only covers documents).
+// It runs first in the sequence so responses that short-circuit before
+// `resolve` (the canonicalHost 301) still pass back through it.
+const securityHeaders: Handle = async ({ event, resolve }) => {
+	const response = await resolve(event);
+	response.headers.set('X-Content-Type-Options', 'nosniff');
+	response.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+	// The app never asks the browser for camera/mic/location — user location
+	// comes from Cloudflare's IP-derived `platform.cf` coordinates on the server
+	// (getUserLocation in src/lib/data.remote.ts) — so all three are locked off.
+	response.headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+	// Redundant with CSP frame-ancestors, but covers older browsers and dev
+	// (where the CSP is absent).
+	response.headers.set('X-Frame-Options', 'DENY');
+	if (!dev) response.headers.set('Content-Security-Policy', CSP);
+	return response;
+};
+
 // The map is public — there is no navigation gate. `authenticate` still runs so an
 // optional signed-in user (account menu, likes, saved diet) is resolved for every
 // request; the user-scoped remote functions guard themselves with `requireUser()`.
-export const handle = sequence(canonicalHost, authenticate);
+export const handle = sequence(securityHeaders, canonicalHost, authenticate);
