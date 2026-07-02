@@ -1,0 +1,39 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	// PMTiles tile server for the map's basemap: serves TileJSON at
+	// /{name}.json and vector tiles at /{name}/{z}/{x}/{y}.mvt by range-reading
+	// the {name}.pmtiles archive out of R2 (a few KB per tile — never the whole
+	// ~137 GB object). Source is vendored from protomaps/PMTiles (see src/).
+	"name": "better-food-map-tiles",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-09-23",
+	// Custom-domain-only: tiles.betterfoodmaps.com is attached to this Worker
+	// manually in the dashboard (Worker → Settings → Domains & Routes) after the
+	// first deploy; the *.workers.dev URL stays disabled. See README.md for the
+	// deploy command — it must run with OAuth auth, not the repo .env token.
+	"workers_dev": false,
+	"observability": {
+		"enabled": true
+	},
+	// The bucket holding planet.pmtiles (whole-planet Protomaps build). The
+	// worker reads it via the BUCKET binding, which the vendored source expects
+	// by exactly that name (env.BUCKET).
+	"r2_buckets": [
+		{
+			"binding": "BUCKET",
+			"bucket_name": "better-food-map-tiles"
+		}
+	],
+	"vars": {
+		// CORS allowlist: comma-separated exact Origin matches. The production
+		// app plus vite dev (port 5050, see the repo root vite.config.ts).
+		"ALLOWED_ORIGINS": "https://betterfoodmaps.com,http://localhost:5050",
+		// Hostname baked into the tile URLs the TileJSON hands out, so clients
+		// are always pointed at the public custom domain regardless of which
+		// host the TileJSON request itself arrived on.
+		"PUBLIC_HOSTNAME": "tiles.betterfoodmaps.com",
+		// Browser/edge cache lifetime for tiles and TileJSON. Tiles only change
+		// when a new planet.pmtiles is uploaded, so a day of staleness is fine.
+		"CACHE_CONTROL": "public, max-age=86400"
+	}
+}
