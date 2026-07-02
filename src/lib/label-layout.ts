@@ -138,7 +138,7 @@ export function hashId(id: string): number {
  * screen-space lattice is only pan-invariant under an affine projection; the globe, where
  * a pan is a sphere rotation, is not affine — which is the trap an earlier version fell
  * into.) Only ZOOM resizes the lattice, moving venues between cells — the progressive
- * reveal, mirroring the server's absolute lattice in `getMapData`.
+ * reveal, mirroring the shared absolute lattice in $lib/grid.
  *
  * Bucketing on a fixed grid is O(n) (one cell lookup per anchor) and, crucially, caps
  * the number of pills handed to the force simulation, so an over-dense viewport can't
@@ -342,7 +342,7 @@ export class LabelEngine {
 				id: c.id,
 				// Bucket on the absolute geographic lattice: the venue's coordinate, shifted
 				// non-negative before the floor so it floors consistently across the equator/
-				// prime-meridian (matching the server grid in getMapData). A pan doesn't move
+				// prime-meridian (matching the shared grid in $lib/grid). A pan doesn't move
 				// the coordinate, so the cell is pan-invariant on the globe as well as Mercator.
 				cellX: Math.floor((c.lng + 180) / cellDeg),
 				cellY: Math.floor((c.lat + 90) / cellDeg),

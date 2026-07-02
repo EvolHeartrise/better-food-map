@@ -7,7 +7,9 @@
 import { Database } from 'bun:sqlite';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import type { D1Like, D1PreparedLike } from '../src/lib/server/db';
+import { getMapCellsData } from '../src/lib/server/db';
+import type { Bounds, D1Like, D1PreparedLike, MapData } from '../src/lib/server/db';
+import { cellsForBounds, levelCell, levelForBounds } from '../src/lib/grid';
 
 class TestStmt implements D1PreparedLike {
 	params: unknown[] = [];
@@ -66,4 +68,18 @@ export function freshDb(): TestD1 {
 		if (f.endsWith('.sql')) db.exec(readFileSync(join('migrations', f), 'utf8'));
 	}
 	return new TestD1(db);
+}
+
+/**
+ * The browse read for a whole viewport, composed exactly the way the map page
+ * composes it (level from the padded box, cells enumerated, one cells read) and
+ * merged back to a plain MapData. Test-side stand-in for the removed
+ * bounds-shaped getMapData, so viewport-behaviour tests keep exercising the
+ * REAL production path — grid selection + getMapCellsData — end to end.
+ */
+export async function viewportMapData(db: D1Like, bounds: Bounds): Promise<MapData> {
+	const level = levelForBounds(bounds);
+	const cells = cellsForBounds(bounds, levelCell(level));
+	const data = await getMapCellsData(db, level, cells);
+	return { locations: data.locations, menus: data.menus, menuMeta: data.menuMeta };
 }
