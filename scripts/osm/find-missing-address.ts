@@ -169,7 +169,7 @@ function displayParts(row: LocationRow): string | null {
 async function allLocations(db: D1Like): Promise<LocationRow[]> {
 	const { results } = await db
 		.prepare(
-			'SELECT id, name, latitude, longitude, street, city, region, postcode, country FROM locations'
+			'SELECT id, name, latitude, longitude, street, city, region, postcode, country FROM locations WHERE closed_at IS NULL'
 		)
 		.all<LocationRow>();
 	return results;
