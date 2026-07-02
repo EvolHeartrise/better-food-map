@@ -315,11 +315,12 @@
 					// tile URL template and the data zoom range (0–15) for the planet
 					// archive, and MapLibre overzooms beyond that on its own.
 					url: 'https://tiles.betterfoodmaps.com/planet.json',
-					// Protomaps basemap over ODbL OpenStreetMap data — both credits are
-					// required; MapLibre surfaces them in the attribution control
-					// automatically (this inline value takes precedence over the TileJSON's).
-					attribution:
-						'<a href="https://protomaps.com">Protomaps</a> © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+					// The tiles are an ODbL Produced Work over OpenStreetMap data, so this
+					// credit is a license requirement; MapLibre surfaces it in the
+					// attribution control automatically (this inline value takes precedence
+					// over the TileJSON's). A Protomaps credit is not required for
+					// self-hosted builds and is deliberately omitted.
+					attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
 				}
 			},
 			layers: basemapLayers('protomaps', namedFlavor('light'), { lang: 'en' }),
@@ -551,7 +552,7 @@
 				center: toLngLat(initialCenter ?? DEFAULT_CENTER),
 				zoom: initialZoom ?? DEFAULT_ZOOM,
 				maxZoom: MAX_ZOOM,
-				// The Protomaps © OpenStreetMap credit is shown; MapLibre adds no
+				// The © OpenStreetMap credit is shown; MapLibre adds no
 				// self-attribution of its own.
 				attributionControl: { compact: false }
 			});
