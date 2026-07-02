@@ -71,6 +71,7 @@ import {
 	type LocationWithTags
 } from '../src/lib/server/db';
 import { createHttpD1 } from '../src/lib/server/d1-http';
+import { CATEGORIES } from '../src/lib/category';
 import { sourceInputSchema } from './mcp/source-input';
 import { normalizeRegion, normalizePostcode, normalizeCountry } from '../src/lib/address';
 import { searchPoi, normalizeName, namesMatch } from './osm/search-poi';
@@ -103,7 +104,7 @@ function getOsmStore(): OsmPoiStore {
 // and the JSON Schema advertised to the client)
 // ---------------------------------------------------------------------------
 
-const categorySchema = v.picklist(['cafe', 'fast_food', 'restaurant', 'bakery']);
+const categorySchema = v.picklist(CATEGORIES);
 const tagIdSchema = v.picklist(TAGS.map((t) => t.id) as [string, ...string[]]);
 
 // Tag ids grouped by type, derived from the canonical list so the descriptions
