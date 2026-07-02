@@ -11,6 +11,7 @@
 		type RenderItem,
 		type SimConfig
 	} from '$lib/label-layout';
+	import { DEFAULT_MAP_CENTER } from '$lib/map-defaults';
 
 	// A geographic bounding box reported to the parent as the visible area. Kept
 	// structural (rather than imported from the server module) so this component
@@ -79,10 +80,12 @@
 	} = $props();
 
 	// Fallback map center, used when no `initialCenter` is supplied (e.g. IP
-	// geolocation is unavailable) — just a sensible starting view, not tied to any
-	// particular city. Stored `[lat, lng]` to match the prop contract; converted to
-	// MapLibre's `[lng, lat]` order at the call sites via `toLngLat`.
-	const DEFAULT_CENTER: [number, number] = [49.2827, -123.1207];
+	// geolocation is unavailable): the shared Vancouver opening view from
+	// $lib/map-defaults — a pure client-safe module, so importing it keeps this
+	// component free of server-only code (see the Bounds note above). Stored
+	// `[lat, lng]` to match the prop contract; converted to MapLibre's
+	// `[lng, lat]` order at the call sites via `toLngLat`.
+	const DEFAULT_CENTER = DEFAULT_MAP_CENTER;
 	// MapLibre's camera zoom runs one level "lower" than Leaflet's for the same
 	// scale (its world base is a 512px tile vs Leaflet's 256px), so these are the
 	// old Leaflet values minus one: DEFAULT 13→12, SELECTED 16→15.
