@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { tick } from 'svelte';
 	import { resolve } from '$app/paths';
 	import { pushState, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
@@ -337,15 +336,10 @@
 			: ''
 	);
 
-	// Selecting from the results list hides the searchbar (the detail panel owns
-	// the page then), which would drop keyboard focus on <body> — so move it onto
-	// the panel's first control (its close button) once the panel has rendered.
+	// Bound to the open detail panel; the focus $effect below moves keyboard
+	// focus onto it whenever a location opens (from the results list, a map pill,
+	// or a deep link), so it's never stranded on a control that just unmounted.
 	let placecardEl = $state<HTMLElement | null>(null);
-	async function selectFromList(id: string): Promise<void> {
-		selectLocation(id);
-		await tick();
-		placecardEl?.querySelector('button')?.focus();
-	}
 
 	// The map plots EVERY matching location — the map itself is the result surface.
 	// Each carries the item names its label rotates through; a 30-branch chain
@@ -514,6 +508,55 @@
 			: { x: '100%', duration: 300, opacity: 1 }
 	);
 
+	// --- Detail panel focus management -----------------------------------------
+	// The panel behaves like a dialog: opening it moves keyboard focus onto the
+	// aside (it carries tabindex="-1") so keyboard and screen-reader users land on
+	// the panel instead of being stranded on the map or on a results button that
+	// just unmounted; closing hands focus back to where it was. Driven by
+	// `selectedId` rather than the open/close functions so EVERY close path
+	// restores focus — the ✕ button, Escape, a bare-map click, and browser Back
+	// (popstate), which never goes through `closeDetail`. The searchbar unmounts
+	// while a detail is open, so the pre-open element is often gone by close time;
+	// then focus falls back to the search input, or the map canvas when the
+	// landing overlay is up (no searchbar to return to).
+	let detailReturnFocus: HTMLElement | null = null;
+	// Effect-local bookkeeping (which transition just happened), not UI state.
+	let detailWasOpen = false;
+	$effect(() => {
+		const open = Boolean(selectedId);
+		const panel = placecardEl;
+		if (open && !detailWasOpen) {
+			// The panel can mount a beat after selection (deep link awaiting its
+			// venue fetch): `panel` is a dependency, so the effect re-runs — and
+			// `detailWasOpen` stays false — until it's bound.
+			if (!panel) return;
+			detailWasOpen = true;
+			const active = document.activeElement;
+			detailReturnFocus = active instanceof HTMLElement && active !== document.body ? active : null;
+			if (!panel.contains(active)) panel.focus();
+		} else if (!open && detailWasOpen) {
+			detailWasOpen = false;
+			const fallback =
+				document.querySelector<HTMLElement>('.searchpill__input') ??
+				document.querySelector<HTMLElement>('.map canvas');
+			const target = detailReturnFocus?.isConnected ? detailReturnFocus : fallback;
+			detailReturnFocus = null;
+			target?.focus();
+		}
+	});
+
+	// Escape closes the open detail — the keyboard counterpart to the bare-map
+	// click. It yields to the window-level popovers (account menu, diet selector),
+	// which handle Escape themselves: one press closes only the topmost layer. The
+	// DOM check covers whichever registration order their window listeners got;
+	// `defaultPrevented` covers a popover whose handler already ran.
+	function onWindowKeydown(event: KeyboardEvent): void {
+		if (event.key !== 'Escape' || !selectedId || event.defaultPrevented) return;
+		if (document.querySelector('.account__popover, .diet .menu')) return;
+		event.preventDefault();
+		closeDetail();
+	}
+
 	function selectLocation(id: string): void {
 		// Selecting a place (e.g. tapping a name pill on the map) sets `selectedId`,
 		// which leaves the landing (see `landing`) so the detail card can show.
@@ -661,6 +704,8 @@
 	}
 </script>
 
+<svelte:window onkeydown={onWindowKeydown} />
+
 <svelte:head>
 	{#if headMeta}
 		<!-- Venue head for an open location. On a hard /locations/<id> load this is
@@ -712,6 +757,7 @@
 		<aside
 			class="placecard"
 			aria-label="Location details"
+			tabindex="-1"
 			bind:this={placecardEl}
 			transition:fly={panelFly}
 		>
@@ -914,7 +960,7 @@
 								<button
 									type="button"
 									class="results__item"
-									onclick={() => selectFromList(result.loc.id)}
+									onclick={() => selectLocation(result.loc.id)}
 								>
 									<span class="results__name">{result.loc.name}</span>
 									{#if result.loc.address}
@@ -1224,6 +1270,12 @@
 		-webkit-backdrop-filter: blur(16px) saturate(180%);
 		border-left: 1px solid rgba(255, 255, 255, 0.6);
 		box-shadow: -12px 0 34px rgba(0, 0, 0, 0.22);
+	}
+
+	/* The panel takes programmatic focus on open (tabindex="-1"); it isn't
+	   tab-reachable, so a focus ring on the whole panel is noise. */
+	.placecard:focus {
+		outline: none;
 	}
 
 	/* The scrolling middle of the panel (info block + menu), between the fixed
