@@ -344,8 +344,28 @@
 	// `idFromPath(page.url.pathname)` would therefore stay pinned to the landing id
 	// for the whole session and re-open the detail every time the selection state
 	// is cleared — so closing must also null this snapshot (see `closeDetail`).
-	let landingId = $state(idFromPath(page.url.pathname));
+	// The plain const holds the hard-load snapshot itself (it never changes for the
+	// life of the page); the $state wrapping it exists so `closeDetail` can null it.
+	const initialLandingId = idFromPath(page.url.pathname);
+	let landingId = $state(initialLandingId);
 	const selectedId = $derived(page.state.selected ?? landingId);
+
+	// --- SSR head data for /locations/<id> links -------------------------------
+	// A hard load of a `/locations/<id>` link must ship the VENUE's metadata in the
+	// server-rendered head: crawlers and link unfurlers read only that HTML, and the
+	// client-only $effect that resolves `selectedLocation` (below) never runs during
+	// SSR. So when the page lands on a venue URL, fetch it here with a top-level
+	// await — the query runs on the server and its result is serialized into the
+	// page for hydration. The detail $effect asks for the same id again on the
+	// client, but getLocationData dedupes by argument, so this never costs a second
+	// request. An unknown id yields an empty payload (no venue), and a failed fetch
+	// falls back the same way — the page must still render with the default head
+	// rather than break over metadata.
+	const landingData =
+		initialLandingId === null ? null : await getLocationData(initialLandingId).catch(() => null);
+	const landingLoc = landingData?.locations[0] ?? null;
+	const landingVenue: LocationData | null =
+		landingData && landingLoc ? resolveLocation(landingLoc, landingData) : null;
 
 	// True while the landing should show (see the WORLD_ZOOM block): the map is zoomed out
 	// onto the globe with nothing open. An open location (including a `/locations/<id>`
@@ -388,6 +408,36 @@
 			.catch((err) => console.error('location detail fetch failed', id, err));
 		return () => {
 			cancelled = true;
+		};
+	});
+
+	// The venue driving the head metadata. During SSR `selectedLocation` is still
+	// null (its $effect can't run on the server) and `selectedId` falls back to
+	// `landingId`, so the awaited landing venue fills the head; client-side the
+	// resolved selection takes over as soon as it lands. Once the detail is closed
+	// (`selectedId` null) this drops to null and the head reverts to the static
+	// defaults.
+	const headVenue = $derived(selectedLocation ?? (selectedId ? landingVenue : null));
+
+	// The canonical public origin for og:url — a shared /locations/<id> link should
+	// unfurl against the production URL regardless of which host served the page.
+	const CANONICAL_ORIGIN = 'https://betterfoodmaps.com';
+
+	// Title, description and canonical URL for the venue head. The description
+	// leads with the category label and address, plus the menu size when there is
+	// one; null keeps the static site-wide head.
+	const headMeta = $derived.by(() => {
+		if (!headVenue) return null;
+		const count = headVenue.menu.length;
+		const parts = [
+			categoryLabel(headVenue.category),
+			headVenue.address,
+			count > 0 ? `${count} menu item${count === 1 ? '' : 's'}` : ''
+		].filter(Boolean);
+		return {
+			title: `${headVenue.name} — BetterFoodMaps`,
+			description: `${headVenue.name} on BetterFoodMaps${parts.length > 0 ? ` — ${parts.join(' · ')}` : ''}.`,
+			url: `${CANONICAL_ORIGIN}/locations/${encodeURIComponent(headVenue.id)}`
 		};
 	});
 
@@ -529,11 +579,26 @@
 </script>
 
 <svelte:head>
-	<title>BetterFoodMaps</title>
-	<meta
-		name="description"
-		content="Explore cafes, fast food and restaurants around the world on an interactive map."
-	/>
+	{#if headMeta}
+		<!-- Venue head for an open location. On a hard /locations/<id> load this is
+		     already in the server-rendered HTML (see the landing-venue fetch above),
+		     so link unfurlers and crawlers see the venue rather than the site
+		     defaults. Svelte escapes text and attribute content here, so the venue
+		     fields need no hand-escaping. -->
+		<title>{headMeta.title}</title>
+		<meta name="description" content={headMeta.description} />
+		<meta property="og:title" content={headMeta.title} />
+		<meta property="og:description" content={headMeta.description} />
+		<meta property="og:site_name" content="BetterFoodMaps" />
+		<meta property="og:type" content="website" />
+		<meta property="og:url" content={headMeta.url} />
+	{:else}
+		<title>BetterFoodMaps</title>
+		<meta
+			name="description"
+			content="Explore cafes, fast food and restaurants around the world on an interactive map."
+		/>
+	{/if}
 </svelte:head>
 
 <div class="app">
