@@ -22,6 +22,7 @@
 	import LikeButton from '$lib/components/LikeButton.svelte';
 	import Search from '@lucide/svelte/icons/search';
 	import { categoryLabel } from '$lib/category';
+	import { matchedItems, searchResults } from '$lib/search-match';
 	import { idFromPath } from '$lib/location-path';
 	import { DEFAULT_MAP_CENTER } from '$lib/map-defaults';
 	import type { MapData, MapLocation, Item, Bounds } from '$lib/server/db';
@@ -308,43 +309,13 @@
 		}));
 	}
 
-	// Whether a venue's NAME matches the active text query. False when there's no text
-	// term (a diet-only filter never matches via the name — it acts on items).
-	function nameMatches(loc: LocationData): boolean {
-		return queryTerm !== '' && loc.name.toLowerCase().includes(queryTerm);
-	}
-
-	// The menu items to surface for a venue under the active search — the line its map
-	// label rotates through. The combined `query` is an OR across the venue name and its
-	// item names: when the name matches (or there's no text term) the text dimension is
-	// satisfied by the WHOLE menu; otherwise only items whose name contains the term. The
-	// dietary selector then narrows that set — it ALWAYS applies. With nothing active this
-	// is the whole menu (browse). Mirrors the server's membership in getSearchMapData.
-	function matchedItems(loc: LocationData): Item[] {
-		const textItems =
-			queryTerm === '' || nameMatches(loc)
-				? loc.menu
-				: loc.menu.filter((menuItem) => menuItem.item_name.toLowerCase().includes(queryTerm));
-		return diet === null
-			? textItems
-			: textItems.filter((menuItem) => menuItem.tags.some((tag) => tag.id === diet));
-	}
-
 	// One entry per location to show, paired with the items to tease under its marker.
-	// The candidate set is whatever is currently visible on the map (`locations`). With
-	// no query active every visible venue shows (its whole menu teased). Under a search a
-	// venue is kept when its NAME matches (show all its items) or at least one item
-	// matches; a name match with an active diet still requires a diet-matching item
-	// (diet always narrows) — that falls out of `matchedItems` being empty.
-	const results = $derived.by(() => {
-		const out: Array<{ loc: LocationData; items: Item[] }> = [];
-		for (const loc of locations) {
-			const items = matchedItems(loc);
-			const keep = !hasQuery || (nameMatches(loc) && diet === null) || items.length > 0;
-			if (keep) out.push({ loc, items });
-		}
-		return out;
-	});
+	// The candidate set is whatever is currently visible on the map (`locations`). The
+	// membership rule — venue-name OR item-name substring, diet always narrowing on the
+	// same item, everything kept in browse mode — lives in $lib/search-match, a pure
+	// module mirroring the server's getSearchMapData so scripts/search-parity.test.ts
+	// can hold the two halves to identical membership.
+	const results = $derived(searchResults(locations, queryTerm, diet));
 
 	// --- Accessible results list -------------------------------------------------
 	// The map pills are aria-hidden and pointer-transparent (selection happens via
@@ -510,7 +481,9 @@
 					name: selectedLocation.name,
 					latitude: selectedLocation.latitude,
 					longitude: selectedLocation.longitude,
-					items: matchedItems(selectedLocation).map((menuItem) => menuItem.item_name)
+					items: matchedItems(selectedLocation, queryTerm, diet).map(
+						(menuItem) => menuItem.item_name
+					)
 				}
 			: null
 	);
