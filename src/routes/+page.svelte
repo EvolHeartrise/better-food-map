@@ -10,7 +10,7 @@
 		getStats,
 		getUserLocation
 	} from '$lib/data.remote';
-	import { getCurrentUser, getLikes, setLocationLiked } from '$lib/user.remote';
+	import { getCurrentUser, getLikes, setLocationLiked, setItemLiked } from '$lib/user.remote';
 	import { getDiet, setDiet } from '$lib/profile.remote';
 	import LocationMap from '$lib/components/LocationMap.svelte';
 	import MapStatsOverlay from '$lib/components/MapStatsOverlay.svelte';
@@ -538,6 +538,19 @@
 		);
 	}
 
+	// Item likes mirror location likes exactly — same pending overlay over the
+	// server set, same optimistic set-then-revert — keyed by item id and backing
+	// the heart on each menu row in the open venue's card.
+	const pendingItemLikes = new SvelteMap<string, boolean>();
+
+	const likedItemIds = $derived(overlayLikes(serverLikes.itemIds, pendingItemLikes));
+
+	function toggleItemLike(id: string) {
+		const liked = likedItemIds.has(id);
+		pendingItemLikes.set(id, !liked);
+		setItemLiked({ itemId: id, liked: !liked }).catch(() => pendingItemLikes.set(id, liked));
+	}
+
 	function formatPrice(price: number | null, code: string): string {
 		return price === null ? '—' : moneyFormatter(code).format(price);
 	}
@@ -701,6 +714,18 @@
 									<li class="placecard__item">
 										<span class="placecard__item-line">
 											<span class="placecard__item-name">{menuItem.item_name}</span>
+											{#if user}
+												<span class="placecard__item-like">
+													<LikeButton
+														liked={likedItemIds.has(menuItem.id)}
+														onToggle={() => toggleItemLike(menuItem.id)}
+														label={likedItemIds.has(menuItem.id)
+															? 'Unlike this item'
+															: 'Like this item'}
+														size={14}
+													/>
+												</span>
+											{/if}
 											<span class="placecard__item-price">
 												{formatPrice(menuItem.price, menuItem.currency)}
 											</span>
@@ -1156,6 +1181,16 @@
 	.placecard__item-name {
 		font-size: 0.85rem;
 		font-weight: 600;
+		/* Soak up the spare width so the like heart (when signed in) and the price
+		   sit together at the row's right edge. */
+		flex: 1;
+	}
+
+	/* The per-item like heart on a menu row. Centred on the row's height (the line
+	   aligns on baselines, which a button doesn't share) so the row stays one line. */
+	.placecard__item-like {
+		display: inline-flex;
+		align-self: center;
 	}
 
 	.placecard__item-price {
