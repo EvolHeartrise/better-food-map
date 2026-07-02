@@ -21,6 +21,7 @@ import {
 	regionCountry
 } from '../../src/lib/address';
 import { blankToNull } from '../../src/lib/text';
+import { hasNonHttpScheme } from '../../src/lib/safe-url';
 
 /** A GeoJSON feature, as produced by osmium export (geometry may be any type). */
 export interface OsmFeature {
@@ -344,6 +345,18 @@ export function poiCountry(poi: {
 	return normalizeCountry(parts.country) ?? regionCountry(parts.region);
 }
 
+/**
+ * An OSM `website`/`contact:website` tag, with values carrying a non-http(s)
+ * scheme dropped. The tag is world-editable and ends up rendered as an anchor
+ * href, so a `javascript:`/`data:` value must not enter the staging store;
+ * scheme-less values ("example.com") are kept — the render-side allowlist
+ * shows them as plain text rather than a link.
+ */
+function safeWebsite(value: string | undefined): string | null {
+	const website = blankToNull(value);
+	return website !== null && hasNonHttpScheme(website) ? null : website;
+}
+
 /** Venue-level dietary markers OSM explicitly asserts (`diet:x=yes|only`), mapped to tag ids. */
 export function dietMarkers(props: Record<string, string>): string[] {
 	const out: string[] = [];
@@ -466,7 +479,7 @@ export function mapFeature(feature: OsmFeature): PoiRow | null {
 		longitude,
 		address: composeAddress(props),
 		phone: blankToNull(props.phone ?? props['contact:phone']),
-		website: blankToNull(props.website ?? props['contact:website']),
+		website: safeWebsite(props.website ?? props['contact:website']),
 		opening_hours: blankToNull(props.opening_hours),
 		diet_markers: dietMarkers(props),
 		tags_json: JSON.stringify(props),
