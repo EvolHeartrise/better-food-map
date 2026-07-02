@@ -25,6 +25,7 @@
 	import { idFromPath } from '$lib/location-path';
 	import { DEFAULT_MAP_CENTER } from '$lib/map-defaults';
 	import { searchableQuery } from '$lib/search';
+	import { safeHttpUrl } from '$lib/safe-url';
 	import type { MapData, MapItem, MapLocation, Item, Bounds } from '$lib/server/db';
 
 	// The visible map area, reported by <LocationMap> (debounced) as the user pans
@@ -855,12 +856,20 @@
 							</div>
 						{/if}
 						{#if loc.website}
+							<!-- Website and source URLs come from world-editable feeds (OSM tags,
+							     agent-cited sources), so an anchor is only rendered for an
+							     http(s)-scheme URL; anything else shows as plain text. -->
+							{@const websiteHref = safeHttpUrl(loc.website)}
 							<div class="info__row">
 								<dt>Website</dt>
 								<dd>
-									<a href={loc.website} target="_blank" rel="external noopener noreferrer">
+									{#if websiteHref}
+										<a href={websiteHref} target="_blank" rel="external noopener noreferrer">
+											{loc.website}
+										</a>
+									{:else}
 										{loc.website}
-									</a>
+									{/if}
 								</dd>
 							</div>
 						{/if}
@@ -870,10 +879,15 @@
 								<dd>
 									<ul class="info__sources">
 										{#each loc.sources as source (source.url)}
+											{@const sourceHref = safeHttpUrl(source.url)}
 											<li>
-												<a href={source.url} target="_blank" rel="external noopener noreferrer">
+												{#if sourceHref}
+													<a href={sourceHref} target="_blank" rel="external noopener noreferrer">
+														{sourceText(source)}
+													</a>
+												{:else}
 													{sourceText(source)}
-												</a>
+												{/if}
 											</li>
 										{/each}
 									</ul>

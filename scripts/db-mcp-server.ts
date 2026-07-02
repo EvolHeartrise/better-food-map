@@ -77,6 +77,7 @@ import { CATEGORIES } from '../src/lib/category';
 import { sourceInputSchema } from './mcp/source-input';
 import { ToolPartialFailure, partialFailureBody } from './mcp/partial-failure';
 import { normalizeRegion, normalizePostcode, normalizeCountry } from '../src/lib/address';
+import { hasNonHttpScheme } from '../src/lib/safe-url';
 import { searchPoi, normalizeName, namesMatch } from './osm/search-poi';
 import { selectChainCandidates, partitionImportable } from './osm/import-chain';
 import { findCoordinateDrift } from './osm/find-coordinate-drift';
@@ -225,6 +226,16 @@ const citySchema = v.pipe(v.string(), v.trim(), v.minLength(1, 'city is required
 const regionSchema = v.pipe(v.string(), v.trim(), v.minLength(1, 'region is required'));
 const postcodeSchema = v.pipe(v.string(), v.trim(), v.minLength(1));
 const countryPartSchema = v.pipe(v.string(), v.trim(), v.minLength(1));
+// Websites are rendered as anchor hrefs in the placecard, so reject values
+// smuggling a non-http(s) scheme (javascript:, data:, …). Scheme-less values
+// pass — the render-side allowlist shows those as plain text, not a link.
+const websiteSchema = v.pipe(
+	v.string(),
+	v.check(
+		(s) => !hasNonHttpScheme(s),
+		'website must be an http(s) URL (no javascript:/data:/other schemes)'
+	)
+);
 
 /** Field descriptions reused on create_locations and update_locations. */
 const NAME_DESC =
@@ -505,7 +516,7 @@ const createLocationArgs = v.object({
 	postcode: v.optional(v.nullable(v.pipe(postcodeSchema, v.description(POSTCODE_DESC)))),
 	country: v.optional(v.nullable(v.pipe(countryPartSchema, v.description(COUNTRY_DESC)))),
 	phone: v.optional(v.nullable(v.string())),
-	website: v.optional(v.nullable(v.string())),
+	website: v.optional(v.nullable(websiteSchema)),
 	brand_id: v.optional(
 		v.nullable(
 			v.pipe(
@@ -618,7 +629,7 @@ const updateLocationItemArgs = v.pipe(
 			v.pipe(countryPartSchema, v.description(`Replace the country. ${COUNTRY_DESC}`))
 		),
 		phone: v.optional(v.nullable(v.string())),
-		website: v.optional(v.nullable(v.string())),
+		website: v.optional(v.nullable(websiteSchema)),
 		brand_id: v.optional(
 			v.nullable(
 				v.pipe(v.string(), v.minLength(1), v.description('Reassign to a chain; null detaches it.'))
@@ -974,7 +985,7 @@ const importChainArgs = v.pipe(
 		),
 		website: v.optional(
 			v.pipe(
-				v.string(),
+				websiteSchema,
 				v.minLength(1),
 				v.description(
 					"Fallback website for branches whose POI has none tagged (typically the chain's own site)."
@@ -1188,7 +1199,7 @@ const createBrandArgs = v.object({
 		v.minLength(1),
 		v.description('Chain / brand name, e.g. "McDonald\'s".')
 	),
-	website: v.optional(v.nullable(v.string())),
+	website: v.optional(v.nullable(websiteSchema)),
 	logo_url: v.optional(
 		v.nullable(v.pipe(v.string(), v.url(), v.description('URL of the brand logo/marker image.')))
 	),
@@ -1204,7 +1215,7 @@ const createBrandArgs = v.object({
 const updateBrandArgs = v.object({
 	id: v.pipe(v.string(), v.minLength(1), v.description('Id of the brand to update.')),
 	name: v.optional(v.pipe(v.string(), v.minLength(1))),
-	website: v.optional(v.nullable(v.string())),
+	website: v.optional(v.nullable(websiteSchema)),
 	logo_url: v.optional(v.nullable(v.pipe(v.string(), v.url())))
 });
 
