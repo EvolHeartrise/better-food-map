@@ -14,15 +14,19 @@ interface Loc {
 	region: string | null;
 	postcode: string | null;
 	country: string | null;
+	closed_at?: string | null;
 }
 
 /** All address parts null — a fully address-less location. */
 const NO_ADDR = { street: null, city: null, region: null, postcode: null, country: null };
 
-/** Minimal D1Like that returns the whole location list for the (param-less) scan query. */
+/** Minimal D1Like that returns the location list for the (param-less) scan query, honouring a `closed_at IS NULL` filter. */
 function fakeD1(locations: Loc[]): D1Like {
 	return {
-		prepare(): D1PreparedLike {
+		prepare(sql: string): D1PreparedLike {
+			const rows = sql.includes('closed_at IS NULL')
+				? locations.filter((l) => !l.closed_at)
+				: locations;
 			const stmt: D1PreparedLike = {
 				bind() {
 					return stmt;
@@ -32,7 +36,7 @@ function fakeD1(locations: Loc[]): D1Like {
 					return results[0] ?? null;
 				},
 				async all<T>() {
-					return { results: locations as T[] };
+					return { results: rows as T[] };
 				},
 				async run() {
 					return { meta: { changes: 0 } };
@@ -238,6 +242,26 @@ test('include_unfixable=false returns only the OSM-fixable work list', async () 
 	expect(res.additional).toBe(2); // C and D exist but are excluded from the list
 	expect(res.counts.osm_has_no_address).toBe(1);
 	expect(res.counts.no_osm_match).toBe(1);
+	store.close();
+});
+
+test('closed (soft-deleted) locations are excluded from the scan', async () => {
+	const { store } = fixture();
+	const db = fakeD1([
+		// Born-closed tombstone: address-less AND no staging POI — must not surface.
+		{
+			id: 'Z',
+			name: 'Departed Diner',
+			latitude: 49.3,
+			longitude: -123.12,
+			...NO_ADDR,
+			closed_at: '2026-01-01T00:00:00Z'
+		}
+	]);
+	const res = await findMissingAddress(store, db, {});
+	expect(res.scanned).toBe(0);
+	expect(res.total_missing).toBe(0);
+	expect(res.locations).toEqual([]);
 	store.close();
 });
 
