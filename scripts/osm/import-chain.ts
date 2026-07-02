@@ -23,6 +23,7 @@
 
 import type { D1Like } from '../../src/lib/server/db';
 import { haversineMeters } from './geo';
+import { effectivePoiAddressParts } from './map-feature';
 import {
 	existingInBbox,
 	isExistingDuplicate,
@@ -142,4 +143,52 @@ export async function selectChainCandidates(
 		excluded_existing: excludedExisting,
 		scan_truncated: scanTruncated
 	};
+}
+
+/** Summary of the matched POIs a chain import cannot resolve an address for. */
+export interface UnresolvableSummary {
+	count: number;
+	/** POIs with city/region but no recoverable street (the dominant case). */
+	missing_street: number;
+	/** POIs missing city and/or region even after every fallback (rare post-enrichment). */
+	missing_city_or_region: number;
+	/** Up to 15 example osm_ids, for spot checks / targeted enrichment. */
+	sample_osm_ids: string[];
+}
+
+const UNRESOLVABLE_SAMPLE = 15;
+
+/**
+ * Splits matched POIs into those whose address is fully resolvable offline
+ * (street + city + region through the same merged-parts chain the import path
+ * uses) and a compact summary of the rest. The import cap (`max`) must be
+ * applied to the IMPORTABLE list — slicing the raw matched list lets a long run
+ * of street-less POIs occupy the window forever, making the valid branches
+ * behind them unreachable no matter how often the call is repeated.
+ */
+export function partitionImportable(pois: StoredPoi[]): {
+	importable: StoredPoi[];
+	unresolvable: UnresolvableSummary;
+} {
+	const importable: StoredPoi[] = [];
+	const unresolvable: UnresolvableSummary = {
+		count: 0,
+		missing_street: 0,
+		missing_city_or_region: 0,
+		sample_osm_ids: []
+	};
+	for (const poi of pois) {
+		const parts = effectivePoiAddressParts(poi);
+		if (parts?.street && parts.city && parts.region) {
+			importable.push(poi);
+			continue;
+		}
+		unresolvable.count++;
+		if (parts?.street) unresolvable.missing_city_or_region++;
+		else unresolvable.missing_street++;
+		if (unresolvable.sample_osm_ids.length < UNRESOLVABLE_SAMPLE) {
+			unresolvable.sample_osm_ids.push(poi.osm_id);
+		}
+	}
+	return { importable, unresolvable };
 }

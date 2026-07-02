@@ -57,6 +57,14 @@ describe('normalizeRegion', () => {
 		expect(normalizeRegion('pei')).toBe('PE');
 	});
 
+	test('resolves dotted code abbreviations', () => {
+		expect(normalizeRegion('B.C', 'CA')).toBe('BC');
+		expect(normalizeRegion('B.C.')).toBe('BC');
+		expect(normalizeRegion('ON.', 'CA')).toBe('ON');
+		// A dotted pair that is not a real code still fails.
+		expect(normalizeRegion('X.X.', 'CA')).toBeNull();
+	});
+
 	test('resolves bilingual OSM boundary labels', () => {
 		expect(normalizeRegion('New Brunswick / Nouveau-Brunswick', 'CA')).toBe('NB');
 		expect(normalizeRegion('ᓄᓇᕗᑦ Nunavut', 'CA')).toBe('NU');

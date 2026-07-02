@@ -87,19 +87,21 @@ export function composeOvertureAddress(parts: {
  * baked into each `address_source` so the citation records which snapshot it came
  * from.
  */
-export function matchOverturePlaces(
+export async function matchOverturePlaces(
 	pois: AddresslessPoi[],
-	places: Iterable<OverturePlace>,
+	places: Iterable<OverturePlace> | AsyncIterable<OverturePlace>,
 	opts: { radiusM: number; releaseLabel: string }
-): OvertureMatch[] {
+): Promise<OvertureMatch[]> {
 	const radiusKm = opts.radiusM / 1000;
 
-	// Index the POIs (the smaller, fixed set) once; stream places past them.
+	// Index the POIs (the smaller, fixed set) once; stream places past them —
+	// async so a country-scale cache (millions of lines, ~1 GB) can be streamed
+	// from disk rather than materialized in memory.
 	const grid = new SpatialGrid(CELL_DEG);
 	pois.forEach((poi, i) => grid.insert(i, poi.latitude, poi.longitude));
 
 	const best = new Map<number, { place: OverturePlace; dist: number }>();
-	for (const place of places) {
+	for await (const place of places) {
 		if (!place.address) continue;
 		const placeName = normalizeName(place.name);
 		const box = bboxAround(place.latitude, place.longitude, radiusKm);

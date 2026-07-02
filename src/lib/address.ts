@@ -267,6 +267,13 @@ export function normalizeRegion(
 	const keys = [raw, ...(raw.includes('/') ? raw.split('/') : [])].map(foldRegionName);
 	for (const key of keys) {
 		if (!key) continue;
+		// A dotted/spaced code ("B.C.", "ON.") folds down to two letters — validate
+		// it as a code rather than looking it up as a name.
+		if (/^[a-z]{2}$/.test(key)) {
+			const asCode = normalizeRegion(key.toUpperCase(), cc);
+			if (asCode) return asCode;
+			continue;
+		}
 		const code =
 			cc === 'CA'
 				? CA_REGION_NAMES[key]
