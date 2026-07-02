@@ -270,3 +270,29 @@ test('mapFeature drops closed/disused venues even when the food tag is live', ()
 		})
 	);
 });
+
+test('poiCountry resolves from explicit country, then region; null means no signal', async () => {
+	const { poiCountry } = await import('./map-feature');
+	const poi = (over: {
+		tags_json?: string;
+		address?: string | null;
+		admin_region?: string | null;
+	}) => ({
+		tags_json: over.tags_json ?? '{}',
+		address: over.address ?? null,
+		admin_city: null,
+		admin_region: over.admin_region ?? null
+	});
+	// Own addr:country wins outright.
+	expect(
+		poiCountry(poi({ tags_json: JSON.stringify({ 'addr:country': 'CA', 'addr:state': 'ME' }) }))
+	).toBe('CA');
+	// A US state code signals US even inside a Canada extract (the Fort Kent case).
+	expect(poiCountry(poi({ tags_json: JSON.stringify({ 'addr:state': 'ME' }) }))).toBe('US');
+	// A Canadian admin-join province signals CA; full names resolve too.
+	expect(poiCountry(poi({ admin_region: 'BC' }))).toBe('CA');
+	expect(poiCountry(poi({ tags_json: JSON.stringify({ 'addr:province': 'Ontario' }) }))).toBe('CA');
+	// No address at all, or an unresolvable region → no signal.
+	expect(poiCountry(poi({}))).toBeNull();
+	expect(poiCountry(poi({ admin_region: 'ZZ' }))).toBeNull();
+});

@@ -232,6 +232,13 @@ export interface Menu {
 	currency: string;
 	/** ISO date the menu was last checked against the source (chain menus go stale). */
 	last_verified: string | null;
+	/**
+	 * Free-form notes on HOW to refresh this menu's data — the machine-readable
+	 * feed endpoint behind a client-rendered menu page, a nutrition-PDF path,
+	 * fetch caveats. Banked once at research time so a re-verification doesn't
+	 * have to re-discover the source (that discovery dominates refresh cost).
+	 */
+	refresh_notes: string | null;
 	/** Citations for where this menu's data came from (may be empty). */
 	sources: Source[];
 }
@@ -1891,7 +1898,7 @@ export async function deleteBrand(db: D1Like, id: string): Promise<boolean> {
 /** Internal raw shape of a `menus` row before its sources are attached. */
 type MenuRow = Omit<Menu, 'sources'>;
 
-const MENU_FIELDS = `id, brand_id, name, region, currency, last_verified`;
+const MENU_FIELDS = `id, brand_id, name, region, currency, last_verified, refresh_notes`;
 
 /**
  * Lists brand menus (with an item count), optionally filtered by brand. Private
@@ -1951,9 +1958,10 @@ export async function getMenuWithItems(db: D1Like, id: string): Promise<MenuWith
 
 export async function insertMenu(
 	db: D1Like,
-	menu: Omit<Menu, 'id' | 'sources' | 'currency' | 'last_verified'> & {
+	menu: Omit<Menu, 'id' | 'sources' | 'currency' | 'last_verified' | 'refresh_notes'> & {
 		id?: string;
 		currency?: string;
+		refresh_notes?: string | null;
 		sources?: Source[];
 	}
 ): Promise<string> {
@@ -1961,7 +1969,7 @@ export async function insertMenu(
 	const stmts: D1PreparedLike[] = [
 		db
 			.prepare(
-				`INSERT INTO menus (id, brand_id, name, region, currency, last_verified) VALUES (?, ?, ?, ?, ?, ?)`
+				`INSERT INTO menus (id, brand_id, name, region, currency, last_verified, refresh_notes) VALUES (?, ?, ?, ?, ?, ?, ?)`
 			)
 			.bind(
 				id,
@@ -1972,7 +1980,8 @@ export async function insertMenu(
 				// last_verified is always "now": a just-created menu is verified as of its
 				// creation, the date is never an agent-supplied parameter, and a real date
 				// satisfies migration 0012's non-empty requirement.
-				currentVerificationDate()
+				currentVerificationDate(),
+				menu.refresh_notes ?? null
 			)
 	];
 	for (const source of menu.sources ?? []) {
@@ -1988,7 +1997,7 @@ export async function insertMenu(
 
 // `last_verified` is excluded: it is never set from the patch, but always stamped
 // to today on any update (the menu's data was just re-checked against its source).
-const MENU_COLUMNS = ['brand_id', 'name', 'region', 'currency'] as const;
+const MENU_COLUMNS = ['brand_id', 'name', 'region', 'currency', 'refresh_notes'] as const;
 
 /**
  * Partial update of a menu. Scalar fields present in `patch` are written; if
@@ -2043,6 +2052,71 @@ export async function updateMenu(
 export async function deleteMenu(db: D1Like, id: string): Promise<boolean> {
 	const res = await db.prepare(`DELETE FROM menus WHERE id = ?`).bind(id).run();
 	return res.meta.changes > 0;
+}
+
+// ---------------------------------------------------------------------------
+// Duplicate-audit verdicts (location_pair_reviews, migration 0018): a durable
+// "these two locations are DISTINCT venues" record, so the duplicate audit
+// stops re-flagging a pair someone already verified against the venue's own
+// locator. Confirmed duplicates need no verdict — deleting the extra row
+// resolves them (and cascades away any verdict either half carried).
+// ---------------------------------------------------------------------------
+
+/** Canonical ordered form of an unordered location pair (a < b). */
+export function orderedPair(idA: string, idB: string): [string, string] {
+	return idA < idB ? [idA, idB] : [idB, idA];
+}
+
+/**
+ * Records that two locations were verified as two REAL venues — not one venue
+ * double-mapped — with the evidence in `reason`. Idempotent: re-marking the
+ * pair replaces the reason and re-stamps the review date. Returns whether a
+ * verdict already existed.
+ */
+export async function markLocationsDistinct(
+	db: D1Like,
+	idA: string,
+	idB: string,
+	reason: string
+): Promise<{ already_reviewed: boolean }> {
+	const [a, b] = orderedPair(idA, idB);
+	const existing = await db
+		.prepare(
+			`SELECT 1 AS x FROM location_pair_reviews WHERE location_id_a = ? AND location_id_b = ?`
+		)
+		.bind(a, b)
+		.first<{ x: number }>();
+	await db
+		.prepare(
+			`INSERT OR REPLACE INTO location_pair_reviews
+				(location_id_a, location_id_b, verdict, reason, reviewed_at)
+			 VALUES (?, ?, 'distinct', ?, ?)`
+		)
+		.bind(a, b, reason, currentVerificationDate())
+		.run();
+	return { already_reviewed: Boolean(existing) };
+}
+
+/** Revokes a distinct-pair verdict (the pair audits normally again). True when a row was deleted. */
+export async function unmarkLocationsDistinct(
+	db: D1Like,
+	idA: string,
+	idB: string
+): Promise<boolean> {
+	const [a, b] = orderedPair(idA, idB);
+	const res = await db
+		.prepare(`DELETE FROM location_pair_reviews WHERE location_id_a = ? AND location_id_b = ?`)
+		.bind(a, b)
+		.run();
+	return res.meta.changes > 0;
+}
+
+/** Every reviewed-distinct pair as an ordered "a|b" key set (audit suppression). */
+export async function reviewedPairKeys(db: D1Like): Promise<Set<string>> {
+	const { results } = await db
+		.prepare(`SELECT location_id_a, location_id_b FROM location_pair_reviews`)
+		.all<{ location_id_a: string; location_id_b: string }>();
+	return new Set(results.map((r) => `${r.location_id_a}|${r.location_id_b}`));
 }
 
 // ---------------------------------------------------------------------------

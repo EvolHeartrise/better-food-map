@@ -59,6 +59,12 @@ export interface BboxQuery {
 	name?: string;
 	/** Case-insensitive substring match on the cuisine tag. */
 	cuisine?: string;
+	/**
+	 * Exact match on the POI's OSM `brand:wikidata` tag (a Wikidata QID like
+	 * "Q37158") — surfaces a chain's branches regardless of how each POI is
+	 * named. Extracted from `tags_json` at query time.
+	 */
+	brand_wikidata?: string;
 	/** Hard cap on rows scanned back from the box (defends against huge boxes). */
 	cap?: number;
 }
@@ -267,6 +273,10 @@ export class OsmPoiStore {
 		if (query.cuisine) {
 			where.push("cuisine LIKE ? ESCAPE '\\'");
 			params.push(`%${escapeLike(query.cuisine)}%`);
+		}
+		if (query.brand_wikidata) {
+			where.push(`json_extract(tags_json, '$."brand:wikidata"') = ?`);
+			params.push(query.brand_wikidata);
 		}
 		params.push(Math.max(1, query.cap ?? DEFAULT_CAP));
 

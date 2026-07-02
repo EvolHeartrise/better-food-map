@@ -3,7 +3,9 @@ import { findDuplicateLocations } from './find-duplicate-locations';
 import {
 	insertLocations,
 	insertBrand,
+	markLocationsDistinct,
 	setLocationClosed,
+	unmarkLocationsDistinct,
 	type D1Like
 } from '../../src/lib/server/db';
 import { freshDb } from '../test-d1';
@@ -130,4 +132,41 @@ test('classifies confidence, matches phones by digits, and scopes by brand', asy
 	expect(scoped.pairs.every((p) => p.a.brand_id === brandId || p.b.brand_id === brandId)).toBe(
 		true
 	);
+});
+
+test('reviewed-distinct pairs are suppressed, counted, and revocable', async () => {
+	const db = freshDb();
+	const [id1, id2] = await seed(db, [
+		// ~8 m apart, same name — would normally flag.
+		{ name: 'Booster Juice', latitude: 43.8566898, longitude: -79.3335859 },
+		{ name: 'Booster Juice', latitude: 43.8567497, longitude: -79.3335274 },
+		// A second, unrelated flagged pair that must keep flagging.
+		{ name: 'Juice Stop', latitude: 43.6525771, longitude: -79.3790938 },
+		{ name: 'Juice Stop', latitude: 43.6528256, longitude: -79.3785139 }
+	]);
+
+	const before = await findDuplicateLocations(db);
+	expect(before.pairs.length).toBe(2);
+	expect(before.suppressed_reviewed).toBe(0);
+
+	// Mark the Booster Juice pair as verified-distinct (either id order works).
+	const first = await markLocationsDistinct(db, id2, id1, 'own locator lists both units');
+	expect(first.already_reviewed).toBe(false);
+
+	const after = await findDuplicateLocations(db);
+	expect(after.pairs.length).toBe(1);
+	expect(after.pairs[0].a.name).toBe('Juice Stop');
+	expect(after.suppressed_reviewed).toBe(1);
+
+	// Re-marking is idempotent and reports the existing verdict.
+	const again = await markLocationsDistinct(db, id1, id2, 'updated evidence');
+	expect(again.already_reviewed).toBe(true);
+	expect((await findDuplicateLocations(db)).suppressed_reviewed).toBe(1);
+
+	// Revoking restores the pair to the audit.
+	expect(await unmarkLocationsDistinct(db, id2, id1)).toBe(true);
+	expect(await unmarkLocationsDistinct(db, id2, id1)).toBe(false); // already gone
+	const restored = await findDuplicateLocations(db);
+	expect(restored.pairs.length).toBe(2);
+	expect(restored.suppressed_reviewed).toBe(0);
 });
