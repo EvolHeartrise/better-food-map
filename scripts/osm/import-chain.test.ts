@@ -157,3 +157,49 @@ test('reports scan truncation at the cap', async () => {
 	});
 	expect(selection.scan_truncated).toBe(true);
 });
+
+test('partitionImportable separates street-less POIs so max cannot be blocked by them', async () => {
+	const { partitionImportable } = await import('./import-chain');
+	const pois = [
+		// Fully resolvable: own addr tags.
+		row({
+			osm_id: 'n1',
+			latitude: 49.1,
+			longitude: -123.1,
+			name: 'Chain',
+			tags_json: JSON.stringify({
+				'addr:housenumber': '1',
+				'addr:street': 'Main St',
+				'addr:city': 'Vancouver',
+				'addr:state': 'BC'
+			})
+		}),
+		// Resolvable via enriched line + admin join.
+		row({
+			osm_id: 'n2',
+			latitude: 49.2,
+			longitude: -123.2,
+			name: 'Chain',
+			address: '465 Merecroft Road',
+			admin_city: 'Campbell River',
+			admin_region: 'BC'
+		}),
+		// Street-less: admin city/region only.
+		row({
+			osm_id: 'n3',
+			latitude: 49.3,
+			longitude: -123.3,
+			name: 'Chain',
+			admin_city: 'Surrey',
+			admin_region: 'BC'
+		}),
+		// Nothing at all.
+		row({ osm_id: 'n4', latitude: 49.4, longitude: -123.4, name: 'Chain' })
+	];
+	const { importable, unresolvable } = partitionImportable(pois);
+	expect(importable.map((p) => p.osm_id)).toEqual(['n1', 'n2']);
+	expect(unresolvable.count).toBe(2);
+	expect(unresolvable.missing_street).toBe(2);
+	expect(unresolvable.missing_city_or_region).toBe(0);
+	expect(unresolvable.sample_osm_ids).toEqual(['n3', 'n4']);
+});

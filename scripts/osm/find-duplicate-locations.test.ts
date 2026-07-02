@@ -86,3 +86,48 @@ test('ignores closed locations and honours limit/additional', async () => {
 	expect(capped.pairs.length).toBe(0);
 	expect(capped.additional).toBe(1);
 });
+
+test('classifies confidence, matches phones by digits, and scopes by brand', async () => {
+	const db = freshDb();
+	const brandId = await insertBrand(db, { name: 'ChainCo', website: null, logo_url: null });
+	const otherBrand = await insertBrand(db, { name: 'OtherCo', website: null, logo_url: null });
+	await seed(db, [
+		// ~11 m apart, same name → high confidence.
+		{ name: 'ChainCo', brand_id: brandId, latitude: 49.28, longitude: -123.12 },
+		{ name: 'ChainCo', brand_id: brandId, latitude: 49.2801, longitude: -123.12 },
+		// ~110 m apart but SAME PHONE (different formatting) → high confidence.
+		{
+			name: 'OtherCo',
+			brand_id: otherBrand,
+			latitude: 50.0,
+			longitude: -120.0,
+			phone: '+1 604-555-0100'
+		},
+		{
+			name: 'OtherCo',
+			brand_id: otherBrand,
+			latitude: 50.001,
+			longitude: -120.0,
+			phone: '(604) 555 0100'
+		},
+		// ~110 m apart, same name, no phones → review.
+		{ name: 'ChainCo', brand_id: brandId, latitude: 51.0, longitude: -114.0 },
+		{ name: 'ChainCo', brand_id: brandId, latitude: 51.001, longitude: -114.0 }
+	]);
+
+	const all = await findDuplicateLocations(db);
+	expect(all.pairs.length).toBe(3);
+	const high = all.pairs.filter((p) => p.confidence === 'high');
+	expect(high.length).toBe(2);
+	expect(high.some((p) => p.same_phone)).toBe(true);
+	expect(all.pairs.filter((p) => p.confidence === 'review').length).toBe(1);
+	// Halves carry contact fields for verification.
+	expect(high.every((p) => 'phone' in p.a && 'website' in p.b)).toBe(true);
+
+	// Brand scoping: only pairs touching brandId.
+	const scoped = await findDuplicateLocations(db, { brand_id: brandId });
+	expect(scoped.pairs.length).toBe(2);
+	expect(scoped.pairs.every((p) => p.a.brand_id === brandId || p.b.brand_id === brandId)).toBe(
+		true
+	);
+});

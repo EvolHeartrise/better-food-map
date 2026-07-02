@@ -70,7 +70,7 @@ import {
 import { createHttpD1 } from '../src/lib/server/d1-http';
 import { normalizeRegion, normalizePostcode, normalizeCountry } from '../src/lib/address';
 import { searchPoi, normalizeName, namesMatch } from './osm/search-poi';
-import { selectChainCandidates } from './osm/import-chain';
+import { selectChainCandidates, partitionImportable } from './osm/import-chain';
 import { findCoordinateDrift } from './osm/find-coordinate-drift';
 import { findMissingAddress } from './osm/find-missing-address';
 import { findDuplicateLocations } from './osm/find-duplicate-locations';
@@ -916,9 +916,19 @@ const importChainArgs = v.pipe(
 				v.minValue(1),
 				v.maxValue(1000),
 				v.description(
-					'Cap on branches imported in this call (default 500). Anything beyond it is counted in ' +
-						'`remaining_beyond_max` — call again to continue (already-imported branches are excluded ' +
-						'automatically).'
+					'Cap on branches imported in this call (default 500), applied to the IMPORTABLE candidates ' +
+						'only — address-unresolvable POIs are summarized in `skipped_unresolvable` and never ' +
+						'consume the cap. Anything beyond it is counted in `remaining_beyond_max` — call again to ' +
+						'continue (already-imported branches are excluded automatically).'
+				)
+			)
+		),
+		include_location_ids: v.optional(
+			v.pipe(
+				v.boolean(),
+				v.description(
+					'Also return the created location ids (default false — a 1000-branch import would return ' +
+						'1000 UUIDs; enumerate branches later with list_locations brand_id instead).'
 				)
 			)
 		),
@@ -962,9 +972,11 @@ const auditLocationsArgs = v.object({
 				'include_unfixable=false for just the OSM-fixable work list.\n' +
 				'• "duplicate_locations" — pairs of live locations within `radius_m` (default 150) whose names ' +
 				'match or that share a brand: probably ONE venue stored twice (OSM sometimes carries two stale ' +
-				'nodes for one place — coordinate-exact dedup cannot catch that). Nearest pairs first. Verify ' +
-				"each against the venue's own store locator before delete_location — two real branches CAN sit " +
-				'close together.'
+				"nodes for one place — coordinate-exact dedup cannot catch that). Each pair carries both halves' " +
+				'phone/website/postcode, a `same_phone` flag (a shared phone ≈ the same store) and a `confidence` ' +
+				'classification: "high" (name match within ~30 m, or shared phone) vs "review". Nearest pairs ' +
+				"first; scope a post-import sweep with `brand_id`. Verify each against the venue's own store " +
+				'locator before delete_location — two real branches CAN sit close together.'
 		)
 	),
 	radius_m: v.optional(
@@ -973,6 +985,16 @@ const auditLocationsArgs = v.object({
 			v.minValue(0),
 			v.maxValue(1000),
 			v.description('[duplicate_locations only] Pair-flagging distance in metres (default 150).')
+		)
+	),
+	brand_id: v.optional(
+		v.pipe(
+			v.string(),
+			v.minLength(1),
+			v.description(
+				'[duplicate_locations only] Only pairs where at least one half belongs to this chain — scopes ' +
+					'a post-import sweep to the chain just imported.'
+			)
 		)
 	),
 	limit: v.optional(
@@ -2348,15 +2370,20 @@ const osmTools = [
 				},
 				nameMatch: input.name_match
 			});
+			// The cap applies to IMPORTABLE candidates only: slicing the raw matched
+			// list would let a long run of address-unresolvable POIs occupy the window
+			// forever, leaving valid branches behind them unreachable on every re-run.
+			const { importable, unresolvable } = partitionImportable(selection.matched);
 			const max = input.max ?? 500;
-			const toImport = selection.matched.slice(0, max);
-			const remaining = selection.matched.length - toImport.length;
+			const toImport = importable.slice(0, max);
+			const remaining = importable.length - toImport.length;
 
 			if (input.dry_run) {
 				return {
 					dry_run: true,
 					would_import: toImport.length,
 					remaining_beyond_max: remaining,
+					skipped_unresolvable: unresolvable,
 					excluded_existing: selection.excluded_existing,
 					scan_truncated: selection.scan_truncated,
 					name_buckets: selection.name_buckets,
@@ -2372,7 +2399,7 @@ const osmTools = [
 
 			// Import through the same core as create_locations, in bounded chunks so
 			// one D1 batch never carries hundreds of statements. skip_invalid semantics:
-			// an unresolvable POI is reported, not fatal, at this scale.
+			// a residual invalid row (normalization edge case) is reported, not fatal.
 			const CHUNK = 50;
 			const locationIds: string[] = [];
 			const skippedDuplicates: { name: string; existing_id: string | null }[] = [];
@@ -2400,8 +2427,9 @@ const osmTools = [
 			}
 			return {
 				imported: created,
-				location_ids: locationIds,
+				...(input.include_location_ids ? { location_ids: locationIds } : {}),
 				excluded_existing: selection.excluded_existing,
+				skipped_unresolvable: unresolvable,
 				...(skippedDuplicates.length ? { skipped_duplicate_locations: skippedDuplicates } : {}),
 				...(skippedInvalid.length ? { skipped_invalid: skippedInvalid } : {}),
 				...(warnings.length ? { warnings } : {}),
@@ -2438,7 +2466,8 @@ const osmTools = [
 				// Reads only the live D1 — no staging store needed.
 				return findDuplicateLocations(getDb(), {
 					radius_m: input.radius_m,
-					limit: input.limit
+					limit: input.limit,
+					brand_id: input.brand_id
 				});
 			}
 			return findMissingAddress(getOsmStore(), getDb(), {
