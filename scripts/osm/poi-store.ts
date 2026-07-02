@@ -15,6 +15,9 @@ import { Database } from 'bun:sqlite';
 import { existsSync } from 'node:fs';
 import type { Bounds } from './geo';
 import type { PoiRow, SuggestedCategory } from './map-feature';
+// Value import into the store is safe: search-poi's import of this module is
+// type-only, so there is no runtime cycle.
+import { normalizeName } from './search-poi';
 
 /** A POI row read back from the store (diet_markers parsed from its JSON column). */
 export interface StoredPoi {
@@ -65,6 +68,14 @@ export interface BboxQuery {
 	 * named. Extracted from `tags_json` at query time.
 	 */
 	brand_wikidata?: string;
+	/**
+	 * Exact match on the store's pre-normalized name column (see normalizeName —
+	 * pass an already-normalized value). This is the same folding import_chain's
+	 * allowlist matching applies, so an equality scan on it reaches every
+	 * spelling variant a raw LIKE substring scan cannot ("A and W" for "A&W",
+	 * "Tim-Hortons", "Café" vs "Cafe").
+	 */
+	normalized_name?: string;
 	/** Hard cap on rows scanned back from the box (defends against huge boxes). */
 	cap?: number;
 }
@@ -89,12 +100,18 @@ CREATE TABLE IF NOT EXISTS osm_poi (
 	address_source TEXT,
 	admin_city TEXT,
 	admin_region TEXT,
+	normalized_name TEXT,
 	region TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_osm_poi_lat ON osm_poi (latitude);
 CREATE INDEX IF NOT EXISTS idx_osm_poi_lon ON osm_poi (longitude);
 CREATE INDEX IF NOT EXISTS idx_osm_poi_region ON osm_poi (region);
 `;
+
+// Created AFTER the additive column migrations in open(): on a store built
+// before normalized_name existed, indexing it inside SCHEMA would fail.
+const NORMALIZED_NAME_INDEX =
+	'CREATE INDEX IF NOT EXISTS idx_osm_poi_normalized_name ON osm_poi (normalized_name);';
 
 const DEFAULT_CAP = 2000;
 
@@ -118,7 +135,8 @@ export class OsmPoiStore {
 		for (const ddl of [
 			'ALTER TABLE osm_poi ADD COLUMN address_source TEXT',
 			'ALTER TABLE osm_poi ADD COLUMN admin_city TEXT',
-			'ALTER TABLE osm_poi ADD COLUMN admin_region TEXT'
+			'ALTER TABLE osm_poi ADD COLUMN admin_region TEXT',
+			'ALTER TABLE osm_poi ADD COLUMN normalized_name TEXT'
 		]) {
 			try {
 				db.run(ddl);
@@ -126,6 +144,8 @@ export class OsmPoiStore {
 				// column already present
 			}
 		}
+		db.run(NORMALIZED_NAME_INDEX);
+		backfillNormalizedNames(db);
 		return new OsmPoiStore(db);
 	}
 
@@ -142,7 +162,18 @@ export class OsmPoiStore {
 					`(or set OSM_POI_DB to an existing store).`
 			);
 		}
-		return new OsmPoiStore(new Database(path, { readonly: true }));
+		let db = new Database(path, { readonly: true });
+		// Self-heal a store built before normalized_name existed (or was
+		// backfilled): a one-time writable open runs the additive migration +
+		// backfill, then the store reopens read-only as promised. Without this,
+		// normalized-equality scans over an old store would silently return
+		// nothing — worse than the LIKE-only behaviour they replace.
+		if (needsNormalizedNames(db)) {
+			db.close();
+			OsmPoiStore.open(path).close();
+			db = new Database(path, { readonly: true });
+		}
+		return new OsmPoiStore(db);
 	}
 
 	/** Inserts/updates a batch of rows for a region (no prior delete). */
@@ -151,10 +182,10 @@ export class OsmPoiStore {
 			`INSERT OR REPLACE INTO osm_poi
 				(osm_id, osm_type, numeric_id, name, osm_class, suggested_category, cuisine,
 				 latitude, longitude, address, phone, website, opening_hours, diet_markers, tags_json,
-				 admin_city, admin_region, region)
+				 admin_city, admin_region, normalized_name, region)
 			 VALUES ($osm_id, $osm_type, $numeric_id, $name, $osm_class, $suggested_category, $cuisine,
 				 $latitude, $longitude, $address, $phone, $website, $opening_hours, $diet_markers, $tags_json,
-				 $admin_city, $admin_region, $region)`
+				 $admin_city, $admin_region, $normalized_name, $region)`
 		);
 		const run = this.db.transaction((items: Iterable<PoiRow>) => {
 			let n = 0;
@@ -177,6 +208,7 @@ export class OsmPoiStore {
 					$tags_json: r.tags_json,
 					$admin_city: r.admin_city,
 					$admin_region: r.admin_region,
+					$normalized_name: normalizeName(r.name),
 					$region: region
 				});
 				n++;
@@ -279,6 +311,10 @@ export class OsmPoiStore {
 			where.push(`UPPER(json_extract(tags_json, '$."brand:wikidata"')) = ?`);
 			params.push(query.brand_wikidata.toUpperCase());
 		}
+		if (query.normalized_name) {
+			where.push('normalized_name = ?');
+			params.push(query.normalized_name);
+		}
 		params.push(Math.max(1, query.cap ?? DEFAULT_CAP));
 
 		const rows = this.db
@@ -331,4 +367,34 @@ function parseMarkers(json: string): string[] {
 /** Escapes LIKE wildcards in user input (paired with `ESCAPE '\'`). */
 function escapeLike(value: string): string {
 	return value.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+
+/**
+ * True when the store predates the normalized_name column or still has
+ * un-backfilled rows (a nameless POI stores '' — normalizeName(null) — so NULL
+ * always means "not yet backfilled", never "no name").
+ */
+function needsNormalizedNames(db: Database): boolean {
+	const cols = db.query('PRAGMA table_info(osm_poi)').all() as { name: string }[];
+	if (!cols.some((c) => c.name === 'normalized_name')) return true;
+	return db.query('SELECT 1 FROM osm_poi WHERE normalized_name IS NULL LIMIT 1').get() !== null;
+}
+
+/**
+ * Fills normalized_name on rows inserted before the column existed, with the
+ * SAME normalizeName the equality scans use — the whole point of the column is
+ * that scan and match can never disagree. One-time cost per legacy store.
+ */
+function backfillNormalizedNames(db: Database): number {
+	const rows = db.query('SELECT osm_id, name FROM osm_poi WHERE normalized_name IS NULL').all() as {
+		osm_id: string;
+		name: string | null;
+	}[];
+	if (rows.length === 0) return 0;
+	const stmt = db.prepare('UPDATE osm_poi SET normalized_name = ? WHERE osm_id = ?');
+	const run = db.transaction(() => {
+		for (const r of rows) stmt.run(normalizeName(r.name), r.osm_id);
+	});
+	run();
+	return rows.length;
 }

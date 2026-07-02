@@ -101,6 +101,40 @@ test('matches strictly by normalized name and histograms everything else', async
 	expect(selection.scan_truncated).toBe(false);
 });
 
+test('normalized scan reaches spelling variants the LIKE scan cannot (#88)', async () => {
+	const store = storeWith([
+		row({ osm_id: 'n1', latitude: 49.1, longitude: -123.1, name: 'A&W' }),
+		// "&" written out: no LIKE term ("A&W"/"AW") is a substring of this name,
+		// but it normalizes identically ("aandw") — the equality scan must find it.
+		row({ osm_id: 'n2', latitude: 49.2, longitude: -123.2, name: 'A and W' }),
+		// Superstring variants still need their own allowlist entry — they don't
+		// normalize-equal, and when their raw spelling also evades every LIKE term
+		// they stay out of the histogram too (the residual, vet-by-QID gap).
+		row({ osm_id: 'n3', latitude: 49.3, longitude: -123.3, name: 'A and W Restaurant' })
+	]);
+	const selection = await selectChainCandidates(store, fakeD1([]), {
+		area: AREA,
+		nameMatch: ['A&W']
+	});
+	expect(selection.matched.map((p) => p.osm_id).toSorted()).toEqual(['n1', 'n2']);
+	const byName = new Map(selection.name_buckets.map((b) => [b.name, b]));
+	expect(byName.get('A and W')?.matched).toBe(true);
+	expect(byName.get('A and W Restaurant')).toBeUndefined();
+});
+
+test('normalized scan folds hyphens, periods and accents like the matcher (#88)', async () => {
+	const store = storeWith([
+		row({ osm_id: 'n1', latitude: 49.1, longitude: -123.1, name: 'Tim-Hortons' }),
+		row({ osm_id: 'n2', latitude: 49.2, longitude: -123.2, name: 'Café Crème' }),
+		row({ osm_id: 'n3', latitude: 49.3, longitude: -123.3, name: 'Mr Sub' })
+	]);
+	const selection = await selectChainCandidates(store, fakeD1([]), {
+		area: AREA,
+		nameMatch: ['Tim Hortons', 'Cafe Creme', 'Mr. Sub']
+	});
+	expect(selection.matched.map((p) => p.osm_id).toSorted()).toEqual(['n1', 'n2', 'n3']);
+});
+
 test('multiple name_match terms union without duplicating a POI', async () => {
 	const store = storeWith([
 		row({ osm_id: 'n1', latitude: 49.1, longitude: -123.1, name: "Mary Brown's" }),
