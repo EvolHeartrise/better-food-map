@@ -170,3 +170,21 @@ test('reviewed-distinct pairs are suppressed, counted, and revocable', async () 
 	expect(restored.pairs.length).toBe(2);
 	expect(restored.suppressed_reviewed).toBe(0);
 });
+
+test('a verdict cascades away when either location is deleted', async () => {
+	const db = freshDb();
+	const [id1, id2] = await seed(db, [
+		{ name: 'Booster Juice', latitude: 43.8566898, longitude: -79.3335859 },
+		{ name: 'Booster Juice', latitude: 43.8567497, longitude: -79.3335274 }
+	]);
+	await markLocationsDistinct(db, id1, id2, 'verified');
+	expect((await findDuplicateLocations(db)).suppressed_reviewed).toBe(1);
+	// Deleting one half (it was a duplicate after all) must take the verdict with
+	// it — production D1 enforces the FK cascade, and so does this harness.
+	await db.prepare(`DELETE FROM locations WHERE id = ?`).bind(id2).run();
+	const after = await findDuplicateLocations(db);
+	expect(after.pairs.length).toBe(0);
+	expect(after.suppressed_reviewed).toBe(0);
+	const { results } = await db.prepare(`SELECT * FROM location_pair_reviews`).all();
+	expect(results.length).toBe(0);
+});

@@ -32,13 +32,14 @@
 
 import type { D1Like } from '../../src/lib/server/db';
 import { haversineMeters } from './geo';
-import { effectivePoiAddressParts, poiCountry } from './map-feature';
+import { effectivePoiAddressParts } from './map-feature';
 import {
 	existingInBbox,
 	isExistingDuplicate,
-	namesMatch,
 	normalizeName,
+	partitionByCountry,
 	resolveArea,
+	type ForeignDrop,
 	type SearchPoiParams
 } from './search-poi';
 import type { OsmPoiStore, StoredPoi } from './poi-store';
@@ -81,6 +82,13 @@ export interface NameBucket {
 	count: number;
 	matched: boolean;
 	/**
+	 * Present (true) when at least one of this bucket's POIs was accepted via the
+	 * brand:wikidata path rather than an exact allowlisted name — brand-accepted
+	 * names must be VISIBLE in a dry run, or the vetting agent scanning for
+	 * unmatched buckets would never notice what the QID pulled in.
+	 */
+	matched_via_brand?: true;
+	/**
 	 * Dominant OSM `brand:wikidata` QID among this bucket's POIs, when any carry
 	 * one — the vetting signal for unmatched buckets: a variant name carrying the
 	 * chain's own QID is almost certainly a real branch, a foreign QID almost
@@ -100,7 +108,13 @@ export interface ChainCandidateSelection {
 	excluded_existing: number;
 	/** POIs dropped because their address signals a different country (only with `country`). */
 	excluded_foreign: number;
-	/** POIs accepted via brand:wikidata agreement rather than an exact name match. */
+	/** Up to 10 of the foreign-dropped POIs, so the drop is auditable, never silent. */
+	excluded_foreign_sample: ForeignDrop[];
+	/**
+	 * POIs accepted via brand:wikidata agreement rather than an exact name match,
+	 * counted BEFORE the already-on-the-map exclusion — so a re-run over imported
+	 * territory reports the same nonzero figure alongside `imported: 0`.
+	 */
 	matched_by_brand: number;
 	/** True when a scan hit `scanCap` — results may be incomplete; narrow the area. */
 	scan_truncated: boolean;
@@ -167,16 +181,15 @@ export async function selectChainCandidates(
 	// Country scope: drop foreign-signalled POIs BEFORE bucketing, so a "Subway"
 	// in a US border town neither imports nor pads the matched bucket's count.
 	let excludedForeign = 0;
+	let excludedForeignSample: ForeignDrop[] = [];
 	if (params.country) {
-		const scope = params.country.toUpperCase();
-		pois = pois.filter((poi) => {
-			const c = poiCountry(poi);
-			if (c === null || c === scope) return true;
-			excludedForeign++;
-			return false;
-		});
+		const { kept, dropped, sample } = partitionByCountry(pois, params.country);
+		pois = kept;
+		excludedForeign = dropped;
+		excludedForeignSample = sample;
 	}
 
+	const targetQid = params.brandWikidata?.toUpperCase();
 	const acceptedList = [...accepted];
 	const buckets = new Map<string, NameBucket>();
 	const qidCounts = new Map<string, Map<string, number>>();
@@ -187,20 +200,34 @@ export async function selectChainCandidates(
 		const norm = normalizeName(poi.name);
 		const qid = brandWikidataOf(poi);
 		const nameMatched = accepted.has(norm);
-		// Two-signal acceptance: the chain's own QID plus a resembling name. A
-		// conflicting name (a mistagged POI) keeps the POI out of the import.
+		// Two-signal acceptance: the chain's own QID plus a resembling,
+		// single-brand name. The QID already provides the second signal, so plain
+		// containment suffices with no length floor (namesMatch's ≥4 overlap would
+		// silently exempt 3-letter chains like KFC). A conflicting name (a
+		// mistagged POI) keeps the POI out, and a co-branded unit name
+		// ("Wendy's / Tim Hortons") is never brand-absorbed into one chain — it
+		// stays a bucket to vet, since importing it under either single brand
+		// would block the other chain's import of the same venue forever.
 		const brandMatched =
 			!nameMatched &&
-			params.brandWikidata !== undefined &&
-			qid === params.brandWikidata &&
-			acceptedList.some((a) => namesMatch(norm, a));
+			targetQid !== undefined &&
+			qid === targetQid &&
+			norm !== '' &&
+			!looksCoBranded(poi.name) &&
+			acceptedList.some((a) => norm === a || norm.includes(a) || a.includes(norm));
 		const matched = nameMatched || brandMatched;
 		const bucket = buckets.get(name);
 		if (bucket) {
 			bucket.count++;
 			bucket.matched ||= matched;
+			if (brandMatched) bucket.matched_via_brand = true;
 		} else {
-			buckets.set(name, { name, count: 1, matched });
+			buckets.set(name, {
+				name,
+				count: 1,
+				matched,
+				...(brandMatched ? { matched_via_brand: true as const } : {})
+			});
 		}
 		if (qid) {
 			const counts = qidCounts.get(name) ?? new Map<string, number>();
@@ -231,20 +258,33 @@ export async function selectChainCandidates(
 		name_buckets: annotated.toSorted((a, b) => b.count - a.count),
 		excluded_existing: excludedExisting,
 		excluded_foreign: excludedForeign,
+		excluded_foreign_sample: excludedForeignSample,
 		matched_by_brand: matchedByBrand,
 		scan_truncated: scanTruncated
 	};
 }
 
-/** The POI's OSM `brand:wikidata` QID, from its stored tag blob (null when absent/corrupt). */
+/**
+ * The POI's OSM `brand:wikidata` QID (upper-cased — a lower-case "q175106"
+ * exists in the wild), from its stored tag blob; null when absent/corrupt.
+ */
 function brandWikidataOf(poi: StoredPoi): string | null {
 	try {
 		const tags = JSON.parse(poi.tags_json) as Record<string, string>;
 		const qid = tags['brand:wikidata'];
-		return typeof qid === 'string' && qid.trim() ? qid.trim() : null;
+		return typeof qid === 'string' && qid.trim() ? qid.trim().toUpperCase() : null;
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * True when a POI name reads as a co-branded/combined unit ("Wendy's / Tim
+ * Hortons", "A&W + Chevron"). "&" is NOT a signal — it appears inside single
+ * brand names (A&W, H&W Produce); "/" and "+" essentially never do.
+ */
+function looksCoBranded(name: string | null): boolean {
+	return name !== null && /[/+]/.test(name);
 }
 
 /** Summary of the matched POIs a chain import cannot resolve an address for. */

@@ -9,6 +9,7 @@
 // ---------------------------------------------------------------------------
 
 import type { D1Like } from '../../src/lib/server/db';
+import { normalizeCountry } from '../../src/lib/address';
 import { stripDiacritics } from '../../src/lib/text';
 import { bboxAround, haversineMeters, type Bbox } from './geo';
 import { effectivePoiAddressParts, osmUrl, poiCountry, type PoiAddressParts } from './map-feature';
@@ -88,6 +89,8 @@ export interface SearchPoiResult {
 	excluded_existing: number;
 	/** POIs dropped because their address signals a different country (only with `country`). */
 	excluded_foreign?: number;
+	/** Up to 10 of the foreign-dropped POIs, so the drop is auditable, never silent. */
+	excluded_foreign_sample?: { osm_id: string; name: string | null; country: string }[];
 	/** Whether results were capped by `limit`. */
 	truncated: boolean;
 }
@@ -95,6 +98,43 @@ export interface SearchPoiResult {
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 const SCAN_CAP = 2000;
+const FOREIGN_SAMPLE = 10;
+
+/** One foreign-dropped POI, for the audit sample. */
+export interface ForeignDrop {
+	osm_id: string;
+	name: string | null;
+	/** The country the POI's address signalled (never the requested scope). */
+	country: string;
+}
+
+/**
+ * Splits POIs into those compatible with an ISO-2 country scope (matching
+ * signal, or no signal at all — an unresolvable address can't prove a POI
+ * foreign) and a sample-carrying summary of the dropped rest. The scope is
+ * folded through the same normalizeCountry as the per-POI signal, so spellings
+ * ("UK" vs "GB") can never disagree. Shared by search_poi and import_chain.
+ */
+export function partitionByCountry(
+	pois: StoredPoi[],
+	countryScope: string
+): { kept: StoredPoi[]; dropped: number; sample: ForeignDrop[] } {
+	const scope = normalizeCountry(countryScope) ?? countryScope.trim().toUpperCase();
+	const kept: StoredPoi[] = [];
+	let dropped = 0;
+	const sample: ForeignDrop[] = [];
+	for (const poi of pois) {
+		const c = poiCountry(poi);
+		if (c === null || c === scope) {
+			kept.push(poi);
+			continue;
+		}
+		dropped++;
+		if (sample.length < FOREIGN_SAMPLE)
+			sample.push({ osm_id: poi.osm_id, name: poi.name, country: c });
+	}
+	return { kept, dropped, sample };
+}
 
 // Dedup thresholds. A staging POI is considered already-present when an existing
 // location is essentially on the same spot, or close with a matching name.
@@ -237,14 +277,12 @@ export async function searchPoi(
 		rows = rows.filter((poi) => !excluded.has(poi.osm_id));
 	}
 	let excludedForeign = 0;
+	let excludedForeignSample: ForeignDrop[] = [];
 	if (params.country) {
-		const scope = params.country.toUpperCase();
-		rows = rows.filter((poi) => {
-			const c = poiCountry(poi);
-			if (c === null || c === scope) return true;
-			excludedForeign++;
-			return false;
-		});
+		const { kept, dropped, sample } = partitionByCountry(rows, params.country);
+		rows = kept;
+		excludedForeign = dropped;
+		excludedForeignSample = sample;
 	}
 
 	// Attach distance and trim to the exact circle for centre+radius queries.
@@ -284,6 +322,7 @@ export async function searchPoi(
 		total_in_area: totalInArea,
 		excluded_existing: excluded,
 		...(params.country === undefined ? {} : { excluded_foreign: excludedForeign }),
+		...(excludedForeignSample.length ? { excluded_foreign_sample: excludedForeignSample } : {}),
 		truncated
 	};
 }

@@ -275,8 +275,9 @@ export class OsmPoiStore {
 			params.push(`%${escapeLike(query.cuisine)}%`);
 		}
 		if (query.brand_wikidata) {
-			where.push(`json_extract(tags_json, '$."brand:wikidata"') = ?`);
-			params.push(query.brand_wikidata);
+			// UPPER on both sides: lower-case "q175106" tags exist in the wild.
+			where.push(`UPPER(json_extract(tags_json, '$."brand:wikidata"')) = ?`);
+			params.push(query.brand_wikidata.toUpperCase());
 		}
 		params.push(Math.max(1, query.cap ?? DEFAULT_CAP));
 
