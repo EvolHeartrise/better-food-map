@@ -258,6 +258,14 @@
 		}
 	});
 
+	// The visitor's IP-detected location, kicked off AT RENDER rather than inside the
+	// click handler: the lookup reads `request.cf` with no I/O, so during SSR it
+	// settles immediately and its value is serialized into the page — the click then
+	// resolves from the already-settled query cache instead of paying a round trip
+	// while the user waits. Holding the instance in a const keeps it cached for the
+	// life of the page (queries are released once nothing references them).
+	const userLocation = getUserLocation();
+
 	// "Start using the map": fly to the visitor's IP-detected location at city zoom, which
 	// leaves the landing (the zoom passes LANDING_MAX_ZOOM). getUserLocation is prompt-free
 	// edge geolocation — null under local dev or when unavailable, so we fall back to the
@@ -266,7 +274,7 @@
 	async function startUsing(): Promise<void> {
 		// A rejected lookup falls back exactly like the documented null return —
 		// the button must still fly somewhere.
-		const loc = await getUserLocation().catch(() => null);
+		const loc = await userLocation.catch(() => null);
 		const target = loc ?? { lat: DEFAULT_CENTER[0], lng: DEFAULT_CENTER[1] };
 		focusNonce += 1;
 		focusTarget = { latitude: target.lat, longitude: target.lng, key: String(focusNonce) };
