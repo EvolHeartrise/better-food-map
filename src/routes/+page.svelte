@@ -2,7 +2,8 @@
 	import { resolve } from '$app/paths';
 	import { pushState, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
-	import { SvelteSet, SvelteMap } from 'svelte/reactivity';
+	import { fly } from 'svelte/transition';
+	import { SvelteSet, SvelteMap, MediaQuery } from 'svelte/reactivity';
 	import {
 		getLocations,
 		getLocationData,
@@ -381,14 +382,15 @@
 	// resolve it from the in-view set when present and otherwise fetch it by id.
 	// Held in state (not a derived) and updated imperatively so the open detail
 	// stays put while a by-id fetch is in flight — panning the place off screen
-	// doesn't flash the card closed.
-	let selectedLocation = $state<LocationData | null>(null);
+	// doesn't flash the panel closed. Seeded from the awaited landing venue so a
+	// hard `/locations/<id>` load server-renders the panel body too, not just the
+	// head. Deliberately NOT nulled on deselect: everything that shows it gates on
+	// `selectedId`, and keeping the last venue gives the closing panel's slide-out
+	// its content (an emptied panel would blank mid-animation).
+	let selectedLocation = $state<LocationData | null>(landingVenue);
 	$effect(() => {
 		const id = selectedId;
-		if (!id) {
-			selectedLocation = null;
-			return;
-		}
+		if (!id) return;
 		const inView = locations.find((loc) => loc.id === id) ?? null;
 		if (inView) {
 			selectedLocation = inView;
@@ -412,13 +414,11 @@
 		};
 	});
 
-	// The venue driving the head metadata. During SSR `selectedLocation` is still
-	// null (its $effect can't run on the server) and `selectedId` falls back to
-	// `landingId`, so the awaited landing venue fills the head; client-side the
-	// resolved selection takes over as soon as it lands. Once the detail is closed
-	// (`selectedId` null) this drops to null and the head reverts to the static
+	// The venue driving the head metadata. Gated on `selectedId` because
+	// `selectedLocation` intentionally survives a close (see above): once the
+	// detail is closed this drops to null and the head reverts to the static
 	// defaults.
-	const headVenue = $derived(selectedLocation ?? (selectedId ? landingVenue : null));
+	const headVenue = $derived(selectedId ? (selectedLocation ?? landingVenue) : null);
 
 	// The canonical public origin for og:url — a shared /locations/<id> link should
 	// unfurl against the production URL regardless of which host served the page.
@@ -445,9 +445,10 @@
 	// The selected venue, trimmed to what <LocationMap> needs and carrying its own
 	// rotating item line. Passed as `selected` so the map keeps its label (and rotation)
 	// even when the venue isn't among `mapLocations` — opened from a `/locations/<id>`
-	// link, or panned off screen.
+	// link, or panned off screen. Gated on `selectedId` (not just the resolved record,
+	// which survives a close — see selectedLocation) so deselecting unhighlights.
 	const mapSelected = $derived(
-		selectedLocation
+		selectedId && selectedLocation
 			? {
 					id: selectedLocation.id,
 					name: selectedLocation.name,
@@ -456,6 +457,32 @@
 					items: matchedItems(selectedLocation).map((menuItem) => menuItem.item_name)
 				}
 			: null
+	);
+
+	// --- Detail panel geometry ---------------------------------------------------
+	// While a location is open, its details live in a panel docked to an edge: a
+	// fixed-width column on the RIGHT on wide screens, a bottom sheet on narrow ones
+	// (the 48rem breakpoint the rest of the page uses). The same footprint is passed
+	// to <LocationMap> as a camera inset so the venue centres in the map area the
+	// panel leaves visible. These px values mirror the CSS (26rem / 320px); the map
+	// clamps them against its own size, so the CSS caps (100vw, 55dvh) need no echo.
+	const PANEL_WIDTH_PX = 416;
+	const SHEET_HEIGHT_PX = 320;
+	const narrowScreen = new MediaQuery('(max-width: 48rem)');
+	const detailInset = $derived(
+		selectedId
+			? narrowScreen.current
+				? { right: 0, bottom: SHEET_HEIGHT_PX }
+				: { right: PANEL_WIDTH_PX, bottom: 0 }
+			: null
+	);
+
+	// How the panel enters/leaves: sliding from the edge it docks to. `opacity: 1`
+	// keeps it fully opaque throughout — the motion alone is the transition.
+	const panelFly = $derived(
+		narrowScreen.current
+			? { y: '100%', duration: 300, opacity: 1 }
+			: { x: '100%', duration: 300, opacity: 1 }
 	);
 
 	function idFromPath(pathname: string): string | null {
@@ -502,6 +529,12 @@
 		// button still closes the detail via the prior `/` entry, so back/forward
 		// stays intuitive.
 		replaceState(resolve('/'), {});
+	}
+
+	// A click on bare map (reported by <LocationMap>) closes the open detail. Guarded
+	// so ordinary map clicks with nothing open don't rewrite the history entry.
+	function deselectLocation(): void {
+		if (selectedId) closeDetail();
 	}
 
 	// --- Account & likes -------------------------------------------------------
@@ -615,155 +648,161 @@
 	{/if}
 </svelte:head>
 
-<div class="app">
+<div class="app" class:app--detail={Boolean(selectedId)}>
 	<div class="app__map">
 		<LocationMap
 			locations={mapLocations}
 			selected={mapSelected}
 			onselect={selectLocation}
+			ondeselect={deselectLocation}
+			{detailInset}
 			initialCenter={WORLD_CENTER}
 			initialZoom={WORLD_ZOOM}
 			onzoom={(z) => (zoomLevel = z)}
 			focus={focusTarget}
 			onviewchange={(bounds) => (viewport = bounds)}
-		>
-			<!-- The selected venue's detail card, rendered by the map at the venue's
-			     point. Holds the location info the old right panel did, plus the venue's
-			     full menu (the map labels only tease a rotating item from it). -->
-			{#snippet detailCard()}
-				{#if selectedLocation}
-					{@const loc = selectedLocation}
-					{@const label = categoryLabel(loc.category)}
-					<div class="placecard">
-						<button
-							type="button"
-							class="placecard__close"
-							aria-label="Close place details"
-							onclick={closeDetail}
-						>
-							✕
-						</button>
-						<header class="placecard__head">
-							<h2 class="placecard__name">{loc.name}</h2>
-							{#if label}
-								<span class="badge">{label}</span>
-							{/if}
-							{#if user}
-								<span class="placecard__like">
-									<LikeButton
-										liked={likedLocationIds.has(loc.id)}
-										onToggle={() => toggleLocationLike(loc.id)}
-										label={likedLocationIds.has(loc.id) ? 'Unlike this place' : 'Like this place'}
-										size={18}
-									/>
-								</span>
-							{/if}
-						</header>
-
-						{#if loc.address || loc.phone || loc.website || loc.sources.length > 0}
-							<dl class="info">
-								{#if loc.address}
-									<div class="info__row">
-										<dt>Address</dt>
-										<dd>{loc.address}</dd>
-									</div>
-								{/if}
-								{#if loc.phone}
-									<div class="info__row">
-										<dt>Phone</dt>
-										<dd><a href="tel:{loc.phone}">{loc.phone}</a></dd>
-									</div>
-								{/if}
-								{#if loc.website}
-									<div class="info__row">
-										<dt>Website</dt>
-										<dd>
-											<a href={loc.website} target="_blank" rel="external noopener noreferrer">
-												{loc.website}
-											</a>
-										</dd>
-									</div>
-								{/if}
-								{#if loc.sources.length > 0}
-									<div class="info__row">
-										<dt>Sources</dt>
-										<dd>
-											<ul class="info__sources">
-												{#each loc.sources as source (source.url)}
-													<li>
-														<a href={source.url} target="_blank" rel="external noopener noreferrer">
-															{sourceText(source)}
-														</a>
-													</li>
-												{/each}
-											</ul>
-										</dd>
-									</div>
-								{/if}
-							</dl>
-						{/if}
-
-						<!-- The venue's full menu, listed in the open card. The map labels only
-						     rotate a teaser item per venue, so this is where the whole menu —
-						     each item's price, description, dietary markers, course and sources —
-						     is read. It scrolls within a capped height so a long menu can't
-						     overflow the card. -->
-						{#if loc.menu.length > 0}
-							<ul class="placecard__menu">
-								{#each loc.menu as menuItem (menuItem.id)}
-									<li class="placecard__item">
-										<span class="placecard__item-line">
-											<span class="placecard__item-name">{menuItem.item_name}</span>
-											{#if user}
-												<span class="placecard__item-like">
-													<LikeButton
-														liked={likedItemIds.has(menuItem.id)}
-														onToggle={() => toggleItemLike(menuItem.id)}
-														label={likedItemIds.has(menuItem.id)
-															? 'Unlike this item'
-															: 'Like this item'}
-														size={14}
-													/>
-												</span>
-											{/if}
-											<span class="placecard__item-price">
-												{formatPrice(menuItem.price, menuItem.currency)}
-											</span>
-										</span>
-										{#if menuItem.description}
-											<p class="placecard__item-desc">{menuItem.description}</p>
-										{/if}
-										{@render dietaryBadges(menuItem)}
-										{@render itemExtras(menuItem)}
-									</li>
-								{/each}
-							</ul>
-						{/if}
-
-						<footer class="placecard__foot">
-							{#if loc.lastVerified}
-								<span
-									class="menu__verified"
-									class:menu__verified--stale={verifiedIsStale(loc.lastVerified)}
-									title={`Menu last verified on ${loc.lastVerified}`}
-								>
-									{formatVerified(loc.lastVerified)}
-								</span>
-							{/if}
-							{#if loc.menu.length === 0}
-								<span class="placecard__hint">No menu on file yet.</span>
-							{:else}
-								<span class="placecard__hint">
-									{loc.menu.length}
-									{loc.menu.length === 1 ? 'item' : 'items'}
-								</span>
-							{/if}
-						</footer>
-					</div>
-				{/if}
-			{/snippet}
-		</LocationMap>
+		/>
 	</div>
+
+	<!-- The open location's page details: a panel docked to the right edge (a bottom
+	     sheet on narrow screens) beside the map, which keeps the venue centred in the
+	     space the panel leaves it (see detailInset). Slides in on select and away on
+	     close/deselect. Gated on `selectedId` so closing starts the slide-out at once;
+	     the content reads the retained `selectedLocation`, which stays valid through
+	     the outro. -->
+	{#if selectedId && selectedLocation}
+		{@const loc = selectedLocation}
+		{@const label = categoryLabel(loc.category)}
+		<aside class="placecard" aria-label="Location details" transition:fly={panelFly}>
+			<button
+				type="button"
+				class="placecard__close"
+				aria-label="Close place details"
+				onclick={closeDetail}
+			>
+				✕
+			</button>
+			<header class="placecard__head">
+				<h2 class="placecard__name">{loc.name}</h2>
+				{#if label}
+					<span class="badge">{label}</span>
+				{/if}
+				{#if user}
+					<span class="placecard__like">
+						<LikeButton
+							liked={likedLocationIds.has(loc.id)}
+							onToggle={() => toggleLocationLike(loc.id)}
+							label={likedLocationIds.has(loc.id) ? 'Unlike this place' : 'Like this place'}
+							size={18}
+						/>
+					</span>
+				{/if}
+			</header>
+
+			<!-- Everything between the header and the footer scrolls as one column, so a
+			     long menu (or a tall info block on the bottom sheet) never overflows the
+			     panel. -->
+			<div class="placecard__body">
+				{#if loc.address || loc.phone || loc.website || loc.sources.length > 0}
+					<dl class="info">
+						{#if loc.address}
+							<div class="info__row">
+								<dt>Address</dt>
+								<dd>{loc.address}</dd>
+							</div>
+						{/if}
+						{#if loc.phone}
+							<div class="info__row">
+								<dt>Phone</dt>
+								<dd><a href="tel:{loc.phone}">{loc.phone}</a></dd>
+							</div>
+						{/if}
+						{#if loc.website}
+							<div class="info__row">
+								<dt>Website</dt>
+								<dd>
+									<a href={loc.website} target="_blank" rel="external noopener noreferrer">
+										{loc.website}
+									</a>
+								</dd>
+							</div>
+						{/if}
+						{#if loc.sources.length > 0}
+							<div class="info__row">
+								<dt>Sources</dt>
+								<dd>
+									<ul class="info__sources">
+										{#each loc.sources as source (source.url)}
+											<li>
+												<a href={source.url} target="_blank" rel="external noopener noreferrer">
+													{sourceText(source)}
+												</a>
+											</li>
+										{/each}
+									</ul>
+								</dd>
+							</div>
+						{/if}
+					</dl>
+				{/if}
+
+				<!-- The venue's full menu. The map labels only rotate a teaser item per
+				     venue, so this is where the whole menu — each item's price, description,
+				     dietary markers, course and sources — is read. -->
+				{#if loc.menu.length > 0}
+					<ul class="placecard__menu">
+						{#each loc.menu as menuItem (menuItem.id)}
+							<li class="placecard__item">
+								<span class="placecard__item-line">
+									<span class="placecard__item-name">{menuItem.item_name}</span>
+									{#if user}
+										<span class="placecard__item-like">
+											<LikeButton
+												liked={likedItemIds.has(menuItem.id)}
+												onToggle={() => toggleItemLike(menuItem.id)}
+												label={likedItemIds.has(menuItem.id)
+													? 'Unlike this item'
+													: 'Like this item'}
+												size={14}
+											/>
+										</span>
+									{/if}
+									<span class="placecard__item-price">
+										{formatPrice(menuItem.price, menuItem.currency)}
+									</span>
+								</span>
+								{#if menuItem.description}
+									<p class="placecard__item-desc">{menuItem.description}</p>
+								{/if}
+								{@render dietaryBadges(menuItem)}
+								{@render itemExtras(menuItem)}
+							</li>
+						{/each}
+					</ul>
+				{/if}
+			</div>
+
+			<footer class="placecard__foot">
+				{#if loc.lastVerified}
+					<span
+						class="menu__verified"
+						class:menu__verified--stale={verifiedIsStale(loc.lastVerified)}
+						title={`Menu last verified on ${loc.lastVerified}`}
+					>
+						{formatVerified(loc.lastVerified)}
+					</span>
+				{/if}
+				{#if loc.menu.length === 0}
+					<span class="placecard__hint">No menu on file yet.</span>
+				{:else}
+					<span class="placecard__hint">
+						{loc.menu.length}
+						{loc.menu.length === 1 ? 'item' : 'items'}
+					</span>
+				{/if}
+			</footer>
+		</aside>
+	{/if}
 
 	<!-- The landing overlay: coverage stats + entry buttons, shown over the zoomed-out
 	     globe. It's zoom-driven (see `landing`): it appears whenever the map is zoomed
@@ -778,10 +817,11 @@
 	<div class="searchbar" role="search" aria-label="Search and filters">
 		<AccountMenu {user} />
 
-		<!-- Search and filter controls are hidden while the landing overlay is up — the
-		     globe is just a backdrop then; only the account control stays. They return
-		     the moment the visitor leaves the landing state. -->
-		{#if !landing}
+		<!-- Search and filter controls are hidden while the landing overlay is up (the
+		     globe is just a backdrop then) AND while a location is open (its detail
+		     panel owns the page then); only the account control stays. They return the
+		     moment the visitor leaves the landing state or closes the location. -->
+		{#if !landing && !selectedId}
 			<!-- Shown only on narrow screens (CSS): collapses the items to free the map. -->
 			<button
 				type="button"
@@ -803,41 +843,18 @@
 				class:searchbar__items--collapsed={!filtersOpen}
 			>
 				<!-- The combined search: one pill matching a venue by name OR by an item
-			     name. Once a location is open it's replaced by a tinted card standing in
-			     for it, with a clear (✕) that closes the detail. -->
-				{#if selectedLocation}
-					{@const placeLabel = categoryLabel(selectedLocation.category)}
-					{@const placeMeta = [placeLabel, selectedLocation.address].filter(Boolean).join(' · ')}
-					<div class="place-card" aria-label="Selected place">
-						<div class="place-card__body">
-							<span class="place-card__name">{selectedLocation.name}</span>
-							{#if placeMeta}
-								<span class="place-card__meta">{placeMeta}</span>
-							{/if}
-						</div>
-						<button
-							type="button"
-							class="place-card__clear"
-							aria-label="Clear selected place"
-							onclick={closeDetail}
-						>
-							✕
-						</button>
-					</div>
-				{:else}
-					<!-- A label so a click anywhere in the pill (the search icon included)
-				     focuses the input; the input is the only control inside it. -->
-					<label class="searchpill searchpill--search">
-						<input
-							class="searchpill__input"
-							type="search"
-							placeholder="Search places & dishes…"
-							aria-label="Search by place or dish name"
-							bind:value={query}
-						/>
-						<Search class="searchpill__icon" size={16} aria-hidden="true" />
-					</label>
-				{/if}
+			     name. A label so a click anywhere in the pill (the search icon included)
+			     focuses the input; the input is the only control inside it. -->
+				<label class="searchpill searchpill--search">
+					<input
+						class="searchpill__input"
+						type="search"
+						placeholder="Search places & dishes…"
+						aria-label="Search by place or dish name"
+						bind:value={query}
+					/>
+					<Search class="searchpill__icon" size={16} aria-hidden="true" />
+				</label>
 
 				<!-- The dietary selector: single-select. Filters items to the chosen diet,
 			     and persists the choice for the signed-in user (see selectDiet). -->
@@ -900,6 +917,15 @@
 		position: absolute;
 		inset: 0;
 		z-index: 0;
+	}
+
+	/* While the detail panel is open it covers the map's bottom-right corner, where
+	   MapLibre puts the OSM attribution — which must stay visible (OSM tile policy).
+	   Shift that control clear of the panel's footprint (the panel's own width
+	   expression), transitioned to track the panel's slide. */
+	.app--detail .app__map :global(.maplibregl-ctrl-bottom-right) {
+		margin-right: calc(min(26rem, 100vw) + env(safe-area-inset-right));
+		transition: margin 0.3s ease;
 	}
 
 	/* The search controls, free-floating over the map: a horizontal, wrapping row of
@@ -1012,83 +1038,40 @@
 		color: var(--color-text-muted);
 	}
 
-	/* Stand-in for the Place pill shown while a location is pinned: a floating
-	   accent-tinted card marking it as an active selection rather than an editable
-	   field. Carries its own glass shadow since it floats free like the pills. */
-	.place-card {
-		display: flex;
-		align-items: flex-start;
-		gap: 0.5rem;
-		max-width: 18rem;
-		padding: 0.5rem 0.6rem;
-		border-radius: 0.7rem;
-		background: color-mix(in srgb, var(--color-accent) 12%, rgba(255, 255, 255, 0.85));
-		backdrop-filter: blur(16px) saturate(180%);
-		-webkit-backdrop-filter: blur(16px) saturate(180%);
-		border: 1px solid color-mix(in srgb, var(--color-accent) 35%, #fff);
-		box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
-	}
-
-	.place-card__body {
-		display: flex;
-		flex-direction: column;
-		gap: 0.1rem;
-		min-width: 0;
-		flex: 1;
-	}
-
-	.place-card__name {
-		font-weight: 600;
-		font-size: 0.9rem;
-		color: var(--color-text);
-	}
-
-	.place-card__meta {
-		font-size: 0.78rem;
-		color: var(--color-text-muted);
-		word-break: break-word;
-	}
-
-	.place-card__clear {
-		flex-shrink: 0;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 1.4rem;
-		height: 1.4rem;
-		padding: 0;
-		font-size: 0.85rem;
-		line-height: 1;
-		color: var(--color-accent);
-		background: rgba(255, 255, 255, 0.6);
-		border: 1px solid color-mix(in srgb, var(--color-accent) 35%, #fff);
-		border-radius: 999px;
-		transition:
-			background-color 0.12s,
-			color 0.12s;
-	}
-
-	.place-card__clear:hover {
-		color: #fff;
-		background: var(--color-accent);
-	}
-
-	/* --- Selected-venue detail card (on the map, by its pill) ----------------- */
-	/* Positioned by <LocationMap>; this is its surface — the glass panel that holds
-	   the venue info the old right panel's detail header/info block did. */
+	/* --- Location detail panel (docked to the right of the map) --------------- */
+	/* The open location's page details: a full-height glass column pinned to the
+	   right edge, over the map (which insets its camera by the same width, so the
+	   venue centres in the visible area to its left). Slides in/out via the fly
+	   transition on the element. The 26rem width is mirrored by PANEL_WIDTH_PX. */
 	.placecard {
-		position: relative;
-		width: min(20rem, calc(100vw - 2rem));
+		position: absolute;
+		z-index: 12;
+		top: 0;
+		right: 0;
+		bottom: 0;
+		width: min(26rem, 100vw);
 		display: flex;
 		flex-direction: column;
 		gap: 0.6rem;
-		padding: 0.85rem 0.95rem;
-		border-radius: 0.9rem;
-		background: rgba(255, 255, 255, 0.92);
+		padding: calc(0.85rem + env(safe-area-inset-top)) calc(0.95rem + env(safe-area-inset-right))
+			calc(0.85rem + env(safe-area-inset-bottom)) 0.95rem;
+		background: rgba(255, 255, 255, 0.94);
 		backdrop-filter: blur(16px) saturate(180%);
 		-webkit-backdrop-filter: blur(16px) saturate(180%);
-		border: 1px solid rgba(255, 255, 255, 0.6);
-		box-shadow: 0 10px 34px rgba(0, 0, 0, 0.22);
+		border-left: 1px solid rgba(255, 255, 255, 0.6);
+		box-shadow: -12px 0 34px rgba(0, 0, 0, 0.22);
+	}
+
+	/* The scrolling middle of the panel (info block + menu), between the fixed
+	   header and footer. min-height: 0 lets it actually shrink inside the flex
+	   column so overflow-y can take over. */
+	.placecard__body {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+		display: flex;
+		flex-direction: column;
+		gap: 0.6rem;
 	}
 
 	.placecard__close {
@@ -1147,14 +1130,12 @@
 		color: var(--color-text-muted);
 	}
 
-	/* The open venue's full menu, listed inside its detail card. Scrolls within a capped
-	   height so a long menu doesn't make the card overflow the viewport. */
+	/* The open venue's full menu, listed inside the panel body (which owns the
+	   scrolling — see .placecard__body). */
 	.placecard__menu {
 		list-style: none;
 		margin: 0;
 		padding: 0;
-		max-height: 40dvh;
-		overflow-y: auto;
 		display: flex;
 		flex-direction: column;
 	}
@@ -1362,10 +1343,34 @@
 			font-size: 1rem;
 		}
 
-		.place-card__clear {
-			width: 1.9rem;
-			height: 1.9rem;
-			font-size: 1rem;
+		/* On narrow screens the detail panel becomes a bottom sheet: the map keeps the
+		   top of the screen (and centres the venue there via the matching bottom
+		   camera inset), the details slide up from below. Height mirrors
+		   SHEET_HEIGHT_PX, capped so a short landscape screen keeps some map. */
+		.placecard {
+			top: auto;
+			left: 0;
+			right: 0;
+			width: auto;
+			height: min(calc(320px + env(safe-area-inset-bottom)), 55dvh);
+			padding: 0.85rem 0.95rem calc(0.85rem + env(safe-area-inset-bottom));
+			border-left: none;
+			border-top: 1px solid rgba(255, 255, 255, 0.6);
+			border-radius: 0.9rem 0.9rem 0 0;
+			box-shadow: 0 -12px 34px rgba(0, 0, 0, 0.22);
+		}
+
+		/* The sheet covers the map's bottom edge, so both bottom controls — zoom
+		   (left) and the OSM attribution (right, which must stay visible) — ride up
+		   above it; the right one no longer needs the wide-screen sideways shift. */
+		.app--detail .app__map :global(.maplibregl-ctrl-bottom-left),
+		.app--detail .app__map :global(.maplibregl-ctrl-bottom-right) {
+			margin-bottom: min(calc(320px + env(safe-area-inset-bottom)), 55dvh);
+			transition: margin 0.3s ease;
+		}
+
+		.app--detail .app__map :global(.maplibregl-ctrl-bottom-right) {
+			margin-right: env(safe-area-inset-right);
 		}
 	}
 </style>
