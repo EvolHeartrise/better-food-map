@@ -20,6 +20,7 @@
 	import LikeButton from '$lib/components/LikeButton.svelte';
 	import Search from '@lucide/svelte/icons/search';
 	import { categoryLabel } from '$lib/category';
+	import { DEFAULT_MAP_CENTER } from '$lib/map-defaults';
 	import type { MapData, MapLocation, Item, Bounds } from '$lib/server/db';
 
 	// The visible map area, reported by <LocationMap> (debounced) as the user pans
@@ -101,10 +102,10 @@
 	});
 
 	// The map centre — the anchor "nearest" is measured from — as its midpoint, with
-	// a default before the first viewport is reported. Read non-reactively inside the
-	// search effect's timer, so panning alone never re-runs a search; only changing
-	// the query does.
-	const DEFAULT_CENTER: [number, number] = [49.2827, -123.1207];
+	// a default (the shared Vancouver fallback, $lib/map-defaults) before the first
+	// viewport is reported. Read non-reactively inside the search effect's timer, so
+	// panning alone never re-runs a search; only changing the query does.
+	const DEFAULT_CENTER = DEFAULT_MAP_CENTER;
 	function mapCenter(): { lat: number; lng: number } {
 		if (!viewport) return { lat: DEFAULT_CENTER[0], lng: DEFAULT_CENTER[1] };
 		return {
