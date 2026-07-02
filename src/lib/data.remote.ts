@@ -7,6 +7,7 @@ import {
 	getLocationMapData,
 	getSearchMapData,
 	getStats as getStatsFromDb,
+	type Item,
 	type MapData,
 	type MapStats
 } from '$lib/server/db';
@@ -56,6 +57,10 @@ const BoundsSchema = v.pipe(
  * pans/zooms, so only what's on screen is ever fetched. Used to render markers
  * and, under each result, the menu items matching the active search/filter query.
  *
+ * Items arrive in the LEAN MapItem shape (name + tags) — everything the map's
+ * labels and the client diet re-filter need, and nothing the detail panel alone
+ * renders (description/price/sources travel only on {@link getLocationData}, #83).
+ *
  * Public: the map is open to everyone (no sign-in gate), so this read carries no
  * `requireUser()`. Only the user-scoped functions (likes, saved diet) require auth.
  */
@@ -65,14 +70,16 @@ export const getLocations = query(BoundsSchema, async (bounds): Promise<MapData>
 
 /**
  * Returns a single location (by id) in the same {@link MapData} shape as
- * {@link getLocations}. Backs the detail view when the open location isn't in the
- * current viewport — a shared `/locations/<id>` link, or one panned off screen —
- * so it always resolves. Yields an empty payload if no location has that id.
- * Ids are UUIDs or short slugs; the length cap only rejects hostile payloads.
+ * {@link getLocations}, but with FULL items — description, price, and item
+ * sources merged with menu-level sources. The detail panel always resolves the
+ * open venue through this read (deduped by id on the client), which is what lets
+ * the bulk viewport/search payloads stay lean (#83). Yields an empty payload if
+ * no location has that id. Ids are UUIDs or short slugs; the length cap only
+ * rejects hostile payloads.
  */
 export const getLocationData = query(
 	v.pipe(v.string(), v.maxLength(128)),
-	async (id): Promise<MapData> => {
+	async (id): Promise<MapData<Item>> => {
 		return getLocationMapData(db(), id);
 	}
 );
