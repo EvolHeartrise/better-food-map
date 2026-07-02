@@ -1,12 +1,13 @@
 /// <reference types="bun-types" />
-// Exercises getMapData (the read behind the map page's getLocations remote). Its
-// whole point is to send each menu ONCE — keyed by menu_id — rather than copied
-// onto every location that serves it, while still exposing each location's
-// per-item overrides so the client can rebuild the effective menu. It also scopes
-// the read to a viewport bounding box, so only on-screen locations (and the menus
-// they reference) are returned; getLocationMapData is the same read for a single
-// location by id. Runs against the real migration schema via the in-memory
-// D1Like adapter.
+// Exercises the viewport read behind the map page's getMapCells remote (via the
+// harness's viewportMapData, which composes grid level + cells + getMapCellsData
+// exactly the way the page does). Its whole point is to send each menu ONCE —
+// keyed by menu_id — rather than copied onto every location that serves it,
+// while still exposing each location's per-item overrides so the client can
+// rebuild the effective menu. It also scopes the read to the cells covering the
+// viewport, so only on-screen locations (and the menus they reference) are
+// returned; getLocationMapData is the same read for a single location by id.
+// Runs against the real migration schema via the in-memory D1Like adapter.
 //
 // Unified model (migration 0004): a chain branch serves a shared brand menu; an
 // independent venue gets its own PRIVATE menu (id `pm-<location_id>`), so its
@@ -14,7 +15,6 @@
 
 import { test, expect } from 'bun:test';
 import {
-	getMapData,
 	getLocationMapData,
 	getSearchMapData,
 	insertLocations,
@@ -25,12 +25,12 @@ import {
 	setLocationItemOverride,
 	MAP_RESULT_LIMIT
 } from '../src/lib/server/db';
-import { freshDb } from './test-d1';
+import { freshDb, viewportMapData } from './test-d1';
 
 // A box wide enough to contain every location seeded below (Toronto + Vancouver).
 const WORLD = { minLat: 40, maxLat: 50, minLng: -130, maxLng: -70 };
 
-test('getMapData sends each menu once, with per-branch overrides and a private menu per venue', async () => {
+test('the viewport read sends each menu once, with per-branch overrides and a private menu per venue', async () => {
 	const db = freshDb();
 
 	const brandId = await insertBrand(db, { name: 'KFC', website: null, logo_url: null });
@@ -113,7 +113,7 @@ test('getMapData sends each menu once, with per-branch overrides and a private m
 	// grid cells at this zoom) and carry/reference the shared chain menu, while the
 	// Vancouver cafe is outside the box. (A wide, zoomed-out box would instead DOWNSAMPLE
 	// to one representative per cell — that path is covered by its own test below.)
-	const { locations, menus } = await getMapData(db, {
+	const { locations, menus } = await viewportMapData(db, {
 		minLat: 43,
 		maxLat: 44,
 		minLng: -80,
@@ -174,7 +174,7 @@ test('getMapData sends each menu once, with per-branch overrides and a private m
 });
 
 // The viewport payload is LEAN (#83): the map UI renders only item names (plus
-// tags for the client diet re-filter), so the bulk reads (getMapData, and
+// tags for the client diet re-filter), so the bulk reads (the viewport read, and
 // getSearchMapData via the same path) must not ship description/price/sources —
 // only the by-id detail read (getLocationMapData, behind the open venue's panel)
 // carries the full item shape, its sources merged with the menu-level sources.
@@ -217,7 +217,7 @@ test('viewport items are lean; the by-id detail read keeps the full shape', asyn
 	]);
 
 	// The viewport read: lean items — name + tags only, none of the detail fields.
-	const viewport = await getMapData(db, { minLat: 43, maxLat: 44, minLng: -80, maxLng: -79 });
+	const viewport = await viewportMapData(db, { minLat: 43, maxLat: 44, minLng: -80, maxLng: -79 });
 	expect(viewport.locations.map((l) => l.id)).toEqual([branch]);
 	const leanItem = viewport.menus[menuId][0];
 	expect(leanItem.item_name).toBe('Falafel Pita');
@@ -253,7 +253,7 @@ test('viewport items are lean; the by-id detail read keeps the full shape', asyn
 // and only ONE representative per cell is returned, so the map ships a uniform spread
 // rather than thousands of rows it can't legibly draw. The representative is the most
 // "important" venue in the cell — one we have a menu for outranks one we don't.
-test('getMapData downsamples a wide viewport to one representative per grid cell', async () => {
+test('the viewport read downsamples a wide viewport to one representative per grid cell', async () => {
 	const db = freshDb();
 	const addr = {
 		street: '1 Test St',
@@ -277,7 +277,7 @@ test('getMapData downsamples a wide viewport to one representative per grid cell
 		{ name: 'Ddd Cafe', category: 'cafe', latitude: 49.2, longitude: -123.1, ...addr }
 	]);
 
-	const wide = await getMapData(db, WORLD);
+	const wide = await viewportMapData(db, WORLD);
 	// The clustered three collapse to the one with a menu; the far one survives alone.
 	expect(wide.locations.map((l) => l.id).toSorted()).toEqual([withMenu, far].toSorted());
 });
@@ -311,7 +311,7 @@ test('a wide viewport returns every occupied cell, past the old 96-id cap', asyn
 	}));
 	await insertLocations(db, venues);
 
-	const wide = await getMapData(db, box);
+	const wide = await viewportMapData(db, box);
 	expect(wide.locations.length).toBe(120); // all occupied cells, not a 96-cell slice
 	expect(new Set(wide.locations.map((l) => l.id)).size).toBe(120);
 });
@@ -345,7 +345,7 @@ test('a dense wide viewport coarsens under the cap, and its reps are pan-stable'
 	await insertLocations(db, venues);
 
 	const box = { minLat: 0, maxLat: 30, minLng: 0, maxLng: 30 };
-	const a = await getMapData(db, box);
+	const a = await viewportMapData(db, box);
 	// Strictly under the cap proves coarsening engaged — without it this would be exactly 200.
 	expect(a.locations.length).toBeLessThan(MAP_RESULT_LIMIT);
 	expect(a.locations.length).toBeGreaterThan(0);
@@ -354,8 +354,8 @@ test('a dense wide viewport coarsens under the cap, and its reps are pan-stable'
 	// cell sits fully inside BOTH boxes must be identical — the "no flicker while panning"
 	// property. Restrict to the deep interior (≥1 cell inside both) so edge cells, which
 	// legitimately enter/leave, don't count.
-	const b = await getMapData(db, { minLat: 1, maxLat: 31, minLng: 1, maxLng: 31 });
-	const interiorIds = (data: Awaited<ReturnType<typeof getMapData>>) =>
+	const b = await viewportMapData(db, { minLat: 1, maxLat: 31, minLng: 1, maxLng: 31 });
+	const interiorIds = (data: Awaited<ReturnType<typeof viewportMapData>>) =>
 		data.locations
 			.filter((l) => l.latitude >= 6 && l.latitude <= 29 && l.longitude >= 6 && l.longitude <= 29)
 			.map((l) => l.id)

@@ -31,6 +31,7 @@ import type { Tag, TagId, TagType } from '../tags';
 import { TAGS } from '../tags';
 import { formatAddress } from '../address';
 import { longestLiteralRun, searchableQuery } from '../search';
+import { cellKey, cellsCoverBounds, levelCell } from '../grid';
 
 // ---------------------------------------------------------------------------
 // Minimal D1 interface (the real `D1Database` binding and the HTTP shim in
@@ -404,14 +405,11 @@ const MAP_ITEM_FIELDS = `id, menu_id, item_name`;
 const ITEM_TAG_SELECT = `t.id AS id, t.name AS name, t.tag_type AS tag_type, it.optional AS optional`;
 
 /**
- * Hard cap on how many locations a single {@link getMapData} viewport read
- * returns. The map page fetches at every zoom, so a fully
- * zoomed-out box can cover the whole dataset; this bounds the payload — and the
- * markers drawn — to a sane size. For a wide viewport the survivors are spatially
- * downsampled to one importance-ranked representative per grid cell (see
- * {@link getMapData}); for a narrow one they are importance-ranked then capped.
- * Mirrored on the client only to label a capped result set; this module stays the
- * source of truth for the value.
+ * Hard cap on how many locations a single search/list read returns. The map's
+ * browse reads are bounded separately — per grid cell ({@link getMapCellsData}),
+ * with the per-request cell count capped so a rep-level batch never exceeds
+ * this either (GRID_REP_LIMIT in $lib/grid is numerically this value; asserted
+ * in grid.test.ts, since the client-safe grid module cannot import this one).
  */
 export const MAP_RESULT_LIMIT = 200;
 
@@ -645,163 +643,127 @@ export async function openLocationsInBbox(
 	return results;
 }
 
-// --- Viewport grid downsampling -------------------------------------------
-// When the map is zoomed out, a viewport can cover thousands of venues — far more
-// than can be drawn legibly, and enough to keep the client's label force-sim from
-// ever settling. Rather than ship an arbitrary (alphabetical) slice, a wide viewport
-// is tiled into a grid and only the single highest-importance representative of each
-// cell is returned, so the labels come back spread UNIFORMLY across the screen. The
-// grid is sized to the viewport (screen-space density stays ~constant at any zoom)
-// but snapped to an ABSOLUTE lattice, so panning at one zoom doesn't reshuffle which
-// venue represents a cell — only zooming, which changes the cell size, does.
+// --- Viewport grid cells ----------------------------------------------------
+// The map's browse reads are keyed on the absolute grid defined in $lib/grid:
+// the client picks a LEVEL for its viewport (level 0 = full tiles for a
+// neighbourhood view; level k ≥ 1 = one representative per rung-k cell for a
+// wide one), enumerates the cells covering it, and asks only for the cells it
+// hasn't cached. A cell's contents depend on the DATA alone — never on the
+// viewport or on which other cells share the request — which is what makes a
+// cell cacheable client-side across pans (#84) and server-side across visitors
+// (#93). The grid math (ladder, level selection, cell indexing) lives in
+// $lib/grid so client and server floor identically; this module owns only the
+// SQL that materializes a cell.
 
-// Target number of grid cells across the viewport's longer span; the representative
-// cap (GRID_REP_LIMIT) bounds the total, this sets how fine the lattice is.
-const GRID_DIVISIONS = 12;
-// Below this cell size (~440 m) the viewport is a neighbourhood: downsampling would
-// start hiding genuinely distinct on-screen venues, and the box is small enough that
-// the flat cap suffices — so the grid is skipped and every venue in the box returned.
-const MIN_GRID_CELL_DEG = 0.004;
-// Hard ceiling on representatives the wide-viewport grid path returns. Set equal to
-// MAP_RESULT_LIMIT so the zoomed-out path never ships more than the zoomed-in one (and
-// queryMapData's default cap, also MAP_RESULT_LIMIT, never re-trims the set). The ids reach
-// queryMapData through a single `json_each(?)` bind, NOT an `id IN (?, …)` list, so this is
-// not bounded by D1's ~100 per-query parameter limit.
-// Crucially this is NOT used as a top-N cut at runtime: `gridCellSize` coarsens the
-// lattice until a viewport can't hold more than this many cells, so the trailing `LIMIT`
-// never actually trims. That matters because a top-N cut over a pan-varying pool is NOT
-// pan-stable — as the box slides, which cells fall under the cut changes, flickering labels
-// in and out. Guaranteeing every occupied cell fits under the cap makes a venue's
-// visibility depend only on its absolute cell, never on the framing (see gridCellSize).
-const GRID_REP_LIMIT = MAP_RESULT_LIMIT;
+/**
+ * Per-cell venue cap on the FULL level: a 0.02°(~2.2 km) tile in a dense core
+ * ships at most this many venues, importance-ranked — a venue WITH a menu
+ * outranks one without, then more-liked outranks less (matching the rep-level
+ * ranking) — so one downtown tile can't blow up the payload. Representative
+ * levels cap at 1 by construction.
+ */
+export const FULL_CELL_CAP = 100;
 
-// Snap a raw degree span to a 1–2–5×10ⁿ ladder, so a small zoom change steps the
-// lattice discretely rather than continuously resizing it (and reshuffling reps).
-function niceStep(raw: number): number {
-	const pow = 10 ** Math.floor(Math.log10(raw));
-	const f = raw / pow;
-	const m = f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10;
-	return m * pow;
+/**
+ * A {@link MapData} payload plus the per-cell membership it was asked for:
+ * `cells` maps every REQUESTED cell key to the ids of its locations — an empty
+ * array for an empty cell, which the caches store as a negative entry so open
+ * ocean isn't re-queried forever.
+ */
+export interface MapCellsData extends MapData {
+	cells: Record<string, string[]>;
 }
 
-// The next rung UP the 1–2–5×10ⁿ ladder from a {1,2,5,10}×10ⁿ `cell` (1→2→5→10…). Used by
-// gridCellSize to coarsen the lattice a discrete step at a time. The +1e-9 nudges log10 off
-// exact powers of ten (e.g. log10(0.1) landing at −1.0000000001) so the floor doesn't slip a
-// decade and stall the coarsening loop.
-function niceStepUp(cell: number): number {
-	const pow = 10 ** Math.floor(Math.log10(cell) + 1e-9);
-	const f = cell / pow;
-	if (f < 1.5) return 2 * pow;
-	if (f < 3.5) return 5 * pow;
-	return 10 * pow;
-}
+/**
+ * The map payload for a set of same-level grid cells (see $lib/grid for what a
+ * level is). Partitions the open venues onto the level's absolute lattice and,
+ * per requested cell, keeps the top venues by importance — menu'd first, then
+ * liked (a correlated index probe per candidate row, not a whole-likes-table
+ * aggregation — #93), then name/id for determinism; one per cell on a
+ * representative level, {@link FULL_CELL_CAP} on the full level. The winners
+ * resolve through {@link queryMapData} as one id-keyed read, so menus and
+ * overrides arrive exactly as the old viewport read shipped them.
+ *
+ * The indexed bbox pre-filter is the COVER of the requested cells (their
+ * bounding box, see cellsCoverBounds); the per-row cell-key test against the
+ * requested set is authoritative. A scattered request therefore boxes more rows
+ * than it keeps — real requests are contiguous strips (a pan's leading edge) or
+ * rectangles (a fresh level), so the cover stays tight; the worst forgeable
+ * case degrades to the old whole-box scan, no worse.
+ */
+export async function getMapCellsData(
+	db: D1Like,
+	level: number,
+	cells: [number, number][]
+): Promise<MapCellsData> {
+	// No cells (a viewport entirely outside the data domain enumerates none):
+	// nothing to ask — and the cover of an empty set would be an infinite box.
+	if (cells.length === 0) return { locations: [], menus: {}, menuMeta: {}, cells: {} };
+	const cellDeg = levelCell(level);
+	const perCellCap = level === 0 ? FULL_CELL_CAP : 1;
+	const cover = cellsCoverBounds(cells, cellDeg);
+	const keys = cells.map(([i, j]) => cellKey(i, j));
 
-// The grid cell size (degrees) for a viewport, or null when the box is small enough to skip
-// downsampling and return everything in it (see MIN_GRID_CELL_DEG).
-//
-// The base size targets ~GRID_DIVISIONS cells across the longer span, but is then coarsened
-// up the ladder until the viewport's WORST-CASE cell count can't exceed GRID_REP_LIMIT. That
-// is what keeps the wide path pan-stable: gridRepresentativeIds' trailing `LIMIT` only causes
-// flicker when it actually trims (a top-N over the in-view cells shuffles as you pan), so we
-// size the lattice so it never has to. The bound `(⌈latSpan/cell⌉+1)·(⌈lngSpan/cell⌉+1)` is
-// the most absolute-lattice cells a box of this span can straddle — the +1 per axis is the
-// box-vs-lattice misalignment, and it must be there (omitting it under-counts and the cap
-// still bites). Because the bound depends only on the span (not the pan position), the chosen
-// cell is itself pan-stable. The loop converges fast (each rung ≥2× the cell, ≥4× fewer
-// cells) and the `next > cell` guard is a float-safety backstop against ever spinning.
-function gridCellSize(bounds: Bounds): number | null {
-	const latSpan = bounds.maxLat - bounds.minLat;
-	const lngSpan = bounds.maxLng - bounds.minLng;
-	const span = Math.max(latSpan, lngSpan);
-	if (!(span > 0)) return null;
-	let cell = niceStep(span / GRID_DIVISIONS);
-	// Decide narrow-vs-grid on the BASE cell, so the boundary is the documented ~440 m cell (a
-	// neighbourhood returns everything). Coarsening below only ever grows the cell, so once we
-	// commit to the grid path it always stays at or above MIN_GRID_CELL_DEG.
-	if (cell < MIN_GRID_CELL_DEG) return null;
-	while ((Math.ceil(latSpan / cell) + 1) * (Math.ceil(lngSpan / cell) + 1) > GRID_REP_LIMIT) {
-		const next = niceStepUp(cell);
-		if (!(next > cell)) break;
-		cell = next;
-	}
-	return cell;
-}
-
-// The ids of the per-cell representative locations within `bounds`: partition the
-// in-box venues onto the absolute lattice of `cell`-degree squares and, in each
-// occupied cell, keep the most "important" one — a venue WITH a menu outranks one
-// without, then more-liked outranks less, then name/id for determinism. Coordinates
-// are shifted to be non-negative before the integer divide so the lattice floors
-// consistently across the equator/prime-meridian (CAST truncates toward zero). At
-// most GRID_REP_LIMIT cells (the most important) are returned.
-async function gridRepresentativeIds(db: D1Like, bounds: Bounds, cell: number): Promise<string[]> {
-	const { results } = await db
+	// `ck` is built to be string-identical to $lib/grid's cellKey: coordinates
+	// shifted non-negative (+90/+180) so the truncating CAST floors exactly like
+	// the client's Math.floor, then joined with ':'. The requested keys travel as
+	// ONE JSON-array bind expanded with json_each — never an `IN (?, …)` list,
+	// which would blow D1's ~100 per-query bound-parameter cap at viewport-sized
+	// cell sets.
+	const { results: picked } = await db
 		.prepare(
-			`WITH likes AS (
-				SELECT location_id, COUNT(*) AS n FROM liked_locations GROUP BY location_id
+			`WITH boxed AS (
+				SELECT l.id AS id, l.menu_id AS menu_id, l.name AS name,
+					(SELECT COUNT(*) FROM liked_locations lk WHERE lk.location_id = l.id) AS likes,
+					(CAST((l.latitude + 90) / ? AS INTEGER) || ':' || CAST((l.longitude + 180) / ? AS INTEGER)) AS ck
+				FROM locations l
+				WHERE l.closed_at IS NULL AND l.latitude BETWEEN ? AND ? AND l.longitude BETWEEN ? AND ?
 			),
 			ranked AS (
-				SELECT l.id AS id, (l.menu_id IS NOT NULL) AS has_menu, COALESCE(lk.n, 0) AS likes,
+				SELECT id, ck,
 					ROW_NUMBER() OVER (
-						PARTITION BY
-							CAST((l.latitude + 90) / ? AS INTEGER),
-							CAST((l.longitude + 180) / ? AS INTEGER)
-						ORDER BY (l.menu_id IS NOT NULL) DESC, COALESCE(lk.n, 0) DESC, l.name, l.id
+						PARTITION BY ck
+						ORDER BY (menu_id IS NOT NULL) DESC, likes DESC, name, id
 					) AS rn
-				FROM locations l
-				LEFT JOIN likes lk ON lk.location_id = l.id
-				WHERE l.closed_at IS NULL AND l.latitude BETWEEN ? AND ? AND l.longitude BETWEEN ? AND ?
+				FROM boxed
+				WHERE ck IN (SELECT value FROM json_each(?))
 			)
-			SELECT id FROM ranked WHERE rn = 1
-			ORDER BY has_menu DESC, likes DESC, id
-			LIMIT ?`
+			SELECT id, ck FROM ranked WHERE rn <= ? ORDER BY ck, rn`
 		)
-		.bind(cell, cell, bounds.minLat, bounds.maxLat, bounds.minLng, bounds.maxLng, GRID_REP_LIMIT)
-		.all<{ id: string }>();
-	return results.map((r) => r.id);
+		.bind(
+			cellDeg,
+			cellDeg,
+			cover.minLat,
+			cover.maxLat,
+			cover.minLng,
+			cover.maxLng,
+			JSON.stringify(keys),
+			perCellCap
+		)
+		.all<{ id: string; ck: string }>();
+
+	// Every requested cell is present in the result — an empty one as [] — so
+	// callers can cache "known empty" rather than re-asking.
+	const byCell: Record<string, string[]> = {};
+	for (const key of keys) byCell[key] = [];
+	for (const row of picked) byCell[row.ck]?.push(row.id);
+	if (picked.length === 0) return { locations: [], menus: {}, menuMeta: {}, cells: byCell };
+
+	// Resolve the winners (menus, overrides, sources) the normal id-first way.
+	// The ids are already capped per cell above, so the trailing LIMIT is sized
+	// to pass them all through — MAP_RESULT_LIMIT would silently drop winners on
+	// a full-level batch and corrupt the per-cell membership.
+	const data = await queryMapData(
+		db,
+		`id IN (SELECT value FROM json_each(?))`,
+		[JSON.stringify(picked.map((row) => row.id))],
+		`ORDER BY name, id LIMIT ${picked.length}`
+	);
+	return { ...data, cells: byCell };
 }
 
 /**
- * Returns everything the map page needs for the given viewport in one payload
- * (see {@link MapData}): a set of locations inside `bounds` with their per-item
- * overrides, plus each menu those locations reference resolved ONCE (keyed by
- * menu_id, each item in the lean {@link MapItem} shape — name + tags, no
- * description/price/sources, which only the by-id detail read carries, #83). The
- * client joins the two — applying each location's overrides — to reconstruct the
- * effective menu, so a shared chain menu travels the wire a single time instead
- * of once per branch.
- *
- * Scoping the read to the visible box keeps the payload bounded as the dataset grows
- * to whole countries. A WIDE viewport (zoomed out) is additionally downsampled to one
- * importance-ranked representative per grid cell — at most {@link GRID_REP_LIMIT},
- * spread uniformly across the screen — so the map neither ships thousands of rows it
- * can't draw nor hands the client's label sim an unsettleable crowd. A NARROW viewport
- * returns every venue in the box (importance-ranked, capped at {@link MAP_RESULT_LIMIT}).
- * Built in bulk to avoid an N+1 query per location.
- */
-export async function getMapData(db: D1Like, bounds: Bounds): Promise<MapData> {
-	const cell = gridCellSize(bounds);
-	if (cell === null) {
-		// Narrow viewport: every venue in the box, the ones we have data for first.
-		return queryMapData(
-			db,
-			`latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ?`,
-			[bounds.minLat, bounds.maxLat, bounds.minLng, bounds.maxLng],
-			IMPORTANCE_MAP_CAP
-		);
-	}
-	// Wide viewport: pick one representative per grid cell, then resolve those concrete
-	// ids (their menus, overrides, sources) the normal way. The ids travel as a single
-	// JSON-array bind expanded with `json_each` rather than an `id IN (?, …)` list, so the
-	// representative count isn't capped by D1's ~100 per-query parameter limit — a cap
-	// that would otherwise force a flicker-inducing top-N trim (see GRID_REP_LIMIT).
-	const ids = await gridRepresentativeIds(db, bounds, cell);
-	if (ids.length === 0) return { locations: [], menus: {}, menuMeta: {} };
-	return queryMapData(db, `id IN (SELECT value FROM json_each(?))`, [JSON.stringify(ids)]);
-}
-
-/**
- * Like {@link getMapData} but for a single location by id, returned in the same
+ * Like {@link getMapCellsData} but for a single location by id, returned in the same
  * {@link MapData} shape — except its items carry the FULL {@link Item} detail
  * (description, price, item sources merged with menu-level sources). This is the
  * one read behind the detail panel, so it alone pays for the heavy fields; the
@@ -813,7 +775,7 @@ export function getLocationMapData(db: D1Like, id: string): Promise<MapData<Item
 }
 
 /**
- * A global menu search, anchored to a point. Unlike {@link getMapData} — which is
+ * A global menu search, anchored to a point. Unlike {@link getMapCellsData} — which is
  * bounded to a viewport — this searches the WHOLE table and returns the
  * {@link MAP_RESULT_LIMIT} matches NEAREST to (`lat`,`lng`), nearest first, so the
  * map can act as a result view rather than the query itself.
@@ -970,15 +932,7 @@ export function getSearchMapData(db: D1Like, q: SearchMapQuery): Promise<MapData
 const DEFAULT_MAP_CAP = `ORDER BY name, id LIMIT ${MAP_RESULT_LIMIT}`;
 
 /**
- * Like {@link DEFAULT_MAP_CAP} but ranks venues that HAVE a menu ahead of those that
- * don't, before the alphabetical tail — so a capped narrow viewport keeps the places
- * we actually have data for. {@link getMapData}'s narrow-viewport path uses this; its
- * wide-viewport (grid) path ranks — including by likes — in SQL instead.
- */
-const IMPORTANCE_MAP_CAP = `ORDER BY (menu_id IS NOT NULL) DESC, name, id LIMIT ${MAP_RESULT_LIMIT}`;
-
-/**
- * Shared implementation of {@link getMapData} / {@link getLocationMapData} /
+ * Shared implementation of {@link getMapCellsData} / {@link getLocationMapData} /
  * {@link getSearchMapData}. `locFilter` is a predicate over the `locations` table
  * (its `?` placeholders bound from the front of `params`); `capClause` is the
  * trailing `ORDER BY … LIMIT …` that both bounds and orders the location set,

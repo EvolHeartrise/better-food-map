@@ -32,6 +32,9 @@ declare global {
 			};
 			cf?: CfProperties;
 			ctx?: ExecutionContext;
+			// `caches` (the Workers Cache API, home of the per-cell map cache — see
+			// $lib/server/cell-cache) needs no declaration here: the adapter's
+			// ambient.d.ts already augments Platform with it.
 		}
 		interface PageState {
 			/**
