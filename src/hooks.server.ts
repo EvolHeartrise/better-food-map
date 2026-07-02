@@ -111,6 +111,11 @@ const securityHeaders: Handle = async ({ event, resolve }) => {
 	// Redundant with CSP frame-ancestors, but covers older browsers and dev
 	// (where the CSP is absent).
 	response.headers.set('X-Frame-Options', 'DENY');
+	// No `includeSubDomains`: it would pin every subdomain of the zone to HTTPS,
+	// and we haven't verified none of them is HTTP-only. Gated on !dev like the
+	// CSP (browsers ignore HSTS over plain HTTP anyway, so this is consistency,
+	// not a functional requirement).
+	if (!dev) response.headers.set('Strict-Transport-Security', 'max-age=31536000');
 	if (!dev) response.headers.set('Content-Security-Policy', CSP);
 	return response;
 };
