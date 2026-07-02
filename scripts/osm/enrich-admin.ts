@@ -23,7 +23,7 @@
 // ---------------------------------------------------------------------------
 
 import { normalizeRegion } from '../../src/lib/address';
-import { SpatialGrid, type Bbox } from './geo';
+import { SpatialGrid, type Bounds } from './geo';
 import type { PoiRow } from './map-feature';
 
 /** One administrative boundary parsed from a geojsonseq line. */
@@ -103,7 +103,7 @@ const BIN_DEG = 0.05;
  * "most specific wins" tie-breaks).
  */
 export class IndexedRings {
-	readonly bbox: Bbox;
+	readonly bbox: Bounds;
 	/** Planar deg² area summed over all rings — a size proxy, not a true area. */
 	readonly areaProxy: number;
 	private readonly minBin: number;
@@ -113,20 +113,20 @@ export class IndexedRings {
 	constructor(rings: number[][][]) {
 		let minLat = 90,
 			maxLat = -90,
-			minLon = 180,
-			maxLon = -180,
+			minLng = 180,
+			maxLng = -180,
 			area = 0;
 		for (const ring of rings) {
 			for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
 				const [lon, lat] = ring[i];
 				if (lat < minLat) minLat = lat;
 				if (lat > maxLat) maxLat = lat;
-				if (lon < minLon) minLon = lon;
-				if (lon > maxLon) maxLon = lon;
+				if (lon < minLng) minLng = lon;
+				if (lon > maxLng) maxLng = lon;
 				area += (ring[j][0] - ring[i][0]) * (ring[j][1] + ring[i][1]);
 			}
 		}
-		this.bbox = { minLat, maxLat, minLon, maxLon };
+		this.bbox = { minLat, maxLat, minLng, maxLng };
 		this.areaProxy = Math.abs(area / 2);
 		this.minBin = Math.floor(minLat / BIN_DEG);
 		const binCount = Math.max(1, Math.floor(maxLat / BIN_DEG) - this.minBin + 1);
@@ -150,7 +150,7 @@ export class IndexedRings {
 	/** Even-odd containment: parity of westward ray crossings over the point's band. */
 	contains(lat: number, lon: number): boolean {
 		const { bbox } = this;
-		if (lat < bbox.minLat || lat > bbox.maxLat || lon < bbox.minLon || lon > bbox.maxLon) {
+		if (lat < bbox.minLat || lat > bbox.maxLat || lon < bbox.minLng || lon > bbox.maxLng) {
 			return false;
 		}
 		const bin = this.bins[Math.floor(lat / BIN_DEG) - this.minBin];

@@ -2,10 +2,11 @@
 // import_chain candidate selection: everything deterministic about importing a
 // chain's branches from the OSM staging store, short of the D1 insert itself.
 //
-// Importing a chain used to be an agent loop — search_poi page, hand-filter the
-// name matches, batch create_locations, repeat until the store ran dry — which
-// burned hundreds of tool calls per chain. Given (area, accepted source names),
-// the whole selection is deterministic, so it lives here as one call: scan the
+// Without this, importing a chain is an agent loop — search_poi page,
+// hand-filter the name matches, batch create_locations, repeat until the store
+// runs dry — burning hundreds of tool calls per chain. Given (area, accepted
+// source names), the whole selection is deterministic, so it lives here as one
+// call: scan the
 // store for each accepted name, union the hits, drop venues already on the map
 // (same dedup rules as search_poi), and split the rest into exact-name matches
 // to import vs a name histogram of everything else seen.

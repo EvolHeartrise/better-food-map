@@ -1,6 +1,5 @@
 <script lang="ts">
-	import type { Tag } from '$lib/server/db';
-	import { tagDisplayName } from '$lib/tags';
+	import { tagDisplayName, type Tag } from '$lib/tags';
 
 	// A single tag, rendered as a styled pill. This is purely presentational: it
 	// shows the tag's name and nothing else — no operator, no remove button, no

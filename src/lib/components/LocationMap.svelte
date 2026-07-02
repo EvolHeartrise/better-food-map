@@ -12,11 +12,10 @@
 		type SimConfig
 	} from '$lib/label-layout';
 	import { DEFAULT_MAP_CENTER } from '$lib/map-defaults';
-
-	// A geographic bounding box reported to the parent as the visible area. Kept
-	// structural (rather than imported from the server module) so this component
-	// stays free of any server-only import.
-	type Bounds = { minLat: number; maxLat: number; minLng: number; maxLng: number };
+	// The shared bounding-box shape ($lib/bounds is client-safe, so importing it
+	// pulls no server code into the browser bundle), reported to the parent as the
+	// visible area.
+	import type { Bounds } from '$lib/bounds';
 
 	// Only the fields the map actually needs. The label shows the venue name plus, on a
 	// second line, a rotating display of the venue's food items (its whole menu, or just
@@ -93,9 +92,7 @@
 	// `[lat, lng]` to match the prop contract; converted to MapLibre's
 	// `[lng, lat]` order at the call sites via `toLngLat`.
 	const DEFAULT_CENTER = DEFAULT_MAP_CENTER;
-	// MapLibre's camera zoom runs one level "lower" than Leaflet's for the same
-	// scale (its world base is a 512px tile vs Leaflet's 256px), so these are the
-	// old Leaflet values minus one: DEFAULT 13→12, SELECTED 16→15.
+	// Opening zoom when no `initialZoom` is passed: a city view.
 	const DEFAULT_ZOOM = 12;
 	// Zoom level used when flying to a single selected location.
 	const SELECTED_ZOOM = 15;
@@ -103,8 +100,7 @@
 	// zoomed further in we keep their zoom (just recenter), but from a zoomed-out
 	// globe we pull in to at least a city view so the match is legible on arrival.
 	const FOCUS_MIN_ZOOM = 12;
-	// Fly animation duration when centering on a selected location (milliseconds —
-	// MapLibre takes ms, where Leaflet took seconds).
+	// Fly animation duration when centering on a selected location, in milliseconds.
 	const FLY_DURATION_MS = 600;
 	// OpenStreetMap's raster tiles stop at z19; cap the camera there so the user
 	// can't zoom past real tile data into blurry overzoomed scaling.
@@ -277,8 +273,8 @@
 		return Math.floor(hashId(id) * 997);
 	}
 
-	// The prop contract carries centres as `[lat, lng]` (Leaflet's order, and how
-	// the page supplies the IP-detected centre); MapLibre wants `[lng, lat]`.
+	// The prop contract carries centres as `[lat, lng]` (how the page supplies
+	// the IP-detected centre); MapLibre wants `[lng, lat]`.
 	function toLngLat([lat, lng]: [number, number]): [number, number] {
 		return [lng, lat];
 	}
@@ -543,7 +539,7 @@
 
 			// Zoom control sits bottom-left, clear of the floating search (top-left)
 			// that overlays the full-screen map. No compass: rotation isn't part of the
-			// interaction, matching the old map.
+			// interaction.
 			map.addControl(new lib.NavigationControl({ showCompass: false }), 'bottom-left');
 
 			// The pills are pointer-transparent so wheel-zoom, drag-pan and pinch pass

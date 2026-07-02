@@ -126,18 +126,18 @@ export class AddressEnricher {
 	apply(building: ParsedBuilding): void {
 		let minLat = 90,
 			maxLat = -90,
-			minLon = 180,
-			maxLon = -180;
+			minLng = 180,
+			maxLng = -180;
 		for (const poly of building.polygons)
 			for (const ring of poly)
 				for (const [lon, lat] of ring) {
 					if (lat < minLat) minLat = lat;
 					if (lat > maxLat) maxLat = lat;
-					if (lon < minLon) minLon = lon;
-					if (lon > maxLon) maxLon = lon;
+					if (lon < minLng) minLng = lon;
+					if (lon > maxLng) maxLng = lon;
 				}
 
-		for (const idx of this.grid.candidatesInBbox({ minLat, maxLat, minLon, maxLon })) {
+		for (const idx of this.grid.candidatesInBbox({ minLat, maxLat, minLng, maxLng })) {
 			const row = this.rows[idx];
 			// Score the row against the polygon that ACTUALLY contains it (a building
 			// may be a MultiPolygon), not always the first — its footprint is what the

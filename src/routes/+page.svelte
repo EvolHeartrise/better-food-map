@@ -342,9 +342,9 @@
 		return out;
 	});
 
-	// The map plots EVERY matching location (the chain-branch grouping the old results
-	// list did is gone — the map itself is the result surface now). Each carries the item
-	// names its label rotates through; a 30-branch chain still drops 30 name pills.
+	// The map plots EVERY matching location — the map itself is the result surface.
+	// Each carries the item names its label rotates through; a 30-branch chain
+	// still drops 30 name pills.
 	const mapLocations = $derived(
 		results.map((result) => ({
 			id: result.loc.id,

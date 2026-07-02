@@ -7,12 +7,11 @@
 //
 // Why this isn't just `wrangler d1 export --remote`:
 //   D1's exporter REFUSES any database that contains an FTS5 virtual table — it
-//   errors with "cannot export databases with Virtual Tables (fts5)". The schema
-//   has none today (the old `tags_fts` index was dropped in migration 0014), but
-//   even a plain per-`--table` export only emits the bare CREATE TABLE + rows for
-//   each listed table — every index and trigger is dropped. So we split schema
-//   from data regardless, and the virtual-table handling below stays in place so a
-//   reintroduced FTS table would still export cleanly:
+//   errors with "cannot export databases with Virtual Tables (fts5)" — and the
+//   schema carries two (the locations_fts/items_fts search mirrors, migration
+//   0016). And even a plain per-`--table` export only emits the bare CREATE
+//   TABLE + rows for each listed table — every index and trigger is dropped. So
+//   we split schema from data:
 //
 //   1. schema  — read every CREATE verbatim from prod's `sqlite_master`
 //                (tables, indexes, triggers, and any FTS5 virtual table). This

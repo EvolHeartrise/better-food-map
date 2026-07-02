@@ -6,9 +6,7 @@ import {
 	getMapData,
 	getLocationMapData,
 	getSearchMapData,
-	getBrands as getBrandsFromDb,
 	getStats as getStatsFromDb,
-	type Brand,
 	type MapData,
 	type MapStats
 } from '$lib/server/db';
@@ -101,15 +99,6 @@ const SearchQuerySchema = v.object({
 
 export const searchLocations = query(SearchQuerySchema, async (q): Promise<MapData> => {
 	return getSearchMapData(db(), q);
-});
-
-/**
- * Returns every chain/brand (id, name, website, logo). Used by the map page to
- * label deduped chain result groups (e.g. "KFC — 511 locations") with the brand
- * name rather than relying on each branch's own `name`.
- */
-export const getBrands = query(async (): Promise<Brand[]> => {
-	return getBrandsFromDb(db());
 });
 
 /**

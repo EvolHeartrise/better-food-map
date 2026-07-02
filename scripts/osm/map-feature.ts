@@ -177,8 +177,8 @@ export interface OsmAddressParts {
  * Extracts structured address parts from OSM `addr:*` tags, as the raw source
  * values — `region`/`postcode`/`country` are NOT normalized here (the MCP server
  * canonicalizes them when they reach create_locations/update_locations). The
- * `street` part includes the unit (Canadian hyphen style), composed by the same
- * {@link composeStreet} the backfill uses, so staging and backfill agree.
+ * `street` part includes the unit (Canadian hyphen style), composed by the shared
+ * {@link composeStreet}, so every pipeline renders the street line identically.
  */
 export function osmAddressParts(props: Record<string, string>): OsmAddressParts {
 	return {
