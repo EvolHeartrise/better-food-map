@@ -70,6 +70,9 @@
 		// A user's explicit pick must win over the saved diet even if getDiet() hasn't
 		// resolved yet — arm the seed guard so a late-arriving value can't clobber it.
 		dietSeeded = true;
+		// One deliberate click, not a keystroke burst: let the search fire at once
+		// (see the debounce-bypass note above SEARCH_DEBOUNCE_MS).
+		searchImmediate = true;
 		diet = id;
 		if (user) setDiet(id).catch(() => {});
 	}
@@ -178,8 +181,18 @@
 	let focusTarget = $state<{ latitude: number; longitude: number; key: string } | null>(null);
 	let focusNonce = 0;
 	// Debounce before a global search hits the server, so a burst of keystrokes
-	// settles into one request.
+	// settles into one request. Applied to TYPED changes only — discrete inputs
+	// (a diet click, Enter, paste) are single deliberate actions with no burst to
+	// coalesce, so waiting the full debounce there is pure lag. Two bypass
+	// channels, both plain non-reactive plumbing (like `focusNonce`):
+	// `searchImmediate` is a one-shot flag consumed by the search effect's next
+	// run, for inputs whose change re-runs the effect (diet click, paste);
+	// `flushSearch` fires a pending debounce timer at once, for Enter — the
+	// signature hasn't changed then, so the effect won't re-run. Null whenever no
+	// timer is pending (already fired, or flushed), making a stray Enter a no-op.
 	const SEARCH_DEBOUNCE_MS = 250;
+	let searchImmediate = false;
+	let flushSearch: (() => void) | null = null;
 	// The query, reduced to a stable string — the reactive trigger for the search
 	// effect's server call, so the map centre (read inside the timer) can change
 	// with a pan without re-running the search. Built from the GATED text
@@ -197,6 +210,7 @@
 			searchData = null;
 			searching = false;
 			searchFailed = false;
+			searchImmediate = false;
 			return;
 		}
 		// Text below the searchable floor with no diet active: there is nothing the
@@ -207,13 +221,17 @@
 			searchData = null;
 			searching = false;
 			searchFailed = false;
+			searchImmediate = false;
 			return;
 		}
 		// Read the signature so the effect re-runs when (and only when) the query
 		// changes; the value itself isn't otherwise needed.
 		void querySignature;
 		let cancelled = false;
-		const timer = setTimeout(() => {
+		const runSearch = () => {
+			// The timer has fired (or been flushed): a further Enter has nothing
+			// left to hurry along.
+			flushSearch = null;
 			const center = mapCenter();
 			// A superseded request's settle handlers bail on `cancelled` below, so
 			// only the request that owns the current query ever clears these.
@@ -249,10 +267,21 @@
 					searching = false;
 					searchFailed = true;
 				});
-		}, SEARCH_DEBOUNCE_MS);
+		};
+		// A discrete input (diet click, paste) armed the one-shot bypass: fire on
+		// the next tick instead of sitting out the typing debounce.
+		const immediate = searchImmediate;
+		searchImmediate = false;
+		const timer = setTimeout(runSearch, immediate ? 0 : SEARCH_DEBOUNCE_MS);
+		// Let Enter fire the pending debounce early (runSearch nulls this once run).
+		flushSearch = () => {
+			clearTimeout(timer);
+			runSearch();
+		};
 		return () => {
 			cancelled = true;
 			clearTimeout(timer);
+			flushSearch = null;
 		};
 	});
 
@@ -1044,6 +1073,16 @@
 						placeholder="Search places & dishes…"
 						aria-label="Search by place or dish name"
 						bind:value={query}
+						onkeydown={(event) => {
+							// Enter is a deliberate "search now": fire any pending debounce
+							// at once (no-op when nothing is pending — see flushSearch).
+							if (event.key === 'Enter') flushSearch?.();
+						}}
+						onpaste={() => {
+							// A paste lands whole, with no keystroke burst to coalesce: arm
+							// the one-shot bypass so the value change fires immediately.
+							searchImmediate = true;
+						}}
 					/>
 					{#if searching}
 						<!-- Replaces the search glyph while the global search round trip is
