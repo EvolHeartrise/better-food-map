@@ -88,9 +88,13 @@
 		if (hasQuery || !viewport) return;
 		const bounds = viewport;
 		let cancelled = false;
-		getLocations(bounds).then((data) => {
-			if (!cancelled) viewportData = data;
-		});
+		getLocations(bounds)
+			.then((data) => {
+				if (!cancelled) viewportData = data;
+			})
+			// A failed fetch must not blank the map — keep the markers already on
+			// screen; the next pan/zoom issues a fresh request anyway.
+			.catch((err) => console.error('viewport locations fetch failed', bounds, err));
 		return () => {
 			cancelled = true;
 		};
@@ -156,20 +160,24 @@
 				dietTagId: diet,
 				lat: center.lat,
 				lng: center.lng
-			}).then((data) => {
-				if (cancelled) return;
-				searchData = data;
-				// The server returns nearest-first, so [0] is the closest match.
-				const nearest = data.locations[0];
-				if (nearest && !withinViewport(nearest)) {
-					focusNonce += 1;
-					focusTarget = {
-						latitude: nearest.latitude,
-						longitude: nearest.longitude,
-						key: String(focusNonce)
-					};
-				}
-			});
+			})
+				.then((data) => {
+					if (cancelled) return;
+					searchData = data;
+					// The server returns nearest-first, so [0] is the closest match.
+					const nearest = data.locations[0];
+					if (nearest && !withinViewport(nearest)) {
+						focusNonce += 1;
+						focusTarget = {
+							latitude: nearest.latitude,
+							longitude: nearest.longitude,
+							key: String(focusNonce)
+						};
+					}
+				})
+				// A failed search keeps the previous result set (or the viewport
+				// fallback) on screen rather than blanking the map mid-search.
+				.catch((err) => console.error('search failed', querySignature, err));
 		}, SEARCH_DEBOUNCE_MS);
 		return () => {
 			cancelled = true;
@@ -241,7 +249,9 @@
 	// default centre. The fly reuses the search focus channel (a fresh nonce flies exactly
 	// once); with no `zoom` override it pulls in to a city view.
 	async function startUsing(): Promise<void> {
-		const loc = await getUserLocation();
+		// A rejected lookup falls back exactly like the documented null return —
+		// the button must still fly somewhere.
+		const loc = await getUserLocation().catch(() => null);
 		const target = loc ?? { lat: DEFAULT_CENTER[0], lng: DEFAULT_CENTER[1] };
 		focusNonce += 1;
 		focusTarget = { latitude: target.lat, longitude: target.lng, key: String(focusNonce) };
@@ -367,11 +377,15 @@
 		// refetch triggered by a subsequent pan won't hit the network again. We
 		// leave any currently-shown detail in place until this resolves.
 		let cancelled = false;
-		getLocationData(id).then((data) => {
-			if (cancelled) return;
-			const loc = data.locations[0];
-			selectedLocation = loc ? resolveLocation(loc, data) : null;
-		});
+		getLocationData(id)
+			.then((data) => {
+				if (cancelled) return;
+				const loc = data.locations[0];
+				selectedLocation = loc ? resolveLocation(loc, data) : null;
+			})
+			// On failure keep whatever detail is showing — closing the card over a
+			// transient error would be worse than briefly stale info.
+			.catch((err) => console.error('location detail fetch failed', id, err));
 		return () => {
 			cancelled = true;
 		};
