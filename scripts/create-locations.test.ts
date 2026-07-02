@@ -7,6 +7,8 @@
 import { test, expect } from 'bun:test';
 import {
 	insertLocations,
+	locationInsertStatementCount,
+	chunkLocationInserts,
 	getLocationById,
 	getFoodByLocation,
 	insertBrand,
@@ -276,4 +278,93 @@ test('insertLocations rejects inline items on a chain branch and writes nothing'
 	}
 	expect(threw).toBe(true);
 	expect(await getLocationById(db, 'branch-x')).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
+// Statement-bounded chunking (#89): create_locations splits its insert into
+// insertLocations calls of at most ~MAX statements at LOCATION boundaries.
+// ---------------------------------------------------------------------------
+
+/** An independent venue with `nItems` inline items, each carrying tags + a source. */
+function venueWithItems(name: string, i: number, nItems: number) {
+	return {
+		name,
+		category: 'restaurant' as const,
+		latitude: 49 + i * 0.001,
+		longitude: -123 - i * 0.001,
+		...ADDR,
+		phone: null,
+		website: null,
+		sources: [{ url: `https://example.com/${name}`, label: null }],
+		items: Array.from({ length: nItems }, (_, j) => ({
+			item_name: `Dish ${j}`,
+			price: 10,
+			tags: ['vegan' as const],
+			optionalTags: ['gluten_free' as const],
+			sources: [{ url: `https://example.com/${name}/menu`, label: null }]
+		}))
+	};
+}
+
+test('locationInsertStatementCount matches the statements insertLocations actually issues', async () => {
+	const inner = freshDb();
+	const batchSizes: number[] = [];
+	const counting = {
+		prepare: (sql: string) => inner.prepare(sql),
+		batch: (stmts: Parameters<typeof inner.batch>[0]) => {
+			batchSizes.push(stmts.length);
+			return inner.batch(stmts);
+		}
+	};
+	const cases = [
+		// bare venue: 1 location row
+		[venueWithItems('Bare', 0, 0)].map((l) => ({ ...l, sources: undefined, items: undefined })),
+		// venue + 1 source, no items: 2
+		[venueWithItems('Sourced', 1, 0)].map((l) => ({ ...l, items: undefined })),
+		// venue + source + private menu + 3 items × (row + tag + optional tag + source): 3 + 12
+		[venueWithItems('Full', 2, 3)],
+		// two venues in one batch: counts add
+		[venueWithItems('A', 3, 1), venueWithItems('B', 4, 2)]
+	];
+	for (const locs of cases) {
+		batchSizes.length = 0;
+		await insertLocations(counting, locs);
+		const expected = locs.reduce((n, l) => n + locationInsertStatementCount(l), 0);
+		expect(batchSizes).toEqual([expected]);
+	}
+});
+
+test('chunkLocationInserts splits at location boundaries under the statement cap', () => {
+	// Each venue is 1 (menu) + 1 (location) + 1 (source) + 4×(1+1+1+1) = 19 statements.
+	const locs = Array.from({ length: 10 }, (_, i) => venueWithItems(`V${i}`, i, 4));
+	const per = locationInsertStatementCount(locs[0]);
+	expect(per).toBe(19);
+	const chunks = chunkLocationInserts(locs, 60); // 3 venues (57) fit, a 4th (76) would not
+	expect(chunks.map((c) => c.length)).toEqual([3, 3, 3, 1]);
+	// Order preserved: concatenating the chunks reproduces the input.
+	expect(chunks.flat()).toEqual(locs);
+	for (const chunk of chunks) {
+		expect(chunk.reduce((n, l) => n + locationInsertStatementCount(l), 0)).toBeLessThanOrEqual(60);
+	}
+});
+
+test('a single location over the cap gets its own chunk rather than being split', () => {
+	const big = venueWithItems('Big Menu', 0, 50); // 2 + 1 + 200 statements, way over any cap
+	const small = venueWithItems('Small', 1, 1);
+	const chunks = chunkLocationInserts([small, big, small], 20);
+	expect(chunks.map((c) => c.length)).toEqual([1, 1, 1]);
+	expect(chunks[1][0]).toBe(big);
+});
+
+test('chunked insertLocations calls write every location and item', async () => {
+	const db = freshDb();
+	const locs = Array.from({ length: 7 }, (_, i) => venueWithItems(`Chunked ${i}`, i, 3));
+	const ids: string[] = [];
+	for (const chunk of chunkLocationInserts(locs, 25)) {
+		ids.push(...(await insertLocations(db, chunk)));
+	}
+	expect(ids).toHaveLength(7);
+	for (const id of ids) {
+		expect((await getFoodByLocation(db, id)).length).toBe(3);
+	}
 });
