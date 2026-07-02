@@ -1,7 +1,8 @@
-// Pure XML builder behind `/sitemap.xml` (src/routes/sitemap.xml/+server.ts).
-// Like db.ts, this module is RUNTIME-AGNOSTIC — no `bun:`/`node:` imports and no
-// SvelteKit request context — so the same code runs in the Worker isolate and
-// under `bun test`.
+// Pure XML builders behind the sitemap routes: the index at `/sitemap.xml`
+// (src/routes/sitemap.xml/+server.ts) and its pages at `/sitemaps/<n>.xml`
+// (src/routes/sitemaps/[page=int].xml/+server.ts). Like db.ts, this module is
+// RUNTIME-AGNOSTIC — no `bun:`/`node:` imports and no SvelteKit request
+// context — so the same code runs in the Worker isolate and under `bun test`.
 
 /**
  * The canonical public origin. Hard-coded rather than derived from the request:
@@ -11,10 +12,27 @@
  */
 const ORIGIN = 'https://betterfoodmaps.com';
 
+/**
+ * Venue entries per sitemap page. The sitemap protocol caps a file at 50,000
+ * URLs; 40,000 leaves headroom so page 1's extra root URL — or a future
+ * hand-curated URL or two — can never nudge a page over the limit.
+ */
+export const SITEMAP_PAGE_SIZE = 40_000;
+
 /** One sitemap row: a venue id plus its menu's last-verification date, or null. */
 export interface SitemapEntry {
 	id: string;
 	last_verified: string | null;
+}
+
+/**
+ * How many sitemap pages `totalEntries` venues need. Never zero: an empty
+ * dataset still yields one (root-only) page, so `/sitemaps/1.xml` — a URL the
+ * index always advertises — always exists. `pageSize` is parameterised so
+ * tests can exercise the math without 40k-entry arrays.
+ */
+export function sitemapPageCount(totalEntries: number, pageSize = SITEMAP_PAGE_SIZE): number {
+	return Math.max(1, Math.ceil(totalEntries / pageSize));
 }
 
 /**
@@ -34,15 +52,21 @@ function escapeXml(value: string): string {
 }
 
 /**
- * Builds the sitemap-protocol `<urlset>` document: the map root first, then one
- * `<url>` per open venue at its shareable `/locations/<id>` address — the same
- * canonical URL the venue head emits, served by the map page via the reroute in
- * src/hooks.ts. `<lastmod>` carries the menu's `last_verified` date when known
- * and is omitted otherwise: an invented date would be worse than none for a
+ * Builds one page of the sitemap as a `<urlset>` document: one `<url>` per
+ * open venue at its shareable `/locations/<id>` address — the same canonical
+ * URL the venue head emits, served by the map page via the reroute in
+ * src/hooks.ts. `includeRoot` prepends the map root, which page 1 alone
+ * carries: an index may only reference sitemap files, never raw URLs, so the
+ * root has to live in a urlset — and exactly one, or crawlers see duplicate
+ * listings. `<lastmod>` carries the menu's `last_verified` date when known and
+ * is omitted otherwise: an invented date would be worse than none for a
  * crawler's revisit scheduling.
  */
-export function buildSitemapXml(entries: SitemapEntry[]): string {
-	const urls = [`<url><loc>${escapeXml(ORIGIN)}/</loc></url>`];
+export function buildSitemapPageXml(
+	entries: SitemapEntry[],
+	{ includeRoot }: { includeRoot: boolean }
+): string {
+	const urls = includeRoot ? [`<url><loc>${escapeXml(ORIGIN)}/</loc></url>`] : [];
 	for (const entry of entries) {
 		const loc = escapeXml(`${ORIGIN}/locations/${encodeURIComponent(entry.id)}`);
 		const lastmod = entry.last_verified
@@ -55,5 +79,39 @@ export function buildSitemapXml(entries: SitemapEntry[]): string {
 		'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' +
 		urls.map((url) => `\t${url}`).join('\n') +
 		'\n</urlset>\n'
+	);
+}
+
+/**
+ * Builds the `<sitemapindex>` document served at `/sitemap.xml`: one
+ * `<sitemap>` per {@link SITEMAP_PAGE_SIZE}-sized page of `entries`, pointing
+ * at `/sitemaps/<n>.xml`. Each page's `<lastmod>` is the MAX `last_verified`
+ * across its entries — the date anything in that file last changed — so
+ * crawlers can skip pages whose venues are all unchanged; a page with no
+ * dated entries omits it. `pageSize` is parameterised for the same reason as
+ * in {@link sitemapPageCount}.
+ */
+export function buildSitemapIndexXml(
+	entries: SitemapEntry[],
+	pageSize = SITEMAP_PAGE_SIZE
+): string {
+	const sitemaps: string[] = [];
+	for (let page = 1; page <= sitemapPageCount(entries.length, pageSize); page++) {
+		let latest: string | null = null;
+		for (const entry of entries.slice((page - 1) * pageSize, page * pageSize)) {
+			// ISO dates compare correctly as strings, so `>` finds the max.
+			if (entry.last_verified && (!latest || entry.last_verified > latest)) {
+				latest = entry.last_verified;
+			}
+		}
+		const loc = escapeXml(`${ORIGIN}/sitemaps/${page}.xml`);
+		const lastmod = latest ? `<lastmod>${escapeXml(latest)}</lastmod>` : '';
+		sitemaps.push(`<sitemap><loc>${loc}</loc>${lastmod}</sitemap>`);
+	}
+	return (
+		'<?xml version="1.0" encoding="UTF-8"?>\n' +
+		'<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' +
+		sitemaps.map((sitemap) => `\t${sitemap}`).join('\n') +
+		'\n</sitemapindex>\n'
 	);
 }
