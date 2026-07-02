@@ -77,12 +77,17 @@ const authenticate: Handle = async ({ event, resolve }) => {
 //   MapLibre ever load one via an Image element instead.
 // • Signed-in users' Google avatars (`user.picture`, AccountMenu.svelte) are
 //   served from *.googleusercontent.com.
+// • Cloudflare Web Analytics is enabled on the zone, which auto-injects its RUM
+//   beacon into served HTML: the script loads from static.cloudflareinsights.com
+//   (script-src) and posts its measurements to cloudflareinsights.com
+//   (connect-src). Omitting these blocks the beacon — a console violation on
+//   every page view and silently missing analytics data.
 const CSP = [
 	"default-src 'self'",
-	"script-src 'self' 'unsafe-inline'",
+	"script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com",
 	"style-src 'self' 'unsafe-inline'",
 	"img-src 'self' blob: data: https://*.tile.openstreetmap.org https://*.googleusercontent.com",
-	"connect-src 'self' https://*.tile.openstreetmap.org",
+	"connect-src 'self' https://*.tile.openstreetmap.org https://cloudflareinsights.com",
 	"worker-src 'self' blob:",
 	"object-src 'none'",
 	"base-uri 'self'",
