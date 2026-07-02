@@ -12,7 +12,7 @@
 		getUserLocation
 	} from '$lib/data.remote';
 	import { cellKey, cellsForBounds, levelCell, levelForBounds } from '$lib/grid';
-	import { mergeCellSlices, splitCellSlices, type CellSlice } from '$lib/map-cells';
+	import { mergeCellSlices, mergeMapData, splitCellSlices, type CellSlice } from '$lib/map-cells';
 	import { CellStore } from '$lib/cell-store';
 	import { getCurrentUser, getLikes, setLocationLiked, setItemLiked } from '$lib/user.remote';
 	import { getDiet, setDiet } from '$lib/profile.remote';
@@ -42,10 +42,11 @@
 	// NAME *or* by an item name — a name match surfaces the whole menu, an item-only
 	// match surfaces just the matching items (see `matchedItems`). The dietary selector
 	// is a separate filter that always narrows the items shown (single-select: an item
-	// must carry the chosen tag — vegan, gluten_free, …). With either set the search
-	// goes GLOBAL — the whole index, nearest first (see the search effect below) —
-	// rather than narrowing only what's on screen; cleared, the map returns to browsing
-	// the current viewport.
+	// must carry the chosen tag — vegan, gluten_free, …). With either set, a GLOBAL
+	// search — the whole index, nearest first (see the search effect below) — joins
+	// the viewport data, so matches surface from beyond the screen too; the viewport
+	// fetch keeps running throughout (see the cell effect), so panning keeps pulling
+	// in the data under the new view whether or not a search is active.
 	let query = $state('');
 	// The chosen dietary tag id, or null for "any diet" (no diet filter).
 	let diet = $state<string | null>(null);
@@ -99,9 +100,11 @@
 	// --- Map data --------------------------------------------------------------
 	// Two payloads, each updated imperatively (rather than via an awaited $derived)
 	// so the markers already on screen stay put while the next set loads — the map
-	// never blanks. `viewportData` is what's in the current box (browse mode);
-	// `searchData` is the global nearest-first result set (search mode, null until
-	// the first search for a query returns). `activeData` picks between them.
+	// never blanks. `viewportData` is what's in the current box (always kept
+	// loaded); `searchData` is the global nearest-first result set (null while
+	// browsing and until the first search for a query returns). `activeData`
+	// renders the viewport set alone while browsing, and its union with the
+	// search set while a query is active.
 	const EMPTY_MAP_DATA: MapData = { locations: [], menus: {}, menuMeta: {} };
 	let viewportData = $state<MapData>(EMPTY_MAP_DATA);
 	let searchData = $state<MapData | null>(null);
@@ -126,19 +129,22 @@
 				: ''
 	);
 
-	// Browse mode only: load the visible box, one GRID CELL at a time. The padded
-	// viewport picks a grid level and enumerates the cells covering it ($lib/grid);
-	// cells already in the client store replay locally, so panning fetches only the
-	// newly uncovered strip and panning back costs nothing (#84) — the 20% bounds
-	// padding is a genuine prefetch ring now, not dead weight. Skipped while a
-	// query is active — the search effect below owns the data then — and resumed
-	// (against wherever the map now sits) the moment the query is cleared.
+	// Load the visible box, one GRID CELL at a time. The padded viewport picks a
+	// grid level and enumerates the cells covering it ($lib/grid); cells already
+	// in the client store replay locally, so panning fetches only the newly
+	// uncovered strip and panning back costs nothing (#84) — the 20% bounds
+	// padding is a genuine prefetch ring now, not dead weight. Runs in BOTH modes,
+	// not just browse: the global search set is anchored to wherever the search
+	// ran, so with a query/diet active it's this fetch that keeps pulling in data
+	// for the area the user pans to (the in-view filter narrows it to matches —
+	// see activeData). Gating it on the query used to leave a signed-in user
+	// whose saved diet seeds at page load with a map that never loaded anything.
 	//
 	// The store is a plain non-reactive memo (level-prefixed cell key → payload
 	// slice, LRU + TTL): consulting or filling it must never re-run this effect.
 	const cellStore = new CellStore();
 	$effect(() => {
-		if (hasQuery || !viewport) return;
+		if (!viewport) return;
 		const bounds = viewport;
 		const level = levelForBounds(bounds);
 		const cells = cellsForBounds(bounds, levelCell(level));
@@ -325,11 +331,18 @@
 		};
 	});
 
-	// The data the page renders from: the global search set while a query is active
-	// (falling back to the viewport set until the first search returns, so the labels
-	// filter what's on screen instantly rather than blanking), otherwise the
-	// viewport set.
-	const activeData = $derived(hasQuery ? (searchData ?? viewportData) : viewportData);
+	// The data the page renders from. Browsing: the viewport set. With a query/
+	// diet active: the UNION of the global search set and the viewport set (the
+	// search results lead, so nearest-first order survives for the results list),
+	// which `results` below narrows to matches — the search set supplies matches
+	// from beyond the current view (and the fly-to-nearest target), while the
+	// viewport set keeps the map filling in as the user pans away from where the
+	// search was anchored. Until the first search for a query returns, the
+	// viewport set alone keeps the labels filtering instantly rather than
+	// blanking.
+	const activeData = $derived(
+		hasQuery && searchData !== null ? mergeMapData(searchData, viewportData) : viewportData
+	);
 
 	// The map page works against each location's fully-resolved `menu`, but the wire
 	// payload sends each menu only once (keyed by menu_id) instead of copying it onto
