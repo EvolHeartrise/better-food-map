@@ -2,15 +2,23 @@ import * as v from 'valibot';
 import { query, getRequestEvent } from '$app/server';
 import { requireDb as db } from '$lib/server/context';
 import { ttlMemo } from '$lib/server/memo';
+import { getMapCellsCached } from '$lib/server/cell-cache';
 import {
-	getMapData,
 	getLocationMapData,
 	getSearchMapData,
 	getStats as getStatsFromDb,
 	type Item,
+	type MapCellsData,
 	type MapData,
 	type MapStats
 } from '$lib/server/db';
+import {
+	FULL_LEVEL_MAX_CELLS,
+	MAX_GRID_LEVEL,
+	MIN_REP_LEVEL,
+	REP_LEVEL_MAX_CELLS,
+	levelCell
+} from '$lib/grid';
 
 /**
  * Latitude/longitude schemas shared by the viewport and search-anchor inputs.
@@ -30,47 +38,63 @@ const LatitudeSchema = v.pipe(v.number(), v.finite(), v.minValue(-90), v.maxValu
 const LongitudeSchema = v.pipe(v.number(), v.finite(), v.minValue(-540), v.maxValue(540));
 
 /**
- * A map viewport (bounding box) the client asks for data within. Validated
- * because `getLocations` is exposed as an HTTP endpoint — the argument arrives
- * untrusted. Ordering is checked too: `currentView()` always emits min <= max
- * (MapLibre's `getBounds()` guarantees south <= north and west <= east, padding
- * is >= 0, and the lat clamp preserves the order), so an inverted box can only
- * be forged input, never a real view.
+ * A batch of same-level grid cells the map page asks for (see $lib/grid for the
+ * level/cell model; the page enumerates the cells covering its viewport and
+ * sends only the ones its client store is missing). Validated because this is
+ * an open HTTP endpoint: `level` must be a level a real client can produce
+ * (level 0, or a representative rung at/above the ~440 m floor — anything else
+ * would spray the server cache with junk keys), the cell count is capped per
+ * level (rep batches are bounded by the coarsening invariant; full-detail
+ * batches by narrow-viewport geometry, so a forged request can't fan a
+ * full-menu read across hundreds of cells), and each index must lie inside the
+ * lat/lng data domain.
  */
-const BoundsSchema = v.pipe(
+const CellIndexSchema = v.pipe(v.number(), v.integer(), v.minValue(0));
+const MapCellsQuerySchema = v.pipe(
 	v.object({
-		minLat: LatitudeSchema,
-		maxLat: LatitudeSchema,
-		minLng: LongitudeSchema,
-		maxLng: LongitudeSchema
+		level: v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(MAX_GRID_LEVEL)),
+		cells: v.pipe(
+			v.array(v.tuple([CellIndexSchema, CellIndexSchema])),
+			v.minLength(1),
+			v.maxLength(REP_LEVEL_MAX_CELLS)
+		)
 	}),
-	v.check((b) => b.minLat <= b.maxLat && b.minLng <= b.maxLng, 'Inverted bounds')
+	v.check((q) => q.level === 0 || q.level >= MIN_REP_LEVEL, 'Unknown grid level'),
+	v.check(
+		(q) => q.level !== 0 || q.cells.length <= FULL_LEVEL_MAX_CELLS,
+		'Too many full-detail cells'
+	),
+	v.check((q) => {
+		const cell = levelCell(q.level);
+		const maxI = Math.floor(180 / cell);
+		const maxJ = Math.floor(360 / cell);
+		return q.cells.every(([i, j]) => i <= maxI && j <= maxJ);
+	}, 'Cell outside the coordinate domain')
 );
 
 /**
- * Returns everything the map page needs for the given viewport (see
- * {@link MapData}): every location inside `bounds` with its own `food` items and
- * per-item overrides, plus each shared brand menu those branches reference,
- * resolved once and keyed by menu_id. The client joins the two to rebuild each
- * location's effective menu, so a chain's shared menu is sent over the wire a
- * single time rather than copied onto every branch. Called again as the user
- * pans/zooms, so only what's on screen is ever fetched. Used to render markers
- * and, under each result, the menu items matching the active search/filter query.
- *
- * Items arrive in the LEAN MapItem shape (name + tags) — everything the map's
- * labels and the client diet re-filter need, and nothing the detail panel alone
- * renders (description/price/sources travel only on {@link getLocationData}, #83).
+ * Returns everything the map page needs for a batch of grid cells (see
+ * {@link MapCellsData}): each requested cell's locations with their per-item
+ * overrides, plus each shared brand menu those locations reference, resolved
+ * once and keyed by menu_id — the same lean wire shape the old whole-viewport
+ * read used (#83), plus the per-cell membership record the client store slices
+ * by. Browse-mode panning fetches only newly uncovered cells (#84), and the
+ * server answers repeat cells from a colo-shared cache instead of re-running
+ * the D1 read per visitor (#93) — see $lib/server/cell-cache.
  *
  * Public: the map is open to everyone (no sign-in gate), so this read carries no
  * `requireUser()`. Only the user-scoped functions (likes, saved diet) require auth.
  */
-export const getLocations = query(BoundsSchema, async (bounds): Promise<MapData> => {
-	return getMapData(db(), bounds);
-});
+export const getMapCells = query(
+	MapCellsQuerySchema,
+	async ({ level, cells }): Promise<MapCellsData> => {
+		return getMapCellsCached(level, cells);
+	}
+);
 
 /**
  * Returns a single location (by id) in the same {@link MapData} shape as
- * {@link getLocations}, but with FULL items — description, price, and item
+ * {@link getMapCells}, but with FULL items — description, price, and item
  * sources merged with menu-level sources. The detail panel always resolves the
  * open venue through this read (deduped by id on the client), which is what lets
  * the bulk viewport/search payloads stay lean (#83). Yields an empty payload if
@@ -86,7 +110,7 @@ export const getLocationData = query(
 
 /**
  * A GLOBAL menu search, anchored to the current map centre. Whereas
- * {@link getLocations} is bounded to the viewport, this searches the whole index
+ * {@link getMapCells} is bounded to the viewport's cells, this searches the whole index
  * and returns the matches nearest the anchor (nearest first, same {@link MapData}
  * shape), so an active search is answered from everywhere on the map rather than
  * only what's on screen. `query` is one combined free-text term matched against the

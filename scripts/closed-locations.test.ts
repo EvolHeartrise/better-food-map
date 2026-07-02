@@ -5,7 +5,6 @@ import { test, expect } from 'bun:test';
 import {
 	insertLocations,
 	setLocationClosed,
-	getMapData,
 	getLocationMapData,
 	getStats,
 	getLocationById,
@@ -17,7 +16,7 @@ import {
 	getUserLikes,
 	type LocationInsert
 } from '../src/lib/server/db';
-import { freshDb } from './test-d1';
+import { freshDb, viewportMapData } from './test-d1';
 
 /** A complete-address venue with sensible defaults; override per test. */
 function venue(over: Partial<LocationInsert> & { name: string }): LocationInsert {
@@ -54,7 +53,7 @@ test('a born-closed location is hidden from reads but still blocks re-creation',
 	// Hidden from the single-detail read (queryMapData) and the viewport read.
 	expect((await getLocationMapData(db, closedId)).locations).toHaveLength(0);
 	expect((await getLocationMapData(db, openId)).locations.map((l) => l.id)).toEqual([openId]);
-	const viewportIds = (await getMapData(db, WIDE)).locations.map((l) => l.id);
+	const viewportIds = (await viewportMapData(db, WIDE)).locations.map((l) => l.id);
 	expect(viewportIds).toContain(openId);
 	expect(viewportIds).not.toContain(closedId);
 

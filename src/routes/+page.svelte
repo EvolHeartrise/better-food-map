@@ -5,12 +5,15 @@
 	import { fly } from 'svelte/transition';
 	import { SvelteSet, SvelteMap, MediaQuery } from 'svelte/reactivity';
 	import {
-		getLocations,
+		getMapCells,
 		getLocationData,
 		searchLocations,
 		getStats,
 		getUserLocation
 	} from '$lib/data.remote';
+	import { cellKey, cellsForBounds, levelCell, levelForBounds } from '$lib/grid';
+	import { mergeCellSlices, splitCellSlices, type CellSlice } from '$lib/map-cells';
+	import { CellStore } from '$lib/cell-store';
 	import { getCurrentUser, getLikes, setLocationLiked, setItemLiked } from '$lib/user.remote';
 	import { getDiet, setDiet } from '$lib/profile.remote';
 	import LocationMap from '$lib/components/LocationMap.svelte';
@@ -123,24 +126,53 @@
 				: ''
 	);
 
-	// Browse mode only: load the visible box. Skipped while a query is active — the
-	// search effect below owns the data then — and resumed (against wherever the map
-	// now sits) the moment the query is cleared.
+	// Browse mode only: load the visible box, one GRID CELL at a time. The padded
+	// viewport picks a grid level and enumerates the cells covering it ($lib/grid);
+	// cells already in the client store replay locally, so panning fetches only the
+	// newly uncovered strip and panning back costs nothing (#84) — the 20% bounds
+	// padding is a genuine prefetch ring now, not dead weight. Skipped while a
+	// query is active — the search effect below owns the data then — and resumed
+	// (against wherever the map now sits) the moment the query is cleared.
+	//
+	// The store is a plain non-reactive memo (level-prefixed cell key → payload
+	// slice, LRU + TTL): consulting or filling it must never re-run this effect.
+	const cellStore = new CellStore();
 	$effect(() => {
 		if (hasQuery || !viewport) return;
 		const bounds = viewport;
+		const level = levelForBounds(bounds);
+		const cells = cellsForBounds(bounds, levelCell(level));
+		const storeKey = ([i, j]: [number, number]) => `${level}/${cellKey(i, j)}`;
+		const missing = cells.filter((c) => cellStore.get(storeKey(c)) === null);
+		const inViewSlices = () =>
+			cells
+				.map((c) => cellStore.get(storeKey(c)))
+				.filter((slice): slice is CellSlice => slice !== null);
+		if (missing.length === 0) {
+			// Everything in view is already local — the "known empty" negative
+			// entries included — so render without a round trip.
+			viewportData = mergeCellSlices(inViewSlices());
+			viewportFailed = false;
+			return;
+		}
 		let cancelled = false;
-		getLocations(bounds)
+		getMapCells({ level, cells: missing })
 			.then((data) => {
+				// Bank every returned cell BEFORE the cancellation check: a cell's
+				// contents don't depend on the viewport, so a superseded response
+				// still warms the store for the run that replaced this one.
+				for (const [key, slice] of splitCellSlices(data)) {
+					cellStore.set(`${level}/${key}`, slice);
+				}
 				if (cancelled) return;
-				viewportData = data;
+				viewportData = mergeCellSlices(inViewSlices());
 				viewportFailed = false;
 			})
 			// A failed fetch must not blank the map — keep the markers already on
 			// screen (the next pan/zoom issues a fresh request anyway) — but flag it
 			// so the status line can say the visible markers are stale.
 			.catch((err) => {
-				console.error('viewport locations fetch failed', bounds, err);
+				console.error('viewport cells fetch failed', bounds, err);
 				if (!cancelled) viewportFailed = true;
 			});
 		return () => {
