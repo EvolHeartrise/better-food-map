@@ -205,7 +205,21 @@
 	// payload slice, LRU + TTL): consulting or filling it must never re-run this
 	// effect.
 	const cellStore = new CellStore();
+	// Store keys with a fetch currently on the wire. The viewport now streams in
+	// THROTTLED reports while a gesture is still moving (see LocationMap), so
+	// consecutive effect runs overlap in time and would otherwise re-request the
+	// same not-yet-banked cells; a run treats an in-flight cell as neither hit
+	// nor missing and simply waits for it. Non-reactive on purpose, like the store.
+	// eslint-disable-next-line svelte/prefer-svelte-reactivity -- a memo mutated inside the effect; reactivity would re-run the effect it serves
+	const inflightCells = new Set<string>();
+	// Bumped when a fetch banks its cells, so the effect re-runs against the
+	// CURRENT viewport and re-merges from the store. This replaces the old
+	// per-run "merge my own response" callback: with overlapping runs, the run
+	// that issued a fetch is routinely superseded before its response lands, and
+	// the bump is what surfaces those banked cells regardless.
+	let storeVersion = $state(0);
 	$effect(() => {
+		void storeVersion;
 		if (!viewport) return;
 		const bounds = viewport;
 		const filter = appliedFilter;
@@ -218,17 +232,16 @@
 		// segments collision-free (free text could otherwise run into the diet id).
 		const prefix = filtered ? `${filter.q}\u001f${filter.diet ?? ''}\u001f` : '';
 		const storeKey = ([i, j]: [number, number]) => `${prefix}${level}/${cellKey(i, j)}`;
-		// SNAPSHOT the store hits now rather than re-reading the store when the
-		// fetch settles: a hit can TTL-expire mid-flight, and a second read would
-		// silently drop its (still on-screen) markers from a successful merge.
 		const hits: CellSlice[] = [];
 		const missing: [number, number][] = [];
+		let pending = 0;
 		for (const c of cells) {
 			const slice = cellStore.get(storeKey(c));
 			if (slice !== null) hits.push(slice);
+			else if (inflightCells.has(storeKey(c))) pending++;
 			else missing.push(c);
 		}
-		if (missing.length === 0) {
+		if (missing.length === 0 && pending === 0) {
 			// Everything in view is already local — the "known empty" negative
 			// entries included — so render without a round trip.
 			viewportData = mergeCellSlices(hits);
@@ -236,34 +249,44 @@
 			searching = false;
 			return;
 		}
-		let cancelled = false;
 		// The spinner tracks FILTERED fetches only: it lives in the search pill,
 		// where it reads as "your search is still filling this area".
 		searching = filtered;
+		// In-flight cells cover the rest of the view: their landing bumps
+		// storeVersion, re-running this effect to merge them. Until then the
+		// previous viewportData stays up, so mid-gesture frames never blank.
+		if (missing.length === 0) return;
+		// Guards the FAILURE flag only: a superseded run's late failure shouldn't
+		// mark the current (refetched) view stale. Success needs no guard — a
+		// cell's contents don't depend on the viewport, so a superseded response
+		// still banks, and the bump re-merges for whichever run is current.
+		let cancelled = false;
+		const missingKeys = missing.map(storeKey);
+		for (const key of missingKeys) inflightCells.add(key);
 		getMapCells({ level, cells: missing, q: filter.q, diet: filter.diet })
 			.then((data) => {
-				// Bank every returned cell BEFORE the cancellation check: a cell's
-				// contents don't depend on the viewport, so a superseded response
-				// still warms the store for the run that replaced this one.
 				const fresh = splitCellSlices(data);
 				for (const [key, slice] of fresh) {
 					cellStore.set(`${prefix}${level}/${key}`, slice);
 				}
-				if (cancelled) return;
-				searching = false;
-				// The effect-time hits plus the fetched cells cover the whole view;
-				// the two sets are disjoint by construction.
-				viewportData = mergeCellSlices([...hits, ...fresh.values()]);
-				fetchFailed = false;
+				for (const key of missingKeys) inflightCells.delete(key);
+				storeVersion++;
 			})
 			// A failed fetch must not blank the map — keep the markers already on
-			// screen (the next pan/zoom issues a fresh request anyway) — but flag it
-			// so the status line can say the visible markers are stale, worded for
-			// the kind of fetch that actually broke.
+			// screen — but flag it so the status line can say the visible markers
+			// are stale, worded for the kind of fetch that actually broke. Its
+			// cells leave the in-flight set with NO version bump: an automatic
+			// retry could loop against a broken backend, so, exactly as before,
+			// the next viewport change is what asks for them again.
 			.catch((err) => {
 				console.error('map cells fetch failed', bounds, filter, err);
-				if (cancelled) return;
+				for (const key of missingKeys) inflightCells.delete(key);
+				// Clear the spinner even when superseded: the run that replaced this
+				// one saw these cells as in-flight and is WAITING on them, so nothing
+				// else would turn it off. (If another fetch is still pending, its
+				// landing re-runs the effect and re-raises the spinner as needed.)
 				searching = false;
+				if (cancelled) return;
 				fetchFailed = filtered ? 'search' : 'browse';
 			});
 		return () => {
