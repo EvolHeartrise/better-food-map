@@ -1,6 +1,6 @@
 <script lang="ts">
 	import 'maplibre-gl/dist/maplibre-gl.css';
-	import { onMount } from 'svelte';
+	import { onMount, type Component } from 'svelte';
 	import type { LngLat, Map as MapLibreMap, StyleSpecification } from 'maplibre-gl';
 	import {
 		LabelEngine,
@@ -208,6 +208,17 @@
 	// importing them is fine. `lib` holds the module namespace once loaded.
 	let lib: typeof import('maplibre-gl') | null = null;
 	let map: MapLibreMap | null = null;
+
+	// Dev-only grid-cell debug overlay. Loaded through a `DEV`-gated dynamic import (in
+	// onMount) so the whole feature — component, geometry and HUD — tree-shakes out of
+	// production builds. `import.meta.env.DEV` is replaced by Vite with the literal
+	// `false` in a prod build (before the module graph is built), so the `import()` sits
+	// in provably-dead code and no chunk is ever emitted — unlike `dev` from
+	// `$app/environment`, which this bundler leaves as a runtime value, shipping an
+	// orphaned (never-loaded) chunk. Bundles the component with the map instance it draws
+	// on, so the markup mount reads only `$state`. See src/lib/dev/GridDebug.svelte.
+	const DEV = import.meta.env.DEV;
+	let gridDebug = $state<{ Comp: Component<{ map: MapLibreMap }>; map: MapLibreMap } | null>(null);
 
 	// Owns the persistent per-pill simulation state across frames (positions survive
 	// a re-render and brief visibility toggles). Plain — and deliberately
@@ -637,6 +648,18 @@
 				// Kick off the first load immediately (no debounce) for the opening view.
 				reportView();
 				onzoom?.(map.getZoom());
+				// Dev-only: lazily mount the grid-cell debug overlay now the style is loaded
+				// (its layers need a parsed style). Gated on the compile-time `DEV`, so a
+				// production build drops this branch and never emits the GridDebug chunk —
+				// the whole debug feature tree-shakes away.
+				if (DEV) {
+					const debugMap = map;
+					void import('$lib/dev/GridDebug.svelte')
+						.then((mod) => {
+							if (active) gridDebug = { Comp: mod.default, map: debugMap };
+						})
+						.catch((err) => console.error('grid debug overlay failed to load', err));
+				}
 			});
 		})();
 
@@ -748,6 +771,14 @@
 			</div>
 		{/each}
 	</div>
+
+	<!-- Dev-only grid-cell debug overlay. `DEV` is a compile-time constant (Vite inlines
+	     `import.meta.env.DEV` to `false` in prod), so this whole block — and the
+	     lazily-imported component it mounts — is dropped from production builds. -->
+	{#if DEV && gridDebug}
+		{@const { Comp, map: debugMap } = gridDebug}
+		<Comp map={debugMap} />
+	{/if}
 </div>
 
 <style>
