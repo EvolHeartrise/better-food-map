@@ -1,15 +1,14 @@
 // ---------------------------------------------------------------------------
-// The shared client/server gate for the global menu search's free-text term.
+// The shared client/server gate for the menu search's free-text term.
 //
 // The FTS5 trigram mirrors (migration 0016) can index-accelerate a `LIKE '%q%'`
 // only when the pattern carries a run of 3+ literal characters. Anything below
 // that — "b", "bu", or wildcard-broken text like "%" or "r_s" — falls back to a
-// full scan of BOTH mirrors plus a near-global distance sort: the most
-// expensive query in the app, for a result the map page's own in-view
-// filtering already covers (issues #103/#104). Both sides apply the SAME gate:
-// the map page skips the server call for unsearchable text (and keeps
-// filtering locally), and getSearchMapData treats such text as absent so a
-// forged request can't force the scan either.
+// full scan of BOTH mirrors: an expensive query for a result the map page's
+// own in-view filtering already covers (issues #103/#104). Both sides apply
+// the SAME gate: the map page never sends unsearchable text with a cell fetch
+// (it keeps filtering locally), and the server (getMapCells → searchMembership)
+// treats such text as absent so a forged request can't force the scan either.
 //
 // Pure and client-safe (like $lib/text.ts) so the page and the server data
 // layer share one definition of "searchable".
@@ -19,12 +18,26 @@
 export const SEARCH_MIN_RUN = 3;
 
 /**
+ * ASCII-only lowercase — the EXACT case folding SQLite's `LIKE` applies (it
+ * folds A-Z alone; 'É' and 'é' stay distinct). Every client-side membership
+ * comparison and every filter cache key must fold with THIS, never
+ * `toLowerCase()`: JS lowercasing is Unicode-aware, so it would equate case
+ * pairs the server distinguishes — the client filter would keep a venue the
+ * filtered cell read dropped (a marker that vanishes when the fetch lands),
+ * and two queries the server answers differently would collide on one cached
+ * (possibly empty) cell entry.
+ */
+export function foldAsciiCase(text: string): string {
+	return text.replace(/[A-Z]/g, (c) => c.toLowerCase());
+}
+
+/**
  * The longest run of characters carrying no LIKE wildcard/escape (`%`, `_`,
  * `\`). Splitting on exactly those characters mirrors `escapeLikePattern`
  * (db.ts): each run survives escaping verbatim, so a run of
  * {@link SEARCH_MIN_RUN}+ characters is precisely what lets the trigram index
  * serve the pattern (and pre-filter the LIKE+ESCAPE form — see
- * getSearchMapData).
+ * searchMembership, db.ts).
  */
 export function longestLiteralRun(text: string): string {
 	let longest = '';

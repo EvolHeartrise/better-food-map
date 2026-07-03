@@ -28,7 +28,7 @@
 import { version } from '$app/environment';
 import { getRequestEvent } from '$app/server';
 import { requireDb } from './context';
-import { getMapCellsData, type MapCellsData } from './db';
+import { getMapCellsData, type MapCellsData, type SearchFilter } from './db';
 import { assembleCellsData, splitCellSlices, type CellSlice } from '$lib/map-cells';
 import { MAX_CACHED_BLOCKS, blockCells, blockOf, blockSpan, cellKey, levelCell } from '$lib/grid';
 
@@ -67,9 +67,20 @@ const EMPTY_SLICE: CellSlice = { locations: [], menus: {}, menuMeta: {} };
  * VERSION is part of the key so a deploy that changes the payload shape (or
  * the grid) starts from a cold cache instead of serving week-old blocks to
  * new code.
+ *
+ * A search filter joins the key as query params (the caller passes the GATED
+ * text, so "jo"+diet and ""+diet share one entry): a block's contents depend
+ * on (level, block, filter). Diet-only filters have a 6-value cardinality and
+ * cache as well as browse; free-text filters are long-tail — entries just age
+ * out — but repeat searches of common terms in a metro still share. The
+ * `diet` param is appended only when set, so a null diet can never collide
+ * with an empty-string one.
  */
-function blockCacheUrl(level: number, bi: number, bj: number): string {
-	return `https://cell-cache.internal/${encodeURIComponent(version)}/${level}/${bi}:${bj}`;
+function blockCacheUrl(level: number, bi: number, bj: number, search: SearchFilter | null): string {
+	const base = `https://cell-cache.internal/${encodeURIComponent(version)}/${level}/${bi}:${bj}`;
+	if (search === null) return base;
+	const diet = search.dietTagId === null ? '' : `&diet=${encodeURIComponent(search.dietTagId)}`;
+	return `${base}?q=${encodeURIComponent(search.query)}${diet}`;
 }
 
 /**
@@ -83,7 +94,8 @@ function blockCacheUrl(level: number, bi: number, bj: number): string {
  */
 export async function getMapCellsCached(
 	level: number,
-	cells: [number, number][]
+	cells: [number, number][],
+	search: SearchFilter | null = null
 ): Promise<MapCellsData> {
 	const event = getRequestEvent();
 	const db = requireDb();
@@ -98,12 +110,12 @@ export async function getMapCellsCached(
 		block.cells.push([i, j]);
 		blocks.set(key, block);
 	}
-	if (!cache || blocks.size > MAX_CACHED_BLOCKS) return getMapCellsData(db, level, cells);
+	if (!cache || blocks.size > MAX_CACHED_BLOCKS) return getMapCellsData(db, level, cells, search);
 
 	try {
 		const blockList = [...blocks.values()];
 		const matches = await Promise.all(
-			blockList.map((b) => cache.match(blockCacheUrl(level, b.bi, b.bj)))
+			blockList.map((b) => cache.match(blockCacheUrl(level, b.bi, b.bj, search)))
 		);
 
 		const sliceByCell = new Map<string, CellSlice>();
@@ -134,7 +146,7 @@ export async function getMapCellsCached(
 			// viewport that touches the block later.
 			const cellDeg = levelCell(level);
 			const expanded = missing.flatMap((b) => blockCells(b.bi, b.bj, span, cellDeg));
-			const fresh = await getMapCellsData(db, level, expanded);
+			const fresh = await getMapCellsData(db, level, expanded, search);
 			const freshSlices = splitCellSlices(fresh);
 			const puts: Promise<unknown>[] = [];
 			for (const b of missing) {
@@ -145,7 +157,7 @@ export async function getMapCellsCached(
 				}
 				puts.push(
 					cache.put(
-						blockCacheUrl(level, b.bi, b.bj),
+						blockCacheUrl(level, b.bi, b.bj, search),
 						new Response(JSON.stringify(assembleCellsData(blockMap)), {
 							headers: {
 								'Content-Type': 'application/json',
@@ -180,6 +192,6 @@ export async function getMapCellsCached(
 		// The cache layer must never fail a read the database can serve: any
 		// error above (a Cache API limit, a runtime quirk) degrades to the
 		// plain uncached read.
-		return getMapCellsData(db, level, cells);
+		return getMapCellsData(db, level, cells, search);
 	}
 }
