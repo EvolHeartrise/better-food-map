@@ -482,6 +482,7 @@
 			name: result.loc.name,
 			latitude: result.loc.latitude,
 			longitude: result.loc.longitude,
+			score: result.loc.score,
 			items: result.items.map((menuItem) => menuItem.item_name)
 		}))
 	);
@@ -601,6 +602,7 @@
 					name: selectedLocation.name,
 					latitude: selectedLocation.latitude,
 					longitude: selectedLocation.longitude,
+					score: selectedLocation.score,
 					items: matchedItems(selectedLocation, queryTerm, diet).map(
 						(menuItem) => menuItem.item_name
 					)

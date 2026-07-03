@@ -104,6 +104,28 @@ test('likes break representative ties, probed per-candidate (not via a whole-tab
 	expect(data.locations.map((l) => l.id)).toEqual([liked]);
 });
 
+test('locations ship a like-derived score for the client-side label priority', async () => {
+	const db = freshDb();
+	// Far enough apart (> 1° each axis) that each holds its own cell at this
+	// viewport's rep level, so both come back.
+	const [plain, liked] = await insertLocations(db, [
+		venue({ name: 'Plain Diner', latitude: 43.6, longitude: -79.4 }),
+		venue({ name: 'Liked Diner', latitude: 45.2, longitude: -77.1 })
+	]);
+	for (const user of ['u1', 'u2']) {
+		await db
+			.prepare(`INSERT INTO users (id, email_verified, created_at) VALUES (?, 0, 0)`)
+			.bind(user)
+			.run();
+		await setLocationLike(db, user, liked, true, 123);
+	}
+
+	const { data } = await fetchViewport(db, { minLat: 40, maxLat: 50, minLng: -85, maxLng: -75 });
+	const byId = new Map(data.locations.map((l) => [l.id, l]));
+	expect(byId.get(liked)?.score).toBe(2);
+	expect(byId.get(plain)?.score).toBe(0);
+});
+
 test('the full level returns whole cells — menus, overrides — and caps per cell', async () => {
 	const db = freshDb();
 	// A neighbourhood viewport (span ~0.02°) → level 0, FULL_CELL_DEG tiles.

@@ -264,8 +264,10 @@ export function stepSimulation(nodes: SimNode[], cfg: SimConfig): void {
 
 /**
  * A label candidate, with the geographic origin its pill anchors to. `priority`
- * overrides the default declutter tie-break (a stable id hash) when a caller wants a
- * specific ordering among labels that compete for the same screen cell.
+ * ranks labels that compete for the same screen cell (higher wins; the map passes
+ * the venue's like-derived score). It should be integer-valued: the engine adds a
+ * stable [0,1) id hash as a fractional tiebreak, which a fractional priority could
+ * otherwise interleave with. Omitted means 0 — tie-break only.
  */
 export type Candidate = {
 	id: string;
@@ -346,7 +348,12 @@ export class LabelEngine {
 				// the coordinate, so the cell is pan-invariant on the globe as well as Mercator.
 				cellX: Math.floor((c.lng + 180) / cellDeg),
 				cellY: Math.floor((c.lat + 90) / cellDeg),
-				priority: c.id === selectedId ? Infinity : (c.priority ?? hashId(c.id))
+				// Caller priority (an integer rank — the venue score) plus the stable
+				// [0,1) id hash as a fractional tiebreak, so equal-priority candidates
+				// still order deterministically from the DATA alone — never from input
+				// order, which varies with fetch/merge order and would flip a cell's
+				// winner between pans. Selection trumps everything.
+				priority: c.id === selectedId ? Infinity : (c.priority ?? 0) + hashId(c.id)
 			});
 		}
 

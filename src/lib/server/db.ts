@@ -158,6 +158,15 @@ export interface LocationWithTags extends Location {
 export interface MapLocation extends Location {
 	/** Per-item deviations from its menu (empty unless it overrides one). */
 	overrides: LocationItemOverride[];
+	/**
+	 * Importance score the client's label declutter ranks by, so the pill that
+	 * survives a crowded screen cell is the venue users actually care about —
+	 * mirroring the likes term of the server's per-cell ranking
+	 * ({@link getMapCellsData}). Derived from the like count but deliberately
+	 * named opaquely on the wire: the payload is public, and this shouldn't
+	 * read as (or be relied on as) an exact like tally.
+	 */
+	score: number;
 }
 
 /**
@@ -971,12 +980,17 @@ async function queryMapData(
 	// rows themselves. `closed_at IS NULL` hides soft-deleted (permanently-closed)
 	// venues from every map/detail/search read this powers (migration 0015). It
 	// carries no bind param, so the `.bind(...params)` alignment is untouched.
+	// `score` is the like count as a correlated index probe per returned row
+	// (bounded by the cap, same shape as getMapCellsData's ranking term) —
+	// aliased to its opaque wire name here so no later step needs to rename it.
 	const { results: locations } = await db
 		.prepare(
-			`SELECT ${LOCATION_FIELDS} FROM locations WHERE closed_at IS NULL AND (${locFilter}) ${capClause}`
+			`SELECT ${LOCATION_FIELDS},
+				(SELECT COUNT(*) FROM liked_locations lk WHERE lk.location_id = locations.id) AS score
+			 FROM locations WHERE closed_at IS NULL AND (${locFilter}) ${capClause}`
 		)
 		.bind(...params)
-		.all<LocationRow>();
+		.all<LocationRow & { score: number }>();
 	if (locations.length === 0) return { locations: [], menus: {}, menuMeta: {} };
 
 	// Everything else is scoped by the materialized ids: the returned locations,
