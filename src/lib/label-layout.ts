@@ -5,11 +5,17 @@
 // -free, so it can be unit-tested and kept out of the Svelte component, which is
 // left as thin glue around `LabelEngine`:
 //
-//   • `selectVisible` decides WHICH pills to show at the current zoom. It greedily
-//     keeps the highest-priority labels whose anchors aren't packed tighter than
-//     `minGap` px and hides the rest. Because the projected anchors spread apart on
-//     screen as the user zooms in, more labels clear the bar at higher zoom — that
-//     is how names reveal progressively without ever drawing a dot.
+//   • `selectVisible` decides WHICH pills to show at the current zoom: per cell of
+//     an absolute geographic lattice, the highest-priority `perCell` labels survive
+//     and the rest hide. Because the lattice shrinks (in degrees) as the user zooms
+//     in, more labels win a cell at higher zoom — that is how names reveal
+//     progressively without ever drawing a dot.
+//
+//   • `fillFreeSpace` then re-admits grid losers into genuinely FREE screen space:
+//     the grid bounds density but is blind to actual room, so without this pass two
+//     venues sharing a cell always cost one its pill even when both boxes fit. With
+//     hysteresis (admission needs clearance, only real overlap evicts), because
+//     screen distances aren't pan-invariant on the globe.
 //
 //   • `stepSimulation` advances the force model one frame: every pill is pulled
 //     strongly toward its origin (a spring), so it wants to sit centred on its venue's
@@ -178,6 +184,94 @@ export function selectVisible(anchors: LabelAnchor[], perCell: number, max: numb
 	return new Set(kept.map((a) => a.id));
 }
 
+// --- Free-space fill ---------------------------------------------------------
+// The declutter grid guarantees bounded, pan-stable density, but it is blind to
+// actual screen room: two venues sharing a grid cell always cost one of them its
+// pill even when their boxes wouldn't touch. This second pass re-admits grid
+// losers into genuinely free screen space, so neighbouring venues both show
+// whenever they fit — the grid stays the density GUARANTEE, the fill is
+// opportunistic on top.
+
+/** A pill's projected anchor + half-box, the unit the free-space fill packs. */
+export type FillBox = {
+	id: string;
+	x: number;
+	y: number;
+	hw: number;
+	hh: number;
+	priority: number;
+};
+
+/**
+ * Clearance (px) a grid loser's box must have from every shown pill to be
+ * ADMITTED by the free-space fill, measured anchor-to-anchor (the sim's rest
+ * state, where every unobstructed pill sits on its point).
+ */
+export const FILL_ADMIT_CLEARANCE_PX = 8;
+/**
+ * The (smaller) clearance an already-admitted pill must keep to STAY admitted.
+ * The gap between this and {@link FILL_ADMIT_CLEARANCE_PX} is the hysteresis
+ * band: screen-space distances are NOT pan-invariant (on the globe a pan is a
+ * sphere rotation, and even flat Mercator zoom scales them), so a pill that
+ * barely qualified would otherwise flicker in and out as the camera slides
+ * across the admission boundary. Entering costs full clearance; only genuine
+ * overlap evicts.
+ */
+export const FILL_RETAIN_CLEARANCE_PX = 0;
+/**
+ * Half-box (px) assumed for a pill that has never been rendered, hence never
+ * measured (the engine measures on DOM attach). Sized generously — a bit above
+ * the typical two-line pill — so an estimate-admitted pill rarely turns out to
+ * overlap once its real box lands; over-estimating only delays an admission
+ * by a pass, while under-estimating admits a pill that then must be evicted.
+ */
+export const FILL_EST_HALF_W_PX = 76;
+export const FILL_EST_HALF_H_PX = 26;
+
+/** Whether two boxes are closer than `clearance` on both axes (i.e. conflict). */
+function boxesConflict(a: FillBox, b: FillBox, clearance: number): boolean {
+	return (
+		Math.abs(a.x - b.x) < a.hw + b.hw + clearance && Math.abs(a.y - b.y) < a.hh + b.hh + clearance
+	);
+}
+
+/**
+ * The grid losers to show anyway because they fit in free screen space: greedy
+ * box packing in descending priority order against everything already shown.
+ * Previously-admitted pills (`prevAdmitted`) re-qualify first, against the
+ * lenient retain clearance — the hysteresis that keeps a pan from churning the
+ * admitted set — then new admissions must clear the full admit clearance, each
+ * claiming its box before lower-priority candidates test theirs. `budget` caps
+ * how many admissions may be added on top of the kept set (the caller passes
+ * `max - kept`, so the global pill ceiling holds). O(rest × shown) axis-aligned
+ * box tests, bounded by the payload caps upstream.
+ */
+export function fillFreeSpace(
+	kept: FillBox[],
+	rest: FillBox[],
+	prevAdmitted: ReadonlySet<string>,
+	budget: number
+): Set<string> {
+	const admitted = new Set<string>();
+	if (budget <= 0) return admitted;
+	const shown = [...kept];
+	// Returning members first — an incumbent must not lose its spot to a newcomer
+	// that packs the same space at higher priority mid-pan (that's churn, exactly
+	// what the hysteresis exists to prevent) — then both groups by priority.
+	const ordered = rest.toSorted(
+		(a, b) =>
+			Number(prevAdmitted.has(b.id)) - Number(prevAdmitted.has(a.id)) || b.priority - a.priority
+	);
+	for (const box of ordered) {
+		if (admitted.size >= budget) break;
+		const clearance = prevAdmitted.has(box.id) ? FILL_RETAIN_CLEARANCE_PX : FILL_ADMIT_CLEARANCE_PX;
+		if (shown.some((s) => boxesConflict(box, s, clearance))) continue;
+		admitted.add(box.id);
+		shown.push(box);
+	}
+	return admitted;
+}
+
 /**
  * Advance the pill positions one frame, mutating the nodes in place. Everything
  * operates on the anchor-relative offset (`ox`, `oy`): the spring pulls it toward
@@ -319,6 +413,11 @@ export type RecomputeOptions = {
 export class LabelEngine {
 	private nodes = new Map<string, LabelNode>();
 	private visibleIds: string[] = [];
+	// Ids currently shown via the free-space fill (grid losers admitted into free
+	// screen room). Persisted across recomputes — membership feeds the fill's
+	// hysteresis, so an admitted pill isn't re-judged against the strict admission
+	// clearance every pass as the camera slides.
+	private admitted = new Set<string>();
 
 	/**
 	 * Re-pick the visible labels for the current camera: project every candidate,
@@ -330,6 +429,7 @@ export class LabelEngine {
 		const { candidates, project, width, height, margin, selectedId, cellDeg, perCell, max } = opts;
 
 		const anchors: LabelAnchor[] = [];
+		const boxes = new Map<string, FillBox>();
 		const candidateIds = new Set<string>();
 		for (const c of candidates) {
 			candidateIds.add(c.id);
@@ -340,6 +440,12 @@ export class LabelEngine {
 			if (p.x < -margin || p.y < -margin || p.x > width + margin || p.y > height + margin) {
 				continue;
 			}
+			// Caller priority (an integer rank — the venue score) plus the stable
+			// [0,1) id hash as a fractional tiebreak, so equal-priority candidates
+			// still order deterministically from the DATA alone — never from input
+			// order, which varies with fetch/merge order and would flip a cell's
+			// winner between pans. Selection trumps everything.
+			const priority = c.id === selectedId ? Infinity : (c.priority ?? 0) + hashId(c.id);
 			anchors.push({
 				id: c.id,
 				// Bucket on the absolute geographic lattice: the venue's coordinate, shifted
@@ -348,21 +454,41 @@ export class LabelEngine {
 				// the coordinate, so the cell is pan-invariant on the globe as well as Mercator.
 				cellX: Math.floor((c.lng + 180) / cellDeg),
 				cellY: Math.floor((c.lat + 90) / cellDeg),
-				// Caller priority (an integer rank — the venue score) plus the stable
-				// [0,1) id hash as a fractional tiebreak, so equal-priority candidates
-				// still order deterministically from the DATA alone — never from input
-				// order, which varies with fetch/merge order and would flip a cell's
-				// winner between pans. Selection trumps everything.
-				priority: c.id === selectedId ? Infinity : (c.priority ?? 0) + hashId(c.id)
+				priority
+			});
+			// The candidate's box for the free-space fill: the measured pill where one
+			// has rendered before (nodes persist while the venue stays a candidate),
+			// the generous estimate for a pill that has never mounted.
+			const node = this.nodes.get(c.id);
+			const measured = node !== undefined && node.hw > 1;
+			boxes.set(c.id, {
+				id: c.id,
+				x: p.x,
+				y: p.y,
+				hw: measured ? node.hw : FILL_EST_HALF_W_PX,
+				hh: measured ? node.hh : FILL_EST_HALF_H_PX,
+				priority
 			});
 		}
 
 		const keep = selectVisible(anchors, perCell, max);
+		// Second pass: grid losers whose boxes fit in genuinely free screen space
+		// are shown anyway (see fillFreeSpace) — the grid bounds density, the fill
+		// stops it hiding a venue no shown pill actually needs the room of. The
+		// budget keeps the global ceiling: kept + admitted ≤ max.
+		const keptBoxes: FillBox[] = [];
+		const restBoxes: FillBox[] = [];
+		for (const a of anchors) {
+			const box = boxes.get(a.id);
+			if (box === undefined) continue;
+			(keep.has(a.id) ? keptBoxes : restBoxes).push(box);
+		}
+		this.admitted = fillFreeSpace(keptBoxes, restBoxes, this.admitted, max - keep.size);
 
 		const items: RenderItem[] = [];
 		const visible: string[] = [];
 		for (const c of candidates) {
-			if (!keep.has(c.id)) continue;
+			if (!keep.has(c.id) && !this.admitted.has(c.id)) continue;
 			let node = this.nodes.get(c.id);
 			if (node) {
 				node.name = c.name;

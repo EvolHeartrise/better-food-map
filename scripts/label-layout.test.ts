@@ -1,11 +1,13 @@
 import { expect, test, describe } from 'bun:test';
 import {
+	fillFreeSpace,
 	hashId,
 	holdZoom,
 	geoCellDegrees,
 	selectVisible,
 	stepSimulation,
 	LabelEngine,
+	type FillBox,
 	type LabelAnchor,
 	type SimNode,
 	type SimConfig,
@@ -297,6 +299,67 @@ describe('stepSimulation', () => {
 	});
 });
 
+describe('fillFreeSpace', () => {
+	const box = (id: string, x: number, y: number, priority = 1, half = 20): FillBox => ({
+		id,
+		x,
+		y,
+		hw: half,
+		hh: half,
+		priority
+	});
+	const NONE: ReadonlySet<string> = new Set();
+
+	test('admits a loser with clear room, skips one conflicting with a kept pill', () => {
+		const kept = [box('k', 0, 0)];
+		// 'free' is 100px away (clear of 20+20+8); 'tight' overlaps k outright.
+		const admitted = fillFreeSpace(kept, [box('free', 100, 0), box('tight', 10, 0)], NONE, 10);
+		expect([...admitted]).toEqual(['free']);
+	});
+
+	test('admissions claim their space: of two conflicting losers, the higher priority wins', () => {
+		const admitted = fillFreeSpace(
+			[box('k', 0, 0)],
+			[box('lo', 100, 0, 1), box('hi', 110, 0, 2)],
+			NONE,
+			10
+		);
+		expect([...admitted]).toEqual(['hi']);
+	});
+
+	test('hysteresis: inside the clearance band, incumbents stay and newcomers stay out', () => {
+		// Boxes 41–48px apart on x (gap 1–8px against 20+20 half-widths): more than
+		// retain clearance (0), less than admit clearance (8).
+		const kept = [box('k', 0, 0)];
+		const nearMiss = box('n', 45, 0);
+		expect(fillFreeSpace(kept, [nearMiss], NONE, 10).size).toBe(0);
+		expect([...fillFreeSpace(kept, [nearMiss], new Set(['n']), 10)]).toEqual(['n']);
+	});
+
+	test('hysteresis: a genuine overlap evicts even an incumbent', () => {
+		const kept = [box('k', 0, 0)];
+		expect(fillFreeSpace(kept, [box('n', 30, 0)], new Set(['n']), 10).size).toBe(0);
+	});
+
+	test('an incumbent holds its space against a higher-priority newcomer', () => {
+		// Both fit the same free spot but conflict with each other; the incumbent
+		// re-qualifies first regardless of priority, so the newcomer is the one out.
+		const admitted = fillFreeSpace(
+			[],
+			[box('new', 100, 0, 9), box('old', 110, 0, 1)],
+			new Set(['old']),
+			10
+		);
+		expect([...admitted]).toEqual(['old']);
+	});
+
+	test('respects the admission budget in priority order', () => {
+		const rest = [box('a', 0, 0, 1), box('b', 100, 0, 3), box('c', 200, 0, 2)];
+		expect(fillFreeSpace([], rest, NONE, 0).size).toBe(0);
+		expect([...fillFreeSpace([], rest, NONE, 2)].toSorted()).toEqual(['b', 'c']);
+	});
+});
+
 describe('LabelEngine', () => {
 	// A fake projector: screen = anchor at (originX + lng*10, lat*10). `originX` mimics a
 	// horizontal pan; it now only moves where pills are CULLED (off-screen), since the
@@ -337,6 +400,19 @@ describe('LabelEngine', () => {
 		];
 		const items = new LabelEngine().recompute(makeOpts(crowd, null, 0));
 		expect(items.map((i) => i.id)).toEqual([loHash]);
+	});
+
+	test('a grid loser with free screen room is admitted; a crowded one stays hidden', () => {
+		// All three share one 42° declutter cell. 'winner' takes the cell; 'clear'
+		// sits 200px away on screen (fits, even at the unmeasured-box estimate) and
+		// must show anyway; 'crowded' overlaps the winner and must not.
+		const crowd: Candidate[] = [
+			{ id: 'winner', name: 'Winner', lat: 5, lng: 5, priority: 9 },
+			{ id: 'clear', name: 'Clear neighbour', lat: 25, lng: 5, priority: 5 },
+			{ id: 'crowded', name: 'Crowded neighbour', lat: 5.2, lng: 5.2, priority: 5 }
+		];
+		const items = new LabelEngine().recompute(makeOpts(crowd, null, 0));
+		expect(items.map((i) => i.id).toSorted()).toEqual(['clear', 'winner']);
 	});
 
 	test('equal priorities tie-break by the stable id hash, not input order', () => {

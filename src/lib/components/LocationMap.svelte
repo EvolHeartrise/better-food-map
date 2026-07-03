@@ -135,7 +135,10 @@
 	// the cell so it's ≈ NAME_CELL_PX wide on screen at the current zoom. Density stays
 	// UNIFORM across the screen (a dense downtown thins to the same labels-per-area as a
 	// sparse suburb) and the count handed to the force sim stays bounded — and so
-	// settle-able. The cell is computed in DEGREES from the zoom (geoCellDegrees) and the
+	// settle-able. On top of the grid, the engine's free-space fill re-admits cell
+	// losers whose boxes fit in genuinely empty screen room (see fillFreeSpace in
+	// $lib/label-layout), so two close-but-clear venues both label; MAX_VISIBLE
+	// bounds grid winners and fill admissions together. The cell is computed in DEGREES from the zoom (geoCellDegrees) and the
 	// bucketing is geographic, NOT screen-space: a venue's lng/lat doesn't move when the
 	// camera pans, so its cell — and which pill wins it — is pan-invariant on the globe
 	// projection as well as flat Mercator (a screen-space lattice is not, because a globe
