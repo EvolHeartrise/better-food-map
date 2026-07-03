@@ -43,16 +43,6 @@ const fullItemOut = v.object({
 	sources: v.array(sourceOut)
 });
 
-/** An item nested inside its parent menu/location: menu_id + currency dropped (itemWithinParent). */
-const nestedItemOut = v.object({
-	id: v.string(),
-	item_name: v.string(),
-	tags: v.array(itemTagOut),
-	description: v.nullable(v.string()),
-	price: v.nullable(v.number()),
-	sources: v.array(sourceOut)
-});
-
 const overrideOut = v.object({
 	location_id: v.string(),
 	item_id: v.string(),
@@ -119,7 +109,14 @@ export const getLocationOutput = v.object({
 	sources: v.array(sourceOut),
 	// present only when the venue serves items (its private menu's currency)
 	currency: v.optional(v.string()),
-	menu: v.array(nestedItemOut),
+	// `menu` varies by `view` ("full"/"names" carry different item shapes; "summary"
+	// drops it for counts) — kept permissive + optional so every view validates.
+	menu: v.optional(v.array(v.object({ id: v.string() }))),
+	// "summary" view (mirrors get_menu's summary): counts + tag histogram, no item list.
+	item_count: v.optional(v.number()),
+	items_with_price: v.optional(v.number()),
+	items_with_sources: v.optional(v.number()),
+	tag_counts: v.optional(v.record(v.string(), v.number())),
 	overrides: v.array(overrideOut)
 });
 
@@ -204,5 +201,21 @@ export const createItemsOutput = v.object({
 export const updateItemsOutput = v.object({
 	updated: v.number(),
 	updated_ids: v.array(v.string()),
+	not_found_ids: v.array(v.string())
+});
+
+/** create_chain: the bundled brand + menu + items result (already_existed/warnings optional). */
+export const createChainOutput = v.object({
+	brand_id: v.string(),
+	menu_id: v.string(),
+	item_ids: v.array(v.string()),
+	created_items: v.number(),
+	already_existed: v.optional(v.object({ brand: v.boolean(), menu: v.boolean() })),
+	warnings: v.optional(v.array(v.string()))
+});
+
+export const deleteLocationsOutput = v.object({
+	deleted: v.number(),
+	deleted_ids: v.array(v.string()),
 	not_found_ids: v.array(v.string())
 });
