@@ -24,5 +24,5 @@ export function partialFailureBody(err: ToolPartialFailure): string {
 	const partial = Object.fromEntries(
 		Object.entries(err.partial).filter(([k]) => k !== 'error' && k !== 'partial_failure')
 	);
-	return JSON.stringify({ error: err.message, partial_failure: true, ...partial }, null, 2);
+	return JSON.stringify({ error: err.message, partial_failure: true, ...partial });
 }

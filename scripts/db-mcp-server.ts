@@ -91,6 +91,9 @@ import {
 	resolveListOffset,
 	buildListLocationsPage
 } from './mcp/list-locations-page';
+import { itemNameView, menuItemsSummary } from './mcp/menu-views';
+import { createChainBundle } from './mcp/create-chain';
+import { deleteLocationsBatch } from './mcp/delete-locations';
 import {
 	listLocationsOutput,
 	getLocationOutput,
@@ -101,7 +104,9 @@ import {
 	createLocationsOutput,
 	updateLocationsOutput,
 	createItemsOutput,
-	updateItemsOutput
+	updateItemsOutput,
+	createChainOutput,
+	deleteLocationsOutput
 } from './mcp/output-schemas';
 import { OsmPoiStore } from './osm/poi-store';
 import { effectivePoiAddressParts, osmUrl } from './osm/map-feature';
@@ -176,6 +181,59 @@ const MODEL_OVERVIEW =
 	'Items carry tags: pass `tags` (dietary/course) and `optional_tags` for things that can be added ' +
 	'or left out (e.g. an item that can be made vegan). Items do NOT store ingredients.';
 
+// --- Field policies -------------------------------------------------------
+// The correctness-critical rules that used to be repeated verbatim on every
+// create/update field. Each full rule is stated ONCE here and advertised via the
+// server instructions; the per-field descriptions carry only a terse load-bearing
+// pointer (the *_SHORT / *_DESC constants) that references the policy by name.
+
+// The naming rule (used by create_locations.name, update_locations.name and
+// import_chain.location_name — was ~600 chars repeated three times).
+const NAME_POLICY =
+	"Naming — a location's `name` is the venue's own business/brand name as the source displays it " +
+	'(e.g. "A&W", "Cactus Club Cafe") and NOTHING else. NEVER bake location data into it to tell ' +
+	'branches apart: no street, intersection, city, neighbourhood, mall/plaza or landmark, and no ' +
+	'parenthetical/suffix locator like "(Scott Road)", "- 72 Ave" or " Surrey" — branches at ' +
+	'different addresses are EXPECTED to share an identical name (the map tells them apart by ' +
+	'address/coordinates). No editorial annotation either: no former name "(formerly Bandidas ' +
+	'Taqueria)", status note "(closed)", or tacked-on descriptor "(Tea & Coffee)". When adding from ' +
+	"OSM, use the POI's `name` tag verbatim, dropping any such locator/annotation. Keep a word that " +
+	'only LOOKS like an addition when the source shows it AS the name (e.g. "Published on Main", ' +
+	'"MeeT on Main", "Almond Dosa - Pure Vegetarian"): the test is whether the venue calls itself ' +
+	'that, not whether it locates or describes a branch.';
+
+// The OSM-import / coordinate-exact rule (used by create_locations.osm_id).
+const OSM_IMPORT_POLICY =
+	'OSM import (`osm_id`) — PREFER passing the `osm_id` of a search_poi candidate: the server takes ' +
+	"that POI's latitude/longitude VERBATIM (the coordinate-exact match the map's de-duplication " +
+	'relies on — never copy or geocode coordinates) and fills the address from its addr:* tags, ' +
+	'auto-citing osm_url. OMIT latitude/longitude when using osm_id (passing them is rejected); you ' +
+	"MAY still pass address parts to override or supply what the POI lacks (from the POI's admin " +
+	'context, never geocoded). Use manual latitude/longitude + address only for a venue not in OSM.';
+
+// The structured-address rule (used by the street/city/region/postcode/country
+// fields on both create_locations and update_locations).
+const ADDRESS_POLICY =
+	'Structured address — `street`, `city`, `region` and `country` are REQUIRED; `postcode` is ' +
+	"optional. Take every part from the venue's OSM/Overture data — never geocode or invent one. " +
+	'region/postcode/country are normalized server-side (province/state → 2-letter code, e.g. ' +
+	'"Ontario" → "ON"; postcode → canonical spacing; country → ISO-2, defaulting to CA), so a source ' +
+	'spelling is accepted as given; a partial/invalid postcode (e.g. a bare FSA) is dropped rather ' +
+	'than stored.';
+
+// The refresh-notes rule (used by create_menu.refresh_notes and update_menu.refresh_notes).
+const REFRESH_NOTES_POLICY =
+	"refresh_notes — banks HOW to refresh a menu's data for the next verification pass: the " +
+	'machine-readable feed endpoint (ordering API, nutrition PDF, CMS query) plus fetch caveats (e.g. ' +
+	'"menu page is client-rendered; use the ordering API behind it"). RECORD it whenever menu ' +
+	'research discovers a non-obvious source; CHECK it (get_menu) before re-researching from scratch.';
+
+// The one-line load-bearing pointer stamped on every name field (see NAME_POLICY).
+const NAME_DESC_SHORT =
+	"The venue's own name ONLY — no location/branch (street, neighbourhood, mall, landmark) or " +
+	'editorial annotation (former name, status note) baked in; branches share a name and are told ' +
+	'apart by address. See the naming policy in the server instructions.';
+
 const SERVER_INSTRUCTIONS =
 	'CRUD tools over the food-map database (locations, chains/brands, and their menu items). Each ' +
 	'location, menu, and item may carry source URLs documenting where the data came from — include ' +
@@ -193,7 +251,9 @@ const SERVER_INSTRUCTIONS =
 	'(check: "duplicate_locations") finds same-name pairs a few metres apart — OSM sometimes maps one ' +
 	`venue twice; verify against the venue's own locator, then delete_location the extra row, or ` +
 	'mark_not_duplicate a verified two-real-venues pair so it is never re-flagged.\n\n' +
-	`${MODEL_OVERVIEW}\n\nTag policy: ${TAG_POLICY}`;
+	`${MODEL_OVERVIEW}\n\nTag policy: ${TAG_POLICY}\n\n` +
+	'Field policies — the full rules the terse per-field descriptions point to:\n\n' +
+	`${NAME_POLICY}\n\n${OSM_IMPORT_POLICY}\n\n${ADDRESS_POLICY}\n\n${REFRESH_NOTES_POLICY}`;
 
 const latitudeSchema = v.pipe(v.number(), v.minValue(-90), v.maxValue(90));
 const longitudeSchema = v.pipe(v.number(), v.minValue(-180), v.maxValue(180));
@@ -257,38 +317,20 @@ const websiteSchema = v.pipe(
 	)
 );
 
-/** Field descriptions reused on create_locations and update_locations. */
-const NAME_DESC =
-	'The venue\'s own business/brand name as the source displays it, e.g. "A&W" or "Cactus Club ' +
-	'Cafe" — and NOTHING else. NEVER bake location data into the name to tell branches apart: no ' +
-	'street, intersection, city, neighbourhood, mall/plaza, or landmark, and no parenthetical/suffix ' +
-	'locator like "(Scott Road)", "- 72 Ave", or " Surrey". Branches at different addresses are ' +
-	'EXPECTED to share an identical name — the map tells them apart by their address/coordinates, not ' +
-	'by the name. No editorial annotation either: no former name like "(formerly Bandidas Taqueria)", ' +
-	'status note like "(closed)", or tacked-on descriptor like "(Tea & Coffee)" — that prose has no ' +
-	"place in the name. When adding from OSM, use the POI's `name` tag verbatim (dropping any such " +
-	'locator/annotation). Keep a word that only looks like an addition when the source shows it AS the ' +
-	'name (e.g. "Published on Main", "MeeT on Main", "Almond Dosa - Pure Vegetarian"); the test is ' +
-	'whether the venue calls itself that, not whether it locates or describes a branch.';
-const STREET_DESC =
-	'House number + street (+ unit), e.g. "1909 W 4th Ave". Take the street line from the candidate\'s ' +
-	'OSM/Overture address; never geocode or invent one.';
+// Terse per-field pointers reused on create_locations and update_locations — the
+// full rules live in SERVER_INSTRUCTIONS (NAME_POLICY / OSM_IMPORT_POLICY /
+// ADDRESS_POLICY above). NAME_DESC_SHORT is defined with the policies.
+const STREET_DESC = 'House number + street (+ unit), e.g. "1909 W 4th Ave".';
 const CITY_DESC = 'Municipality, e.g. "Vancouver".';
 const REGION_DESC =
-	'Province/state — a 2-letter code ("BC") or full name ("British Columbia"); stored as the 2-letter code.';
-const POSTCODE_DESC =
-	'Postal/ZIP code (optional). Stored canonically (e.g. "V6J 1M5"); omit when the source has none.';
-const COUNTRY_DESC =
-	'Country — name ("Canada") or ISO-2 code ("CA"); stored as ISO-2. Defaults to CA.';
+	'Province/state, e.g. "BC" or "British Columbia" (stored as the 2-letter code).';
+const POSTCODE_DESC = 'Postal/ZIP code (optional); omit when the source has none.';
+const COUNTRY_DESC = 'Country name or ISO-2 code (stored as ISO-2; defaults to CA).';
 const OSM_ID_DESC =
-	'PREFERRED way to add a venue: the `osm_id` of a search_poi candidate (same local OSM staging ' +
-	"store). When set, the server takes this venue's latitude/longitude VERBATIM from that OSM POI — " +
-	"guaranteeing the coordinate-exact match the map's de-duplication relies on, so you never copy or " +
-	"geocode coordinates — and fills the address from the POI's own addr:* tags, auto-citing its " +
-	'osm_url as a source. OMIT latitude/longitude when using osm_id (passing them is rejected). You may ' +
-	'still pass street/city/region/postcode/country to override or supply parts the POI lacks (e.g. ' +
-	"city/region) — take those from the POI's admin context, never geocode. Fall back to the manual " +
-	'latitude/longitude + address only for a venue genuinely not in OSM.';
+	'PREFERRED way to add a venue: the `osm_id` of a search_poi candidate — the server then takes ' +
+	"this venue's coordinates VERBATIM from that OSM POI (never geocoded/copied) and fills its " +
+	"address from the POI's addr:* tags, auto-citing osm_url. OMIT latitude/longitude when using " +
+	'osm_id (passing them is rejected). See the OSM-import policy in the server instructions.';
 
 /**
  * Normalizes raw structured address args into the stored parts, throwing a clear
@@ -496,7 +538,7 @@ const itemSchema = v.object({
 });
 
 const createLocationArgs = v.object({
-	name: v.pipe(v.string(), v.minLength(1), v.description(NAME_DESC)),
+	name: v.pipe(v.string(), v.minLength(1), v.description(NAME_DESC_SHORT)),
 	category: v.optional(
 		v.nullable(
 			v.pipe(
@@ -636,7 +678,7 @@ const updateLocationItemArgs = v.pipe(
 	v.object({
 		id: v.pipe(v.string(), v.minLength(1), v.description('Id of the location to update.')),
 		name: v.optional(
-			v.pipe(v.string(), v.minLength(1), v.description(`Replace the name. ${NAME_DESC}`))
+			v.pipe(v.string(), v.minLength(1), v.description(`Replace the name. ${NAME_DESC_SHORT}`))
 		),
 		category: v.optional(v.nullable(categorySchema)),
 		latitude: v.optional(latitudeSchema),
@@ -687,6 +729,20 @@ const updateLocationsArgs = v.object({
 				'Each carries an `id` plus only the fields to change. Ideal for mass backfills from ' +
 				'audit_locations. Ids that do not exist are reported in ' +
 				'`not_found_ids` rather than failing the batch.'
+		)
+	)
+});
+
+const deleteLocationsArgs = v.object({
+	ids: v.pipe(
+		v.array(v.pipe(v.string(), v.minLength(1))),
+		v.minLength(1),
+		v.maxLength(100),
+		v.description(
+			'Ids of the locations to HARD-delete (1-100), mirroring the batched update_locations. Each ' +
+				"delete cascades that venue's sources/overrides/likes and orphans its private menu — PREFER " +
+				'close_location for a real venue that has permanently closed (it preserves likes); reserve ' +
+				'this for mistaken/duplicate rows. Ids matching no row come back in `not_found_ids`.'
 		)
 	)
 });
@@ -799,6 +855,26 @@ const listLocationsArgs = v.object({
 			v.integer(),
 			v.minValue(0),
 			v.description('Skip this many results (paging).')
+		)
+	)
+});
+
+// get_location takes the SAME `view` selector as get_menu, but DEFAULTS to "full"
+// rather than "names": a single venue's own private menu is typically small, so
+// returning it in full by default is cheap and useful — unlike get_menu, whose
+// target is often a shared chain menu of hundreds of items. Only the default
+// differs; the three view shapes are identical (see scripts/mcp/menu-views.ts).
+const getLocationArgs = v.object({
+	id: v.pipe(v.string(), v.minLength(1), v.description('The record id (UUID).')),
+	view: v.optional(
+		v.pipe(
+			v.picklist(['full', 'names', 'summary']),
+			v.description(
+				'Payload size for the inline `menu`. DEFAULT is "full" — every owned item with its ' +
+					"description, sources and optional-tag detail (a single venue's menu is usually small). " +
+					'"names" returns items as just { id, item_name, price, tags }; "summary" returns no item ' +
+					'list, just counts and a per-tag histogram. (Contrast get_menu, which defaults to "names".)'
+			)
 		)
 	)
 });
@@ -936,7 +1012,7 @@ const importChainArgs = v.pipe(
 			v.string(),
 			v.minLength(1),
 			v.description(
-				'The canonical name stored on every imported branch, e.g. "Harvey\'s". ' + NAME_DESC
+				'The canonical name stored on every imported branch, e.g. "Harvey\'s". ' + NAME_DESC_SHORT
 			)
 		),
 		name_match: v.pipe(
@@ -1233,11 +1309,9 @@ const markNotDuplicateArgs = v.pipe(
 // to fetch a chain's menu (finding the API behind a client-rendered page) is the
 // dominant cost of a refresh, and this is where that knowledge is banked.
 const REFRESH_NOTES_DESC =
-	"HOW to refresh this menu's data, banked for the next verification pass: the machine-readable " +
-	'feed endpoint (ordering API, nutrition PDF, CMS query) plus fetch caveats — e.g. "menu page is ' +
-	'client-rendered; use https://www.starbucks.ca/apiproxy/v1/ordering/menu (unauthenticated JSON)". ' +
-	'RECORD it whenever menu research discovers a non-obvious source; CHECK it (get_menu) before ' +
-	're-researching a menu from scratch.';
+	"HOW to re-fetch this menu's source, banked for the next verification pass (the machine-readable " +
+	'feed endpoint + fetch caveats) and read back (get_menu) before re-researching from scratch. ' +
+	'See the refresh-notes policy in the server instructions.';
 
 const createBrandArgs = v.object({
 	name: v.pipe(
@@ -1304,6 +1378,35 @@ const updateMenuArgs = v.object({
 	add_sources: addSourcesSchema
 });
 
+// create_chain bundles create_brand + create_menu + create_items into one call.
+// The sub-schemas are REUSED verbatim (no duplicated validation): `createBrandArgs`
+// for the brand, `createMenuArgs` minus its brand_id (the bundled brand supplies it)
+// for the menu, and the shared `itemSchema` for the items.
+const createChainArgs = v.object({
+	brand: v.pipe(
+		createBrandArgs,
+		v.description(
+			'The chain/brand to create — or reuse by passing an existing `id` (a no-op returning ' +
+				'already_existed).'
+		)
+	),
+	menu: v.pipe(
+		v.omit(createMenuArgs, ['brand_id']),
+		v.description(
+			'The shared regional menu to create under the brand (its brand_id is the bundled brand). ' +
+				'Reuse by passing an existing `id` (a no-op returning already_existed).'
+		)
+	),
+	items: v.pipe(
+		v.array(itemSchema),
+		v.maxLength(500),
+		v.description(
+			"The menu's shared items (same shape as create_items). May be [] to scaffold just the brand + " +
+				'menu now and add the items later with create_items (using the returned menu_id).'
+		)
+	)
+});
+
 const listMenusArgs = v.object({
 	brand_id: v.optional(
 		v.pipe(v.string(), v.minLength(1), v.description('Only list menus belonging to this brand.'))
@@ -1316,9 +1419,10 @@ const getMenuArgs = v.object({
 		v.pipe(
 			v.picklist(['full', 'names', 'summary']),
 			v.description(
-				'Payload size: "full" (default) — complete items; "names" — id/name/price/tag-ids per item; ' +
-					'"summary" — no item list, just counts and a tag histogram. Prefer names/summary for audits ' +
-					'and menu-wide scans.'
+				'Payload size. DEFAULT is "names" — id/item_name/price/tags per item only. Pass view: "full" ' +
+					'to get item descriptions, sources and optional-tag detail — REQUIRED when verifying dietary ' +
+					'tags or reading descriptions; a shared chain menu can be hundreds of items, so full is ' +
+					'opt-in. "summary" returns no item list, just counts and a per-tag histogram.'
 			)
 		)
 	)
@@ -1996,13 +2100,16 @@ const tools = [
 		annotations: READ_ONLY,
 		outputSchema: getLocationOutput,
 		description:
-			'Get a single location with its source URLs. `menu` lists only the items owned directly by this ' +
-			'venue (on its own private menu); each item omits the menu-level `currency`/`menu_id`, surfaced ' +
-			'once as the top-level `currency` (the venue serves one private menu). If `menu_id` is a shared ' +
-			'brand menu the location is a chain branch — call get_menu to see/edit those items; `overrides` ' +
-			"lists this branch's per-item deviations from them. Returns null if not found.",
-		schema: idArgs,
-		handler: async ({ id }) => {
+			'Get a single location with its source URLs and its inline `menu` (the items owned directly ' +
+			'by this venue on its own private menu; each omits the menu-level `currency`/`menu_id`, ' +
+			'surfaced once as the top-level `currency`). `view` controls the `menu` payload and DEFAULTS ' +
+			'to "full" (every item in detail, since a single venue\'s menu is typically small); pass ' +
+			'"names" for id/item_name/price/tags per item, or "summary" for counts + a tag histogram ' +
+			'with no item list. If `menu_id` is a shared brand menu the location is a chain branch — call ' +
+			"get_menu to see/edit those items; `overrides` lists this branch's per-item deviations from " +
+			'them. Returns null if not found.',
+		schema: getLocationArgs,
+		handler: async ({ id, view }) => {
 			const location = await getLocationById(getDb(), id);
 			if (!location) return null;
 			const [menu, overrides] = await Promise.all([
@@ -2013,12 +2120,13 @@ const tools = [
 			// currency/menu_id are identical across them: surface currency once at the top
 			// and drop the per-item copies (see itemWithinParent).
 			const currency = menu[0]?.currency;
-			return {
-				...location,
-				...(currency ? { currency } : {}),
-				menu: menu.map(itemWithinParent),
-				overrides
-			};
+			const base = { ...location, ...(currency ? { currency } : {}) };
+			if (view === 'summary') {
+				// counts + tag histogram, no item list (mirrors get_menu's summary view).
+				return { ...base, ...menuItemsSummary(menu), overrides };
+			}
+			const menuItems = view === 'names' ? menu.map(itemNameView) : menu.map(itemWithinParent);
+			return { ...base, menu: menuItems, overrides };
 		}
 	}),
 	defineTool({
@@ -2101,6 +2209,21 @@ const tools = [
 			'a mistaken/duplicate row that should never have existed.',
 		schema: idArgs,
 		handler: async ({ id }) => ({ deleted: await deleteLocation(getDb(), id) })
+	}),
+	defineTool({
+		name: 'delete_locations',
+		annotations: DESTRUCTIVE,
+		outputSchema: deleteLocationsOutput,
+		description:
+			'HARD-delete one or more location rows in a single batch (1-100 ids), mirroring the batched ' +
+			"update_locations. Each delete cascades that row's sources, per-item overrides and any user " +
+			'LIKES (liked_locations), and orphans its private menu + items. PREFER close_location for a real ' +
+			'venue that has permanently closed — that preserves the likes and keeps the record for analysis; ' +
+			'reserve delete for mistaken/duplicate rows that should never have existed. Ids matching no row ' +
+			'come back in `not_found_ids`. Returns { deleted, deleted_ids, not_found_ids } (deleted = count ' +
+			'actually removed).',
+		schema: deleteLocationsArgs,
+		handler: ({ ids }) => deleteLocationsBatch(getDb(), ids)
 	}),
 	defineTool({
 		name: 'close_location',
@@ -2282,6 +2405,44 @@ const tools = [
 // Kept in a separate array purely for grouping; merged into `allTools` below.
 const chainTools = [
 	defineTool({
+		name: 'create_chain',
+		annotations: CREATE,
+		outputSchema: createChainOutput,
+		description:
+			'Bootstrap a chain in ONE call: create the brand, one regional menu under it, and that ' +
+			"menu's shared items — the create_brand -> create_menu -> create_items sequence bundled " +
+			'(mirroring how create_locations takes inline menu_items). Pass `items: []` to scaffold just ' +
+			'the brand + menu and add the items later with create_items (using the returned menu_id). Then ' +
+			'point branches at the menu with import_chain (preferred) or create_locations. Idempotent on ' +
+			'explicit brand/menu ids (an existing id is a no-op, reported in `already_existed`) and flags a ' +
+			'same-name brand/menu in `warnings`, so retries are safe. Returns { brand_id, menu_id, ' +
+			'item_ids, created_items, already_existed?, warnings? }. If a stage fails mid-sequence the error ' +
+			'reply carries the committed ids (partial_failure) — re-run passing those ids back (no-ops) to ' +
+			'resume.',
+		schema: createChainArgs,
+		handler: (input) =>
+			createChainBundle(getDb(), {
+				brand: input.brand,
+				menu: {
+					name: input.menu.name,
+					region: input.menu.region,
+					currency: input.menu.currency,
+					refresh_notes: input.menu.refresh_notes,
+					sources: normalizeSources(input.menu.sources),
+					id: input.menu.id
+				},
+				items: input.items.map((it) => ({
+					id: it.id,
+					item_name: it.item_name,
+					description: it.description ?? null,
+					price: it.price ?? null,
+					tags: it.tags,
+					optionalTags: it.optional_tags,
+					sources: normalizeSources(it.sources)
+				}))
+			})
+	}),
+	defineTool({
 		name: 'create_brand',
 		annotations: CREATE,
 		description:
@@ -2405,49 +2566,27 @@ const chainTools = [
 		outputSchema: getMenuOutput,
 		description:
 			"Get a menu with its own source URLs and `refresh_notes` (HOW to re-fetch the menu's source — " +
-			'read these before re-researching a menu from scratch). `view` picks the payload size: "full" (default) — ' +
-			'every item with tags, description, price and sources; "names" — items as just { id, item_name, ' +
-			'price, tags } (menu-wide edits/scans without the prose); "summary" — no item list, just counts ' +
-			'(item_count, a per-tag histogram, how many items have a price / a source). A 100-item chain menu ' +
-			'is a large payload in full view — prefer summary/names for audits. Each full-view item omits the ' +
-			'menu-level `currency`/`menu_id`, which the menu itself carries once. Returns null if not found.',
+			'read these before re-researching a menu from scratch). `view` picks the payload size and ' +
+			'DEFAULTS to "names" — each item as just { id, item_name, price, tags } — so a large shared ' +
+			'chain menu is not returned in full unless asked. Pass view: "full" to get every item WITH its ' +
+			'description, sources and optional-tag detail (REQUIRED to verify dietary tags or read ' +
+			'descriptions); "summary" returns no item list, just counts (item_count, a per-tag histogram, ' +
+			'how many items have a price / a source). Each full-view item omits the menu-level ' +
+			'`currency`/`menu_id`, which the menu itself carries once. Returns null if not found.',
 		schema: getMenuArgs,
 		handler: async ({ id, view }) => {
 			const menu = await getMenuWithItems(getDb(), id);
 			if (!menu) return null;
 			if (view === 'summary') {
-				const tagCounts: Record<string, number> = {};
-				let priced = 0;
-				let sourced = 0;
-				for (const item of menu.items) {
-					if (item.price !== null) priced++;
-					if (item.sources.length) sourced++;
-					for (const tag of item.tags) {
-						tagCounts[tag.id] = (tagCounts[tag.id] ?? 0) + 1;
-					}
-				}
 				const { items, ...meta } = menu;
-				return {
-					...meta,
-					item_count: items.length,
-					items_with_price: priced,
-					items_with_sources: sourced,
-					tag_counts: tagCounts
-				};
+				return { ...meta, ...menuItemsSummary(items) };
 			}
-			if (view === 'names') {
-				return {
-					...menu,
-					items: menu.items.map((item) => ({
-						id: item.id,
-						item_name: item.item_name,
-						price: item.price,
-						tags: item.tags.map((t) => (t.optional ? `${t.id} (optional)` : t.id))
-					}))
-				};
+			if (view === 'full') {
+				// The menu already carries its id + currency; drop the identical per-item copies.
+				return { ...menu, items: menu.items.map(itemWithinParent) };
 			}
-			// The menu already carries its id + currency; drop the identical per-item copies.
-			return { ...menu, items: menu.items.map(itemWithinParent) };
+			// DEFAULT "names" (view undefined or "names"): lean id/item_name/price/tag-ids per item.
+			return { ...menu, items: menu.items.map(itemNameView) };
 		}
 	}),
 	defineTool({
@@ -2880,7 +3019,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 				? { structuredContent: result as Record<string, unknown> }
 				: {};
 		return {
-			content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+			content: [{ type: 'text' as const, text: JSON.stringify(result) }],
 			...structured
 		};
 	} catch (err) {
