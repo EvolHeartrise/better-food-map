@@ -440,7 +440,7 @@ export interface LocationListFilter {
  * Escapes LIKE wildcards in user input (paired with `ESCAPE '\'`). When the
  * result equals the input, nothing needed escaping — the pattern then carries no
  * escape character, so the `ESCAPE` clause may be omitted without changing what
- * the LIKE matches (getSearchMapData relies on this to keep the FTS5 trigram
+ * the LIKE matches (searchMembership relies on this to keep the FTS5 trigram
  * pushdown, which an ESCAPE clause would disable — see migration 0016).
  */
 function escapeLikePattern(value: string): string {
@@ -684,6 +684,13 @@ export interface MapCellsData extends MapData {
  * resolve through {@link queryMapData} as one id-keyed read, so menus and
  * overrides arrive exactly as the old viewport read shipped them.
  *
+ * With a {@link SearchFilter} the same read narrows to MATCHING venues before
+ * the per-cell ranking, so a representative cell keeps its top-ranked MATCH
+ * (not a non-matching venue that would hide it) and an empty `cells` entry
+ * means "no match here" — negatively cacheable per (filter, cell) exactly like
+ * browse. An empty-once-gated filter (unsearchable text, no diet) degrades to
+ * the plain browse read (see {@link searchMembership}).
+ *
  * The indexed bbox pre-filter is the COVER of the requested cells (their
  * bounding box, see cellsCoverBounds); the per-row cell-key test against the
  * requested set is authoritative. A scattered request therefore boxes more rows
@@ -694,7 +701,8 @@ export interface MapCellsData extends MapData {
 export async function getMapCellsData(
 	db: D1Like,
 	level: number,
-	cells: [number, number][]
+	cells: [number, number][],
+	search: SearchFilter | null = null
 ): Promise<MapCellsData> {
 	// No cells (a viewport entirely outside the data domain enumerates none):
 	// nothing to ask — and the cover of an empty set would be an infinite box.
@@ -703,13 +711,16 @@ export async function getMapCellsData(
 	const perCellCap = level === 0 ? FULL_CELL_CAP : 1;
 	const cover = cellsCoverBounds(cells, cellDeg);
 	const keys = cells.map(([i, j]) => cellKey(i, j));
+	const membership = search === null ? null : searchMembership(search);
 
 	// `ck` is built to be string-identical to $lib/grid's cellKey: coordinates
 	// shifted non-negative (+90/+180) so the truncating CAST floors exactly like
 	// the client's Math.floor, then joined with ':'. The requested keys travel as
 	// ONE JSON-array bind expanded with json_each — never an `IN (?, …)` list,
 	// which would blow D1's ~100 per-query bound-parameter cap at viewport-sized
-	// cell sets.
+	// cell sets. The membership predicate (when filtering) is AND'ed into the
+	// boxed scan, so ranking only ever sees matches; its params bind between the
+	// cover's and the keys', matching their position in the SQL text.
 	const { results: picked } = await db
 		.prepare(
 			`WITH boxed AS (
@@ -718,6 +729,7 @@ export async function getMapCellsData(
 					(CAST((l.latitude + 90) / ? AS INTEGER) || ':' || CAST((l.longitude + 180) / ? AS INTEGER)) AS ck
 				FROM locations l
 				WHERE l.closed_at IS NULL AND l.latitude BETWEEN ? AND ? AND l.longitude BETWEEN ? AND ?
+					${membership === null ? '' : `AND (${membership.cond})`}
 			),
 			ranked AS (
 				SELECT id, ck,
@@ -737,6 +749,7 @@ export async function getMapCellsData(
 			cover.maxLat,
 			cover.minLng,
 			cover.maxLng,
+			...(membership === null ? [] : membership.params),
 			JSON.stringify(keys),
 			perCellCap
 		)
@@ -775,10 +788,10 @@ export function getLocationMapData(db: D1Like, id: string): Promise<MapData<Item
 }
 
 /**
- * A global menu search, anchored to a point. Unlike {@link getMapCellsData} — which is
- * bounded to a viewport — this searches the WHOLE table and returns the
- * {@link MAP_RESULT_LIMIT} matches NEAREST to (`lat`,`lng`), nearest first, so the
- * map can act as a result view rather than the query itself.
+ * The search filter a cells read can carry (see {@link getMapCellsData}): the
+ * same per-cell viewport read, narrowed server-side to matching venues, so an
+ * active search stays cell-based — panning fetches matches for the newly
+ * visible cells, cached per (filter, cell) at every layer exactly like browse.
  *
  * The single `query` is one combined free-text term matched as an OR across two
  * dimensions — the venue NAME and its item names — so one box finds both a place
@@ -788,47 +801,43 @@ export function getLocationMapData(db: D1Like, id: string): Promise<MapData<Item
  * The `dietTagId` selector is a SEPARATE filter that always narrows: when set, the
  * matching item must ALSO carry that one curated dietary tag (the SAME item must
  * satisfy both name and diet), and a name-only match is kept only if the venue has
- * a diet-carrying item. With no `query` and no `dietTagId` this returns nothing.
+ * a diet-carrying item.
  *
- * This mirrors the client's membership (src/lib/search-match.ts) exactly so the two
- * agree (the client re-filters the result set while a search is in flight); the
- * scripts/search-parity.test.ts suite holds the two halves to identical membership. Per-
- * location overrides are not applied here (the shared menu is what's searched); the
- * client re-filters the resolved menu, so an item made unavailable at one branch
- * simply drops from that card.
- *
- * Text matching resolves through the FTS5 trigram mirrors (locations_fts /
- * items_fts, migration 0016) using the SAME `LIKE '%q%'` patterns as before —
- * never MATCH — so membership stays substring-exact while the trigram index
- * takes the query from a two-table crawl to an index lookup. Text the index
- * CANNOT serve — no run of 3+ wildcard-free characters (see
- * {@link searchableQuery}) — is treated as absent rather than full-scanned:
- * the map page applies the same gate (it filters short prefixes locally and
- * never sends them), so only a forged request ever hits this floor, and it
- * gets the diet-only result or, with no diet either, the empty guard below
- * (issues #103/#104).
+ * This mirrors the client's membership (src/lib/search-match.ts) exactly so the
+ * two agree (the client re-filters the rendered set while a fetch is in flight);
+ * the scripts/search-parity.test.ts suite holds the two halves to identical
+ * membership. Per-location overrides are not applied here (the shared menu is
+ * what's searched); the client re-filters the resolved menu, so an item made
+ * unavailable at one branch simply drops from that card.
  */
-export interface SearchMapQuery {
+export interface SearchFilter {
 	/** Combined free-text: matched against the venue name OR its item names. */
 	query: string;
 	/** A single curated dietary tag id the item must carry, or `null` for no diet filter. */
 	dietTagId: string | null;
-	/** Anchor the "nearest" ranking is measured from (the map centre). */
-	lat: number;
-	lng: number;
 }
 
-export function getSearchMapData(db: D1Like, q: SearchMapQuery): Promise<MapData> {
+/**
+ * The membership predicate (over the `locations` row aliased `l`) + bind params
+ * for a {@link SearchFilter}, or null when the filter is EMPTY once gated —
+ * unsearchable text with no diet degrades to the plain browse read, matching
+ * the client, which filters such text locally and never sends it (#103/#104).
+ *
+ * Text matching resolves through the FTS5 trigram mirrors (locations_fts /
+ * items_fts, migration 0016) using the SAME `LIKE '%q%'` patterns as a base-
+ * table scan would — never MATCH — so membership stays substring-exact while
+ * the trigram index takes the query from a two-table crawl to an index lookup.
+ * Text the index CANNOT serve — no run of 3+ wildcard-free characters (see
+ * {@link searchableQuery}) — is treated as absent rather than full-scanned.
+ */
+function searchMembership(filter: SearchFilter): { cond: string; params: string[] } | null {
 	// Text the trigram index can't serve is treated as ABSENT (searchableQuery
-	// returns ''): with a diet active the search degrades to diet-only, without
-	// one it falls through to the empty guard. Never full-scan the FTS mirrors.
-	const text = searchableQuery(q.query);
+	// returns ''): with a diet active the filter degrades to diet-only, without
+	// one to no filter at all. Never full-scan the FTS mirrors.
+	const text = searchableQuery(filter.query);
 	const hasText = text !== '';
-	const hasDiet = q.dietTagId !== null;
-
-	// With neither filter this would match every venue; the caller only searches when
-	// one is set, but guard so an empty (or unsearchable) query can't scan the table.
-	if (!hasText && !hasDiet) return Promise.resolve({ locations: [], menus: {}, menuMeta: {} });
+	const hasDiet = filter.dietTagId !== null;
+	if (!hasText && !hasDiet) return null;
 
 	// Both text dimensions resolve through the FTS5 trigram mirrors (migration 0016):
 	// the pattern is the exact `%q%` substring LIKE as ever, but evaluated against the
@@ -849,29 +858,23 @@ export function getSearchMapData(db: D1Like, q: SearchMapQuery): Promise<MapData
 	const textParams: string[] = needsEscape
 		? [`%${longestLiteralRun(text)}%`, `%${escapedText}%`]
 		: [`%${escapedText}%`];
-	// The venue-name dimension, joined back to the outer row by id. `locations.id`
-	// names the outer table explicitly (it is always the unaliased `locations`
-	// where `locFilter` is spliced in — see queryMapData); a stale mirror row can
-	// only ever un-match, never invent a venue.
-	const nameMatch = `locations.id IN (SELECT f.id FROM locations_fts f WHERE ${textCond('f.name')})`;
+	// The venue-name dimension, joined back to the outer row by id. A stale
+	// mirror row can only ever un-match, never invent a venue.
+	const nameMatch = `l.id IN (SELECT f.id FROM locations_fts f WHERE ${textCond('f.name')})`;
 	// Menus with at least one item carrying the selected diet tag, as an
 	// UNCORRELATED set (driven off idx_item_tags_tag_id, computed once). Every
-	// disjunct below tests `locations.menu_id IN (…such a set…)` rather than the
-	// correlated `EXISTS (… i.menu_id = locations.menu_id …)` it used to be: the
-	// correlated form forced a full scan of `locations` that re-probed a chain's
-	// SHARED menu once per branch — the cost that made searches crawl once whole
-	// chains were imported — while the IN-of-uncorrelated-set form lets SQLite
-	// serve the whole OR as a MULTI-INDEX OR union over the locations PK and
-	// idx_locations_menu_id, touching only the matching rows. (`NULL IN (…)` is
-	// never true, so a venue with no menu is excluded exactly as EXISTS did.)
+	// disjunct below tests `l.menu_id IN (…such a set…)` rather than a correlated
+	// `EXISTS (… i.menu_id = l.menu_id …)`: the correlated form re-probes a
+	// chain's SHARED menu once per branch, while the uncorrelated set is
+	// materialized once per statement and probed per row. (`NULL IN (…)` is
+	// never true, so a venue with no menu is excluded exactly as EXISTS would.)
 	const dietMenus = `SELECT i.menu_id FROM items i JOIN item_tags it ON it.item_id = i.id WHERE it.tag_id = ?`;
 
 	// Membership is an OR of independent disjuncts, built so each disjunct's `?`
 	// placeholders are pushed onto `params` in the exact left-to-right order they
-	// appear in the SQL (queryMapData binds locFilter params from the front, then the
-	// distance-anchor params from the end).
+	// appear in the SQL.
 	const disjuncts: string[] = [];
-	const params: (string | number)[] = [];
+	const params: string[] = [];
 
 	// Name match with no diet active → the whole menu is relevant, so the venue is kept
 	// even with an empty menu (no item is required).
@@ -882,8 +885,8 @@ export function getSearchMapData(db: D1Like, q: SearchMapQuery): Promise<MapData
 	// Name match WITH a diet active → kept only if some item carries the diet tag
 	// (diet always narrows), so a name-only match with no diet-matching item drops.
 	if (hasText && hasDiet) {
-		disjuncts.push(`(${nameMatch} AND locations.menu_id IN (${dietMenus}))`);
-		params.push(...textParams, q.dietTagId as string);
+		disjuncts.push(`(${nameMatch} AND l.menu_id IN (${dietMenus}))`);
+		params.push(...textParams, filter.dietTagId as string);
 	}
 	// An item satisfying every active predicate: its name contains `query` (when set)
 	// AND it carries the diet tag (when set). The SAME item `i` must satisfy both. The
@@ -901,42 +904,29 @@ export function getSearchMapData(db: D1Like, q: SearchMapQuery): Promise<MapData
 			itemConds.push(
 				`EXISTS (SELECT 1 FROM item_tags it WHERE it.item_id = i.id AND it.tag_id = ?)`
 			);
-			params.push(q.dietTagId as string);
+			params.push(filter.dietTagId as string);
 		}
-		disjuncts.push(
-			`locations.menu_id IN (SELECT i.menu_id FROM items i WHERE ${itemConds.join(' AND ')})`
-		);
+		disjuncts.push(`l.menu_id IN (SELECT i.menu_id FROM items i WHERE ${itemConds.join(' AND ')})`);
 	} else {
-		disjuncts.push(`locations.menu_id IN (${dietMenus})`);
-		params.push(q.dietTagId as string);
+		disjuncts.push(`l.menu_id IN (${dietMenus})`);
+		params.push(filter.dietTagId as string);
 	}
 
-	// Rank by an approximate squared planar distance from the anchor: latitude in
-	// degrees, longitude scaled by cos²(lat) so a degree of longitude counts for
-	// its real (shrunk) width at this latitude. Exact enough to order matches
-	// within a region; the anchor params bind AFTER the disjunct params (see queryMapData).
-	const lngScale = Math.cos((q.lat * Math.PI) / 180) ** 2;
-	const capClause =
-		`ORDER BY ((latitude - ?) * (latitude - ?) + (longitude - ?) * (longitude - ?) * ?) ASC, id ` +
-		`LIMIT ${MAP_RESULT_LIMIT}`;
-	params.push(q.lat, q.lat, q.lng, q.lng, lngScale);
-
-	return queryMapData(db, disjuncts.join(' OR '), params, capClause);
+	return { cond: disjuncts.join(' OR '), params };
 }
 
 /**
  * The default ordering+cap for {@link queryMapData}: the alphabetically-first
- * {@link MAP_RESULT_LIMIT} locations. {@link getSearchMapData} passes a
- * distance-ordered clause instead so a global search returns the NEAREST matches.
+ * {@link MAP_RESULT_LIMIT} locations.
  */
 const DEFAULT_MAP_CAP = `ORDER BY name, id LIMIT ${MAP_RESULT_LIMIT}`;
 
 /**
- * Shared implementation of {@link getMapCellsData} / {@link getLocationMapData} /
- * {@link getSearchMapData}. `locFilter` is a predicate over the `locations` table
+ * Shared implementation of {@link getMapCellsData} / {@link getLocationMapData}.
+ * `locFilter` is a predicate over the `locations` table
  * (its `?` placeholders bound from the front of `params`); `capClause` is the
  * trailing `ORDER BY … LIMIT …` that both bounds and orders the location set,
- * any `?` placeholders it carries (e.g. a distance anchor) bound from the END of
+ * any `?` placeholders it carries bound from the END of
  * `params`, AFTER the `locFilter` ones.
  *
  * The filter is evaluated EXACTLY ONCE — the main row read. Every sub-row read

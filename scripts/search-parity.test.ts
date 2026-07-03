@@ -1,19 +1,20 @@
 /// <reference types="bun-types" />
 // Client/server search-membership PARITY. The map's search rule is implemented
-// twice — getSearchMapData on the server (FTS5 mirrors) and src/lib/search-match.ts
-// on the client (the page re-filters the result set while a search is in flight) —
-// and search-fts.test.ts declares that mirror an invariant. This suite enforces it
+// twice — searchMembership on the server (the filter inside the cell read, over
+// the FTS5 mirrors) and src/lib/search-match.ts on the client (the page
+// re-filters the rendered set while a filtered fetch is in flight) — and
+// search-fts.test.ts declares that mirror an invariant. This suite enforces it
 // structurally: the same fixtures run through BOTH halves and must produce the
-// same venue membership.
+// same venue membership. The server half runs at the FULL grid level (see
+// searchMapData in test-d1.ts), where no per-cell representative trimming
+// thins the matches — rep-level trimming is a DISPLAY density rule, not a
+// membership rule, covered in map-cells.test.ts.
 //
-// Scope (the mirror is intentionally not bit-exact, see db.ts getSearchMapData and
-// search-match.ts headers):
-//   • parity is asserted in SEARCH MODE only (text and/or diet active) — client
-//     browse mode (keep everything) has no server counterpart (the server returns
-//     empty for no-query/no-diet), pinned in its own test below;
+// Scope (the mirror is intentionally not bit-exact, see db.ts searchMembership
+// and search-match.ts headers):
 //   • parity covers SEARCHABLE text only — a 3+ character wildcard-free run
 //     (searchableQuery, $lib/search), which is the only text the page ever
-//     sends. Shorter/wildcard-only text is filtered client-locally and the
+//     sends. Shorter/wildcard-only text is filtered client-locally while the
 //     server treats it as absent (issues #103/#104), pinned in its own test
 //     below;
 //   • the client filter is fed the same RESOLVED menus the page builds — each
@@ -24,7 +25,6 @@
 
 import { test, expect } from 'bun:test';
 import {
-	getSearchMapData,
 	getLocationMapData,
 	insertLocations,
 	insertFoods,
@@ -35,7 +35,7 @@ import {
 } from '../src/lib/server/db';
 import type { Item, MapData, MapLocation } from '../src/lib/server/db';
 import { searchResults } from '../src/lib/search-match';
-import { freshDb } from './test-d1';
+import { freshDb, searchMapData } from './test-d1';
 import type { TestD1 } from './test-d1';
 
 const addr = {
@@ -48,7 +48,9 @@ const addr = {
 	website: null
 };
 
-const anchor = { lat: 49.28, lng: -123.12 };
+// A box covering every fixture venue (they spread ~0.01° per index from the
+// base point) — the "viewport" the server half reads.
+const BOX = { minLat: 49.2, maxLat: 49.5, minLng: -123.4, maxLng: -123.0 };
 
 /** One venue near the anchor (offset a touch so ids stay distinct). */
 function venue(name: string, i = 0) {
@@ -102,7 +104,7 @@ async function clientCandidates(db: TestD1, ids: string[]) {
 
 /** Assert both halves keep exactly the same venues for this query/diet. */
 async function expectParity(db: TestD1, ids: string[], query: string, diet: string | null = null) {
-	const server = await getSearchMapData(db, { query, dietTagId: diet, ...anchor });
+	const server = await searchMapData(db, BOX, { query, dietTagId: diet });
 	const serverIds = server.locations.map((l) => l.id).toSorted();
 	const clientIds = searchResults(await clientCandidates(db, ids), query, diet)
 		.map((r) => r.loc.id)
@@ -191,15 +193,15 @@ test('diet queries: narrowing on the SAME item agrees through both halves', asyn
 	await expectParity(db, ids, '', 'gluten_free'); // nothing carries it → both empty
 });
 
-// The one asymmetry by design: with no text and no diet the client keeps every
-// candidate (browse mode) while the server returns nothing — the page only
-// calls the server once a filter is set.
-test('browse mode is client-only: server returns empty, client keeps all', async () => {
+// Browse (no text, no diet) is parity too now that the search rides the cell
+// read: an empty filter is simply the unfiltered read — every candidate — and
+// the client keeps everything as well.
+test('browse mode: an empty filter returns every candidate through both halves', async () => {
 	const db = freshDb();
 	const ids = await fixtures(db);
 
-	const server = await getSearchMapData(db, { query: '', dietTagId: null, ...anchor });
-	expect(server.locations).toEqual([]);
+	const server = await searchMapData(db, BOX, { query: '', dietTagId: null });
+	expect(server.locations.map((l) => l.id).toSorted()).toEqual(ids.toSorted());
 
 	const candidates = await clientCandidates(db, ids);
 	const kept = searchResults(candidates, '', null);
@@ -208,28 +210,30 @@ test('browse mode is client-only: server returns empty, client keeps all', async
 	for (const r of kept) expect(r.items).toEqual(r.loc.menu);
 });
 
-// The other asymmetry by design (issues #103/#104): text the trigram index
+// The one asymmetry by design (issues #103/#104): text the trigram index
 // cannot serve — no 3+ character wildcard-free run (searchableQuery,
-// $lib/search) — is CLIENT-LOCAL. The page never sends it (it keeps filtering
-// what's already on screen); the server, reached with such text only by a
-// forged request, treats it as absent rather than full-scanning the FTS
-// mirrors: empty with no diet, degraded to diet-only with one.
+// $lib/search) — is CLIENT-LOCAL. The page narrows it over the unfiltered
+// cells it already has; the server (reached with such text only by a forged
+// request, since the page sends the gated text) treats it as absent rather
+// than full-scanning the FTS mirrors: the plain browse read with no diet,
+// the diet-only filter with one.
 test('unsearchable text is client-only: the server treats it as absent', async () => {
 	const db = freshDb();
 	const ids = await fixtures(db);
 	const [palace, , , joe, , wildcard] = ids;
 
 	for (const q of ['jo', 'k', '%', 'r_s']) {
-		const server = await getSearchMapData(db, { query: q, dietTagId: null, ...anchor });
-		expect(server.locations).toEqual([]);
+		const server = await searchMapData(db, BOX, { query: q, dietTagId: null });
+		expect(server.locations.map((l) => l.id).toSorted()).toEqual(ids.toSorted());
 	}
 	// The client still filters short text over its candidates, exactly as before.
 	const candidates = await clientCandidates(db, ids);
 	const clientIds = searchResults(candidates, 'jo', null).map((r) => r.loc.id);
 	expect(clientIds.toSorted()).toEqual([joe, wildcard].toSorted());
-	// With a diet active the server degrades to diet-only rather than blanking.
-	const degraded = await getSearchMapData(db, { query: 'jo', dietTagId: 'vegan', ...anchor });
-	const dietOnly = await getSearchMapData(db, { query: '', dietTagId: 'vegan', ...anchor });
+	// With a diet active the server degrades to diet-only rather than widening
+	// back to browse.
+	const degraded = await searchMapData(db, BOX, { query: 'jo', dietTagId: 'vegan' });
+	const dietOnly = await searchMapData(db, BOX, { query: '', dietTagId: 'vegan' });
 	expect(degraded.locations.map((l) => l.id).toSorted()).toEqual(
 		dietOnly.locations.map((l) => l.id).toSorted()
 	);

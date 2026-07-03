@@ -8,8 +8,8 @@ import { Database } from 'bun:sqlite';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { getMapCellsData } from '../src/lib/server/db';
-import type { Bounds, D1Like, D1PreparedLike, MapData } from '../src/lib/server/db';
-import { cellsForBounds, levelCell, levelForBounds } from '../src/lib/grid';
+import type { Bounds, D1Like, D1PreparedLike, MapData, SearchFilter } from '../src/lib/server/db';
+import { FULL_CELL_DEG, cellsForBounds, levelCell, levelForBounds } from '../src/lib/grid';
 
 class TestStmt implements D1PreparedLike {
 	params: unknown[] = [];
@@ -81,5 +81,22 @@ export async function viewportMapData(db: D1Like, bounds: Bounds): Promise<MapDa
 	const level = levelForBounds(bounds);
 	const cells = cellsForBounds(bounds, levelCell(level));
 	const data = await getMapCellsData(db, level, cells);
+	return { locations: data.locations, menus: data.menus, menuMeta: data.menuMeta };
+}
+
+/**
+ * The SEARCH read over a viewport, at the FULL level so no per-cell
+ * representative trimming thins the matches — the shape membership tests need:
+ * "every venue in `bounds` matching `filter`". Exercises the real production
+ * filter path (searchMembership inside getMapCellsData); rep-level trimming
+ * under a filter is covered by its own tests in map-cells.test.ts.
+ */
+export async function searchMapData(
+	db: D1Like,
+	bounds: Bounds,
+	filter: SearchFilter
+): Promise<MapData> {
+	const cells = cellsForBounds(bounds, FULL_CELL_DEG);
+	const data = await getMapCellsData(db, 0, cells, filter);
 	return { locations: data.locations, menus: data.menus, menuMeta: data.menuMeta };
 }

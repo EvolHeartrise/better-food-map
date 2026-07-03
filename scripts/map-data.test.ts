@@ -16,7 +16,6 @@
 import { test, expect } from 'bun:test';
 import {
 	getLocationMapData,
-	getSearchMapData,
 	insertLocations,
 	insertFoods,
 	insertBrand,
@@ -25,7 +24,7 @@ import {
 	setLocationItemOverride,
 	MAP_RESULT_LIMIT
 } from '../src/lib/server/db';
-import { freshDb, viewportMapData } from './test-d1';
+import { freshDb, searchMapData, viewportMapData } from './test-d1';
 
 // A box wide enough to contain every location seeded below (Toronto + Vancouver).
 const WORLD = { minLat: 40, maxLat: 50, minLng: -130, maxLng: -70 };
@@ -174,8 +173,8 @@ test('the viewport read sends each menu once, with per-branch overrides and a pr
 });
 
 // The viewport payload is LEAN (#83): the map UI renders only item names (plus
-// tags for the client diet re-filter), so the bulk reads (the viewport read, and
-// getSearchMapData via the same path) must not ship description/price/sources —
+// tags for the client diet re-filter), so the bulk reads (the viewport read,
+// filtered or not) must not ship description/price/sources —
 // only the by-id detail read (getLocationMapData, behind the open venue's panel)
 // carries the full item shape, its sources merged with the menu-level sources.
 test('viewport items are lean; the by-id detail read keeps the full shape', async () => {
@@ -228,13 +227,12 @@ test('viewport items are lean; the by-id detail read keeps the full shape', asyn
 	// Menu freshness metadata still travels with the lean payload.
 	expect(viewport.menuMeta[menuId].last_verified).not.toBeNull();
 
-	// The search read shares the lean shape.
-	const search = await getSearchMapData(db, {
-		query: 'falafel',
-		dietTagId: null,
-		lat: 43.6,
-		lng: -79.4
-	});
+	// The filtered (search) read shares the lean shape.
+	const search = await searchMapData(
+		db,
+		{ minLat: 43, maxLat: 44, minLng: -80, maxLng: -79 },
+		{ query: 'falafel', dietTagId: null }
+	);
 	expect('price' in search.menus[menuId][0]).toBe(false);
 
 	// The by-id detail read: the full item, its own source first, menu source appended.
@@ -364,12 +362,13 @@ test('a dense wide viewport coarsens under the cap, and its reps are pan-stable'
 	expect(interiorIds(a).length).toBeGreaterThan(0); // the stable region isn't trivially empty
 });
 
-// The global search behind the `searchLocations` remote. Exercises the
-// single-diet filter (dietTagId) and its combined-text companion: with a diet set
-// a venue matches only when ONE of its items satisfies every active predicate, and
-// a diet match counts an `optional` tag ("can be made vegan") the same way the
-// client's per-item filter does — so the two stay in lock-step.
-test('getSearchMapData filters by a single dietary tag, counting optional tags', async () => {
+// The search filter riding the cell read (searchMembership behind getMapCells).
+// Exercises the single-diet filter (dietTagId) and its combined-text companion:
+// with a diet set a venue matches only when ONE of its items satisfies every
+// active predicate, and a diet match counts an `optional` tag ("can be made
+// vegan") the same way the client's per-item filter does — so the two stay in
+// lock-step.
+test('the filtered cell read narrows by a single dietary tag, counting optional tags', async () => {
 	const db = freshDb();
 	const addr = {
 		street: '1 Test St',
@@ -397,24 +396,24 @@ test('getSearchMapData filters by a single dietary tag, counting optional tags',
 		{ location_id: optLoc, item_name: 'Build-a-Wrap', optionalTags: ['vegan'], price: 8 }
 	]);
 
-	const anchor = { lat: 49.28, lng: -123.12 };
+	const box = { minLat: 49.2, maxLat: 49.4, minLng: -123.3, maxLng: -123.0 };
 
 	// vegan: the asserted-vegan venue and the can-be-made-vegan venue, not the plain one.
-	const vegan = await getSearchMapData(db, { query: '', dietTagId: 'vegan', ...anchor });
+	const vegan = await searchMapData(db, box, { query: '', dietTagId: 'vegan' });
 	expect(vegan.locations.map((l) => l.id).toSorted()).toEqual([veganLoc, optLoc].toSorted());
 
 	// A diet no item carries returns nothing.
-	const halal = await getSearchMapData(db, { query: '', dietTagId: 'halal', ...anchor });
+	const halal = await searchMapData(db, box, { query: '', dietTagId: 'halal' });
 	expect(halal.locations).toEqual([]);
 
 	// A bare text term narrows by venue name alone (no item here is named "Plain").
-	const byName = await getSearchMapData(db, { query: 'Plain', dietTagId: null, ...anchor });
+	const byName = await searchMapData(db, box, { query: 'Plain', dietTagId: null });
 	expect(byName.locations.map((l) => l.id)).toEqual([plainLoc]);
 
 	// Text + diet must be satisfied by the SAME item: 'Beef Stew' isn't vegan and no
 	// venue is named "Beef", so Green Spot drops out even though it has a (separate)
 	// vegan item.
-	const conflicting = await getSearchMapData(db, { query: 'Beef', dietTagId: 'vegan', ...anchor });
+	const conflicting = await searchMapData(db, box, { query: 'Beef', dietTagId: 'vegan' });
 	expect(conflicting.locations).toEqual([]);
 });
 
@@ -422,7 +421,7 @@ test('getSearchMapData filters by a single dietary tag, counting optional tags',
 // item name (an OR), with the dietary selector still narrowing on top. Mirrors the
 // client's `matchedItems`/`results` membership so the in-flight client re-filter and
 // the server agree.
-test('getSearchMapData matches by venue name OR item name, diet still narrowing', async () => {
+test('the filtered cell read matches by venue name OR item name, diet still narrowing', async () => {
 	const db = freshDb();
 	const addr = {
 		street: '1 Test St',
@@ -455,17 +454,17 @@ test('getSearchMapData matches by venue name OR item name, diet still narrowing'
 	await insertFoods(db, [{ location_id: neither, item_name: 'Margherita', price: 13 }]);
 	// emptyName has a matching NAME but no menu at all.
 
-	const anchor = { lat: 49.28, lng: -123.12 };
+	const box = { minLat: 49.2, maxLat: 49.4, minLng: -123.3, maxLng: -123.0 };
 
 	// Text only: kept when the NAME matches (even with no matching item, and even with
 	// an empty menu) OR an item name matches.
-	const text = await getSearchMapData(db, { query: 'burrito', dietTagId: null, ...anchor });
+	const text = await searchMapData(db, box, { query: 'burrito', dietTagId: null });
 	expect(text.locations.map((l) => l.id).toSorted()).toEqual(
 		[nameOnly, itemOnly, emptyName].toSorted()
 	);
 
 	// Text + diet: diet always narrows, so a NAME-only match with no diet item drops —
 	// only the venue whose matching item is itself vegan survives.
-	const textDiet = await getSearchMapData(db, { query: 'burrito', dietTagId: 'vegan', ...anchor });
+	const textDiet = await searchMapData(db, box, { query: 'burrito', dietTagId: 'vegan' });
 	expect(textDiet.locations.map((l) => l.id)).toEqual([itemOnly]);
 });

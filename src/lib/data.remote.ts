@@ -5,13 +5,13 @@ import { ttlMemo } from '$lib/server/memo';
 import { getMapCellsCached } from '$lib/server/cell-cache';
 import {
 	getLocationMapData,
-	getSearchMapData,
 	getStats as getStatsFromDb,
 	type Item,
 	type MapCellsData,
 	type MapData,
 	type MapStats
 } from '$lib/server/db';
+import { searchableQuery } from '$lib/search';
 import {
 	FULL_LEVEL_MAX_CELLS,
 	MAX_GRID_LEVEL,
@@ -21,33 +21,21 @@ import {
 } from '$lib/grid';
 
 /**
- * Latitude/longitude schemas shared by the viewport and search-anchor inputs.
- * `v.finite()` rejects `NaN` AND `±Infinity` (plain `v.number()` lets Infinity
- * through), so a malformed coordinate can't reach a D1 range query.
- *
- * Latitude is bounded to [-90, 90]: `currentView()` (LocationMap.svelte) clamps
- * it there even after padding. Longitude is deliberately NOT bounded to
- * [-180, 180] — `currentView()` pads the visible box by 20% per side and leaves
- * longitude unclamped, and MapLibre's `getBounds()` reports unwrapped longitudes
- * beyond ±180 on a zoomed-out globe or an antimeridian-spanning view (the search
- * anchor, a padded-viewport midpoint, inherits the same range). [-540, 540]
- * covers any view the client can produce while still capping hostile input; do
- * not "fix" it to ±180 or world-zoom fetches and searches start 400ing.
- */
-const LatitudeSchema = v.pipe(v.number(), v.finite(), v.minValue(-90), v.maxValue(90));
-const LongitudeSchema = v.pipe(v.number(), v.finite(), v.minValue(-540), v.maxValue(540));
-
-/**
  * A batch of same-level grid cells the map page asks for (see $lib/grid for the
  * level/cell model; the page enumerates the cells covering its viewport and
- * sends only the ones its client store is missing). Validated because this is
+ * sends only the ones its client store is missing), with the ACTIVE SEARCH
+ * riding along: `q` is the combined free-text term and `diet` the dietary-tag
+ * selector, both narrowing what each cell returns (see SearchFilter in
+ * $lib/server/db) — so searching stays cell-based and panning under a search
+ * fetches matches for the newly visible cells. Validated because this is
  * an open HTTP endpoint: `level` must be a level a real client can produce
  * (level 0, or a representative rung at/above the ~440 m floor — anything else
  * would spray the server cache with junk keys), the cell count is capped per
  * level (rep batches are bounded by the coarsening invariant; full-detail
  * batches by narrow-viewport geometry, so a forged request can't fan a
- * full-menu read across hundreds of cells), and each index must lie inside the
- * lat/lng data domain.
+ * full-menu read across hundreds of cells), each index must lie inside the
+ * lat/lng data domain, and the filter lengths bound what reaches the FTS index
+ * (200 far exceeds any real search term; diet tag ids are short fixed tokens).
  */
 const CellIndexSchema = v.pipe(v.number(), v.integer(), v.minValue(0));
 const MapCellsQuerySchema = v.pipe(
@@ -57,7 +45,9 @@ const MapCellsQuerySchema = v.pipe(
 			v.array(v.tuple([CellIndexSchema, CellIndexSchema])),
 			v.minLength(1),
 			v.maxLength(REP_LEVEL_MAX_CELLS)
-		)
+		),
+		q: v.optional(v.pipe(v.string(), v.maxLength(200)), ''),
+		diet: v.optional(v.nullable(v.pipe(v.string(), v.maxLength(64))), null)
 	}),
 	v.check((q) => q.level === 0 || q.level >= MIN_REP_LEVEL, 'Unknown grid level'),
 	v.check(
@@ -78,17 +68,29 @@ const MapCellsQuerySchema = v.pipe(
  * overrides, plus each shared brand menu those locations reference, resolved
  * once and keyed by menu_id — the same lean wire shape the old whole-viewport
  * read used (#83), plus the per-cell membership record the client store slices
- * by. Browse-mode panning fetches only newly uncovered cells (#84), and the
+ * by. Panning fetches only newly uncovered cells (#84), and the
  * server answers repeat cells from a colo-shared cache instead of re-running
  * the D1 read per visitor (#93) — see $lib/server/cell-cache.
+ *
+ * With `q`/`diet` set the same read returns only MATCHING venues per cell, so
+ * an active search follows the viewport exactly like browse. The searchable
+ * gate is applied HERE, before the cache layer, so the canonical filter keys
+ * the colo cache: text the trigram index can't serve (no 3+ char wildcard-free
+ * run — see $lib/search) is treated as absent rather than full-scanned; the
+ * map page applies the same gate and never sends such text, so only a forged
+ * request hits this floor, and it degrades to the diet-only filter or, with no
+ * diet either, the plain browse read (#103/#104) — exactly what the client
+ * itself renders for a short query.
  *
  * Public: the map is open to everyone (no sign-in gate), so this read carries no
  * `requireUser()`. Only the user-scoped functions (likes, saved diet) require auth.
  */
 export const getMapCells = query(
 	MapCellsQuerySchema,
-	async ({ level, cells }): Promise<MapCellsData> => {
-		return getMapCellsCached(level, cells);
+	async ({ level, cells, q, diet }): Promise<MapCellsData> => {
+		const text = searchableQuery(q);
+		const search = text !== '' || diet !== null ? { query: text, dietTagId: diet } : null;
+		return getMapCellsCached(level, cells, search);
 	}
 );
 
@@ -107,35 +109,6 @@ export const getLocationData = query(
 		return getLocationMapData(db(), id);
 	}
 );
-
-/**
- * A GLOBAL menu search, anchored to the current map centre. Whereas
- * {@link getMapCells} is bounded to the viewport's cells, this searches the whole index
- * and returns the matches nearest the anchor (nearest first, same {@link MapData}
- * shape), so an active search is answered from everywhere on the map rather than
- * only what's on screen. `query` is one combined free-text term matched against the
- * venue name OR its item names; the `dietTagId` selector narrows it further. Both
- * mirror the client's own filtering; see {@link getSearchMapData}. Validated
- * because, like every remote query, the argument arrives untrusted over HTTP:
- * the length caps bound what reaches the FTS index (200 far exceeds any real
- * search term; diet tag ids are short fixed tokens), and the anchor reuses the
- * coordinate schemas — see their comment for why `lng` stays loose. Text the
- * trigram index cannot accelerate (no 3+ character wildcard-free run — see
- * $lib/search) is treated as absent by getSearchMapData rather than rejected
- * here, so a forged short/wildcard query degrades to the cheap diet-only or
- * empty result instead of forcing a full FTS scan (#103/#104); the map page
- * applies the same gate and never sends such text.
- */
-const SearchQuerySchema = v.object({
-	query: v.pipe(v.string(), v.maxLength(200)),
-	dietTagId: v.nullable(v.pipe(v.string(), v.maxLength(64))),
-	lat: LatitudeSchema,
-	lng: LongitudeSchema
-});
-
-export const searchLocations = query(SearchQuerySchema, async (q): Promise<MapData> => {
-	return getSearchMapData(db(), q);
-});
 
 /**
  * Aggregate coverage totals (locations, items, cities) for the zoomed-out landing

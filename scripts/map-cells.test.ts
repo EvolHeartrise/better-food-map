@@ -20,12 +20,7 @@ import {
 	type LocationInsert,
 	type MapCellsData
 } from '../src/lib/server/db';
-import {
-	assembleCellsData,
-	mergeCellSlices,
-	mergeMapData,
-	splitCellSlices
-} from '../src/lib/map-cells';
+import { assembleCellsData, mergeCellSlices, splitCellSlices } from '../src/lib/map-cells';
 import { cellKey, cellsForBounds, levelCell, levelForBounds, MIN_REP_LEVEL } from '../src/lib/grid';
 import { CellStore, CELL_STORE_MAX, CELL_TTL_MS } from '../src/lib/cell-store';
 import { freshDb } from './test-d1';
@@ -301,45 +296,82 @@ test('an item-less menu keeps its menuMeta through slicing', async () => {
 	expect(withLoc?.menuMeta[menuId]).toBeDefined();
 });
 
-// The page renders the union of the global search set and the viewport's
-// browse cells while a query/diet is active (see +page.svelte activeData) —
-// the two payloads OVERLAP wherever a search match is also on screen, so the
-// merge must dedupe by venue id (keeping the primary set's copy and order)
-// and collapse a menu carried by both.
-test('mergeMapData unions overlapping payloads, primary-first and deduped', async () => {
+// --- Filtered cell reads (the cell-based search) -----------------------------
+// With a SearchFilter, getMapCellsData narrows to MATCHING venues BEFORE the
+// per-cell ranking, so a representative cell shows its best MATCH (not a
+// non-matching venue that would hide it), an unmatched cell comes back [] (a
+// per-filter negative-cache entry), and the same cell answers identically
+// alone or in a batch — the purity both cache layers key on.
+
+test('a filtered rep cell keeps the top-ranked MATCH, not the browse representative', async () => {
 	const db = freshDb();
-	const [a, b, c] = await insertLocations(db, [
+	// Same rep cell at a wide zoom: the menu'd, alphabetically-first venue wins
+	// browse; only the vegan-tagged one may win the vegan filter.
+	const [plain, greens] = await insertLocations(db, [
+		venue({ name: 'Aaa Diner', latitude: 43.6, longitude: -79.4 }),
+		venue({ name: 'Zzz Greens', latitude: 43.61, longitude: -79.41 })
+	]);
+	await insertFoods(db, [
+		{ location_id: plain, item_name: 'Steak Plate', price: 14 },
+		{ location_id: greens, item_name: 'Tofu Bowl', tags: ['vegan'], price: 10 }
+	]);
+	const bounds = { minLat: 40, maxLat: 50, minLng: -85, maxLng: -75 };
+	const level = levelForBounds(bounds);
+	const cells = cellsForBounds(bounds, levelCell(level));
+	expect(level).toBeGreaterThanOrEqual(MIN_REP_LEVEL);
+
+	const browse = await getMapCellsData(db, level, cells);
+	expect(browse.locations.map((l) => l.id)).toEqual([plain]);
+
+	const vegan = await getMapCellsData(db, level, cells, { query: '', dietTagId: 'vegan' });
+	expect(vegan.locations.map((l) => l.id)).toEqual([greens]);
+
+	// Text dimension through the same path: the item name only matches `greens`.
+	const tofu = await getMapCellsData(db, level, cells, { query: 'tofu', dietTagId: null });
+	expect(tofu.locations.map((l) => l.id)).toEqual([greens]);
+
+	// A filter nothing matches: every requested cell still answers, all empty —
+	// the negative entries that stop a fruitless search being re-asked per pan.
+	const none = await getMapCellsData(db, level, cells, { query: 'sushi', dietTagId: null });
+	expect(none.locations).toEqual([]);
+	expect(Object.keys(none.cells).length).toBe(cells.length);
+	expect(Object.values(none.cells).every((ids) => ids.length === 0)).toBe(true);
+});
+
+test('filtered cells are batch-independent, and the full level returns every match', async () => {
+	const db = freshDb();
+	const [a, b] = await insertLocations(db, [
 		venue({ name: 'Green Spot', latitude: 49.28, longitude: -123.12 }),
-		venue({ name: 'Plain Diner', latitude: 49.281, longitude: -123.121 }),
-		venue({ name: 'Far Cafe', latitude: 49.4, longitude: -123.3 })
+		venue({ name: 'Leaf House', latitude: 49.281, longitude: -123.121 })
+	]);
+	const [far] = await insertLocations(db, [
+		venue({ name: 'Vegan Far', latitude: 45.6, longitude: -75.7 })
 	]);
 	await insertFoods(db, [
 		{ location_id: a, item_name: 'Tofu Bowl', tags: ['vegan'], price: 10 },
-		{ location_id: b, item_name: 'Burger', price: 9 },
-		{ location_id: c, item_name: 'Vegan Cookie', tags: ['vegan'], price: 4 }
+		{ location_id: b, item_name: 'Kale Salad', tags: ['vegan'], price: 9 },
+		{ location_id: far, item_name: 'Vegan Poutine', tags: ['vegan'], price: 12 }
 	]);
-	// "Viewport" payload: what's on screen (a and b). "Search" payload: the
-	// nearest matches (a again, plus the off-screen c) with the menus they
-	// reference — the same self-contained shape getSearchMapData returns.
-	const view = (
-		await fetchViewport(db, { minLat: 49.27, maxLat: 49.29, minLng: -123.13, maxLng: -123.11 })
-	).data;
-	const far = (
-		await fetchViewport(db, { minLat: 49.39, maxLat: 49.41, minLng: -123.31, maxLng: -123.29 })
-	).data;
-	const search = {
-		locations: [...view.locations.filter((l) => l.id === a), ...far.locations],
-		menus: { [`pm-${a}`]: view.menus[`pm-${a}`], [`pm-${c}`]: far.menus[`pm-${c}`] },
-		menuMeta: { [`pm-${a}`]: view.menuMeta[`pm-${a}`], [`pm-${c}`]: far.menuMeta[`pm-${c}`] }
-	};
+	const filter = { query: '', dietTagId: 'vegan' as string | null };
 
-	const merged = mergeMapData(search, view);
-	// Primary (search) order leads; the viewport-only venue appends; the shared
-	// venue appears exactly once.
-	expect(merged.locations.map((l) => l.id)).toEqual([a, c, b]);
-	// Menus from both sides survive under their ids, the shared one collapsed.
-	expect(Object.keys(merged.menus).toSorted()).toEqual(
-		[`pm-${a}`, `pm-${b}`, `pm-${c}`].toSorted()
+	// FULL level: both co-located matches survive in their shared tile (no rep
+	// trimming under a filter at street zoom).
+	const tile: [number, number] = [
+		Math.floor((49.28 + 90) / 0.02),
+		Math.floor((-123.12 + 180) / 0.02)
+	];
+	const alone = await getMapCellsData(db, 0, [tile], filter);
+	expect(alone.locations.map((l) => l.id).toSorted()).toEqual([a, b].toSorted());
+
+	// The same cell answers identically alongside a distant cell (level 0's
+	// batch mate here), so per-(filter, cell) cache entries stay pure.
+	const farTile: [number, number] = [
+		Math.floor((45.6 + 90) / 0.02),
+		Math.floor((-75.7 + 180) / 0.02)
+	];
+	const together = await getMapCellsData(db, 0, [tile, farTile], filter);
+	expect(together.cells[cellKey(tile[0], tile[1])].toSorted()).toEqual(
+		alone.cells[cellKey(tile[0], tile[1])].toSorted()
 	);
-	expect(merged.menuMeta[`pm-${a}`]).toBeDefined();
+	expect(together.locations.map((l) => l.id).toSorted()).toEqual([a, b, far].toSorted());
 });

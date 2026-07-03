@@ -4,15 +4,9 @@
 	import { page } from '$app/state';
 	import { fly } from 'svelte/transition';
 	import { SvelteSet, SvelteMap, MediaQuery } from 'svelte/reactivity';
-	import {
-		getMapCells,
-		getLocationData,
-		searchLocations,
-		getStats,
-		getUserLocation
-	} from '$lib/data.remote';
+	import { getMapCells, getLocationData, getStats, getUserLocation } from '$lib/data.remote';
 	import { cellKey, cellsForBounds, levelCell, levelForBounds } from '$lib/grid';
-	import { mergeCellSlices, mergeMapData, splitCellSlices, type CellSlice } from '$lib/map-cells';
+	import { mergeCellSlices, splitCellSlices, type CellSlice } from '$lib/map-cells';
 	import { CellStore } from '$lib/cell-store';
 	import { getCurrentUser, getLikes, setLocationLiked, setItemLiked } from '$lib/user.remote';
 	import { getDiet, setDiet } from '$lib/profile.remote';
@@ -32,9 +26,9 @@
 	import type { MapData, MapItem, MapLocation, Item, Bounds } from '$lib/server/db';
 
 	// The visible map area, reported by <LocationMap> (debounced) as the user pans
-	// and zooms, plus once on load. This is the ONLY thing that decides which data
-	// we fetch — the area filter is now "whatever's on screen". Null until the map
-	// has mounted and reported its opening view.
+	// and zooms, plus once on load. Together with the applied search filter this
+	// decides which data we fetch — the area is always "whatever's on screen".
+	// Null until the map has mounted and reported its opening view.
 	let viewport = $state<Bounds | null>(null);
 
 	// --- Search filters --------------------------------------------------------
@@ -42,11 +36,10 @@
 	// NAME *or* by an item name — a name match surfaces the whole menu, an item-only
 	// match surfaces just the matching items (see `matchedItems`). The dietary selector
 	// is a separate filter that always narrows the items shown (single-select: an item
-	// must carry the chosen tag — vegan, gluten_free, …). With either set, a GLOBAL
-	// search — the whole index, nearest first (see the search effect below) — joins
-	// the viewport data, so matches surface from beyond the screen too; the viewport
-	// fetch keeps running throughout (see the cell effect), so panning keeps pulling
-	// in the data under the new view whether or not a search is active.
+	// must carry the chosen tag — vegan, gluten_free, …). With either set, the SAME
+	// per-cell viewport fetch below narrows server-side to matching venues, so the
+	// search follows the map: panning searches the newly visible cells, and what
+	// renders is always "the matches in (and just around) the current view".
 	let query = $state('');
 	// The chosen dietary tag id, or null for "any diet" (no diet filter).
 	let diet = $state<string | null>(null);
@@ -82,73 +75,135 @@
 	}
 
 	// The text query, normalised once and shared by the map item labels, the venue
-	// membership test and the global-search effect so they all agree on what "matches".
-	// `hasQuery` — text query or diet active — is what flips browse → search.
+	// membership test and the applied-filter commit so they all agree on what
+	// "matches". `hasQuery` — text query or diet active — is what makes the cell
+	// fetch a SEARCH (and shows the spinner/announcement machinery).
 	const queryTerm = $derived(query.trim().toLowerCase());
 	const hasQuery = $derived(queryTerm !== '' || diet !== null);
-	// The text actually sent to the global search: the trimmed query once (and only
+	// The text actually sent with the cell fetch: the trimmed query once (and only
 	// once) the server's trigram index can accelerate it — a 3+ character
-	// wildcard-free run ($lib/search). Below that floor a server search would full-
-	// scan both FTS mirrors for a result the local in-view filtering above already
-	// delivers instantly, so short/wildcard-only text stays client-side ('' here)
-	// and the server applies the same gate (getSearchMapData). `hasSearchText` is
-	// the boolean read by the search effect, so a case-only edit (which can't
-	// change the results — matching is case-insensitive) doesn't re-fire it.
+	// wildcard-free run ($lib/search). Below that floor a server-side filter would
+	// full-scan both FTS mirrors for a result the local in-view filtering above
+	// already delivers instantly, so short/wildcard-only text stays client-side
+	// ('' here) and the server applies the same gate (getMapCells).
 	const searchText = $derived(searchableQuery(query));
-	const hasSearchText = $derived(searchText !== '');
 
 	// --- Map data --------------------------------------------------------------
-	// Two payloads, each updated imperatively (rather than via an awaited $derived)
-	// so the markers already on screen stay put while the next set loads — the map
-	// never blanks. `viewportData` is what's in the current box (always kept
-	// loaded); `searchData` is the global nearest-first result set (null while
-	// browsing and until the first search for a query returns). `activeData`
-	// renders the viewport set alone while browsing, and its union with the
-	// search set while a query is active.
+	// The one rendered payload: what's in the current box under the current
+	// APPLIED filter (see appliedFilter below). Updated imperatively (rather than
+	// via an awaited $derived) so the markers already on screen stay put while
+	// the next set loads — the map never blanks, and a filter change keeps the
+	// previous markers (re-narrowed locally by `results`) until the filtered
+	// cells land.
 	const EMPTY_MAP_DATA: MapData = { locations: [], menus: {}, menuMeta: {} };
 	let viewportData = $state<MapData>(EMPTY_MAP_DATA);
-	let searchData = $state<MapData | null>(null);
 
 	// --- Fetch status ----------------------------------------------------------
-	// Both fetches below keep the previous markers on screen while a request is in
-	// flight or after it fails — right for the map, but invisible to the user.
-	// `searching` is true from the moment the debounced search request fires until
-	// it settles and drives a spinner in the search pill; the two failure flags
-	// feed the floating status line (plus its always-mounted aria-live twin) so a
-	// failed fetch says so instead of silently showing old data. Imperative flags
-	// rather than $effect.pending(): these are .then() chains inside a setTimeout,
-	// not awaits a boundary could count.
+	// The cell fetch below keeps the previous markers on screen while a request is
+	// in flight or after it fails — right for the map, but invisible to the user.
+	// `searching` is true while a FILTERED fetch is in flight and drives a spinner
+	// in the search pill; `fetchFailed` feeds the floating status line (plus its
+	// always-mounted aria-live twin) so a failed fetch says so instead of silently
+	// showing old data. Imperative flags rather than $effect.pending(): these are
+	// .then() chains, not awaits a boundary could count.
 	let searching = $state(false);
-	let searchFailed = $state(false);
-	let viewportFailed = $state(false);
+	let fetchFailed = $state(false);
 	const fetchStatus = $derived(
-		searchFailed
-			? 'Search failed — showing previous results.'
-			: viewportFailed
-				? 'Couldn’t load places for this area — showing previous results.'
-				: ''
+		fetchFailed
+			? hasQuery
+				? 'Search failed — showing previous results.'
+				: 'Couldn’t load places for this area — showing previous results.'
+			: ''
 	);
 
-	// Load the visible box, one GRID CELL at a time. The padded viewport picks a
-	// grid level and enumerates the cells covering it ($lib/grid); cells already
-	// in the client store replay locally, so panning fetches only the newly
-	// uncovered strip and panning back costs nothing (#84) — the 20% bounds
-	// padding is a genuine prefetch ring now, not dead weight. Runs in BOTH modes,
-	// not just browse: the global search set is anchored to wherever the search
-	// ran, so with a query/diet active it's this fetch that keeps pulling in data
-	// for the area the user pans to (the in-view filter narrows it to matches —
-	// see activeData). Gating it on the query used to leave a signed-in user
-	// whose saved diet seeds at page load with a map that never loaded anything.
+	// --- Applied filter (the debounced commit) ----------------------------------
+	// The filter the cell fetch below actually sends: the gated text + diet as of
+	// the last COMMIT. Typing edits `query` live (and the local `results`
+	// narrowing tracks every keystroke instantly), but the server round trips
+	// only happen against this committed copy, so a keystroke burst settles into
+	// one fetch. Discrete inputs bypass the wait — see SEARCH_DEBOUNCE_MS.
+	let appliedFilter = $state<{ q: string; diet: string | null }>({ q: '', diet: null });
+
+	// Debounce before a query change commits (and so hits the server), so a burst
+	// of keystrokes settles into one fetch. Applied to TYPED changes only —
+	// discrete inputs (a diet click, Enter, paste) are single deliberate actions
+	// with no burst to coalesce, so waiting the full debounce there is pure lag.
+	// Two bypass channels, both plain non-reactive plumbing (like `focusNonce`):
+	// `searchImmediate` is a one-shot flag consumed by the commit effect's next
+	// run, for inputs whose change re-runs the effect (diet click, paste);
+	// `flushSearch` fires a pending debounce timer at once, for Enter — the
+	// signature hasn't changed then, so the effect won't re-run. Null whenever no
+	// timer is pending (already fired, or flushed), making a stray Enter a no-op.
+	const SEARCH_DEBOUNCE_MS = 250;
+	let searchImmediate = false;
+	let flushSearch: (() => void) | null = null;
+	// The query, reduced to a stable string — the reactive trigger for the commit
+	// effect. Built from the GATED text (`searchText`, lowercased to match the
+	// server's case-insensitive LIKE), so typing through the sub-searchable
+	// prefixes of a term ("b", "bu") never commits a new filter, and a case-only
+	// edit (which can't change the results) doesn't either.
+	const querySignature = $derived(JSON.stringify({ query: searchText.toLowerCase(), diet }));
+
+	// Commit the live query into `appliedFilter` whenever its signature changes:
+	// after the typing debounce, at once for a discrete input, and at once when
+	// the filter empties — clearing must drop back to unfiltered data without a
+	// lag the user would read as a stuck search.
+	$effect(() => {
+		// Read the signature so the effect re-runs when (and only when) the
+		// effective query changes; the value itself isn't otherwise needed.
+		void querySignature;
+		const commit = () => {
+			flushSearch = null;
+			appliedFilter = { q: searchText, diet };
+		};
+		if (searchText === '' && diet === null) {
+			searchImmediate = false;
+			commit();
+			return;
+		}
+		// A discrete input (diet click, paste) armed the one-shot bypass: fire on
+		// the next tick instead of sitting out the typing debounce.
+		const immediate = searchImmediate;
+		searchImmediate = false;
+		const timer = setTimeout(commit, immediate ? 0 : SEARCH_DEBOUNCE_MS);
+		// Let Enter fire the pending debounce early (commit nulls this once run).
+		flushSearch = () => {
+			clearTimeout(timer);
+			commit();
+		};
+		return () => {
+			clearTimeout(timer);
+			flushSearch = null;
+		};
+	});
+
+	// Load the visible box, one GRID CELL at a time, under the APPLIED filter.
+	// The padded viewport picks a grid level and enumerates the cells covering it
+	// ($lib/grid); cells already in the client store replay locally, so panning
+	// fetches only the newly uncovered strip and panning back costs nothing (#84)
+	// — the 20% bounds padding is a genuine prefetch ring, not dead weight. With
+	// a filter active the SAME read narrows server-side to matching venues (a rep
+	// cell keeps its top-ranked MATCH, so a non-matching neighbour can't hide
+	// it), which is what makes panning under a search actually search the new
+	// area; store keys carry the filter, so browse cells and each filter's cells
+	// coexist without cross-talk and clearing the search replays warm browse
+	// cells with no round trip.
 	//
-	// The store is a plain non-reactive memo (level-prefixed cell key → payload
-	// slice, LRU + TTL): consulting or filling it must never re-run this effect.
+	// The store is a plain non-reactive memo (filter+level-prefixed cell key →
+	// payload slice, LRU + TTL): consulting or filling it must never re-run this
+	// effect.
 	const cellStore = new CellStore();
 	$effect(() => {
 		if (!viewport) return;
 		const bounds = viewport;
+		const filter = appliedFilter;
+		const filtered = filter.q !== '' || filter.diet !== null;
 		const level = levelForBounds(bounds);
 		const cells = cellsForBounds(bounds, levelCell(level));
-		const storeKey = ([i, j]: [number, number]) => `${level}/${cellKey(i, j)}`;
+		// Lowercased text in the store key, mirroring querySignature: a case-only
+		// variant of a term is the same filter, so it replays the same cells.
+		const prefix = filtered ? `${filter.q.toLowerCase()}\u001f${filter.diet ?? ''}\u001f` : '';
+		const storeKey = ([i, j]: [number, number]) => `${prefix}${level}/${cellKey(i, j)}`;
 		// SNAPSHOT the store hits now rather than re-reading the store when the
 		// fetch settles: a hit can TTL-expire mid-flight, and a second read would
 		// silently drop its (still on-screen) markers from a successful merge.
@@ -163,186 +218,55 @@
 			// Everything in view is already local — the "known empty" negative
 			// entries included — so render without a round trip.
 			viewportData = mergeCellSlices(hits);
-			viewportFailed = false;
+			fetchFailed = false;
+			searching = false;
 			return;
 		}
 		let cancelled = false;
-		getMapCells({ level, cells: missing })
+		// The spinner tracks FILTERED fetches only: it lives in the search pill,
+		// where it reads as "your search is still filling this area".
+		searching = filtered;
+		getMapCells({ level, cells: missing, q: filter.q, diet: filter.diet })
 			.then((data) => {
 				// Bank every returned cell BEFORE the cancellation check: a cell's
 				// contents don't depend on the viewport, so a superseded response
 				// still warms the store for the run that replaced this one.
 				const fresh = splitCellSlices(data);
 				for (const [key, slice] of fresh) {
-					cellStore.set(`${level}/${key}`, slice);
+					cellStore.set(`${prefix}${level}/${key}`, slice);
 				}
 				if (cancelled) return;
+				searching = false;
 				// The effect-time hits plus the fetched cells cover the whole view;
 				// the two sets are disjoint by construction.
 				viewportData = mergeCellSlices([...hits, ...fresh.values()]);
-				viewportFailed = false;
+				fetchFailed = false;
 			})
 			// A failed fetch must not blank the map — keep the markers already on
 			// screen (the next pan/zoom issues a fresh request anyway) — but flag it
 			// so the status line can say the visible markers are stale.
 			.catch((err) => {
-				console.error('viewport cells fetch failed', bounds, err);
-				if (!cancelled) viewportFailed = true;
+				console.error('map cells fetch failed', bounds, filter, err);
+				if (cancelled) return;
+				searching = false;
+				fetchFailed = true;
 			});
 		return () => {
 			cancelled = true;
 		};
 	});
 
-	// The map centre — the anchor "nearest" is measured from — as its midpoint, with
-	// a default (the shared Vancouver fallback, $lib/map-defaults) before the first
-	// viewport is reported. Read non-reactively inside the search effect's timer, so
-	// panning alone never re-runs a search; only changing the query does.
+	// Fallback opening centre (the shared Vancouver default, $lib/map-defaults),
+	// used by "Start using" when IP geolocation is unavailable.
 	const DEFAULT_CENTER = DEFAULT_MAP_CENTER;
-	function mapCenter(): { lat: number; lng: number } {
-		if (!viewport) return { lat: DEFAULT_CENTER[0], lng: DEFAULT_CENTER[1] };
-		return {
-			lat: (viewport.minLat + viewport.maxLat) / 2,
-			lng: (viewport.minLng + viewport.maxLng) / 2
-		};
-	}
 
-	// Whether a point already falls within the (padded) reported viewport — used to
-	// decide if a search's nearest match needs the camera flown to it at all.
-	function withinViewport(loc: { latitude: number; longitude: number }): boolean {
-		if (!viewport) return false;
-		return (
-			loc.latitude >= viewport.minLat &&
-			loc.latitude <= viewport.maxLat &&
-			loc.longitude >= viewport.minLng &&
-			loc.longitude <= viewport.maxLng
-		);
-	}
-
-	// A point to fly the map to (the nearest match); null leaves the camera alone.
-	// Set by the search effect only when the nearest result is off screen, so a
-	// search whose matches are already in view doesn't yank the camera. `key` is a
-	// monotonic nonce so <LocationMap> flies exactly once per assignment — even when
-	// two consecutive searches happen to target the same coordinates.
+	// A point to fly the map to; null leaves the camera alone. Only "Start using"
+	// (the landing's entry button) flies the camera now — a search never moves
+	// it: the map shows the matches wherever the user is looking, and panning is
+	// how they look elsewhere. `key` is a monotonic nonce so <LocationMap> flies
+	// exactly once per assignment.
 	let focusTarget = $state<{ latitude: number; longitude: number; key: string } | null>(null);
 	let focusNonce = 0;
-	// Debounce before a global search hits the server, so a burst of keystrokes
-	// settles into one request. Applied to TYPED changes only — discrete inputs
-	// (a diet click, Enter, paste) are single deliberate actions with no burst to
-	// coalesce, so waiting the full debounce there is pure lag. Two bypass
-	// channels, both plain non-reactive plumbing (like `focusNonce`):
-	// `searchImmediate` is a one-shot flag consumed by the search effect's next
-	// run, for inputs whose change re-runs the effect (diet click, paste);
-	// `flushSearch` fires a pending debounce timer at once, for Enter — the
-	// signature hasn't changed then, so the effect won't re-run. Null whenever no
-	// timer is pending (already fired, or flushed), making a stray Enter a no-op.
-	const SEARCH_DEBOUNCE_MS = 250;
-	let searchImmediate = false;
-	let flushSearch: (() => void) | null = null;
-	// The query, reduced to a stable string — the reactive trigger for the search
-	// effect's server call, so the map centre (read inside the timer) can change
-	// with a pan without re-running the search. Built from the GATED text
-	// (`searchText`, lowercased to match the server's case-insensitive LIKE), so
-	// typing through the sub-searchable prefixes of a term ("b", "bu") never fires
-	// a request. Each distinct query runs (and flies) once; an unchanged query
-	// never re-fires the effect.
-	const querySignature = $derived(JSON.stringify({ query: searchText.toLowerCase(), diet }));
-
-	// Search mode: run a global, nearest-first search whenever the QUERY changes. On
-	// each query's result, fly to the nearest match unless it's already on screen.
-	// Clearing the query drops back to browse mode.
-	$effect(() => {
-		if (!hasQuery) {
-			searchData = null;
-			searching = false;
-			searchFailed = false;
-			searchImmediate = false;
-			return;
-		}
-		// Text below the searchable floor with no diet active: there is nothing the
-		// server could do but full-scan (see $lib/search), and the in-view filtering
-		// already handles the short term instantly — so skip the call and stay on
-		// the viewport set (searchData null → activeData falls back).
-		if (!hasSearchText && diet === null) {
-			searchData = null;
-			searching = false;
-			searchFailed = false;
-			searchImmediate = false;
-			return;
-		}
-		// Read the signature so the effect re-runs when (and only when) the query
-		// changes; the value itself isn't otherwise needed.
-		void querySignature;
-		let cancelled = false;
-		const runSearch = () => {
-			// The timer has fired (or been flushed): a further Enter has nothing
-			// left to hurry along.
-			flushSearch = null;
-			const center = mapCenter();
-			// A superseded request's settle handlers bail on `cancelled` below, so
-			// only the request that owns the current query ever clears these.
-			searching = true;
-			searchFailed = false;
-			searchLocations({
-				query: searchText,
-				dietTagId: diet,
-				lat: center.lat,
-				lng: center.lng
-			})
-				.then((data) => {
-					if (cancelled) return;
-					searching = false;
-					searchData = data;
-					// The server returns nearest-first, so [0] is the closest match.
-					const nearest = data.locations[0];
-					if (nearest && !withinViewport(nearest)) {
-						focusNonce += 1;
-						focusTarget = {
-							latitude: nearest.latitude,
-							longitude: nearest.longitude,
-							key: String(focusNonce)
-						};
-					}
-				})
-				// A failed search keeps the previous result set (or the viewport
-				// fallback) on screen rather than blanking the map mid-search — but
-				// flags the failure so the status line surfaces it.
-				.catch((err) => {
-					console.error('search failed', querySignature, err);
-					if (cancelled) return;
-					searching = false;
-					searchFailed = true;
-				});
-		};
-		// A discrete input (diet click, paste) armed the one-shot bypass: fire on
-		// the next tick instead of sitting out the typing debounce.
-		const immediate = searchImmediate;
-		searchImmediate = false;
-		const timer = setTimeout(runSearch, immediate ? 0 : SEARCH_DEBOUNCE_MS);
-		// Let Enter fire the pending debounce early (runSearch nulls this once run).
-		flushSearch = () => {
-			clearTimeout(timer);
-			runSearch();
-		};
-		return () => {
-			cancelled = true;
-			clearTimeout(timer);
-			flushSearch = null;
-		};
-	});
-
-	// The data the page renders from. Browsing: the viewport set. With a query/
-	// diet active: the UNION of the global search set and the viewport set (the
-	// search results lead, so nearest-first order survives for the results list),
-	// which `results` below narrows to matches — the search set supplies matches
-	// from beyond the current view (and the fly-to-nearest target), while the
-	// viewport set keeps the map filling in as the user pans away from where the
-	// search was anchored. Until the first search for a query returns, the
-	// viewport set alone keeps the labels filtering instantly rather than
-	// blanking.
-	const activeData = $derived(
-		hasQuery && searchData !== null ? mergeMapData(searchData, viewportData) : viewportData
-	);
 
 	// The map page works against each location's fully-resolved `menu`, but the wire
 	// payload sends each menu only once (keyed by menu_id) instead of copying it onto
@@ -378,7 +302,9 @@
 		return { ...loc, menu, lastVerified };
 	}
 
-	const locations = $derived(activeData.locations.map((loc) => resolveLocation(loc, activeData)));
+	const locations = $derived(
+		viewportData.locations.map((loc) => resolveLocation(loc, viewportData))
+	);
 
 	// --- Landing: zoomed-out globe + stats overlay ----------------------------
 	// The map is public and opens on the fully zoomed-out globe (WORLD_ZOOM). A landing
@@ -430,8 +356,8 @@
 
 	// "Start using the map": fly to the visitor's IP-detected location at city zoom, which
 	// leaves the landing (the zoom passes LANDING_MAX_ZOOM). getUserLocation is prompt-free
-	// edge geolocation — null under local dev or when unavailable, so we fall back to the
-	// default centre. The fly reuses the search focus channel (a fresh nonce flies exactly
+	// edge geolocation — null when unavailable, so we fall back to the default
+	// centre. The fly goes through the focus channel (a fresh nonce flies exactly
 	// once); with no `zoom` override it pulls in to a city view.
 	function startUsing(): void {
 		const target = userLocation ?? { lat: DEFAULT_CENTER[0], lng: DEFAULT_CENTER[1] };
@@ -468,8 +394,11 @@
 	// The candidate set is whatever is currently visible on the map (`locations`). The
 	// membership rule — venue-name OR item-name substring, diet always narrowing on the
 	// same item, everything kept in browse mode — lives in $lib/search-match, a pure
-	// module mirroring the server's getSearchMapData so scripts/search-parity.test.ts
-	// can hold the two halves to identical membership.
+	// module mirroring the server's cell-read filter (searchMembership, db.ts) so
+	// scripts/search-parity.test.ts can hold the two halves to identical membership.
+	// Under an applied filter the server already sent only matches; this narrows
+	// the LIVE query over them — instant feedback for the keystrokes and short
+	// prefixes the committed fetch hasn't (or won't) run for.
 	const results = $derived(searchResults(locations, queryTerm, diet));
 
 	// --- Accessible results list -------------------------------------------------
@@ -484,12 +413,18 @@
 	const listedResults = $derived(results.slice(0, RESULTS_LIST_MAX));
 
 	// The count announced by the aria-live region. Only speaks once a SEARCH has
-	// settled (searchData stays null while browsing and until the first result set
-	// for a query returns), so pans and the pre-debounce fallback stay silent.
+	// settled — the live query has been committed (post-debounce) and its cell
+	// fetch has returned — so plain browsing and the mid-debounce window stay
+	// silent. Compared through the signature, so a case-only edit (same filter)
+	// doesn't mute an already-settled announcement.
+	const searchSettled = $derived(
+		hasQuery &&
+			!searching &&
+			appliedFilter.q.toLowerCase() === searchText.toLowerCase() &&
+			appliedFilter.diet === diet
+	);
 	const resultsAnnouncement = $derived(
-		hasQuery && searchData !== null
-			? `${results.length} ${results.length === 1 ? 'place' : 'places'} found`
-			: ''
+		searchSettled ? `${results.length} ${results.length === 1 ? 'place' : 'places'} found` : ''
 	);
 
 	// Bound to the open detail panel; the focus $effect below moves keyboard

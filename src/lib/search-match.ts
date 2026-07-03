@@ -2,19 +2,20 @@
  * The CLIENT half of the search-membership mirror: which venues a text query
  * and/or dietary tag keep on the map, and which of their items to surface.
  *
- * `getSearchMapData` (src/lib/server/db.ts) implements the SERVER half over the
- * FTS5 mirrors, and the two must agree — the client re-filters the result set
- * while a search is in flight, so any drift shows as venues with empty teaser
- * lines or markers that vanish once the client re-filter runs. This lives in a
- * pure module (not inline in +page.svelte) so scripts/search-parity.test.ts can
- * run the same fixtures through both halves and assert identical membership.
+ * `searchMembership` (src/lib/server/db.ts, the filter inside the cell read
+ * getMapCellsData) implements the SERVER half over the FTS5 mirrors, and the
+ * two must agree — the client re-filters the rendered set while a filtered
+ * fetch is in flight, so any drift shows as venues with empty teaser lines or
+ * markers that vanish once the client re-filter runs. This lives in a pure
+ * module (not inline in +page.svelte) so scripts/search-parity.test.ts can run
+ * the same fixtures through both halves and assert identical membership.
  *
  * The mirror is intentionally not bit-exact in two documented ways:
  *   • the server searches a chain's SHARED menu without per-location overrides,
  *     while the client filters the resolved (override-applied) menu — an item
  *     made unavailable at one branch simply drops from that card;
- *   • browse mode (no text, no diet) keeps every candidate here, whereas the
- *     server returns nothing (the caller only searches when a filter is set).
+ *   • unsearchable text (below the $lib/search gate) is filtered here over the
+ *     unfiltered cells, whereas the server treats such text as absent.
  */
 
 /** The item fields membership reads: its name, and the ids of its tags. */

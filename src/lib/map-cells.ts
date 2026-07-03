@@ -74,24 +74,3 @@ export function assembleCellsData(slices: Map<string, CellSlice>): MapCellsData 
 	for (const [key, slice] of slices) cells[key] = slice.locations.map((loc) => loc.id);
 	return { ...mergeCellSlices(slices.values()), cells };
 }
-
-/**
- * Merges two whole {@link MapData} payloads that may OVERLAP — unlike
- * {@link mergeCellSlices}, whose same-level slices partition venues and never
- * share one. The map page uses this to render the union of the global search
- * results and the viewport's browse cells while a search is active: a venue in
- * both payloads keeps `primary`'s copy (and `primary`'s position in the list,
- * so a nearest-first search set stays nearest-first); a menu carried by both
- * collapses to one entry under its menu_id.
- */
-export function mergeMapData<I extends MapItem>(
-	primary: MapData<I>,
-	extra: MapData<I>
-): MapData<I> {
-	const seen = new Set(primary.locations.map((loc) => loc.id));
-	return {
-		locations: [...primary.locations, ...extra.locations.filter((loc) => !seen.has(loc.id))],
-		menus: { ...extra.menus, ...primary.menus },
-		menuMeta: { ...extra.menuMeta, ...primary.menuMeta }
-	};
-}
