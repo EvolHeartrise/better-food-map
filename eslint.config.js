@@ -10,6 +10,12 @@ const gitignorePath = path.resolve(import.meta.dirname, '.gitignore');
 
 export default defineConfig(
 	includeIgnoreFile(gitignorePath),
+	// Never lint anything under .claude/ — it holds Claude Code local worktrees
+	// (each a full repo checkout with its own tsconfig.json). Without this, the
+	// `**/*.svelte` glob descends into them and typescript-eslint's projectService
+	// fails with "multiple candidate TSConfigRootDirs" (and can OOM). Global-ignores
+	// object (only `ignores`), so it applies to every later config block.
+	{ ignores: ['.claude/'] },
 	js.configs.recommended,
 	ts.configs.recommended,
 	svelte.configs.recommended,
