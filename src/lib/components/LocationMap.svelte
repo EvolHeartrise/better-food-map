@@ -1,7 +1,7 @@
 <script lang="ts">
 	import 'maplibre-gl/dist/maplibre-gl.css';
 	import { onMount } from 'svelte';
-	import type { Map as MapLibreMap, StyleSpecification } from 'maplibre-gl';
+	import type { LngLat, Map as MapLibreMap, StyleSpecification } from 'maplibre-gl';
 	import {
 		LabelEngine,
 		geoCellDegrees,
@@ -114,10 +114,11 @@
 	const VIEW_DEBOUNCE_MS = 250;
 
 	// --- Label overlay tuning -------------------------------------------------
-	// Below this zoom the map is curved enough (and the world dense enough) that
-	// names aren't worth drawing — the overlay renders nothing and the globe stays
-	// clean. Above it the declutter gap does the progressive reveal.
-	const MIN_OVERLAY_ZOOM = 6;
+	// The overlay draws at EVERY zoom — there is no display floor. Density on the
+	// zoomed-out globe is already bounded twice over (the declutter cell grows to
+	// ~59° at zoom 0, and the server sends at most ~200 grid-cell representatives),
+	// and venues on the far side of the globe are culled by `isOccluded` below, so
+	// the wide view stays clean without a zoom gate.
 	// Declutter grid for the name pills: keep at most NAME_PER_CELL pill per cell, sizing
 	// the cell so it's ≈ NAME_CELL_PX wide on screen at the current zoom. Density stays
 	// UNIFORM across the screen (a dense downtown thins to the same labels-per-area as a
@@ -279,6 +280,21 @@
 		return [lng, lat];
 	}
 
+	// Whether a lng/lat is hidden behind the globe for the current camera. Uses the
+	// transform's own `isLocationOccluded` — the same test MapLibre applies to its
+	// GL symbols — so labels vanish at exactly the limb the tiles render, instead of
+	// being flat-projected onto the screen from the far side (`map.project` happily
+	// projects back-of-globe points). The method is marked @internal upstream, hence
+	// the defensive probe: if a future maplibre-gl drops it, labels degrade to
+	// drawing everywhere (the old behavior), never to a crash. The flat Mercator
+	// transform occludes nothing, so no zoom gating is needed here.
+	function isOccluded(lng: number, lat: number): boolean {
+		if (!map || !lib) return false;
+		const t = (map as unknown as { transform?: { isLocationOccluded?: (p: LngLat) => boolean } })
+			.transform;
+		return t?.isLocationOccluded?.(new lib.LngLat(lng, lat)) ?? false;
+	}
+
 	// The map style: OpenStreetMap raster tiles on a 3D globe projection. MapLibre
 	// renders this flat (Web Mercator) when zoomed in and smoothly curves it into a
 	// globe as the user zooms out, with no work on our part. The `sky` atmosphere
@@ -344,8 +360,11 @@
 		// threshold) keeps the same cell, so the lattice and the surviving labels stay put;
 		// only a deliberate zoom past the threshold resizes it.
 		cellZoom = holdZoom(cellZoom, zoom, CELL_ZOOM_THRESHOLD);
+		// Drop back-of-globe venues BEFORE decluttering, so an occluded venue never
+		// claims a declutter cell or a MAX_VISIBLE slot — and, since the engine only
+		// lays out what it's given, hitTest stops matching it too.
 		const next = engine.recompute({
-			candidates,
+			candidates: candidates.filter((c) => !isOccluded(c.lng, c.lat)),
 			project,
 			width: overlayWidth,
 			height: overlayHeight,
@@ -378,6 +397,12 @@
 				const x = node.ax + node.ox;
 				const y = node.ay + node.oy;
 				node.el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%)`;
+				// The declutter pass already filters occluded venues out of the visible
+				// set, but it only runs every DECLUTTER_INTERVAL_MS while a globe pan
+				// carries venues across the limb continuously — this per-frame toggle
+				// covers the frames in between, so a pill slides to the globe's edge and
+				// disappears behind it instead of lingering flat-projected.
+				node.el.style.visibility = isOccluded(node.lng, node.lat) ? 'hidden' : '';
 			}
 			const movement = node.vx * node.vx + node.vy * node.vy;
 			if (movement > maxMovement) maxMovement = movement;
@@ -418,28 +443,19 @@
 		const cameraMoving = m.isMoving();
 		let simMoving = false;
 
-		if (m.getZoom() < MIN_OVERLAY_ZOOM) {
-			// Below the overlay floor, show nothing.
-			if (render.length) {
-				render = [];
-				renderSig = '';
-				engine.clear();
-			}
-		} else {
-			// A projector bound to the live camera (`m` is the narrowed, non-null map).
-			const project: Projector = (lng, lat) => m.project([lng, lat]);
+		// A projector bound to the live camera (`m` is the narrowed, non-null map).
+		const project: Projector = (lng, lat) => m.project([lng, lat]);
 
-			if (time - lastDeclutter > DECLUTTER_INTERVAL_MS) {
-				lastDeclutter = time;
-				recomputeVisible(project, m.getZoom());
-			}
-
-			// Re-project the name-pill anchors and advance the force model one step (each
-			// pill springs to its venue point and is pushed off any overlapping neighbour).
-			const names = engine.tick(project, SIM_CONFIG);
-			// Write each pill's transform; keep going while any is still moving enough to see.
-			if (writeTransforms(names) > SETTLE_KE_EPS) simMoving = true;
+		if (time - lastDeclutter > DECLUTTER_INTERVAL_MS) {
+			lastDeclutter = time;
+			recomputeVisible(project, m.getZoom());
 		}
+
+		// Re-project the name-pill anchors and advance the force model one step (each
+		// pill springs to its venue point and is pushed off any overlapping neighbour).
+		const names = engine.tick(project, SIM_CONFIG);
+		// Write each pill's transform; keep going while any is still moving enough to see.
+		if (writeTransforms(names) > SETTLE_KE_EPS) simMoving = true;
 
 		// Settle backstop: count consecutive frames the camera is still but the sim is
 		// not at rest; once that exceeds the budget, stop driving the loop even though

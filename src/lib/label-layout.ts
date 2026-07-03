@@ -459,7 +459,7 @@ export class LabelEngine {
 		return active;
 	}
 
-	/** Forget every pill (e.g. when the camera drops below the overlay floor). */
+	/** Forget every pill (on unmount). */
 	clear(): void {
 		this.nodes.clear();
 		this.visibleIds = [];
