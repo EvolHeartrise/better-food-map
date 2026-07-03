@@ -327,6 +327,30 @@ describe('LabelEngine', () => {
 		expect(items.some((i) => i.id === 'b')).toBe(true);
 	});
 
+	test('caller priority (the venue score) outranks the hash tie-break in a shared cell', () => {
+		// Give the WORSE-hashed candidate the higher priority, so a win can only
+		// come from the priority — never from the hash the old fallback used.
+		const [loHash, hiHash] = hashId('a') < hashId('b') ? ['a', 'b'] : ['b', 'a'];
+		const crowd: Candidate[] = [
+			{ id: loHash, name: 'Low hash, liked', lat: 5, lng: 5, priority: 3 },
+			{ id: hiHash, name: 'High hash, unliked', lat: 5.1, lng: 5.1, priority: 0 }
+		];
+		const items = new LabelEngine().recompute(makeOpts(crowd, null, 0));
+		expect(items.map((i) => i.id)).toEqual([loHash]);
+	});
+
+	test('equal priorities tie-break by the stable id hash, not input order', () => {
+		const crowd: Candidate[] = [
+			{ id: 'a', name: 'Alpha', lat: 5, lng: 5, priority: 2 },
+			{ id: 'b', name: 'Bravo', lat: 5.1, lng: 5.1, priority: 2 }
+		];
+		const expected = hashId('a') > hashId('b') ? 'a' : 'b';
+		const forward = new LabelEngine().recompute(makeOpts(crowd, null, 0));
+		const reversed = new LabelEngine().recompute(makeOpts([...crowd].reverse(), null, 0));
+		expect(forward.map((i) => i.id)).toEqual([expected]);
+		expect(reversed.map((i) => i.id)).toEqual([expected]);
+	});
+
 	test('tick re-projects anchors against the live camera', () => {
 		const engine = new LabelEngine();
 		engine.recompute(makeOpts(cands, 'sel', 0));
