@@ -68,9 +68,10 @@
 		// whenever `key` changes, so the parent controls exactly when a fly happens.
 		// Null leaves the camera untouched.
 		focus = null,
-		// Called (debounced) with the visible bounding box whenever the map settles
-		// after a pan/zoom, plus once on load. The parent fetches location data for
-		// this box, so only what's on screen is ever loaded.
+		// Called with the visible bounding box as the camera moves — throttled while
+		// a pan/zoom/flight is in progress, debounced once it settles — plus once on
+		// load. The parent fetches location data for this box, so only what's on
+		// (or about to be on) screen is ever loaded.
 		onviewchange
 	}: {
 		locations: Location[];
@@ -109,9 +110,16 @@
 	// each span, so labels just off screen are already loaded when the user nudges
 	// the map, and small pans don't trigger a refetch. 0.2 = 20% on every side.
 	const BOUNDS_PADDING = 0.2;
-	// Debounce (ms) before reporting a new viewport, so a drag or pinch settles into
-	// a single fetch rather than firing on every intermediate `moveend`.
+	// Debounce (ms) before reporting a new viewport after the camera settles, so a
+	// burst of `moveend`s (e.g. wheel-zoom steps) collapses into one trailing report.
 	const VIEW_DEBOUNCE_MS = 250;
+	// While the camera is STILL moving, report the viewport at most this often
+	// (leading-edge throttle on `move`), so data for newly exposed area starts
+	// loading mid-pan and mid-zoom instead of only after the gesture settles. The
+	// page's cell store and in-flight dedup make a redundant report nearly free —
+	// cells already fetched or fetching are skipped — so the only cost of an
+	// intermediate report is starting useful fetches sooner.
+	const VIEW_THROTTLE_MS = 250;
 
 	// --- Label overlay tuning -------------------------------------------------
 	// The overlay draws at EVERY zoom — there is no display floor. Density on the
@@ -229,6 +237,10 @@
 
 	// Pending debounced viewport report (see scheduleViewReport).
 	let viewTimer: ReturnType<typeof setTimeout> | null = null;
+	// When the viewport was last reported (performance.now()), for the mid-gesture
+	// throttle: shared by every report path so a settle report also opens a fresh
+	// throttle window.
+	let lastViewReport = 0;
 	// The last selected id we flew to, so re-renders (e.g. a viewport refetch) don't
 	// re-fly to an already-open location — only a genuine change of selection does.
 	let lastSelectedId: string | null = null;
@@ -523,6 +535,7 @@
 	}
 
 	function reportView() {
+		lastViewReport = performance.now();
 		const view = currentView();
 		if (view) onviewchange?.(view);
 	}
@@ -530,6 +543,13 @@
 	function scheduleViewReport() {
 		if (viewTimer) clearTimeout(viewTimer);
 		viewTimer = setTimeout(reportView, VIEW_DEBOUNCE_MS);
+	}
+
+	// Mid-gesture reporting: fired on every `move` frame, reports whenever the
+	// throttle window has elapsed, so a long drag/zoom/flight streams viewport
+	// reports every VIEW_THROTTLE_MS instead of staying silent until moveend.
+	function throttledViewReport() {
+		if (performance.now() - lastViewReport >= VIEW_THROTTLE_MS) reportView();
 	}
 
 	onMount(() => {
@@ -582,8 +602,11 @@
 			map.on('move', wake);
 			map.on('resize', wake);
 
-			// Report the viewport as it changes so the parent can load data for it.
-			// `moveend` fires after both pans and zooms (and programmatic flights) settle.
+			// Report the viewport as it changes so the parent can load data for it:
+			// throttled DURING movement (pans, zooms and programmatic flights all fire
+			// `move`), so fetching starts while the camera is still in motion, plus a
+			// debounced trailing report on `moveend` for the exact settled view.
+			map.on('move', throttledViewReport);
 			map.on('moveend', scheduleViewReport);
 
 			// Report the zoom live (every frame of a gesture or flight) so the landing can
