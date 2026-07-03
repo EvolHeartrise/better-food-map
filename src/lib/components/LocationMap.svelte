@@ -27,6 +27,10 @@
 		name: string;
 		latitude: number;
 		longitude: number;
+		// Importance rank for the label declutter: when venues compete for the same
+		// screen cell, the highest-score pill survives (server-derived — see
+		// MapLocation.score). Ties fall back to the engine's stable hash.
+		score: number;
 		// The food-item names this venue rotates through beneath its name. Empty when the
 		// venue has no menu (then only the name shows). The first is shown initially and
 		// the display cycles through the rest; "+N more" reports the count of the others.
@@ -256,14 +260,16 @@
 			id: l.id,
 			name: l.name,
 			lat: l.latitude,
-			lng: l.longitude
+			lng: l.longitude,
+			priority: l.score
 		}));
 		if (selected && !list.some((c) => c.id === selected.id)) {
 			list.push({
 				id: selected.id,
 				name: selected.name,
 				lat: selected.latitude,
-				lng: selected.longitude
+				lng: selected.longitude,
+				priority: selected.score
 			});
 		}
 		return list;
