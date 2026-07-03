@@ -29,3 +29,7 @@ vite.config.ts.timestamp-*
 
 # Local SQLite database
 data/
+
+# Claude Code local worktrees (never committed; each carries a tsconfig.json that
+# breaks typescript-eslint's project-root detection when eslint globs into them)
+.claude/worktrees/
