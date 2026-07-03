@@ -8,7 +8,7 @@
 // map gets two pins. This audit finds them after the fact: same-name (or
 // same-brand) pairs within a small radius, nearest-first, so the worst
 // offenders (metres apart) top the work-list. Each pair needs human/agent
-// verification against the venue's own locator before delete_location — two
+// verification against the venue's own locator before delete_locations — two
 // real branches CAN sit close (food court + street level).
 //
 // Reads only the live D1 (no OSM store). Unit-tested in
@@ -45,7 +45,7 @@ export interface DuplicatePair {
 	/**
 	 * "high" = almost certainly one venue stored twice (matching names within
 	 * ~30 m, or a shared phone number) — verify against the venue's own locator,
-	 * then delete_location the half with the weaker address. "review" = plausible
+	 * then delete_locations the half with the weaker address. "review" = plausible
 	 * but needs judgment (two real branches can sit this close).
 	 */
 	confidence: 'high' | 'review';
