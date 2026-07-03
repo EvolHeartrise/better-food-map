@@ -18,6 +18,8 @@
  *     unfiltered cells, whereas the server treats such text as absent.
  */
 
+import { foldAsciiCase } from './search';
+
 /** The item fields membership reads: its name, and the ids of its tags. */
 export interface SearchableItem {
 	item_name: string;
@@ -33,11 +35,13 @@ export interface SearchableLocation {
 /**
  * Whether a venue's NAME matches the active text query. False when there's no
  * text term (a diet-only filter never matches via the name — it acts on items).
- * `queryTerm` must be pre-normalised (trimmed + lowercased); `searchResults`
- * does this for its callers.
+ * `queryTerm` must be pre-normalised (trimmed + ASCII-folded); `searchResults`
+ * does this for its callers. Case folding is ASCII-ONLY (foldAsciiCase) to
+ * mirror the server's LIKE exactly — Unicode lowercasing would keep venues the
+ * filtered cell read drops (see $lib/search).
  */
 export function nameMatches(name: string, queryTerm: string): boolean {
-	return queryTerm !== '' && name.toLowerCase().includes(queryTerm);
+	return queryTerm !== '' && foldAsciiCase(name).includes(queryTerm);
 }
 
 /**
@@ -56,7 +60,7 @@ export function matchedItems<I extends SearchableItem>(
 	const textItems =
 		queryTerm === '' || nameMatches(loc.name, queryTerm)
 			? loc.menu
-			: loc.menu.filter((menuItem) => menuItem.item_name.toLowerCase().includes(queryTerm));
+			: loc.menu.filter((menuItem) => foldAsciiCase(menuItem.item_name).includes(queryTerm));
 	return diet === null
 		? textItems
 		: textItems.filter((menuItem) => menuItem.tags.some((tag) => tag.id === diet));
@@ -68,7 +72,7 @@ export function matchedItems<I extends SearchableItem>(
  * Under a search a venue is kept when its NAME matches (show all its items) or
  * at least one item matches; a name match with an active diet still requires a
  * diet-matching item (diet always narrows) — that falls out of `matchedItems`
- * being empty. `query` is normalised (trimmed + lowercased) here, so callers
+ * being empty. `query` is normalised (trimmed + ASCII-folded) here, so callers
  * may pass either the raw input or an already-normalised term.
  */
 export function searchResults<I extends SearchableItem, L extends { name: string; menu: I[] }>(
@@ -76,7 +80,7 @@ export function searchResults<I extends SearchableItem, L extends { name: string
 	query: string,
 	diet: string | null
 ): Array<{ loc: L; items: I[] }> {
-	const queryTerm = query.trim().toLowerCase();
+	const queryTerm = foldAsciiCase(query.trim());
 	const hasQuery = queryTerm !== '' || diet !== null;
 	const out: Array<{ loc: L; items: I[] }> = [];
 	for (const loc of locations) {

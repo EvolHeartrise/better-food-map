@@ -193,6 +193,35 @@ test('diet queries: narrowing on the SAME item agrees through both halves', asyn
 	await expectParity(db, ids, '', 'gluten_free'); // nothing carries it → both empty
 });
 
+// Case folding is ASCII-ONLY on BOTH halves: SQLite's LIKE folds A-Z alone, so
+// 'É' and 'é' stay distinct on the server — and the client folds with
+// foldAsciiCase to match exactly. (Unicode .toLowerCase() on the client would
+// keep venues the filtered cell read drops: a marker that vanishes the moment
+// the fetch lands — and would collapse store keys for queries the server
+// answers differently.)
+test('non-ASCII case is significant through both halves (ASCII-only folding)', async () => {
+	const db = freshDb();
+	const [cafe] = await insertLocations(db, [venue('Café Crème')]);
+	await insertFoods(db, [{ location_id: cafe, item_name: 'Crêpe Sucrée', price: 7 }]);
+	const ids = [cafe];
+
+	// The exact-accent query matches; ASCII letters fold both ways.
+	const hit = await searchMapData(db, BOX, { query: 'CAFé', dietTagId: null });
+	expect(hit.locations.map((l) => l.id)).toEqual([cafe]);
+	// A case-variant of the non-ASCII letter does NOT match (É ≠ é) — on the
+	// server, and therefore on the client too.
+	const miss = await searchMapData(db, BOX, { query: 'CAFÉ', dietTagId: null });
+	expect(miss.locations).toEqual([]);
+
+	// And membership stays identical through both halves for every variant,
+	// name and item dimensions alike.
+	await expectParity(db, ids, 'café');
+	await expectParity(db, ids, 'CAFé');
+	await expectParity(db, ids, 'CAFÉ');
+	await expectParity(db, ids, 'crêpe');
+	await expectParity(db, ids, 'CRÊPE');
+});
+
 // Browse (no text, no diet) is parity too now that the search rides the cell
 // read: an empty filter is simply the unfiltered read — every candidate — and
 // the client keeps everything as well.

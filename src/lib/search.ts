@@ -18,6 +18,20 @@
 export const SEARCH_MIN_RUN = 3;
 
 /**
+ * ASCII-only lowercase — the EXACT case folding SQLite's `LIKE` applies (it
+ * folds A-Z alone; 'É' and 'é' stay distinct). Every client-side membership
+ * comparison and every filter cache key must fold with THIS, never
+ * `toLowerCase()`: JS lowercasing is Unicode-aware, so it would equate case
+ * pairs the server distinguishes — the client filter would keep a venue the
+ * filtered cell read dropped (a marker that vanishes when the fetch lands),
+ * and two queries the server answers differently would collide on one cached
+ * (possibly empty) cell entry.
+ */
+export function foldAsciiCase(text: string): string {
+	return text.replace(/[A-Z]/g, (c) => c.toLowerCase());
+}
+
+/**
  * The longest run of characters carrying no LIKE wildcard/escape (`%`, `_`,
  * `\`). Splitting on exactly those characters mirrors `escapeLikePattern`
  * (db.ts): each run survives escaping verbatim, so a run of

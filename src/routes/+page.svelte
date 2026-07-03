@@ -21,7 +21,7 @@
 	import { matchedItems, searchResults } from '$lib/search-match';
 	import { idFromPath } from '$lib/location-path';
 	import { DEFAULT_MAP_CENTER } from '$lib/map-defaults';
-	import { searchableQuery } from '$lib/search';
+	import { foldAsciiCase, searchableQuery } from '$lib/search';
 	import { safeHttpUrl } from '$lib/safe-url';
 	import type { MapData, MapItem, MapLocation, Item, Bounds } from '$lib/server/db';
 
@@ -76,9 +76,12 @@
 
 	// The text query, normalised once and shared by the map item labels, the venue
 	// membership test and the applied-filter commit so they all agree on what
-	// "matches". `hasQuery` — text query or diet active — is what makes the cell
-	// fetch a SEARCH (and shows the spinner/announcement machinery).
-	const queryTerm = $derived(query.trim().toLowerCase());
+	// "matches". ASCII-only folding (foldAsciiCase, $lib/search) — the exact case
+	// folding the server's LIKE applies — so the local narrowing can never keep a
+	// venue the filtered cell read drops. `hasQuery` — text query or diet active —
+	// is what makes the cell fetch a SEARCH (and shows the spinner/announcement
+	// machinery).
+	const queryTerm = $derived(foldAsciiCase(query.trim()));
 	const hasQuery = $derived(queryTerm !== '' || diet !== null);
 	// The text actually sent with the cell fetch: the trimmed query once (and only
 	// once) the server's trigram index can accelerate it — a 3+ character
@@ -104,16 +107,20 @@
 	// `searching` is true while a FILTERED fetch is in flight and drives a spinner
 	// in the search pill; `fetchFailed` feeds the floating status line (plus its
 	// always-mounted aria-live twin) so a failed fetch says so instead of silently
-	// showing old data. Imperative flags rather than $effect.pending(): these are
-	// .then() chains, not awaits a boundary could count.
+	// showing old data. It records WHICH KIND of fetch failed — the wording must
+	// describe the request that actually broke, not whatever the query box holds
+	// by the time the line renders (typing a character mustn't relabel a browse
+	// failure as a search failure). Imperative flags rather than
+	// $effect.pending(): these are .then() chains, not awaits a boundary could
+	// count.
 	let searching = $state(false);
-	let fetchFailed = $state(false);
+	let fetchFailed = $state<false | 'browse' | 'search'>(false);
 	const fetchStatus = $derived(
-		fetchFailed
-			? hasQuery
-				? 'Search failed — showing previous results.'
-				: 'Couldn’t load places for this area — showing previous results.'
-			: ''
+		fetchFailed === 'search'
+			? 'Search failed — showing previous results.'
+			: fetchFailed === 'browse'
+				? 'Couldn’t load places for this area — showing previous results.'
+				: ''
 	);
 
 	// --- Applied filter (the debounced commit) ----------------------------------
@@ -138,23 +145,28 @@
 	let searchImmediate = false;
 	let flushSearch: (() => void) | null = null;
 	// The query, reduced to a stable string — the reactive trigger for the commit
-	// effect. Built from the GATED text (`searchText`, lowercased to match the
-	// server's case-insensitive LIKE), so typing through the sub-searchable
-	// prefixes of a term ("b", "bu") never commits a new filter, and a case-only
-	// edit (which can't change the results) doesn't either.
-	const querySignature = $derived(JSON.stringify({ query: searchText.toLowerCase(), diet }));
+	// effect. Built from the GATED text (`searchText`), ASCII-folded EXACTLY like
+	// the server's LIKE folds (foldAsciiCase — Unicode lowercasing would merge
+	// case pairs the server distinguishes, replaying one variant's cached cells,
+	// possibly empty, for the other). So typing through the sub-searchable
+	// prefixes of a term ("b", "bu") never commits a new filter, and an
+	// ASCII-case-only edit (which can't change the results) doesn't either.
+	const querySignature = $derived(JSON.stringify({ query: foldAsciiCase(searchText), diet }));
 
 	// Commit the live query into `appliedFilter` whenever its signature changes:
 	// after the typing debounce, at once for a discrete input, and at once when
 	// the filter empties — clearing must drop back to unfiltered data without a
-	// lag the user would read as a stuck search.
+	// lag the user would read as a stuck search. The committed text is the
+	// FOLDED form — semantically identical to the raw text on the server (LIKE
+	// folds ASCII itself), and it canonicalizes the wire arg so ASCII case
+	// variants share one colo cache entry.
 	$effect(() => {
 		// Read the signature so the effect re-runs when (and only when) the
 		// effective query changes; the value itself isn't otherwise needed.
 		void querySignature;
 		const commit = () => {
 			flushSearch = null;
-			appliedFilter = { q: searchText, diet };
+			appliedFilter = { q: foldAsciiCase(searchText), diet };
 		};
 		if (searchText === '' && diet === null) {
 			searchImmediate = false;
@@ -200,9 +212,11 @@
 		const filtered = filter.q !== '' || filter.diet !== null;
 		const level = levelForBounds(bounds);
 		const cells = cellsForBounds(bounds, levelCell(level));
-		// Lowercased text in the store key, mirroring querySignature: a case-only
-		// variant of a term is the same filter, so it replays the same cells.
-		const prefix = filtered ? `${filter.q.toLowerCase()}\u001f${filter.diet ?? ''}\u001f` : '';
+		// `filter.q` is committed pre-folded (see the commit effect), so the key
+		// equivalence-classes exactly the queries the server answers identically —
+		// no wider. The unit-separator delimiters keep the (q, diet, level)
+		// segments collision-free (free text could otherwise run into the diet id).
+		const prefix = filtered ? `${filter.q}\u001f${filter.diet ?? ''}\u001f` : '';
 		const storeKey = ([i, j]: [number, number]) => `${prefix}${level}/${cellKey(i, j)}`;
 		// SNAPSHOT the store hits now rather than re-reading the store when the
 		// fetch settles: a hit can TTL-expire mid-flight, and a second read would
@@ -244,12 +258,13 @@
 			})
 			// A failed fetch must not blank the map — keep the markers already on
 			// screen (the next pan/zoom issues a fresh request anyway) — but flag it
-			// so the status line can say the visible markers are stale.
+			// so the status line can say the visible markers are stale, worded for
+			// the kind of fetch that actually broke.
 			.catch((err) => {
 				console.error('map cells fetch failed', bounds, filter, err);
 				if (cancelled) return;
 				searching = false;
-				fetchFailed = true;
+				fetchFailed = filtered ? 'search' : 'browse';
 			});
 		return () => {
 			cancelled = true;
@@ -412,15 +427,18 @@
 	const RESULTS_LIST_MAX = 50;
 	const listedResults = $derived(results.slice(0, RESULTS_LIST_MAX));
 
-	// The count announced by the aria-live region. Only speaks once a SEARCH has
-	// settled — the live query has been committed (post-debounce) and its cell
-	// fetch has returned — so plain browsing and the mid-debounce window stay
-	// silent. Compared through the signature, so a case-only edit (same filter)
-	// doesn't mute an already-settled announcement.
+	// The count announced by the aria-live region. Only speaks once a real SEARCH
+	// has settled: the APPLIED filter is non-empty (sub-searchable text commits
+	// the empty filter, so "s"/"su" keystrokes never announce their transient
+	// local narrowing), it still matches the live query (mid-debounce edits stay
+	// silent), its cell fetch has returned, and that fetch SUCCEEDED — a failed
+	// search must read as failed, not announce a definitive count computed from
+	// stale markers.
 	const searchSettled = $derived(
-		hasQuery &&
+		(appliedFilter.q !== '' || appliedFilter.diet !== null) &&
 			!searching &&
-			appliedFilter.q.toLowerCase() === searchText.toLowerCase() &&
+			fetchFailed === false &&
+			appliedFilter.q === foldAsciiCase(searchText) &&
 			appliedFilter.diet === diet
 	);
 	const resultsAnnouncement = $derived(
