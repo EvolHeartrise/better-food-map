@@ -11,11 +11,13 @@
 //     in, more labels win a cell at higher zoom — that is how names reveal
 //     progressively without ever drawing a dot.
 //
-//   • `fillFreeSpace` then re-admits grid losers into genuinely FREE screen space:
-//     the grid bounds density but is blind to actual room, so without this pass two
-//     venues sharing a cell always cost one its pill even when both boxes fit. With
-//     hysteresis (admission needs clearance, only real overlap evicts), because
-//     screen distances aren't pan-invariant on the globe.
+//   • `fillFreeSpace` then re-admits grid losers whose overlap the force sim can
+//     RESOLVE: the grid bounds density but is blind to actual room, so without this
+//     pass two venues sharing a cell always cost one its pill — even two co-located
+//     mall stalls whose pills merely need a nudge apart. Admission is budgeted on
+//     least-axis penetration (the sim's own separating move), with hysteresis
+//     (entering is stricter than staying) because screen distances aren't
+//     pan-invariant on the globe.
 //
 //   • `stepSimulation` advances the force model one frame: every pill is pulled
 //     strongly toward its origin (a spring), so it wants to sit centred on its venue's
@@ -187,10 +189,14 @@ export function selectVisible(anchors: LabelAnchor[], perCell: number, max: numb
 // --- Free-space fill ---------------------------------------------------------
 // The declutter grid guarantees bounded, pan-stable density, but it is blind to
 // actual screen room: two venues sharing a grid cell always cost one of them its
-// pill even when their boxes wouldn't touch. This second pass re-admits grid
-// losers into genuinely free screen space, so neighbouring venues both show
-// whenever they fit — the grid stays the density GUARANTEE, the fill is
-// opportunistic on top.
+// pill even when the force sim could easily lay both out. This second pass
+// re-admits grid losers whose overlap the sim can RESOLVE — the grid stays the
+// density GUARANTEE, the fill is opportunistic on top. Admission is budgeted on
+// penetration, not clearance: two co-located venues (food stalls in a mall)
+// never have clear anchor-to-anchor room at ANY reachable zoom, but their pills
+// only overlap by a pill-height — exactly the least-penetration nudge
+// stepSimulation resolves — so both show, sitting a little off their shared
+// point. A pile-up beyond what the sim can spread stays hidden.
 
 /** A pill's projected anchor + half-box, the unit the free-space fill packs. */
 export type FillBox = {
@@ -203,48 +209,61 @@ export type FillBox = {
 };
 
 /**
- * Clearance (px) a grid loser's box must have from every shown pill to be
- * ADMITTED by the free-space fill, measured anchor-to-anchor (the sim's rest
- * state, where every unobstructed pill sits on its point).
+ * Total penetration (px, summed over every shown pill it overlaps, each pair
+ * measured on its least axis — the axis the sim separates along) a grid loser
+ * may ADD and still be admitted by the free-space fill. This is the nudging an
+ * admission asks of the layout: sized to admit a fully co-located PAIR even at
+ * the unmeasured-box estimate (2 × {@link FILL_EST_HALF_H_PX} = 52), while a
+ * third pill on the same point doubles the sum and stays out — so a mall pair
+ * splits apart and shows, a food-court pile-up doesn't jostle forever. Well
+ * inside the sim's maxLeader, so the resolving nudges stay near the anchors.
  */
-export const FILL_ADMIT_CLEARANCE_PX = 8;
+export const FILL_ADMIT_BUDGET_PX = 56;
 /**
- * The (smaller) clearance an already-admitted pill must keep to STAY admitted.
- * The gap between this and {@link FILL_ADMIT_CLEARANCE_PX} is the hysteresis
- * band: screen-space distances are NOT pan-invariant (on the globe a pan is a
- * sphere rotation, and even flat Mercator zoom scales them), so a pill that
+ * The (looser) penetration an already-admitted pill may carry and STAY
+ * admitted. The gap above {@link FILL_ADMIT_BUDGET_PX} is the hysteresis band:
+ * screen-space penetration is NOT pan-invariant (on the globe a pan is a
+ * sphere rotation, and even flat Mercator zoom scales it), so a pill that
  * barely qualified would otherwise flicker in and out as the camera slides
- * across the admission boundary. Entering costs full clearance; only genuine
+ * across the admission boundary. Entering is strict; only clearly-worse
  * overlap evicts.
  */
-export const FILL_RETAIN_CLEARANCE_PX = 0;
+export const FILL_RETAIN_BUDGET_PX = 64;
 /**
  * Half-box (px) assumed for a pill that has never been rendered, hence never
  * measured (the engine measures on DOM attach). Sized generously — a bit above
- * the typical two-line pill — so an estimate-admitted pill rarely turns out to
- * overlap once its real box lands; over-estimating only delays an admission
- * by a pass, while under-estimating admits a pill that then must be evicted.
+ * the typical two-line pill — so an estimate admission rarely turns out worse
+ * once its real box lands; over-estimating only delays an admission by a
+ * pass, while under-estimating admits a pill that then must be evicted.
  */
 export const FILL_EST_HALF_W_PX = 76;
 export const FILL_EST_HALF_H_PX = 26;
 
-/** Whether two boxes are closer than `clearance` on both axes (i.e. conflict). */
-function boxesConflict(a: FillBox, b: FillBox, clearance: number): boolean {
-	return (
-		Math.abs(a.x - b.x) < a.hw + b.hw + clearance && Math.abs(a.y - b.y) < a.hh + b.hh + clearance
-	);
+/**
+ * How deeply two boxes interpenetrate on their LEAST axis (0 when apart) — the
+ * separating nudge stepSimulation's collision pass would apply to the pair.
+ */
+function pairPenetration(a: FillBox, b: FillBox): number {
+	const px = a.hw + b.hw - Math.abs(a.x - b.x);
+	const py = a.hh + b.hh - Math.abs(a.y - b.y);
+	return px > 0 && py > 0 ? Math.min(px, py) : 0;
 }
 
 /**
- * The grid losers to show anyway because they fit in free screen space: greedy
- * box packing in descending priority order against everything already shown.
- * Previously-admitted pills (`prevAdmitted`) re-qualify first, against the
- * lenient retain clearance — the hysteresis that keeps a pan from churning the
- * admitted set — then new admissions must clear the full admit clearance, each
- * claiming its box before lower-priority candidates test theirs. `budget` caps
- * how many admissions may be added on top of the kept set (the caller passes
- * `max - kept`, so the global pill ceiling holds). O(rest × shown) axis-aligned
- * box tests, bounded by the payload caps upstream.
+ * The grid losers to show anyway because the sim can lay them out: greedy
+ * admission in descending priority order, each candidate charged the TOTAL
+ * least-axis penetration its box adds against everything already shown and
+ * admitted while under the budget. Previously-admitted pills (`prevAdmitted`)
+ * re-qualify first, against the looser retain budget — the hysteresis that
+ * keeps a pan from churning the admitted set, and lets an incumbent hold its
+ * space against a higher-priority newcomer (churn again) — then new
+ * admissions, each claiming their box before lower-priority candidates test
+ * theirs. `budget` caps how many admissions may be added on top of the kept
+ * set (the caller passes `max - kept`, so the global pill ceiling holds).
+ * O(rest × shown) axis-aligned box tests, bounded by the payload caps
+ * upstream. Greedy pairwise-at-anchor sums don't PROVE the final multi-pill
+ * layout is overlap-free — the sim's settle backstop covers the rare
+ * over-constrained cluster.
  */
 export function fillFreeSpace(
 	kept: FillBox[],
@@ -264,8 +283,13 @@ export function fillFreeSpace(
 	);
 	for (const box of ordered) {
 		if (admitted.size >= budget) break;
-		const clearance = prevAdmitted.has(box.id) ? FILL_RETAIN_CLEARANCE_PX : FILL_ADMIT_CLEARANCE_PX;
-		if (shown.some((s) => boxesConflict(box, s, clearance))) continue;
+		const allowance = prevAdmitted.has(box.id) ? FILL_RETAIN_BUDGET_PX : FILL_ADMIT_BUDGET_PX;
+		let need = 0;
+		for (const s of shown) {
+			need += pairPenetration(box, s);
+			if (need > allowance) break;
+		}
+		if (need > allowance) continue;
 		admitted.add(box.id);
 		shown.push(box);
 	}
@@ -472,10 +496,10 @@ export class LabelEngine {
 		}
 
 		const keep = selectVisible(anchors, perCell, max);
-		// Second pass: grid losers whose boxes fit in genuinely free screen space
-		// are shown anyway (see fillFreeSpace) — the grid bounds density, the fill
-		// stops it hiding a venue no shown pill actually needs the room of. The
-		// budget keeps the global ceiling: kept + admitted ≤ max.
+		// Second pass: grid losers whose overlap the force sim can resolve are shown
+		// anyway (see fillFreeSpace) — the grid bounds density, the fill stops it
+		// hiding a venue the layout actually has room for (nudged pills included).
+		// The count budget keeps the global ceiling: kept + admitted ≤ max.
 		const keptBoxes: FillBox[] = [];
 		const restBoxes: FillBox[] = [];
 		for (const a of anchors) {

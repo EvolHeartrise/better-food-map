@@ -136,9 +136,10 @@
 	// UNIFORM across the screen (a dense downtown thins to the same labels-per-area as a
 	// sparse suburb) and the count handed to the force sim stays bounded — and so
 	// settle-able. On top of the grid, the engine's free-space fill re-admits cell
-	// losers whose boxes fit in genuinely empty screen room (see fillFreeSpace in
-	// $lib/label-layout), so two close-but-clear venues both label; MAX_VISIBLE
-	// bounds grid winners and fill admissions together. The cell is computed in DEGREES from the zoom (geoCellDegrees) and the
+	// losers whose overlap the force sim can resolve (see fillFreeSpace in
+	// $lib/label-layout) — so two neighbouring venues, co-located stalls included,
+	// both label and merely nudge apart; MAX_VISIBLE bounds grid winners and fill
+	// admissions together. The cell is computed in DEGREES from the zoom (geoCellDegrees) and the
 	// bucketing is geographic, NOT screen-space: a venue's lng/lat doesn't move when the
 	// camera pans, so its cell — and which pill wins it — is pan-invariant on the globe
 	// projection as well as flat Mercator (a screen-space lattice is not, because a globe
