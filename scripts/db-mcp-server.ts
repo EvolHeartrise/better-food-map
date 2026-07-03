@@ -39,7 +39,6 @@ import {
 	chunkLocationInserts,
 	insertFoods,
 	updateLocations,
-	deleteLocation,
 	setLocationClosed,
 	getBrands,
 	getBrandById,
@@ -249,7 +248,7 @@ const SERVER_INSTRUCTIONS =
 	'every branch with OSM-verbatim coordinates/addresses in one call. After bulk imports, ' +
 	'audit_locations ' +
 	'(check: "duplicate_locations") finds same-name pairs a few metres apart — OSM sometimes maps one ' +
-	`venue twice; verify against the venue's own locator, then delete_location the extra row, or ` +
+	`venue twice; verify against the venue's own locator, then delete_locations the extra row, or ` +
 	'mark_not_duplicate a verified two-real-venues pair so it is never re-flagged.\n\n' +
 	`${MODEL_OVERVIEW}\n\nTag policy: ${TAG_POLICY}\n\n` +
 	'Field policies — the full rules the terse per-field descriptions point to:\n\n' +
@@ -1163,7 +1162,7 @@ const auditLocationsArgs = v.object({
 				'phone/website/postcode, a `same_phone` flag (a shared phone ≈ the same store) and a `confidence` ' +
 				'classification: "high" (name match within ~30 m, or shared phone) vs "review". Nearest pairs ' +
 				"first; scope a post-import sweep with `brand_id`. Verify each against the venue's own store " +
-				'locator before delete_location — two real branches CAN sit close together.\n' +
+				'locator before delete_locations — two real branches CAN sit close together.\n' +
 				'• "empty_menu" — OPEN locations whose EFFECTIVE menu has fewer than `min_items` items (default ' +
 				'1, so only truly-empty menus; raise it to hunt suspiciously thin ones). Effective count = the ' +
 				"items on the location's menu (its private menu, or a chain branch's shared menu) MINUS the ones " +
@@ -1640,7 +1639,7 @@ async function nearDuplicateWarnings(
 				warnings.push(
 					`"${it.name}"${it.osm_id ? ` (${it.osm_id})` : ''} was created ${Math.round(d)} m from ` +
 						`existing same-name location ${loc.id} — possibly the same venue mapped twice in OSM. ` +
-						`Verify (e.g. against the chain's own store locator) and delete_location the duplicate row.`
+						`Verify (e.g. against the chain's own store locator) and delete_locations the duplicate row.`
 				);
 				break;
 			}
@@ -1658,7 +1657,7 @@ async function nearDuplicateWarnings(
 					`"${it.name}"${it.osm_id ? ` (${it.osm_id})` : ''} and "${other.it.name}"` +
 						`${other.it.osm_id ? ` (${other.it.osm_id})` : ''} in this batch are only ` +
 						`${Math.round(d)} m apart — possibly one venue carried twice in OSM. Verify and ` +
-						`delete_location the duplicate row.`
+						`delete_locations the duplicate row.`
 				);
 			}
 		}
@@ -2197,18 +2196,6 @@ const tools = [
 			const { updatedIds, notFoundIds } = await updateLocations(getDb(), patches);
 			return { updated: updatedIds.length, updated_ids: updatedIds, not_found_ids: notFoundIds };
 		}
-	}),
-	defineTool({
-		name: 'delete_location',
-		annotations: DESTRUCTIVE,
-		description:
-			'HARD-delete a location row. Cascades its sources, per-item overrides, and any user LIKES of the ' +
-			'venue (liked_locations); its private menu + items are left orphaned, not removed. Returns ' +
-			'{ deleted: true } if a row was removed. Prefer close_location for a venue that has permanently ' +
-			'closed — that preserves the likes and keeps the record for analysis; reserve delete_location for ' +
-			'a mistaken/duplicate row that should never have existed.',
-		schema: idArgs,
-		handler: async ({ id }) => ({ deleted: await deleteLocation(getDb(), id) })
 	}),
 	defineTool({
 		name: 'delete_locations',
@@ -2876,7 +2863,7 @@ const osmTools = [
 			'update_locations), "missing_address" (empty or streetless addresses, with the OSM address to ' +
 			'backfill where available), "duplicate_locations" (same-name/same-brand pairs within a small ' +
 			"radius — probably one venue stored twice; verify against the venue's own locator, then EITHER " +
-			'delete_location the extra row OR record a confirmed two-real-venues pair with ' +
+			'delete_locations the extra row OR record a confirmed two-real-venues pair with ' +
 			'mark_not_duplicate so it stops being re-flagged — such pairs are counted in ' +
 			'`suppressed_reviewed`, never re-listed), or "empty_menu" (open venues whose effective menu is ' +
 			'empty or thinner than `min_items` — they violate the EXHAUSTIVE-menu policy; backfill with ' +
@@ -2929,7 +2916,7 @@ const osmTools = [
 			'evidence, and put that evidence in `reason`. The verdict is per-pair and survives until either ' +
 			'location is deleted (it cascades away with the row). Idempotent: re-marking replaces the ' +
 			'reason/date. Pass `revoke: true` to withdraw a verdict so the pair audits normally again. For the ' +
-			'opposite verdict — one venue stored twice — do NOT use this; delete_location the redundant row.',
+			'opposite verdict — one venue stored twice — do NOT use this; delete_locations the redundant row.',
 		schema: markNotDuplicateArgs,
 		handler: async (input) => {
 			if (input.revoke) {

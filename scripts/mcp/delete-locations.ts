@@ -3,7 +3,7 @@
 // its own module so it is unit-testable without importing db-mcp-server.ts (which
 // opens a stdio transport on import).
 //
-// Same caveat as the single delete_location: a hard delete cascades a venue's
+// A hard delete cascades a venue's
 // sources/overrides/likes and orphans its private menu — PREFER close_location for
 // a real venue that has permanently closed (it preserves likes). Reserve this for
 // mistaken/duplicate rows.
