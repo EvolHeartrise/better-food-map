@@ -117,9 +117,9 @@
 	let fetchFailed = $state<false | 'browse' | 'search'>(false);
 	const fetchStatus = $derived(
 		fetchFailed === 'search'
-			? 'Search failed — showing previous results.'
+			? 'Search failed - showing previous results.'
 			: fetchFailed === 'browse'
-				? 'Couldn’t load places for this area — showing previous results.'
+				? 'Couldn’t load places for this area - showing previous results.'
 				: ''
 	);
 
@@ -584,8 +584,8 @@
 			count > 0 ? `${count} menu item${count === 1 ? '' : 's'}` : ''
 		].filter(Boolean);
 		return {
-			title: `${headVenue.name} — BetterFoodMaps`,
-			description: `${headVenue.name} on BetterFoodMaps${parts.length > 0 ? ` — ${parts.join(' · ')}` : ''}.`,
+			title: `${headVenue.name} - BetterFoodMaps`,
+			description: `${headVenue.name} on BetterFoodMaps${parts.length > 0 ? ` - ${parts.join(' · ')}` : ''}.`,
 			url: `${CANONICAL_ORIGIN}/locations/${encodeURIComponent(headVenue.id)}`
 		};
 	});
