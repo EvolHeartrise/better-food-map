@@ -1,7 +1,8 @@
 /// <reference types="bun-types" />
-// Exercises the FTS5 trigram path behind getSearchMapData (migration 0016). The
-// search's text matching now resolves through the locations_fts / items_fts
-// mirrors, so these tests pin down the two things that must hold forever:
+// Exercises the FTS5 trigram path behind the filtered cell read (searchMembership
+// inside getMapCellsData; migration 0016). The search's text matching resolves
+// through the locations_fts / items_fts mirrors, so these tests pin down the two
+// things that must hold forever:
 //
 //   1. SEMANTICS MATCH THE CLIENT. The client mirrors the server's membership
 //      with case-insensitive substring `.includes()` (src/lib/search-match.ts,
@@ -10,10 +11,12 @@
 //      3+ char wildcard-free run — the FTS route must match exactly what a bare
 //      `LIKE '%q%' ESCAPE '\'` over the base tables matched: interior
 //      substrings, ASCII case-insensitivity, literal `%`/`_` wildcards in the
-//      query, the venue-name OR item-name membership with the diet filter
-//      narrowing on the SAME item, and nearest-first ordering. Text BELOW the
-//      gate (short/wildcard-only) is treated as absent — never full-scanned
-//      (issues #103/#104).
+//      query, and the venue-name OR item-name membership with the diet filter
+//      narrowing on the SAME item. Text BELOW the gate (short/wildcard-only) is
+//      treated as absent — never full-scanned (issues #103/#104) — degrading
+//      the filter to diet-only, or with no diet to the plain browse read (the
+//      same thing the client renders for such text: everything, narrowed
+//      locally).
 //
 //   2. THE MIRRORS STAY IN SYNC. Every insert/rename/delete of a location or
 //      item flows through the 0016 triggers, so a renamed venue is found under
@@ -23,7 +26,6 @@
 
 import { test, expect } from 'bun:test';
 import {
-	getSearchMapData,
 	insertLocations,
 	insertFoods,
 	insertBrand,
@@ -37,7 +39,7 @@ import {
 	setLocationClosed
 } from '../src/lib/server/db';
 import { searchableQuery, longestLiteralRun } from '../src/lib/search';
-import { freshDb } from './test-d1';
+import { freshDb, searchMapData } from './test-d1';
 import type { TestD1 } from './test-d1';
 
 const addr = {
@@ -50,11 +52,13 @@ const addr = {
 	website: null
 };
 
-const anchor = { lat: 49.28, lng: -123.12 };
+// A box covering every fixture venue below (they spread ~0.01° per index from
+// the base point), so a full-level filtered read over it IS "the matches".
+const BOX = { minLat: 49.2, maxLat: 49.5, minLng: -123.4, maxLng: -123.0 };
 
-/** Ids returned by a text(+diet) search, anchored at the fixed test point. */
+/** Ids returned by a text(+diet) filtered cell read over the fixture box. */
 async function searchIds(db: TestD1, query: string, dietTagId: string | null = null) {
-	const res = await getSearchMapData(db, { query, dietTagId, ...anchor });
+	const res = await searchMapData(db, BOX, { query, dietTagId });
 	return res.locations.map((l) => l.id);
 }
 
@@ -89,18 +93,21 @@ test('search matches interior substrings of venue and item names, case-insensiti
 // Queries shorter than a trigram can't use the index — running them would full-
 // scan BOTH mirrors (issues #103/#104) — so the server treats them as absent.
 // The client applies the same gate and never sends them; it filters the venues
-// already on screen locally instead.
+// already on screen locally instead — over the UNFILTERED cells, which is
+// exactly what the degraded server read returns.
 test('text below the trigram width is treated as absent, never full-scanned', async () => {
 	const db = freshDb();
-	const [pho] = await insertLocations(db, [venue('Pho King')]);
+	const [pho, taco] = await insertLocations(db, [venue('Pho King'), venue('Taco Stand', 1)]);
 	await insertFoods(db, [
 		{ location_id: pho, item_name: 'Ox Tail Soup', tags: ['vegan'], price: 9 }
 	]);
 
-	// Short text with no diet: no searchable dimension at all → the empty guard.
-	expect(await searchIds(db, 'ph')).toEqual([]);
-	expect(await searchIds(db, 'x')).toEqual([]);
-	// With a diet active the search degrades to diet-only rather than blanking.
+	// Short text with no diet: no searchable dimension at all → the plain browse
+	// read (EVERY venue, not just would-be matches — 'ph' never filtered).
+	expect((await searchIds(db, 'ph')).toSorted()).toEqual([pho, taco].toSorted());
+	expect((await searchIds(db, 'x')).toSorted()).toEqual([pho, taco].toSorted());
+	// With a diet active the filter degrades to diet-only rather than widening
+	// back to browse.
 	expect(await searchIds(db, 'ph', 'vegan')).toEqual([pho]);
 	// At the trigram width the text dimension kicks in.
 	expect(await searchIds(db, 'pho')).toEqual([pho]);
@@ -131,11 +138,12 @@ test('LIKE wildcard characters in the query match literally', async () => {
 	// Wildcards stay literal through the ITEM dimension too.
 	expect(await searchIds(db, '50% off')).toEqual([kale]);
 	// Wildcard-only / wildcard-broken text has no run the index could serve:
-	// treated as absent, not full-scanned ('%' used to mean "a name containing a
-	// percent sign" — now it is simply not searchable).
-	expect(await searchIds(db, '%')).toEqual([]);
-	expect(await searchIds(db, 'r_s')).toEqual([]);
-	expect(await searchIds(db, '\\')).toEqual([]);
+	// treated as absent, not full-scanned — the read degrades to plain browse
+	// (all four fixture venues), exactly what the client shows while narrowing
+	// such text locally.
+	expect((await searchIds(db, '%')).length).toBe(4);
+	expect((await searchIds(db, 'r_s')).length).toBe(4);
+	expect((await searchIds(db, '\\')).length).toBe(4);
 });
 
 test('diet narrows a name match, and text+diet must hold on the SAME item', async () => {
@@ -164,19 +172,6 @@ test('diet narrows a name match, and text+diet must hold on the SAME item', asyn
 
 	expect((await searchIds(db, 'burrito')).toSorted()).toEqual([palace, barn, taco, joe].toSorted());
 	expect((await searchIds(db, 'burrito', 'vegan')).toSorted()).toEqual([palace, joe].toSorted());
-});
-
-test('matches come back nearest the anchor first', async () => {
-	const db = freshDb();
-	// Same latitude, increasing longitude distance from the anchor — inserted shuffled
-	// so the order can only come from the distance ranking.
-	const [far, near, mid] = await insertLocations(db, [
-		{ ...venue('Noodle Far'), longitude: anchor.lng - 0.3 },
-		{ ...venue('Noodle Near'), longitude: anchor.lng - 0.01 },
-		{ ...venue('Noodle Mid'), longitude: anchor.lng - 0.1 }
-	]);
-
-	expect(await searchIds(db, 'noodle')).toEqual([near, mid, far]);
 });
 
 test('sync triggers: a renamed venue is found under its new name only; a deleted one not at all', async () => {
@@ -262,7 +257,7 @@ test('closed venues stay out of search results, reopened ones return', async () 
 });
 
 // The pure gate itself ($lib/search) — the single definition of "searchable"
-// shared by the map page (skip the request) and getSearchMapData (ignore the
+// shared by the map page (send no text) and the filtered cell read (ignore the
 // text). Pinned here so the two sides can't drift.
 test('searchableQuery gates on a 3+ character wildcard-free run', () => {
 	// Short text, however padded, is unsearchable.

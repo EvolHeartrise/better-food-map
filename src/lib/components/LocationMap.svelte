@@ -63,10 +63,10 @@
 		// plus once on load. The landing uses this to drive itself: it shows while the
 		// map is zoomed out and hides once the user zooms in (and returns on zoom-out).
 		onzoom,
-		// A point to fly the camera to (without selecting it) — used by global search
-		// to bring the nearest match into view. The camera flies whenever `key`
-		// changes, so the parent controls exactly when a fly happens (it omits it when
-		// the target is already on screen). Null leaves the camera untouched.
+		// A point to fly the camera to (without selecting it) — used by the landing's
+		// "Start using" button to open on the visitor's city. The camera flies
+		// whenever `key` changes, so the parent controls exactly when a fly happens.
+		// Null leaves the camera untouched.
 		focus = null,
 		// Called (debounced) with the visible bounding box whenever the map settles
 		// after a pan/zoom, plus once on load. The parent fetches location data for
@@ -96,9 +96,9 @@
 	const DEFAULT_ZOOM = 12;
 	// Zoom level used when flying to a single selected location.
 	const SELECTED_ZOOM = 15;
-	// Minimum zoom when flying to a search's nearest match: if the user is already
-	// zoomed further in we keep their zoom (just recenter), but from a zoomed-out
-	// globe we pull in to at least a city view so the match is legible on arrival.
+	// Minimum zoom when flying to a focus target: if the user is already zoomed
+	// further in we keep their zoom (just recenter), but from a zoomed-out globe
+	// we pull in to at least a city view so the area is legible on arrival.
 	const FOCUS_MIN_ZOOM = 12;
 	// Fly animation duration when centering on a selected location, in milliseconds.
 	const FLY_DURATION_MS = 600;
@@ -637,10 +637,10 @@
 		wake();
 	});
 
-	// Fly to a search focus target (the nearest match) when its key changes. Keeps
-	// the user's zoom if they're already closer than FOCUS_MIN_ZOOM, so a fly from a
-	// street-level view doesn't jump back out. Unlike selection, this never selects
-	// or highlights — it only moves the camera so the nearest result is on screen.
+	// Fly to a focus target when its key changes. Keeps the user's zoom if
+	// they're already closer than FOCUS_MIN_ZOOM, so a fly from a street-level
+	// view doesn't jump back out. Unlike selection, this never selects or
+	// highlights — it only moves the camera.
 	$effect(() => {
 		if (!ready) return;
 		const f = focus;
