@@ -47,8 +47,11 @@ import {
 	createLocationsOutput,
 	updateLocationsOutput,
 	createItemsOutput,
-	updateItemsOutput
+	updateItemsOutput,
+	createChainOutput,
+	deleteLocationsOutput
 } from './output-schemas';
+import { itemNameView, menuItemsSummary } from './menu-views';
 
 // --- projections copied verbatim from the server handlers -------------------
 // (itemWithinParent / projectLocationOverview live in db-mcp-server.ts, which we
@@ -213,6 +216,24 @@ test('get_location output validates for both a chain branch and an independent v
 	}
 });
 
+test('get_location output validates for the names and summary views', async () => {
+	const db = freshDb();
+	const { indieId } = await seedRich(db);
+	const location = present(await getLocationById(db, indieId));
+	const menu = await getFoodByLocation(db, indieId);
+	const overrides = await getLocationItemOverrides(db, indieId);
+	const currency = menu[0]?.currency;
+	const base = { ...location, ...(currency ? { currency } : {}) };
+
+	// names view: lean per-item shape.
+	const names = { ...base, menu: menu.map(itemNameView), overrides };
+	expect(() => v.parse(getLocationOutput, names)).not.toThrow();
+
+	// summary view: counts + histogram, no `menu` array.
+	const summary = { ...base, ...menuItemsSummary(menu), overrides };
+	expect(() => v.parse(getLocationOutput, summary)).not.toThrow();
+});
+
 test('list_locations output validates for both the paged and count_only shapes', async () => {
 	const db = freshDb();
 	await seedRich(db);
@@ -289,4 +310,21 @@ test('create_items output validates (with and without name_collisions)', () => {
 	const without = { created: 2, item_ids: ['it-1', 'it-2'], skipped_existing_ids: ['it-0'] };
 	expect(() => v.parse(createItemsOutput, withColl)).not.toThrow();
 	expect(() => v.parse(createItemsOutput, without)).not.toThrow();
+});
+
+test('create_chain / delete_locations outputs validate (full and minimal)', () => {
+	const chainFull = {
+		brand_id: 'b-1',
+		menu_id: 'm-1',
+		item_ids: ['it-1', 'it-2'],
+		created_items: 2,
+		already_existed: { brand: true, menu: false },
+		warnings: ['A brand named "X" already exists']
+	};
+	const chainMin = { brand_id: 'b-1', menu_id: 'm-1', item_ids: [], created_items: 0 };
+	expect(() => v.parse(createChainOutput, chainFull)).not.toThrow();
+	expect(() => v.parse(createChainOutput, chainMin)).not.toThrow();
+
+	const del = { deleted: 1, deleted_ids: ['loc-1'], not_found_ids: ['missing'] };
+	expect(() => v.parse(deleteLocationsOutput, del)).not.toThrow();
 });
