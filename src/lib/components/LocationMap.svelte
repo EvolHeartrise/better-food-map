@@ -17,11 +17,11 @@
 	// visible area.
 	import type { Bounds } from '$lib/bounds';
 
-	// Only the fields the map actually needs. The label shows the venue name plus, on a
-	// second line, a rotating display of the venue's food items (its whole menu, or just
-	// the items matching an active filter) with a "+N more" count. Kept structural
-	// (rather than derived from a remote's return type) so any location-shaped object can
-	// be passed in.
+	// Only the fields the map actually needs. The label shows the venue name — with a
+	// count of the venue's food items beside it (its whole menu, or just the items
+	// matching an active filter) — plus, on a second line, a rotating display of those
+	// items. Kept structural (rather than derived from a remote's return type) so any
+	// location-shaped object can be passed in.
 	type Location = {
 		id: string;
 		name: string;
@@ -32,8 +32,9 @@
 		// MapLocation.score). Ties fall back to the engine's stable hash.
 		score: number;
 		// The food-item names this venue rotates through beneath its name. Empty when the
-		// venue has no menu (then only the name shows). The first is shown initially and
-		// the display cycles through the rest; "+N more" reports the count of the others.
+		// venue has no menu (then only the name shows, with no count). Its length is the
+		// "N items" count shown beside the name; the first is shown initially and the
+		// display cycles through the rest.
 		items: string[];
 	};
 
@@ -725,18 +726,23 @@
 				class:pill--has-item={current !== null}
 				{@attach pill(item.id)}
 			>
-				<span class="pill__name">{item.name}</span>
-				<!-- The rotating food-item line: the current item (ellipsized within a fixed
-				     box so the pill never resizes as it cycles) and a "+N more" count of the
-				     others. Absent when the venue has no items to show. -->
+				<!-- Top row: the venue name, with the count of items matching the active
+				     filter (its whole menu when nothing is filtered) pinned to the right.
+				     The count is absent when the venue has no items to show. -->
+				<div class="pill__head">
+					<span class="pill__name">{item.name}</span>
+					{#if names.length > 0}
+						<span class="pill__count">{names.length} {names.length === 1 ? 'item' : 'items'}</span>
+					{/if}
+				</div>
+				<!-- The rotating food-item line: the current item, ellipsized within a fixed
+				     box so the pill never resizes as it cycles. Absent when the venue has no
+				     items to show. -->
 				{#if current !== null}
 					<span class="pill__sub">
 						{#key current}
 							<span class="pill__item">{current}</span>
 						{/key}
-						{#if names.length > 1}
-							<span class="pill__more">+{names.length - 1} more</span>
-						{/if}
 					</span>
 				{/if}
 			</div>
@@ -789,25 +795,46 @@
 	}
 
 	/* A pill that carries a rotating food-item line gets a comfortable minimum width so
-	   the line stays legible (and the "+N more" count has room) even under a short venue
-	   name. The width is then fixed for that pill, so the rotating item — which ellipsizes
-	   within it — never resizes the pill or perturbs the force layout as it cycles. */
+	   the line stays legible even under a short venue name. The width is then fixed for
+	   that pill, so the rotating item — which ellipsizes within it — never resizes the
+	   pill or perturbs the force layout as it cycles. */
 	.pill--has-item {
 		min-width: 8rem;
 		max-width: 15rem;
 	}
 
-	.pill__name {
-		white-space: nowrap;
-		font-weight: 500;
-	}
-
-	/* The second line: the rotating item name (flexes and ellipsizes) followed by the
-	   "+N more" count pinned to the right. */
-	.pill__sub {
+	/* The top line: the venue name (flexes and ellipsizes) followed by the item count
+	   pinned to the right. */
+	.pill__head {
 		display: flex;
 		align-items: baseline;
 		gap: 0.45em;
+	}
+
+	.pill__name {
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		white-space: nowrap;
+		text-overflow: ellipsis;
+		font-weight: 500;
+	}
+
+	/* The item count, sitting next to the name and never shrinking so it stays legible
+	   under a long (ellipsized) venue name. */
+	.pill__count {
+		flex: none;
+		color: rgba(0, 0, 0, 0.45);
+		font-size: 11px;
+		font-weight: 600;
+		font-variant-numeric: tabular-nums;
+	}
+
+	/* The second line: the rotating item name, which flexes and ellipsizes within the
+	   pill's fixed width. */
+	.pill__sub {
+		display: flex;
+		align-items: baseline;
 		margin-top: 1px;
 		font-size: 11px;
 	}
@@ -821,14 +848,6 @@
 		color: #2f6f4f;
 		/* A quick fade as each item swaps in (the element is re-keyed per rotation). */
 		animation: pill-item-in 0.35s ease;
-	}
-
-	.pill__more {
-		flex: none;
-		margin-left: auto;
-		color: rgba(0, 0, 0, 0.45);
-		font-weight: 600;
-		font-variant-numeric: tabular-nums;
 	}
 
 	@keyframes pill-item-in {
@@ -856,7 +875,7 @@
 		color: rgba(255, 255, 255, 0.92);
 	}
 
-	.pill--selected .pill__more {
+	.pill--selected .pill__count {
 		color: rgba(255, 255, 255, 0.7);
 	}
 
