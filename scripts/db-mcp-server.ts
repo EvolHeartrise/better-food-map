@@ -85,6 +85,24 @@ import { selectChainCandidates, partitionImportable } from './osm/import-chain';
 import { findCoordinateDrift } from './osm/find-coordinate-drift';
 import { findMissingAddress } from './osm/find-missing-address';
 import { findDuplicateLocations } from './osm/find-duplicate-locations';
+import { findIncompleteMenus } from './osm/find-incomplete-menus';
+import {
+	resolveListLimit,
+	resolveListOffset,
+	buildListLocationsPage
+} from './mcp/list-locations-page';
+import {
+	listLocationsOutput,
+	getLocationOutput,
+	getItemOutput,
+	getMenuOutput,
+	getBrandOutput,
+	auditLocationsOutput,
+	createLocationsOutput,
+	updateLocationsOutput,
+	createItemsOutput,
+	updateItemsOutput
+} from './mcp/output-schemas';
 import { OsmPoiStore } from './osm/poi-store';
 import { effectivePoiAddressParts, osmUrl } from './osm/map-feature';
 import { bboxAround, haversineMeters } from './osm/geo';
@@ -765,7 +783,15 @@ const listLocationsArgs = v.object({
 		)
 	),
 	limit: v.optional(
-		v.pipe(v.number(), v.integer(), v.minValue(1), v.description('Maximum number to return.'))
+		v.pipe(
+			v.number(),
+			v.integer(),
+			v.minValue(1),
+			v.description(
+				'Maximum rows to return in this page (default 50, max 200; a larger value is clamped). ' +
+					'Ignored when `count_only` is true.'
+			)
+		)
 	),
 	offset: v.optional(
 		v.pipe(
@@ -1041,7 +1067,7 @@ const importChainArgs = v.pipe(
 // (flagged in their descriptions) and simply ignored by the audit they don't apply to.
 const auditLocationsArgs = v.object({
 	check: v.pipe(
-		v.picklist(['coordinate_drift', 'missing_address', 'duplicate_locations']),
+		v.picklist(['coordinate_drift', 'missing_address', 'duplicate_locations', 'empty_menu']),
 		v.description(
 			'Which audit to run:\n' +
 				'• "coordinate_drift" — locations whose stored coordinates do NOT coincide with their ' +
@@ -1061,7 +1087,14 @@ const auditLocationsArgs = v.object({
 				'phone/website/postcode, a `same_phone` flag (a shared phone ≈ the same store) and a `confidence` ' +
 				'classification: "high" (name match within ~30 m, or shared phone) vs "review". Nearest pairs ' +
 				"first; scope a post-import sweep with `brand_id`. Verify each against the venue's own store " +
-				'locator before delete_location — two real branches CAN sit close together.'
+				'locator before delete_location — two real branches CAN sit close together.\n' +
+				'• "empty_menu" — OPEN locations whose EFFECTIVE menu has fewer than `min_items` items (default ' +
+				'1, so only truly-empty menus; raise it to hunt suspiciously thin ones). Effective count = the ' +
+				"items on the location's menu (its private menu, or a chain branch's shared menu) MINUS the ones " +
+				'this branch overrode to unavailable; a location with no menu counts as 0. Surfaces venues that ' +
+				'violate the EXHAUSTIVE-menu policy — a create_locations never followed by create_items, an ' +
+				'import_chain onto an empty menu. Each `locations` entry is { id, name, address, item_count, ' +
+				'brand_id, menu_id }, worst-first (0-item menus lead). Reads only the live D1.'
 		)
 	),
 	radius_m: v.optional(
@@ -1070,6 +1103,17 @@ const auditLocationsArgs = v.object({
 			v.minValue(0),
 			v.maxValue(1000),
 			v.description('[duplicate_locations only] Pair-flagging distance in metres (default 150).')
+		)
+	),
+	min_items: v.optional(
+		v.pipe(
+			v.number(),
+			v.integer(),
+			v.minValue(1),
+			v.description(
+				'[empty_menu only] Flag locations whose effective menu has FEWER than this many items ' +
+					'(default 1 ⇒ only empty menus; raise it to catch suspiciously thin menus).'
+			)
 		)
 	),
 	brand_id: v.optional(
@@ -1374,6 +1418,14 @@ interface ToolDef<S extends AnySchema> {
 	schema: S;
 	/** MCP behavioural hints advertised to clients (read-only/destructive/idempotent). */
 	annotations?: Tool['annotations'];
+	/**
+	 * Optional valibot schema advertised as the tool's MCP `outputSchema` (and the
+	 * contract its `structuredContent` conforms to). Declared only for the high-value
+	 * object-returning tools; kept PERMISSIVE (see scripts/mcp/output-schemas.ts) so a
+	 * strict client never rejects a valid response. A tool that returns a bare array,
+	 * null or a primitive omits it — structuredContent must be a JSON object.
+	 */
+	outputSchema?: AnySchema;
 	handler: (input: v.InferOutput<S>) => unknown;
 }
 
@@ -1898,6 +1950,7 @@ const tools = [
 	defineTool({
 		name: 'list_locations',
 		annotations: READ_ONLY,
+		outputSchema: listLocationsOutput,
 		description:
 			'List locations in the LIVE map database as a lightweight overview — id, name, category, ' +
 			'coordinates, address, phone, website, brand_id/menu_id (set for chain branches), and the distinct ' +
@@ -1905,9 +1958,11 @@ const tools = [
 			'match by name (case-insensitive substring) — e.g. to check whether a venue is already on the map ' +
 			'(de-dup before adding) or to find one to edit; this reads the live D1, distinct from search_poi ' +
 			'which finds OSM venues NOT yet on the map. Narrow with `near`/`category`/`brand_id` (exact chain ' +
-			'membership — better than a name substring for enumerating branches), page with `limit`/`offset`, ' +
-			'or pass `count_only: true` for just the matching total (cheap chain-size audits). Use ' +
-			'get_location for a single place with its full menu and sources.',
+			'membership — better than a name substring for enumerating branches). Returns ' +
+			'{ locations, returned, has_more, limit, offset }: a page of at most `limit` rows (default 50, ' +
+			'max 200), with `has_more: true` when more match beyond this page — pass `offset` to fetch the ' +
+			'next page. Pass `count_only: true` for just { count } of matching locations (cheap chain-size ' +
+			'audits; `limit`/`offset` ignored). Use get_location for a single place with its full menu and sources.',
 		schema: listLocationsArgs,
 		handler: async ({ query, near, category, brand_id, count_only, limit, offset }) => {
 			if (count_only) {
@@ -1920,12 +1975,26 @@ const tools = [
 					count: await countLocations(getDb(), { category, nameLike: query, brandId: brand_id })
 				};
 			}
-			return queryLocations({ near, category, nameLike: query, brandId: brand_id, limit, offset });
+			// Cap + truncation signal, mirroring search_poi/audit_locations. Over-fetch one
+			// row (limit + 1) so `has_more` is free — no second COUNT query. The +1 probe
+			// works for both the SQL path and the in-memory `near` slice.
+			const effLimit = resolveListLimit(limit);
+			const effOffset = resolveListOffset(offset);
+			const rows = await queryLocations({
+				near,
+				category,
+				nameLike: query,
+				brandId: brand_id,
+				limit: effLimit + 1,
+				offset: effOffset
+			});
+			return buildListLocationsPage(rows, effLimit, effOffset);
 		}
 	}),
 	defineTool({
 		name: 'get_location',
 		annotations: READ_ONLY,
+		outputSchema: getLocationOutput,
 		description:
 			'Get a single location with its source URLs. `menu` lists only the items owned directly by this ' +
 			'venue (on its own private menu); each item omits the menu-level `currency`/`menu_id`, surfaced ' +
@@ -1955,6 +2024,7 @@ const tools = [
 	defineTool({
 		name: 'create_locations',
 		annotations: CREATE,
+		outputSchema: createLocationsOutput,
 		description:
 			'Create one or more locations in a single batch — the only way to add ' +
 			"locations; pass a one-item `items` array for a single place. PREFERRED: set each item's " +
@@ -1984,6 +2054,7 @@ const tools = [
 	defineTool({
 		name: 'update_locations',
 		annotations: DESTRUCTIVE,
+		outputSchema: updateLocationsOutput,
 		description:
 			'Update one or more existing locations in a single atomic batch — pass a one-item `items` array to ' +
 			'edit one place. Each patch carries an `id` plus only the fields to change; a given `sources` array ' +
@@ -2061,6 +2132,7 @@ const tools = [
 	defineTool({
 		name: 'create_items',
 		annotations: CREATE,
+		outputSchema: createItemsOutput,
 		description:
 			'Create one or more menu items in a single transaction (all-or-nothing): if any item is invalid, ' +
 			'none are written. Target EITHER an independent venue (pass `location_id` — items go on its own ' +
@@ -2153,6 +2225,7 @@ const tools = [
 	defineTool({
 		name: 'get_item',
 		annotations: READ_ONLY,
+		outputSchema: getItemOutput,
 		description:
 			"Get any menu item by id — a venue's own item or a chain's shared one — with its tags " +
 			"(dietary, course) and source URLs. To browse a venue's items use get_location; " +
@@ -2163,6 +2236,7 @@ const tools = [
 	defineTool({
 		name: 'update_items',
 		annotations: DESTRUCTIVE,
+		outputSchema: updateItemsOutput,
 		description:
 			'Update one or more menu items by id in a single atomic batch — pass a one-item `items` array to ' +
 			'edit one. Each patch carries an `id` plus only the fields to change; editing a shared chain item ' +
@@ -2247,6 +2321,7 @@ const chainTools = [
 	defineTool({
 		name: 'get_brand',
 		annotations: READ_ONLY,
+		outputSchema: getBrandOutput,
 		description:
 			'Get a brand plus its menus as summaries (id, name, region, currency, last_verified, item_count, ' +
 			"location_count = open branches serving it). Call get_menu for a menu's items. Returns null if not found.",
@@ -2327,6 +2402,7 @@ const chainTools = [
 	defineTool({
 		name: 'get_menu',
 		annotations: READ_ONLY,
+		outputSchema: getMenuOutput,
 		description:
 			"Get a menu with its own source URLs and `refresh_notes` (HOW to re-fetch the menu's source — " +
 			'read these before re-researching a menu from scratch). `view` picks the payload size: "full" (default) — ' +
@@ -2654,16 +2730,19 @@ const osmTools = [
 	defineTool({
 		name: 'audit_locations',
 		annotations: READ_ONLY,
+		outputSchema: auditLocationsOutput,
 		description:
 			'Audit existing locations and surface a work-list. `check` selects the audit: "coordinate_drift" ' +
 			"(stored coordinates that do NOT coincide with the location's OSM POI — fix with " +
 			'update_locations), "missing_address" (empty or streetless addresses, with the OSM address to ' +
-			'backfill where available), or "duplicate_locations" (same-name/same-brand pairs within a small ' +
+			'backfill where available), "duplicate_locations" (same-name/same-brand pairs within a small ' +
 			"radius — probably one venue stored twice; verify against the venue's own locator, then EITHER " +
 			'delete_location the extra row OR record a confirmed two-real-venues pair with ' +
 			'mark_not_duplicate so it stops being re-flagged — such pairs are counted in ' +
-			'`suppressed_reviewed`, never re-listed). The first ' +
-			'two compare against the LOCAL OSM staging store; duplicate_locations reads only the live D1. ' +
+			'`suppressed_reviewed`, never re-listed), or "empty_menu" (open venues whose effective menu is ' +
+			'empty or thinner than `min_items` — they violate the EXHAUSTIVE-menu policy; backfill with ' +
+			'create_items). The address/coordinate checks compare against the LOCAL OSM staging store; ' +
+			'duplicate_locations and empty_menu read only the live D1. ' +
 			'Results are worst-first / actionable-first; `limit` caps how many are returned and `additional` ' +
 			"is how many more exist beyond it. See the `check` field for each mode's entry shape and which " +
 			'options apply.',
@@ -2683,6 +2762,13 @@ const osmTools = [
 					radius_m: input.radius_m,
 					limit: input.limit,
 					brand_id: input.brand_id
+				});
+			}
+			if (input.check === 'empty_menu') {
+				// Reads only the live D1 — no staging store needed.
+				return findIncompleteMenus(getDb(), {
+					min_items: input.min_items,
+					limit: input.limit
 				});
 			}
 			return findMissingAddress(getOsmStore(), getDb(), {
@@ -2763,6 +2849,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 		name: t.name,
 		description: t.description,
 		inputSchema: inputSchemaFor(t.schema),
+		// Advertised only for the tools that declare one (object-returning); the JSON
+		// Schema shares the same valibot→JSON helper, so it stays open/permissive.
+		...(t.outputSchema
+			? { outputSchema: inputSchemaFor(t.outputSchema) as Tool['outputSchema'] }
+			: {}),
 		...(t.annotations ? { annotations: t.annotations } : {})
 	}))
 }));
@@ -2780,8 +2871,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 	try {
 		const input = v.parse(tool.schema, rawArgs ?? {});
 		const result = await tool.handler(input as never);
+		// Keep the text content block for backward compatibility (older clients read
+		// only text); ADDITIONALLY attach structuredContent when the result is a plain
+		// JSON object — the MCP spec requires structuredContent to be an object, so a
+		// null (get_* not-found), array (list_brands/list_menus) or primitive stays text-only.
+		const structured =
+			result !== null && typeof result === 'object' && !Array.isArray(result)
+				? { structuredContent: result as Record<string, unknown> }
+				: {};
 		return {
-			content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }]
+			content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+			...structured
 		};
 	} catch (err) {
 		// A partial failure stays an error (isError), but its body carries the
