@@ -21,11 +21,16 @@ function present<T>(value: T | null): T {
 	return value;
 }
 
-/** A menu with one fully-detailed item (price, source, a required + an optional tag)
- *  and one bare item (no price, no source, no tags). */
+/** A menu with one fully-detailed item (price, a required + an optional tag)
+ *  and one bare item (no price, no tags). Provenance is menu-level, not per item. */
 async function seedMenu(db: D1Like): Promise<MenuWithItems> {
 	const brandId = await insertBrand(db, { name: 'ChainCo', website: null, logo_url: null });
-	const menuId = await insertMenu(db, { brand_id: brandId, name: 'ChainCo CA', currency: 'CAD' });
+	const menuId = await insertMenu(db, {
+		brand_id: brandId,
+		name: 'ChainCo CA',
+		currency: 'CAD',
+		sources: [{ url: 'https://x', label: null }]
+	});
 	await insertMenuItems(db, [
 		{
 			menu_id: menuId,
@@ -33,8 +38,7 @@ async function seedMenu(db: D1Like): Promise<MenuWithItems> {
 			description: 'A combo',
 			price: 10,
 			tags: ['vegan'],
-			optionalTags: ['gluten_free'],
-			sources: [{ url: 'https://x', label: null }]
+			optionalTags: ['gluten_free']
 		},
 		{ menu_id: menuId, item_name: 'Plain Side' }
 	]);
@@ -56,14 +60,13 @@ test('itemNameView projects id/item_name/price/tag-ids, flagging optional tags',
 	expect('sources' in view).toBe(false);
 });
 
-test('menuItemsSummary counts items, prices, sources and a per-tag histogram', async () => {
+test('menuItemsSummary counts items, prices and a per-tag histogram', async () => {
 	const db = freshDb();
 	const menu = await seedMenu(db);
 
 	const summary = menuItemsSummary(menu.items);
 	expect(summary.item_count).toBe(2);
 	expect(summary.items_with_price).toBe(1); // only Vegan Combo has a price
-	expect(summary.items_with_sources).toBe(1); // only Vegan Combo has a source
 	// Both a required (vegan) and an optional (gluten_free) tag are counted.
 	expect(summary.tag_counts).toEqual({ vegan: 1, gluten_free: 1 });
 });
@@ -73,7 +76,6 @@ test('an empty menu summarizes to all-zero counts and an empty histogram', () =>
 	expect(summary).toEqual({
 		item_count: 0,
 		items_with_price: 0,
-		items_with_sources: 0,
 		tag_counts: {}
 	});
 });

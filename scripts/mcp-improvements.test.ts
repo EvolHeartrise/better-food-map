@@ -25,7 +25,6 @@ import {
 	getLocationItemOverrides,
 	updateItems,
 	updateMenu,
-	updateLocations,
 	deleteItem,
 	setLocationClosed,
 	countLocations,
@@ -223,26 +222,28 @@ test('setLocationItemOverride is a partial patch (omitted field is preserved)', 
 
 // --- add_sources append -----------------------------------------------------
 
-test('updateItems add_sources appends and de-dupes; sources replaces', async () => {
+test('updateMenu add_sources appends and de-dupes; sources replaces', async () => {
 	const db = freshDb();
-	const [locId] = await insertLocations(db, [indieLocation()]);
-	const [itemId] = await insertFoods(db, [
-		{ location_id: locId, item_name: 'X', sources: [{ url: 'https://a', label: null }] }
-	]);
+	const brandId = await insertBrand(db, { name: 'B', website: null, logo_url: null });
+	const menuId = await insertMenu(db, {
+		brand_id: brandId,
+		name: 'M',
+		sources: [{ url: 'https://a', label: null }]
+	});
 
-	await updateItems(db, [{ id: itemId, addSources: [{ url: 'https://b', label: 'B' }] }]);
-	expect((await getItemById(db, itemId))?.sources.map((s) => s.url)).toEqual([
+	await updateMenu(db, menuId, { addSources: [{ url: 'https://b', label: 'B' }] });
+	expect((await getMenuById(db, menuId))?.sources.map((s) => s.url)).toEqual([
 		'https://a',
 		'https://b'
 	]);
 
 	// Re-appending an existing url is a no-op (de-duped by url).
-	await updateItems(db, [{ id: itemId, addSources: [{ url: 'https://b', label: 'B' }] }]);
-	expect((await getItemById(db, itemId))?.sources).toHaveLength(2);
+	await updateMenu(db, menuId, { addSources: [{ url: 'https://b', label: 'B' }] });
+	expect((await getMenuById(db, menuId))?.sources).toHaveLength(2);
 
 	// `sources` replaces the whole set.
-	await updateItems(db, [{ id: itemId, sources: [{ url: 'https://c', label: null }] }]);
-	expect((await getItemById(db, itemId))?.sources.map((s) => s.url)).toEqual(['https://c']);
+	await updateMenu(db, menuId, { sources: [{ url: 'https://c', label: null }] });
+	expect((await getMenuById(db, menuId))?.sources.map((s) => s.url)).toEqual(['https://c']);
 });
 
 test('updateItems applies a batch atomically and reports not_found_ids', async () => {
@@ -269,30 +270,6 @@ test('updateItems applies a batch atomically and reports not_found_ids', async (
 	// `tags` replaces the whole dietary/course set for that item.
 	const itemB = await getItemById(db, b);
 	expect(itemB?.tags.map((t) => t.id).toSorted()).toEqual(['halal', 'vegetarian']);
-});
-
-test('updateMenu and updateLocations add_sources append', async () => {
-	const db = freshDb();
-	const brandId = await insertBrand(db, { name: 'B', website: null, logo_url: null });
-	const menuId = await insertMenu(db, {
-		brand_id: brandId,
-		name: 'M',
-		sources: [{ url: 'https://m1', label: null }]
-	});
-	await updateMenu(db, menuId, { addSources: [{ url: 'https://m2', label: null }] });
-	expect((await getMenuById(db, menuId))?.sources.map((s) => s.url)).toEqual([
-		'https://m1',
-		'https://m2'
-	]);
-
-	const [locId] = await insertLocations(db, [
-		indieLocation({ sources: [{ url: 'https://l1', label: null }] })
-	]);
-	await updateLocations(db, [{ id: locId, addSources: [{ url: 'https://l2', label: null }] }]);
-	expect((await getLocationById(db, locId))?.sources.map((s) => s.url)).toEqual([
-		'https://l1',
-		'https://l2'
-	]);
 });
 
 // --- duplicate / collision detection ---------------------------------------

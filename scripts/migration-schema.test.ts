@@ -47,3 +47,17 @@ test('0017 index: sessions.expires_at index exists', async () => {
 		.first<{ name: string }>();
 	expect(row?.name).toBe('idx_sessions_expires_at');
 });
+
+test('0021: sources are menu-only — location_sources / item_sources are dropped, menu_sources remains', async () => {
+	const db = freshDb();
+	const tableNames = async (name: string) =>
+		db
+			.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`)
+			.bind(name)
+			.first<{ name: string }>();
+	// The per-location and per-item source tables are gone after migration 0021.
+	expect(await tableNames('location_sources')).toBeNull();
+	expect(await tableNames('item_sources')).toBeNull();
+	// menu_sources is the sole surviving provenance table.
+	expect((await tableNames('menu_sources'))?.name).toBe('menu_sources');
+});

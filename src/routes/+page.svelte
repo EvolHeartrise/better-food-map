@@ -23,7 +23,7 @@
 	import { DEFAULT_MAP_CENTER } from '$lib/map-defaults';
 	import { foldAsciiCase, searchableQuery } from '$lib/search';
 	import { safeHttpUrl } from '$lib/safe-url';
-	import type { MapData, MapItem, MapLocation, Item, Bounds } from '$lib/server/db';
+	import type { MapData, MapItem, MapLocation, Item, Source, Bounds } from '$lib/server/db';
 
 	// The visible map area, reported by <LocationMap> (debounced) as the user pans
 	// and zooms, plus once on load. Together with the applied search filter this
@@ -311,14 +311,15 @@
 	// every branch that serves it. Rebuild the effective menu here: the items of the
 	// location's menu (its own private menu, or a shared brand menu) with this
 	// location's per-item overrides applied — items marked unavailable dropped,
-	// overridden prices used — and attach the menu's `last_verified` freshness date.
+	// overridden prices used — and attach the menu's `last_verified` freshness date
+	// and its `sources` (provenance is menu-level now, shown once for the venue).
 	// Generic over the item shape (#83): the viewport/search payloads carry lean
 	// MapItems (the map only renders names + tags), while the by-id detail fetch
 	// resolves full Items for the open venue's panel.
 	function resolveLocation<I extends MapItem>(
 		loc: MapLocation,
 		data: MapData<I>
-	): MapLocation & { menu: I[]; lastVerified: string | null } {
+	): MapLocation & { menu: I[]; lastVerified: string | null; sources: Source[] } {
 		const menu: I[] = [];
 		if (loc.menu_id) {
 			const overrideByItem = new Map(loc.overrides.map((o) => [o.item_id, o]));
@@ -336,8 +337,13 @@
 				}
 			}
 		}
-		const lastVerified = loc.menu_id ? (data.menuMeta[loc.menu_id]?.last_verified ?? null) : null;
-		return { ...loc, menu, lastVerified };
+		const meta = loc.menu_id ? data.menuMeta[loc.menu_id] : undefined;
+		return {
+			...loc,
+			menu,
+			lastVerified: meta?.last_verified ?? null,
+			sources: meta?.sources ?? []
+		};
 	}
 
 	const locations = $derived(
@@ -404,10 +410,14 @@
 	}
 
 	// A location with its FULL effective menu resolved (see resolveLocation), plus
-	// its menu's `last_verified` freshness date (null for unverified/private
-	// menus). This is the detail-panel shape — only the by-id fetch carries full
-	// Items; the in-view set resolves to lean MapItems (#83).
-	type LocationData = MapLocation & { menu: Item[]; lastVerified: string | null };
+	// its menu's `last_verified` freshness date (null for unverified/private menus)
+	// and its menu-level `sources`. This is the detail-panel shape — only the by-id
+	// fetch carries full Items; the in-view set resolves to lean MapItems (#83).
+	type LocationData = MapLocation & {
+		menu: Item[];
+		lastVerified: string | null;
+		sources: Source[];
+	};
 
 	// On narrow (mobile) screens the row of floating search items collapses behind a
 	// "Filters" toggle so the map isn't crowded. Open by default so the filters stay
@@ -1195,10 +1205,10 @@
 		{/if}
 	{/snippet}
 
-	<!-- The item's course tag and its data sources, shown beneath each menu row in the
-	     open venue's card. Dietary tags are shown inline on the row above (see
-	     dietaryBadges), so they're omitted here to avoid repeating them. An `optional`
-	     tag keeps its dashed marker. -->
+	<!-- The item's course tag, shown beneath each menu row in the open venue's card.
+	     Dietary tags are shown inline on the row above (see dietaryBadges), so they're
+	     omitted here to avoid repeating them. An `optional` tag keeps its dashed marker.
+	     Data sources are menu-level now, shown once in the venue info block above. -->
 	{#snippet itemExtras(menuItem: Item)}
 		{@const courseTags = menuItem.tags.filter((tag) => tag.tag_type === 'course')}
 		{#if courseTags.length > 0}
@@ -1207,16 +1217,6 @@
 					<li><FoodTag {tag} optional={tag.optional} /></li>
 				{/each}
 			</ul>
-		{/if}
-		{#if menuItem.sources.length > 0}
-			<div class="sources">
-				<span class="sources__label">Sources</span>
-				<ul class="sources__list">
-					{#each menuItem.sources as source (source.url)}
-						<li class="source">{sourceText(source)}</li>
-					{/each}
-				</ul>
-			</div>
 		{/if}
 	{/snippet}
 </div>
@@ -1725,43 +1725,6 @@
 	   top margin so they hug the row above. */
 	.taglist--inline {
 		margin-top: 0.3rem;
-	}
-
-	/* Per-item provenance under a menu row, shown as plain labels/hostnames (the venue's
-	   own sources in the info block above render as real links). */
-	.sources {
-		margin: 0.5rem 0 0;
-	}
-
-	.sources__label {
-		display: block;
-		font-size: 0.65rem;
-		font-weight: 700;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		color: var(--color-text-muted);
-	}
-
-	.sources__list {
-		list-style: none;
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.3rem;
-		margin: 0.25rem 0 0;
-		padding: 0;
-	}
-
-	.source {
-		max-width: 100%;
-		overflow: hidden;
-		font-size: 0.72rem;
-		color: var(--color-accent);
-		background-color: color-mix(in srgb, var(--color-accent) 8%, #fff);
-		border: 1px solid color-mix(in srgb, var(--color-accent) 25%, #fff);
-		border-radius: 999px;
-		padding: 0.1rem 0.5rem;
-		white-space: nowrap;
-		text-overflow: ellipsis;
 	}
 
 	/* Below ~48rem let the search row span the top (its items wrapping into their own

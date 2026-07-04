@@ -91,10 +91,13 @@ test('soft-closing a live venue keeps its likes, then reopening restores it', as
 	expect((await getStats(db)).locations).toBe(1);
 	expect((await getUserLikes(db, 'u1')).locationIds).toEqual([id]);
 
-	// Close it with a cited reason.
-	const closed = await setLocationClosed(db, id, 1_700_000_000_000, 'Closed per owner notice', [
-		{ url: 'https://example.com/closure', label: 'Closure notice' }
-	]);
+	// Close it with a cited reason (evidence lives in the reason text — provenance is menu-level).
+	const closed = await setLocationClosed(
+		db,
+		id,
+		1_700_000_000_000,
+		'Closed per owner notice — https://example.com/closure'
+	);
 	expect(closed).toBe(true);
 
 	// Hidden from every display read (and the 404 gate's probe tracks the close)...

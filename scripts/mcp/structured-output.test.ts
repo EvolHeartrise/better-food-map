@@ -21,6 +21,7 @@ import {
 	insertMenuItems,
 	setLocationItemOverride,
 	getItemById,
+	getMenuById,
 	getMenuWithItems,
 	getBrandById,
 	getMenus,
@@ -99,13 +100,7 @@ async function seedRich(db: D1Like) {
 		sources: [{ url: 'https://chainco.example/menu', label: 'Official menu' }]
 	});
 	const [combo, salad] = await insertMenuItems(db, [
-		{
-			menu_id: menuId,
-			item_name: 'Vegan Combo',
-			price: 10,
-			tags: ['vegan'],
-			sources: [{ url: 'https://chainco.example/combo', label: null }]
-		},
+		{ menu_id: menuId, item_name: 'Vegan Combo', price: 10, tags: ['vegan'] },
 		{ menu_id: menuId, item_name: 'Side Salad', price: 4, tags: ['vegetarian'] }
 	]);
 	const [branchId, indieId] = await insertLocations(db, [
@@ -136,6 +131,7 @@ async function seedRich(db: D1Like) {
 			country: 'CA',
 			phone: null,
 			website: 'https://indie.example',
+			menuSources: [{ url: 'https://indie.example/menu', label: 'Menu' }],
 			items: [{ item_name: 'Coffee', price: 3, tags: ['vegan'] }]
 		}
 	]);
@@ -181,7 +177,6 @@ test('get_menu output validates in all three views', async () => {
 		...meta,
 		item_count: menu.items.length,
 		items_with_price: menu.items.filter((i) => i.price !== null).length,
-		items_with_sources: menu.items.filter((i) => i.sources.length).length,
 		tag_counts: tagCounts
 	};
 	expect(() => v.parse(getMenuOutput, summary)).not.toThrow();
@@ -201,13 +196,16 @@ test('get_location output validates for both a chain branch and an independent v
 
 	for (const id of [branchId, indieId]) {
 		const location = present(await getLocationById(db, id));
-		const [menu, overrides] = await Promise.all([
+		const [menu, overrides, menuRow] = await Promise.all([
 			getFoodByLocation(db, id),
-			getLocationItemOverrides(db, id)
+			getLocationItemOverrides(db, id),
+			location.menu_id ? getMenuById(db, location.menu_id) : Promise.resolve(null)
 		]);
 		const currency = menu[0]?.currency;
+		// Provenance is menu-level: the handler surfaces the menu's sources on the location.
 		const result = {
 			...location,
+			sources: menuRow?.sources ?? [],
 			...(currency ? { currency } : {}),
 			menu: menu.map(itemWithinParent),
 			overrides
@@ -222,8 +220,9 @@ test('get_location output validates for the names and summary views', async () =
 	const location = present(await getLocationById(db, indieId));
 	const menu = await getFoodByLocation(db, indieId);
 	const overrides = await getLocationItemOverrides(db, indieId);
+	const menuRow = location.menu_id ? await getMenuById(db, location.menu_id) : null;
 	const currency = menu[0]?.currency;
-	const base = { ...location, ...(currency ? { currency } : {}) };
+	const base = { ...location, sources: menuRow?.sources ?? [], ...(currency ? { currency } : {}) };
 
 	// names view: lean per-item shape.
 	const names = { ...base, menu: menu.map(itemNameView), overrides };
