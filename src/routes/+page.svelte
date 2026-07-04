@@ -15,6 +15,7 @@
 	import DietSelector from '$lib/components/DietSelector.svelte';
 	import FoodTag from '$lib/components/FoodTag.svelte';
 	import AccountMenu from '$lib/components/AccountMenu.svelte';
+	import SourcesModal from '$lib/components/SourcesModal.svelte';
 	import LikeButton from '$lib/components/LikeButton.svelte';
 	import Search from '@lucide/svelte/icons/search';
 	import { categoryLabel } from '$lib/category';
@@ -708,13 +709,29 @@
 	// topmost layer.
 	let accountMenuOpen = $state(false);
 
+	// Whether the sources modal (opened from the "N Sources" button in the detail
+	// panel) is showing. Bound below so Escape can close it before the detail. Reset
+	// whenever the open venue changes (tracked via `sourcesModalVenue`) so it never
+	// lingers over a different place — covers every path that moves the selection,
+	// including browser back/forward.
+	let sourcesModalOpen = $state(false);
+	let sourcesModalVenue: string | null = null;
+	$effect(() => {
+		if (selectedId !== sourcesModalVenue) {
+			sourcesModalVenue = selectedId;
+			sourcesModalOpen = false;
+		}
+	});
+
 	// Escape closes the open detail — the keyboard counterpart to the bare-map
 	// click. It yields to the account popover, which handles Escape itself; the
 	// `defaultPrevented` check additionally covers any Escape consumer whose
 	// window handler happened to run first.
 	function onWindowKeydown(event: KeyboardEvent): void {
 		if (event.key !== 'Escape' || !selectedId || event.defaultPrevented) return;
-		if (accountMenuOpen) return;
+		// Yield to any layer above the detail: the account popover and the sources
+		// modal each handle Escape themselves, so it closes only the topmost one.
+		if (accountMenuOpen || sourcesModalOpen) return;
 		event.preventDefault();
 		closeDetail();
 	}
@@ -816,16 +833,6 @@
 
 	function formatPrice(price: number | null, code: string): string {
 		return price === null ? '—' : moneyFormatter(code).format(price);
-	}
-
-	// A short, readable name for a source: its label, else the bare hostname.
-	function sourceText(source: { url: string; label: string | null }): string {
-		if (source.label) return source.label;
-		try {
-			return new URL(source.url).hostname.replace(/^www\./, '');
-		} catch {
-			return source.url;
-		}
 	}
 
 	// --- Menu freshness --------------------------------------------------------
@@ -952,7 +959,7 @@
 			     long menu (or a tall info block on the bottom sheet) never overflows the
 			     panel. -->
 			<div class="placecard__body">
-				{#if loc.address || loc.phone || loc.website || loc.sources.length > 0}
+				{#if loc.address || loc.phone || loc.website}
 					<dl class="info">
 						{#if loc.address}
 							<div class="info__row">
@@ -984,33 +991,31 @@
 								</dd>
 							</div>
 						{/if}
-						{#if loc.sources.length > 0}
-							<div class="info__row">
-								<dt>Sources</dt>
-								<dd>
-									<ul class="info__sources">
-										{#each loc.sources as source (source.url)}
-											{@const sourceHref = safeHttpUrl(source.url)}
-											<li>
-												{#if sourceHref}
-													<a href={sourceHref} target="_blank" rel="external noopener noreferrer">
-														{sourceText(source)}
-													</a>
-												{:else}
-													{sourceText(source)}
-												{/if}
-											</li>
-										{/each}
-									</ul>
-								</dd>
-							</div>
-						{/if}
 					</dl>
+				{/if}
+
+				<!-- Menu header: the "Menu" label plus, when the venue cites provenance,
+				     a button opening the sources modal (sources are menu-level now). Shown
+				     whenever there's a menu or sources to head. -->
+				{#if loc.menu.length > 0 || loc.sources.length > 0}
+					<div class="placecard__menu-head">
+						<h3 class="placecard__menu-title">Menu</h3>
+						{#if loc.sources.length > 0}
+							<button
+								type="button"
+								class="placecard__sources-btn"
+								onclick={() => (sourcesModalOpen = true)}
+							>
+								{loc.sources.length}
+								{loc.sources.length === 1 ? 'Source' : 'Sources'}
+							</button>
+						{/if}
+					</div>
 				{/if}
 
 				<!-- The venue's full menu. The map labels only rotate a teaser item per
 				     venue, so this is where the whole menu — each item's price, description,
-				     dietary markers, course and sources — is read. -->
+				     dietary markers and course — is read. -->
 				{#if loc.menu.length > 0}
 					<ul class="placecard__menu">
 						{#each loc.menu as menuItem (menuItem.id)}
@@ -1063,6 +1068,8 @@
 					</span>
 				{/if}
 			</footer>
+
+			<SourcesModal sources={loc.sources} bind:open={sourcesModalOpen} />
 		</aside>
 	{/if}
 
@@ -1682,13 +1689,40 @@
 		word-break: break-word;
 	}
 
-	.info__sources {
-		list-style: none;
-		margin: 0;
-		padding: 0;
+	/* The Menu header row: the "Menu" label with the sources button pushed to the
+	   trailing edge. */
+	.placecard__menu-head {
 		display: flex;
-		flex-direction: column;
-		gap: 0.15rem;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.5rem;
+	}
+
+	.placecard__menu-title {
+		margin: 0;
+		font-size: 0.95rem;
+	}
+
+	/* The "N Sources" button opening the sources modal: a quiet outlined pill that
+	   reads as a control without competing with the menu items below it. */
+	.placecard__sources-btn {
+		flex-shrink: 0;
+		padding: 0.2rem 0.6rem;
+		font-size: 0.72rem;
+		font-weight: 600;
+		color: var(--color-accent);
+		background: color-mix(in srgb, var(--color-accent) 8%, #fff);
+		border: 1px solid color-mix(in srgb, var(--color-accent) 30%, #fff);
+		border-radius: 999px;
+		cursor: pointer;
+		transition:
+			background-color 0.12s,
+			border-color 0.12s;
+	}
+
+	.placecard__sources-btn:hover {
+		background: color-mix(in srgb, var(--color-accent) 16%, #fff);
+		border-color: color-mix(in srgb, var(--color-accent) 45%, #fff);
 	}
 
 	/* Menu freshness ("Verified 3 months ago"): a quiet accent pill, turning amber
