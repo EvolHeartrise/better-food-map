@@ -434,6 +434,21 @@ function normalizeAddressPatch(patch: {
 const SOURCE_KINDS_HINT =
 	'the menu / online-ordering link, an official nutrition page, an official dietary/allergen page';
 
+// Source-QUALITY rule, appended to every sources input description. Sources are
+// menu-level PROVENANCE a human reads to trust the data — so cite a few canonical,
+// browsable pages, never one link per item and never raw API endpoints (those read
+// as noise and build no trust). When the data came from a JSON/ordering API behind a
+// client-rendered page, cite the PUBLIC page a user can open and bank the API
+// endpoint in `refresh_notes` instead — the API is how you RE-FETCH, not how a reader
+// VERIFIES.
+const SOURCE_QUALITY_HINT =
+	'Keep sources FEW and user-friendly (usually 1–3 canonical, browsable pages): the official ' +
+	'menu/nutrition/allergen page, plus at most one aggregator (Uber Eats/DoorDash) or a nutrition PDF ' +
+	'when it corroborates something the official page lacks. Do NOT cite one URL per item, and do NOT ' +
+	'cite raw API/ordering endpoints (…/api/…, …/apiproxy/…, ?fuseaction=order): if the menu comes from ' +
+	'such a feed behind a JS-rendered page, cite the public page a reader can open and record the feed ' +
+	'endpoint in `refresh_notes` instead.';
+
 // Menu sources on a CREATE that MUST cite at least one link (create_menu, and
 // create_locations when it builds a private menu from inline items). Optional in
 // the schema so `[]` is a clear validation error rather than a missing field; the
@@ -443,7 +458,8 @@ const createSourcesSchema = v.optional(
 		v.array(sourceInputSchema),
 		v.description(
 			`Menu source URLs — where this menu's food data came from (${SOURCE_KINDS_HINT}). ` +
-				'Each: a URL string, or { url, label }. Provide AT LEAST ONE link so the menu stays verifiable.'
+				'Each: a URL string, or { url, label }. Provide AT LEAST ONE link so the menu stays verifiable. ' +
+				SOURCE_QUALITY_HINT
 		)
 	)
 );
@@ -454,7 +470,8 @@ const updateSourcesSchema = v.optional(
 		v.description(
 			"REPLACES the menu's full source set (each: a URL string, or { url, label }). Pass [] to clear all " +
 				'sources. To ADD a citation without resending the existing ones, use `add_sources` instead. ' +
-				`Keep at least one menu link (${SOURCE_KINDS_HINT}).`
+				`Keep at least one menu link (${SOURCE_KINDS_HINT}). ` +
+				SOURCE_QUALITY_HINT
 		)
 	)
 );
@@ -465,7 +482,8 @@ const addSourcesSchema = v.optional(
 		v.description(
 			'APPENDS these sources to the existing set (de-duplicated by url); existing sources are kept. ' +
 				'Each: a URL string, or { url, label }. Use this to add a citation without re-sending the full ' +
-				'set. Mutually exclusive with `sources` (which replaces) — passing both is rejected.'
+				'set. Mutually exclusive with `sources` (which replaces) — passing both is rejected. ' +
+				SOURCE_QUALITY_HINT
 		)
 	)
 );
@@ -637,7 +655,8 @@ const createLocationArgs = v.object({
 				`Menu source URLs for this venue's menu (${SOURCE_KINDS_HINT}). Each: a URL string, or ` +
 					'{ url, label }. REQUIRED (at least one) when `menu_items` are given — they build the ' +
 					"venue's private menu, and every menu must cite where its food data came from. Ignored for a " +
-					'chain branch (its shared menu carries the sources) or a venue added with no menu.'
+					'chain branch (its shared menu carries the sources) or a venue added with no menu. ' +
+					SOURCE_QUALITY_HINT
 			)
 		)
 	),
