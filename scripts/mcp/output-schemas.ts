@@ -31,7 +31,7 @@ const itemTagOut = v.object({
 	optional: v.boolean()
 });
 
-/** A menu item as returned standalone (get_item): carries menu_id + currency. */
+/** A menu item as returned standalone (get_item): carries menu_id + currency. Provenance is menu-level. */
 const fullItemOut = v.object({
 	id: v.string(),
 	menu_id: v.string(),
@@ -39,8 +39,7 @@ const fullItemOut = v.object({
 	tags: v.array(itemTagOut),
 	description: v.nullable(v.string()),
 	price: v.nullable(v.number()),
-	currency: v.string(),
-	sources: v.array(sourceOut)
+	currency: v.string()
 });
 
 const overrideOut = v.object({
@@ -106,6 +105,7 @@ export const getLocationOutput = v.object({
 	website: v.nullable(v.string()),
 	brand_id: v.nullable(v.string()),
 	menu_id: v.nullable(v.string()),
+	// The venue's provenance, resolved from the menu it serves (sources are menu-level).
 	sources: v.array(sourceOut),
 	// present only when the venue serves items (its private menu's currency)
 	currency: v.optional(v.string()),
@@ -115,7 +115,6 @@ export const getLocationOutput = v.object({
 	// "summary" view (mirrors get_menu's summary): counts + tag histogram, no item list.
 	item_count: v.optional(v.number()),
 	items_with_price: v.optional(v.number()),
-	items_with_sources: v.optional(v.number()),
 	tag_counts: v.optional(v.record(v.string(), v.number())),
 	overrides: v.array(overrideOut)
 });
@@ -141,7 +140,6 @@ export const getMenuOutput = v.object({
 	// "summary" view
 	item_count: v.optional(v.number()),
 	items_with_price: v.optional(v.number()),
-	items_with_sources: v.optional(v.number()),
 	tag_counts: v.optional(v.record(v.string(), v.number()))
 });
 

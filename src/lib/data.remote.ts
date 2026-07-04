@@ -96,8 +96,8 @@ export const getMapCells = query(
 
 /**
  * Returns a single location (by id) in the same {@link MapData} shape as
- * {@link getMapCells}, but with FULL items — description, price, and item
- * sources merged with menu-level sources. The detail panel always resolves the
+ * {@link getMapCells}, but with FULL items — description and price — and its
+ * menu's sources on `menuMeta` (provenance is menu-level). The detail panel always resolves the
  * open venue through this read (deduped by id on the client), which is what lets
  * the bulk viewport/search payloads stay lean (#83). Yields an empty payload if
  * no location has that id. Ids are UUIDs or short slugs; the length cap only

@@ -31,7 +31,6 @@ export interface ItemNameView {
 export interface MenuItemsSummary {
 	item_count: number;
 	items_with_price: number;
-	items_with_sources: number;
 	tag_counts: Record<string, number>;
 }
 
@@ -47,22 +46,20 @@ export function itemNameView(item: Item): ItemNameView {
 
 /**
  * Summarizes a menu's items for the "summary" view: total count, how many carry a
- * price / a source, and a per-tag-id histogram (optional and required tags counted
- * alike, since every tag on the item is counted).
+ * price, and a per-tag-id histogram (optional and required tags counted alike,
+ * since every tag on the item is counted). Provenance is menu-level, so a source
+ * count is not an item-level statistic — read the menu's own `sources`.
  */
 export function menuItemsSummary(items: Item[]): MenuItemsSummary {
 	const tagCounts: Record<string, number> = {};
 	let priced = 0;
-	let sourced = 0;
 	for (const item of items) {
 		if (item.price !== null) priced++;
-		if (item.sources.length) sourced++;
 		for (const tag of item.tags) tagCounts[tag.id] = (tagCounts[tag.id] ?? 0) + 1;
 	}
 	return {
 		item_count: items.length,
 		items_with_price: priced,
-		items_with_sources: sourced,
 		tag_counts: tagCounts
 	};
 }

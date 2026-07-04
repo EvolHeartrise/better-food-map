@@ -103,17 +103,16 @@ export interface Location {
 	/**
 	 * The menu this location serves: a shared brand menu (chain branch), or its
 	 * own private menu (independent venue). `null` only when it has no menu/items.
+	 * Provenance lives on that menu ({@link Menu.sources}), not on the location.
 	 */
 	menu_id: string | null;
-	/** Citations for where this location's data came from (may be empty). */
-	sources: Source[];
 }
 
 /**
  * The LEAN item shape the viewport/search payloads carry (see {@link MapData}).
  * The map UI renders only item names (the rotating label teasers) and re-filters
- * by dietary tag client-side, so this is all a bulk payload needs; description,
- * price and sources are read solely in the detail panel of the ONE open venue,
+ * by dietary tag client-side, so this is all a bulk payload needs; description
+ * and price are read solely in the detail panel of the ONE open venue,
  * which resolves through the by-id read (full {@link Item} shape). Shipping the
  * full shape for every in-view menu made a dense-viewport pan serialize hundreds
  * of KB that was never rendered (#83).
@@ -140,8 +139,6 @@ export interface Item extends MapItem {
 	 * self-describing. Defaults to "CAD".
 	 */
 	currency: string;
-	/** Citations for where this item's data came from (may be empty). */
-	sources: Source[];
 }
 
 export interface LocationWithTags extends Location {
@@ -179,21 +176,23 @@ export interface MapLocation extends Location {
  * The default item shape is the LEAN {@link MapItem} — what the bulk
  * viewport/search reads return. Only the single-venue by-id read
  * ({@link getLocationMapData}, backing the detail panel) instantiates this with
- * the full {@link Item} (description, price, merged sources) — see #83.
+ * the full {@link Item} (description, price) — see #83.
  */
 export interface MapData<I extends MapItem = MapItem> {
 	locations: MapLocation[];
 	/** Menus referenced by the returned locations, items resolved once, keyed by menu_id. */
 	menus: Record<string, I[]>;
 	/**
-	 * Per-menu metadata for the referenced menus, keyed by menu_id — currently just
-	 * `last_verified` (the ISO date a menu was last checked against its source). Sent
-	 * once per menu alongside {@link menus} so the detail view can show a freshness
-	 * signal without a second read. Every menu carries a date (enforced by the
-	 * triggers in migration 0012), so this is non-null for any menu present here; it
-	 * is typed nullable only because the read column is.
+	 * Per-menu metadata for the referenced menus, keyed by menu_id: `last_verified`
+	 * (the ISO date a menu was last checked against its source) and the menu's
+	 * `sources` (its provenance citations, now the ONLY level sources live at). Sent
+	 * once per menu alongside {@link menus} so the detail view can show a venue's
+	 * freshness + sources without a second read. `sources` is populated only on the
+	 * by-id detail read (the lean viewport payload ships `[]` — the map never renders
+	 * them); every menu carries a `last_verified` date (enforced by migration 0012's
+	 * triggers), typed nullable only because the read column is.
 	 */
-	menuMeta: Record<string, { last_verified: string | null }>;
+	menuMeta: Record<string, { last_verified: string | null; sources: Source[] }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -302,13 +301,13 @@ export interface LocationItemOverride {
 }
 
 /**
- * Internal raw shape of an `items` row before its tags, sources and (menu-derived)
+ * Internal raw shape of an `items` row before its tags and (menu-derived)
  * currency are attached. `currency` is NOT a column on `items`; it is read from the
  * item's menu and attached when the {@link Item} is assembled. A LEAN read
  * (queryMapData without `detail`) projects only the {@link MapItem} columns, so
  * `description`/`price` are undefined at runtime there — the lean path never reads them.
  */
-type ItemRow = Omit<Item, 'tags' | 'sources' | 'currency'>;
+type ItemRow = Omit<Item, 'tags' | 'currency'>;
 
 /** Raw `location_item_overrides` row (`available` stored as 0/1/NULL). */
 interface OverrideRow {
@@ -318,12 +317,11 @@ interface OverrideRow {
 	price: number | null;
 }
 
-/** Internal raw shape of a `locations` row before its sources are attached. */
-// The raw DB row: the structured columns, but not `sources` (joined) or the
-// derived `address` (composed on read).
-type LocationRow = Omit<Location, 'sources' | 'address'>;
+/** Internal raw shape of a `locations` row before its derived `address` is attached. */
+// The raw DB row: the structured columns, but not the derived `address` (composed on read).
+type LocationRow = Omit<Location, 'address'>;
 
-/** Raw `*_sources` row keyed by its owner id (item_id or location_id). */
+/** Raw `menu_sources` row keyed by its owner menu id. */
 interface SourceRow {
 	owner_id: string;
 	url: string;
@@ -389,19 +387,6 @@ function groupLocationTagsDistinct(rows: LocationTagRow[]): Map<string, Tag[]> {
 	return byOwner;
 }
 
-/** Concatenates two source lists, dropping later duplicates by URL (first wins). */
-function mergeSources(primary: Source[], secondary: Source[]): Source[] {
-	if (secondary.length === 0) return primary;
-	const seen = new Set(primary.map((s) => s.url));
-	const merged = [...primary];
-	for (const s of secondary) {
-		if (seen.has(s.url)) continue;
-		seen.add(s.url);
-		merged.push(s);
-	}
-	return merged;
-}
-
 // ---------------------------------------------------------------------------
 // SQL (D1 enforces foreign keys; schema lives in migrations/)
 // ---------------------------------------------------------------------------
@@ -430,7 +415,7 @@ export const MAP_RESULT_LIMIT = 200;
  * Optional server-side filters for {@link getLocationsWithTags}, pushed into SQL
  * so a bounded list doesn't read (and ship) the whole table. `bbox` and
  * `category` narrow the rows; `limit`/`offset` page the name-ordered result, and
- * the joined tag/source reads are keyed to the returned page's ids. A radius query is served by passing the
+ * the joined tag read is keyed to the returned page's ids. A radius query is served by passing the
  * covering `bbox` and refining to the exact circle in the caller, so this layer
  * stays geo-free. With no filter the behaviour is unchanged (every location).
  */
@@ -503,8 +488,8 @@ export async function getLocationsWithTags(
 	filter: LocationListFilter = {}
 ): Promise<LocationWithTags[]> {
 	// The filter (and its paging) is evaluated exactly once — the location-row
-	// read; the tag/source sub-reads are then keyed by the ids that read returned,
-	// so their cost is bounded by the PAGE size, not the full filter-match set
+	// read; the tag sub-read is then keyed by the ids that read returned,
+	// so its cost is bounded by the PAGE size, not the full filter-match set
 	// (the same id-first shape queryMapData uses, #80/#92).
 	const { conds, params } = locationFilterConds(filter);
 	const whereSql = `WHERE ${conds.join(' AND ')}`;
@@ -522,44 +507,34 @@ export async function getLocationsWithTags(
 
 	// One JSON-array bind expanded with json_each — never an `IN (?, …)` list,
 	// which would blow D1's ~100 per-query bound-parameter cap on an unpaged read
-	// (the `near` path calls this with no limit). Both sub-reads travel as a
-	// single db.batch, so id-first costs one extra round trip, not two.
+	// (the `near` path calls this with no limit).
 	const idsJson = JSON.stringify(locations.map((l) => l.id));
-	const [{ results: tagRows }, { results: sourceRows }] = (await db.batch([
+	const { results: tagRows } = await db
 		// Distinct dietary/course tags offered across a location's menu, excluding
 		// items it has overridden to unavailable.
-		db
-			.prepare(
-				`SELECT DISTINCT l.id AS owner_id, t.id AS id, t.name AS name, t.tag_type AS tag_type
-				 FROM locations l
-				 JOIN items i ON i.menu_id = l.menu_id
-				 JOIN item_tags it ON it.item_id = i.id
-				 JOIN tags t ON t.id = it.tag_id
-				 LEFT JOIN location_item_overrides o
-					ON o.location_id = l.id AND o.item_id = i.id
-				 WHERE l.id IN (SELECT value FROM json_each(?))
-					AND l.menu_id IS NOT NULL
-					AND t.tag_type IN ('dietary', 'course')
-					AND (o.available IS NULL OR o.available <> 0)
-				 ORDER BY l.id, t.rowid`
-			)
-			.bind(idsJson),
-		db
-			.prepare(
-				`SELECT location_id AS owner_id, url, label FROM location_sources
-				 WHERE location_id IN (SELECT value FROM json_each(?)) ORDER BY rowid`
-			)
-			.bind(idsJson)
-	])) as [{ results: LocationTagRow[] }, { results: SourceRow[] }];
+		.prepare(
+			`SELECT DISTINCT l.id AS owner_id, t.id AS id, t.name AS name, t.tag_type AS tag_type
+			 FROM locations l
+			 JOIN items i ON i.menu_id = l.menu_id
+			 JOIN item_tags it ON it.item_id = i.id
+			 JOIN tags t ON t.id = it.tag_id
+			 LEFT JOIN location_item_overrides o
+				ON o.location_id = l.id AND o.item_id = i.id
+			 WHERE l.id IN (SELECT value FROM json_each(?))
+				AND l.menu_id IS NOT NULL
+				AND t.tag_type IN ('dietary', 'course')
+				AND (o.available IS NULL OR o.available <> 0)
+			 ORDER BY l.id, t.rowid`
+		)
+		.bind(idsJson)
+		.all<LocationTagRow>();
 
 	const tagsByLocation = groupLocationTagsDistinct(tagRows);
-	const sourcesByLocation = groupSources(sourceRows);
 
 	return locations.map((loc) => ({
 		...loc,
 		address: formatAddress(loc),
-		tags: tagsByLocation.get(loc.id) ?? [],
-		sources: sourcesByLocation.get(loc.id) ?? []
+		tags: tagsByLocation.get(loc.id) ?? []
 	}));
 }
 
@@ -771,7 +746,7 @@ export async function getMapCellsData(
 	for (const row of picked) byCell[row.ck]?.push(row.id);
 	if (picked.length === 0) return { locations: [], menus: {}, menuMeta: {}, cells: byCell };
 
-	// Resolve the winners (menus, overrides, sources) the normal id-first way.
+	// Resolve the winners (menus, overrides) the normal id-first way.
 	// The ids are already capped per cell above, so the trailing LIMIT is sized
 	// to pass them all through — MAP_RESULT_LIMIT would silently drop winners on
 	// a full-level batch and corrupt the per-cell membership.
@@ -787,7 +762,7 @@ export async function getMapCellsData(
 /**
  * Like {@link getMapCellsData} but for a single location by id, returned in the same
  * {@link MapData} shape — except its items carry the FULL {@link Item} detail
- * (description, price, item sources merged with menu-level sources). This is the
+ * (description, price) and its menu's sources ride on `menuMeta`. This is the
  * one read behind the detail panel, so it alone pays for the heavy fields; the
  * bulk viewport/search reads stay lean (#83). Yields an empty payload if no
  * location has that id.
@@ -950,10 +925,10 @@ const DEFAULT_MAP_CAP = `ORDER BY name, id LIMIT ${MAP_RESULT_LIMIT}`;
  *     independently-raced reads.
  *
  * `detail` picks the item shape (#83): false (the bulk viewport/search reads)
- * projects only the lean {@link MapItem} columns and skips the item/menu source
- * reads entirely — the map UI never renders those fields; true (the single-venue
+ * projects only the lean {@link MapItem} columns and skips the menu-source read
+ * entirely — the map UI never renders those fields; true (the single-venue
  * by-id read behind the detail panel) returns full {@link Item}s with
- * description, price and merged sources.
+ * description and price, plus each menu's sources on `menuMeta`.
  */
 async function queryMapData(
 	db: D1Like,
@@ -1009,10 +984,10 @@ async function queryMapData(
 	// The tuple cast mirrors each statement's projection 1:1 — `batch` itself is
 	// typed `unknown[]` on D1Like because the two backends (Worker binding,
 	// d1-http shim) type their per-statement results differently, though both
-	// return `{ results }` objects in statement order. The item/menu source reads
-	// run only in detail mode (they are per-item weight the lean payload exists to
-	// shed), appended after the fixed core statements so the destructuring holds
-	// in both modes — their slots are simply absent on a lean read.
+	// return `{ results }` objects in statement order. The menu-source read runs
+	// only in detail mode (sources are surfaced in the ONE open venue's panel, not
+	// on the lean map payload), appended after the fixed core statements so the
+	// destructuring holds in both modes — its slot is simply absent on a lean read.
 	const coreStatements = [
 		db
 			.prepare(
@@ -1033,12 +1008,6 @@ async function queryMapData(
 			.bind(menuIds),
 		db
 			.prepare(
-				`SELECT location_id AS owner_id, url, label FROM location_sources
-				 WHERE location_id IN (${inLocations}) ORDER BY rowid`
-			)
-			.bind(locationIds),
-		db
-			.prepare(
 				`SELECT location_id, item_id, available, price FROM location_item_overrides
 				 WHERE location_id IN (${inLocations}) ORDER BY rowid`
 			)
@@ -1046,12 +1015,6 @@ async function queryMapData(
 	];
 	const detailStatements = detail
 		? [
-				db
-					.prepare(
-						`SELECT item_id AS owner_id, url, label FROM item_sources
-						 WHERE item_id IN (${inItems}) ORDER BY rowid`
-					)
-					.bind(menuIds),
 				db
 					.prepare(
 						`SELECT menu_id AS owner_id, url, label FROM menu_sources
@@ -1064,30 +1027,29 @@ async function queryMapData(
 		{ results: itemRows },
 		{ results: menuCurrencyRows },
 		{ results: itemTagRows },
-		{ results: locationSourceRows },
 		{ results: overrideRows },
-		itemSourceRes,
 		menuSourceRes
 	] = (await db.batch([...coreStatements, ...detailStatements])) as [
 		{ results: ItemRow[] },
 		{ results: { id: string; currency: string; last_verified: string | null }[] },
 		{ results: ItemTagRow[] },
-		{ results: SourceRow[] },
 		{ results: OverrideRow[] },
-		{ results: SourceRow[] }?,
 		{ results: SourceRow[] }?
 	];
 
-	// Resolve each menu item once (tags, plus — in detail mode — item sources with
-	// the menu-level source appended) and group by menu. The client applies the
+	// Resolve each menu item once (tags) and group by menu. The client applies the
 	// per-location price/availability deltas as it expands a menu onto each branch.
+	// Menu-level sources (detail mode only) ride on `menuMeta` per menu, not per item.
 	const tagsByItem = groupItemTags(itemTagRows);
-	const sourcesByItem = groupSources(itemSourceRes?.results ?? []);
 	const sourcesByMenu = groupSources(menuSourceRes?.results ?? []);
-	const sourcesByLocation = groupSources(locationSourceRows);
 	const currencyByMenu = new Map(menuCurrencyRows.map((r) => [r.id, r.currency]));
 	const menuMeta: MapData['menuMeta'] = {};
-	for (const row of menuCurrencyRows) menuMeta[row.id] = { last_verified: row.last_verified };
+	for (const row of menuCurrencyRows) {
+		menuMeta[row.id] = {
+			last_verified: row.last_verified,
+			sources: sourcesByMenu.get(row.id) ?? []
+		};
+	}
 
 	const menus: Record<string, MapItem[]> = {};
 	for (const row of itemRows) {
@@ -1102,11 +1064,7 @@ async function queryMapData(
 					...lean,
 					description: row.description,
 					price: row.price,
-					currency: currencyByMenu.get(row.menu_id) ?? DEFAULT_CURRENCY,
-					sources: mergeSources(
-						sourcesByItem.get(row.id) ?? [],
-						sourcesByMenu.get(row.menu_id) ?? []
-					)
+					currency: currencyByMenu.get(row.menu_id) ?? DEFAULT_CURRENCY
 				}
 			: null;
 		(menus[row.menu_id] ??= []).push(full ?? lean);
@@ -1128,7 +1086,6 @@ async function queryMapData(
 	const mapLocations: MapLocation[] = locations.map((loc) => ({
 		...loc,
 		address: formatAddress(loc),
-		sources: sourcesByLocation.get(loc.id) ?? [],
 		overrides: overridesByLocation.get(loc.id) ?? []
 	}));
 
@@ -1139,8 +1096,8 @@ async function queryMapData(
  * Whether an OPEN location with this id exists. The existence probe behind the
  * map page's `/locations/<id>` 404 gate (src/routes/+page.server.ts): it runs
  * on every hard load of a venue URL, so it deliberately reads one column of one
- * row rather than paying {@link getLocationById}'s two-statement row+sources
- * read whose result the gate would throw away. Closed (soft-deleted) venues
+ * row rather than paying {@link getLocationById}'s full row read whose result
+ * the gate would throw away. Closed (soft-deleted) venues
  * count as absent, matching every display read (migration 0015) — their pages
  * should 404, not render.
  */
@@ -1153,20 +1110,14 @@ export async function locationExists(db: D1Like, id: string): Promise<boolean> {
 }
 
 export async function getLocationById(db: D1Like, id: string): Promise<Location | null> {
-	const [row, { results: sources }] = await Promise.all([
-		db
-			// Closed (soft-deleted) venues are hidden from get_location too (migration 0015);
-			// they remain in D1 for analysis and are reopenable via setLocationClosed.
-			.prepare(`SELECT ${LOCATION_FIELDS} FROM locations WHERE id = ? AND closed_at IS NULL`)
-			.bind(id)
-			.first<LocationRow>(),
-		db
-			.prepare(`SELECT url, label FROM location_sources WHERE location_id = ? ORDER BY rowid`)
-			.bind(id)
-			.all<Source>()
-	]);
+	const row = await db
+		// Closed (soft-deleted) venues are hidden from get_location too (migration 0015);
+		// they remain in D1 for analysis and are reopenable via setLocationClosed.
+		.prepare(`SELECT ${LOCATION_FIELDS} FROM locations WHERE id = ? AND closed_at IS NULL`)
+		.bind(id)
+		.first<LocationRow>();
 	if (!row) return null;
-	return { ...row, address: formatAddress(row), sources };
+	return { ...row, address: formatAddress(row) };
 }
 
 /**
@@ -1197,15 +1148,9 @@ export async function getSitemapEntries(
 	return results;
 }
 
-/** Returns all items of a menu, each with its tags and sources (item + menu-level). */
+/** Returns all items of a menu, each with its tags. Provenance is menu-level (see {@link getMenuById}). */
 async function getItemsByMenu(db: D1Like, menuId: string): Promise<Item[]> {
-	const [
-		{ results: rows },
-		menuRow,
-		{ results: tagRows },
-		{ results: itemSourceRows },
-		{ results: menuSourceRows }
-	] = await Promise.all([
+	const [{ results: rows }, menuRow, { results: tagRows }] = await Promise.all([
 		db
 			.prepare(`SELECT ${ITEM_FIELDS} FROM items WHERE menu_id = ? ORDER BY item_name`)
 			.bind(menuId)
@@ -1224,31 +1169,15 @@ async function getItemsByMenu(db: D1Like, menuId: string): Promise<Item[]> {
 				 ORDER BY t.rowid`
 			)
 			.bind(menuId)
-			.all<ItemTagRow>(),
-		db
-			.prepare(
-				`SELECT s.item_id AS owner_id, s.url AS url, s.label AS label
-				 FROM item_sources s
-				 JOIN items i ON i.id = s.item_id
-				 WHERE i.menu_id = ?
-				 ORDER BY s.rowid`
-			)
-			.bind(menuId)
-			.all<SourceRow>(),
-		db
-			.prepare(`SELECT url, label FROM menu_sources WHERE menu_id = ? ORDER BY rowid`)
-			.bind(menuId)
-			.all<Source>()
+			.all<ItemTagRow>()
 	]);
 
 	const tagsByItem = groupItemTags(tagRows);
-	const sourcesByItem = groupSources(itemSourceRows);
 	const currency = menuRow?.currency ?? DEFAULT_CURRENCY;
 	return rows.map((row) => ({
 		...row,
 		currency,
-		tags: tagsByItem.get(row.id) ?? [],
-		sources: mergeSources(sourcesByItem.get(row.id) ?? [], menuSourceRows)
+		tags: tagsByItem.get(row.id) ?? []
 	}));
 }
 
@@ -1270,9 +1199,9 @@ export async function getFoodByLocation(db: D1Like, locationId: string): Promise
 	return getItemsByMenu(db, owner.menu_id);
 }
 
-/** Returns a single item with its tags and sources (item + menu-level), or `null`. */
+/** Returns a single item with its tags, or `null`. Provenance is menu-level (see {@link getMenuById}). */
 export async function getItemById(db: D1Like, id: string): Promise<Item | null> {
-	const [row, { results: tags }, { results: itemSources }] = await Promise.all([
+	const [row, { results: tags }] = await Promise.all([
 		db.prepare(`SELECT ${ITEM_FIELDS} FROM items WHERE id = ?`).bind(id).first<ItemRow>(),
 		db
 			.prepare(
@@ -1283,23 +1212,13 @@ export async function getItemById(db: D1Like, id: string): Promise<Item | null> 
 				 ORDER BY t.rowid`
 			)
 			.bind(id)
-			.all<ItemTagRow>(),
-		db
-			.prepare(`SELECT url, label FROM item_sources WHERE item_id = ? ORDER BY rowid`)
-			.bind(id)
-			.all<Source>()
+			.all<ItemTagRow>()
 	]);
 	if (!row) return null;
-	const [{ results: menuSources }, menuRow] = await Promise.all([
-		db
-			.prepare(`SELECT url, label FROM menu_sources WHERE menu_id = ? ORDER BY rowid`)
-			.bind(row.menu_id)
-			.all<Source>(),
-		db
-			.prepare(`SELECT currency FROM menus WHERE id = ?`)
-			.bind(row.menu_id)
-			.first<{ currency: string }>()
-	]);
+	const menuRow = await db
+		.prepare(`SELECT currency FROM menus WHERE id = ?`)
+		.bind(row.menu_id)
+		.first<{ currency: string }>();
 	return {
 		...row,
 		currency: menuRow?.currency ?? DEFAULT_CURRENCY,
@@ -1308,8 +1227,7 @@ export async function getItemById(db: D1Like, id: string): Promise<Item | null> 
 			name: t.name,
 			tag_type: t.tag_type,
 			optional: t.optional !== 0
-		})),
-		sources: mergeSources(itemSources, menuSources)
+		}))
 	};
 }
 
@@ -1317,11 +1235,10 @@ export async function getItemById(db: D1Like, id: string): Promise<Item | null> 
 // Writes — shared item-write helpers
 // ---------------------------------------------------------------------------
 
-/** Tag/source content for one item write (insert or update). */
+/** Tag content for one item write (insert or update). Provenance is menu-level, not per item. */
 interface ItemContent {
 	tags?: TagId[];
 	optionalTags?: TagId[];
-	sources?: Source[];
 }
 
 /** A single `item_tags` link statement. */
@@ -1343,19 +1260,6 @@ function tagLinkStmts(db: D1Like, itemId: string, content: ItemContent): D1Prepa
 	return stmts;
 }
 
-/** Statements that link an item to its source URLs. */
-function sourceLinkStmts(
-	db: D1Like,
-	itemId: string,
-	sources: Source[] | undefined
-): D1PreparedLike[] {
-	return (sources ?? []).map((source) =>
-		db
-			.prepare(`INSERT OR IGNORE INTO item_sources (item_id, url, label) VALUES (?, ?, ?)`)
-			.bind(itemId, source.url, source.label ?? null)
-	);
-}
-
 /** Shape of one item to insert into a given menu. */
 export interface ItemInsertSpec extends ItemContent {
 	id?: string;
@@ -1364,7 +1268,7 @@ export interface ItemInsertSpec extends ItemContent {
 	price?: number | null;
 }
 
-/** Builds the full statement list to insert one item (row + tags + sources). */
+/** Builds the full statement list to insert one item (row + tags). */
 function insertItemStmts(
 	db: D1Like,
 	id: string,
@@ -1377,8 +1281,7 @@ function insertItemStmts(
 				`INSERT INTO items (id, menu_id, item_name, description, price) VALUES (?, ?, ?, ?, ?)`
 			)
 			.bind(id, menuId, spec.item_name, spec.description ?? null, spec.price ?? null),
-		...tagLinkStmts(db, id, spec),
-		...sourceLinkStmts(db, id, spec.sources)
+		...tagLinkStmts(db, id, spec)
 	];
 }
 
@@ -1387,14 +1290,16 @@ function insertItemStmts(
 // ---------------------------------------------------------------------------
 
 /** Arguments accepted by {@link insertLocations} (one per location). */
-export type LocationInsert = Omit<
-	Location,
-	'id' | 'sources' | 'brand_id' | 'menu_id' | 'address'
-> & {
+export type LocationInsert = Omit<Location, 'id' | 'brand_id' | 'menu_id' | 'address'> & {
 	id?: string;
 	brand_id?: string | null;
 	menu_id?: string | null;
-	sources?: Source[];
+	/**
+	 * Provenance for the PRIVATE menu created when `items` are given (sources are
+	 * menu-level). Ignored for a chain branch (which shares its menu) or a location
+	 * with no inline items (which gets no menu here).
+	 */
+	menuSources?: Source[];
 	/**
 	 * Unix-ms timestamp marking this venue PERMANENTLY CLOSED at import time (a
 	 * "born-closed" tombstone), or null/undefined for a normal live venue. A closed
@@ -1421,8 +1326,8 @@ export type LocationInsert = Omit<
 };
 
 /**
- * Inserts many locations (with their sources, and optionally each venue's own
- * menu items) in one atomic batch and returns their ids in input order: either
+ * Inserts many locations (and optionally each venue's own menu items, with the
+ * menu's sources) in one atomic batch and returns their ids in input order: either
  * every location is written or, on any error, none are. Pass a single location to
  * add just one. Ideal for backfilling a chain's branches — give each the same
  * `brand_id`/`menu_id` so they all serve the shared menu — or for adding an
@@ -1464,6 +1369,14 @@ export async function insertLocations(db: D1Like, locs: LocationInsert[]): Promi
 						currentVerificationDate()
 					)
 			);
+			// Provenance lives on the menu now: attach the venue's sources to its private menu.
+			for (const source of loc.menuSources ?? []) {
+				stmts.push(
+					db
+						.prepare(`INSERT OR IGNORE INTO menu_sources (menu_id, url, label) VALUES (?, ?, ?)`)
+						.bind(privateMenuId, source.url, source.label ?? null)
+				);
+			}
 		}
 		stmts.push(
 			db
@@ -1490,15 +1403,6 @@ export async function insertLocations(db: D1Like, locs: LocationInsert[]): Promi
 					loc.closed_reason ?? null
 				)
 		);
-		for (const source of loc.sources ?? []) {
-			stmts.push(
-				db
-					.prepare(
-						`INSERT OR IGNORE INTO location_sources (location_id, url, label) VALUES (?, ?, ?)`
-					)
-					.bind(id, source.url, source.label ?? null)
-			);
-		}
 		if (privateMenuId) {
 			for (const item of loc.items ?? []) {
 				stmts.push(...insertItemStmts(db, item.id ?? crypto.randomUUID(), privateMenuId, item));
@@ -1511,24 +1415,20 @@ export async function insertLocations(db: D1Like, locs: LocationInsert[]): Promi
 
 /**
  * How many statements {@link insertLocations} builds for one location: the
- * private-menu row (when it has inline `items`), the location row, one per
- * location source, and per item its row plus one per tag/optional-tag/source
- * link. Kept next to insertLocations so the count and the statement builder
- * stay in sync (see the parity test in create-locations.test.ts).
+ * private-menu row and its menu-source links (only when it has inline `items`),
+ * the location row, and per item its row plus one per tag/optional-tag link.
+ * Kept next to insertLocations so the count and the statement builder stay in
+ * sync (see the parity test in create-locations.test.ts).
  */
 export function locationInsertStatementCount(loc: LocationInsert): number {
 	const items = loc.items ?? [];
+	const hasItems = items.length > 0;
 	return (
-		(items.length ? 1 : 0) +
+		(hasItems ? 1 : 0) +
+		(hasItems ? (loc.menuSources?.length ?? 0) : 0) +
 		1 +
-		(loc.sources?.length ?? 0) +
 		items.reduce(
-			(n, item) =>
-				n +
-				1 +
-				(item.tags?.length ?? 0) +
-				(item.optionalTags?.length ?? 0) +
-				(item.sources?.length ?? 0),
+			(n, item) => n + 1 + (item.tags?.length ?? 0) + (item.optionalTags?.length ?? 0),
 			0
 		)
 	);
@@ -1584,15 +1484,13 @@ const LOCATION_COLUMNS = [
 /** A partial update to one location, keyed by id (for {@link updateLocations}). */
 export type LocationPatch = Partial<Omit<Location, 'id' | 'address'>> & {
 	id: string;
-	/** Append these sources (dedupe by url), keeping existing ones — vs `sources` which replaces. */
-	addSources?: Source[];
 };
 
 /**
  * Statements that apply one location patch: the scalar SET (only the columns
- * present in `patch`) and, when `patch.sources` is given, a full source-set
- * replacement (pass `[]` to clear). No existence check — {@link updateLocations}
- * resolves which ids exist up front so the whole batch stays a single round trip.
+ * present in `patch`). No existence check — {@link updateLocations} resolves which
+ * ids exist up front so the whole batch stays a single round trip. Provenance is
+ * menu-level, so a location patch never touches sources (use update_menu).
  */
 function locationUpdateStmts(db: D1Like, patch: LocationPatch): D1PreparedLike[] {
 	const stmts: D1PreparedLike[] = [];
@@ -1611,28 +1509,12 @@ function locationUpdateStmts(db: D1Like, patch: LocationPatch): D1PreparedLike[]
 				.bind(...values, patch.id)
 		);
 	}
-	// `sources` replaces the whole set; `addSources` appends (dedupe via the PK).
-	const replace = patch.sources !== undefined;
-	if (replace) {
-		stmts.push(db.prepare(`DELETE FROM location_sources WHERE location_id = ?`).bind(patch.id));
-	}
-	const toAdd = replace ? patch.sources : patch.addSources;
-	for (const source of toAdd ?? []) {
-		stmts.push(
-			db
-				.prepare(
-					`INSERT OR IGNORE INTO location_sources (location_id, url, label) VALUES (?, ?, ?)`
-				)
-				.bind(patch.id, source.url, source.label ?? null)
-		);
-	}
 	return stmts;
 }
 
 /**
  * Applies many partial location updates in one atomic batch. Each patch touches
- * only the fields it carries; a `sources` array replaces that location's whole
- * source set (`[]` clears it). Ids that don't exist are skipped and reported in
+ * only the fields it carries. Ids that don't exist are skipped and reported in
  * `notFoundIds` rather than aborting the batch. Returns which ids were updated and
  * which were not found. Ideal for mass backfills from the address/coordinate
  * audits — one round trip instead of one update call per location.
@@ -1673,38 +1555,26 @@ export async function deleteLocation(db: D1Like, id: string): Promise<boolean> {
 
 /**
  * Soft-deletes (or reopens) an existing location by flipping its `closed_at`/
- * `closed_reason`, WITHOUT touching the row's likes, menu or sources — the reason a
+ * `closed_reason`, WITHOUT touching the row's likes or menu — the reason a
  * permanently-closed venue is marked rather than {@link deleteLocation}'d (a delete
  * would cascade `liked_locations` away; see migration 0015). Pass `closedAt = null`
- * (and `reason = null`) to reopen. Any `addSources` are appended (deduped by url),
- * e.g. the closure-evidence link. Returns false when no location has that id (nothing
- * written, so a stray source can't be orphaned). For a venue NOT yet on the map, use
+ * (and `reason = null`) to reopen. The closure evidence is captured in `reason`
+ * (provenance is menu-level now, so there is no per-location source to append).
+ * Returns false when no location has that id. For a venue NOT yet on the map, use
  * {@link insertLocations} with `closed_at` set instead (a born-closed tombstone).
  */
 export async function setLocationClosed(
 	db: D1Like,
 	id: string,
 	closedAt: number | null,
-	reason: string | null,
-	addSources?: Source[]
+	reason: string | null
 ): Promise<boolean> {
 	const exists = await db.prepare(`SELECT id FROM locations WHERE id = ?`).bind(id).first();
 	if (!exists) return false;
-	const stmts: D1PreparedLike[] = [
-		db
-			.prepare(`UPDATE locations SET closed_at = ?, closed_reason = ? WHERE id = ?`)
-			.bind(closedAt, reason, id)
-	];
-	for (const source of addSources ?? []) {
-		stmts.push(
-			db
-				.prepare(
-					`INSERT OR IGNORE INTO location_sources (location_id, url, label) VALUES (?, ?, ?)`
-				)
-				.bind(id, source.url, source.label ?? null)
-		);
-	}
-	await db.batch(stmts);
+	await db
+		.prepare(`UPDATE locations SET closed_at = ?, closed_reason = ? WHERE id = ?`)
+		.bind(closedAt, reason, id)
+		.run();
 	return true;
 }
 
@@ -1721,7 +1591,6 @@ export type FoodInsert = {
 	price?: number | null;
 	tags?: TagId[];
 	optionalTags?: TagId[];
-	sources?: Source[];
 };
 
 /**
@@ -1821,11 +1690,10 @@ export async function insertFoods(
 
 /**
  * Statements that apply one item patch: the scalar SET (only the columns present
- * in `patch`), plus full-set replacements for the dietary/course tags and the
- * sources when those are provided (`tags: []`/`sources: []` clear; `addSources`
- * appends instead of replacing). No existence check — the caller
+ * in `patch`), plus a full-set replacement for the dietary/course tags when those
+ * are provided (`tags: []` clears). No existence check — the caller
  * ({@link updateItems}) resolves which ids exist up front so a whole batch stays a
- * single round trip.
+ * single round trip. Provenance is menu-level, so an item patch never touches sources.
  */
 function itemUpdateStmts(db: D1Like, id: string, patch: ItemUpdate): D1PreparedLike[] {
 	const stmts: D1PreparedLike[] = [];
@@ -1858,14 +1726,6 @@ function itemUpdateStmts(db: D1Like, id: string, patch: ItemUpdate): D1PreparedL
 		);
 		for (const tagId of patch.tags ?? []) stmts.push(linkTagStmt(db, id, tagId, 0));
 		for (const tagId of patch.optionalTags ?? []) stmts.push(linkTagStmt(db, id, tagId, 1));
-	}
-
-	if (patch.sources !== undefined) {
-		stmts.push(db.prepare(`DELETE FROM item_sources WHERE item_id = ?`).bind(id));
-		stmts.push(...sourceLinkStmts(db, id, patch.sources));
-	} else if (patch.addSources !== undefined) {
-		// Append-only: existing sources stay; INSERT OR IGNORE dedupes by (item_id, url).
-		stmts.push(...sourceLinkStmts(db, id, patch.addSources));
 	}
 
 	return stmts;
@@ -1966,7 +1826,7 @@ export async function updateBrand(
 }
 
 /**
- * Deletes a brand and (by cascade) its menus, their items and tag/source links.
+ * Deletes a brand and (by cascade) its menus, their items, tag links and menu sources.
  * Any locations referencing it revert to having no menu (`brand_id`/`menu_id` set
  * to NULL by `ON DELETE SET NULL`). Returns `true` if a row was removed.
  */
@@ -2183,7 +2043,7 @@ export async function updateMenu(
 }
 
 /**
- * Deletes a menu and (by cascade) its items and their tag/source links. Any
+ * Deletes a menu and (by cascade) its items, their tag links and the menu's sources. Any
  * locations serving it revert to having no menu (`menu_id` set NULL). Returns
  * `true` if a row was removed.
  */
@@ -2273,7 +2133,6 @@ export type MenuItemInsert = {
 	price?: number | null;
 	tags?: TagId[];
 	optionalTags?: TagId[];
-	sources?: Source[];
 };
 
 /**
@@ -2345,8 +2204,6 @@ export type ItemUpdate = {
 	item_name?: string;
 	description?: string | null;
 	price?: number | null;
-	/** Append these sources (dedupe by url), keeping existing ones — vs `sources` which replaces. */
-	addSources?: Source[];
 } & ItemContent;
 
 /** A partial update to one item, keyed by id (for {@link updateItems}). */
@@ -2400,7 +2257,7 @@ export async function updateItems(
 	return { updatedIds, notFoundIds };
 }
 
-/** Deletes an item and its tag/source links (and any per-location overrides). Returns `true` if removed. */
+/** Deletes an item and its tag links (and any per-location overrides). Returns `true` if removed. */
 export async function deleteItem(db: D1Like, id: string): Promise<boolean> {
 	// Resolve the parent menu before the delete so we can mark it freshly verified
 	// (removing an item is a reconciliation against the source like any other write).
