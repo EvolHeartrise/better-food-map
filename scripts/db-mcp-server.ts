@@ -108,7 +108,7 @@ import {
 	deleteLocationsOutput
 } from './mcp/output-schemas';
 import { OsmPoiStore } from './osm/poi-store';
-import { effectivePoiAddressParts, osmUrl } from './osm/map-feature';
+import { effectivePoiAddressParts } from './osm/map-feature';
 import { bboxAround, haversineMeters } from './osm/geo';
 
 // The D1 client is created lazily so the server can start and advertise its
@@ -235,8 +235,9 @@ const NAME_DESC_SHORT =
 
 const SERVER_INSTRUCTIONS =
 	'CRUD tools over the food-map database (locations, chains/brands, and their menu items). Each ' +
-	'location, menu, and item may carry source URLs documenting where the data came from — include ' +
-	'them whenever you add scraped data so it stays verifiable.\n\n' +
+	'Each MENU may carry source URLs documenting where its food data came from (the menu / ordering ' +
+	'link, official nutrition or dietary pages) — provenance is MENU-LEVEL, so cite it on create_menu / ' +
+	'update_menu (or via create_locations for an independent venue). Every menu should have at least one.\n\n' +
 	'To find venues still missing from the map, use search_poi: it reads a local OpenStreetMap ' +
 	'food-POI staging store (built offline, not the live D1), already de-duplicated against existing ' +
 	'locations, and returns candidates each carrying an `osm_id` (pass it to create_locations to ' +
@@ -425,16 +426,24 @@ function normalizeAddressPatch(patch: {
 }
 
 // A single citation: a URL the data came from, plus an optional human label.
-// Reused on create_* (append) and update_* (replace wholesale). The wording
-// nudges the scraping agent to cite where any added data came from. Each entry
-// is a bare URL string or a { url, label } object (see source-input.ts).
+// Sources are MENU-LEVEL (the app only records where a menu's food data came from
+// — the menu link, official nutrition/dietary pages), so these ride on the menu
+// tools (create_menu / update_menu / create_chain) and on create_locations' inline
+// private menu. Each entry is a bare URL string or a { url, label } object (see
+// source-input.ts).
+const SOURCE_KINDS_HINT =
+	'the menu / online-ordering link, an official nutrition page, an official dietary/allergen page';
+
+// Menu sources on a CREATE that MUST cite at least one link (create_menu, and
+// create_locations when it builds a private menu from inline items). Optional in
+// the schema so `[]` is a clear validation error rather than a missing field; the
+// tools enforce the non-empty requirement in their handlers.
 const createSourcesSchema = v.optional(
 	v.pipe(
 		v.array(sourceInputSchema),
 		v.description(
-			'Source URLs documenting where this data came from (each: a URL string, or { url, label }). ' +
-				'Strongly encouraged whenever you add scraped data, so it stays verifiable. ' +
-				'May be omitted or [] when you genuinely have no source.'
+			`Menu source URLs — where this menu's food data came from (${SOURCE_KINDS_HINT}). ` +
+				'Each: a URL string, or { url, label }. Provide AT LEAST ONE link so the menu stays verifiable.'
 		)
 	)
 );
@@ -443,9 +452,9 @@ const updateSourcesSchema = v.optional(
 	v.pipe(
 		v.array(sourceInputSchema),
 		v.description(
-			'REPLACES the full source set (each: a URL string, or { url, label }). Pass [] to clear all ' +
+			"REPLACES the menu's full source set (each: a URL string, or { url, label }). Pass [] to clear all " +
 				'sources. To ADD a citation without resending the existing ones, use `add_sources` instead. ' +
-				'Encouraged: keep at least one source documenting where the data came from.'
+				`Keep at least one menu link (${SOURCE_KINDS_HINT}).`
 		)
 	)
 );
@@ -487,8 +496,10 @@ const closeLocationArgs = v.object({
 			v.string(),
 			v.minLength(1),
 			v.description(
-				'Short note with the closure evidence, stored on the row (e.g. "Closed 2024 per Yelp + dead ' +
-					'site"). Strongly encouraged when closing; ignored when `reopen` is true.'
+				'Short note with the closure evidence INCLUDING the source link, stored on the row (e.g. ' +
+					'"Closed 2024 per Yelp permanently-closed + dead site https://…"). Provenance is menu-level, ' +
+					'so a closed venue keeps its evidence here in the reason text. Strongly encouraged when ' +
+					'closing; ignored when `reopen` is true.'
 			)
 		)
 	),
@@ -500,8 +511,7 @@ const closeLocationArgs = v.object({
 					'reappears on the map. Omit (or false) to close it.'
 			)
 		)
-	),
-	sources: addSourcesSchema
+	)
 });
 
 // One menu item. Shared by create_items (the batch's location_id/menu_id is given
@@ -526,7 +536,6 @@ const itemSchema = v.object({
 		v.pipe(v.array(tagIdSchema), v.description('Tags to apply to this item. ' + TAG_POLICY_SHORT))
 	),
 	optional_tags: optionalTagsSchema,
-	sources: createSourcesSchema,
 	id: v.optional(
 		v.pipe(
 			v.string(),
@@ -621,7 +630,17 @@ const createLocationArgs = v.object({
 			)
 		)
 	),
-	sources: createSourcesSchema,
+	sources: v.optional(
+		v.pipe(
+			v.array(sourceInputSchema),
+			v.description(
+				`Menu source URLs for this venue's menu (${SOURCE_KINDS_HINT}). Each: a URL string, or ` +
+					'{ url, label }. REQUIRED (at least one) when `menu_items` are given — they build the ' +
+					"venue's private menu, and every menu must cite where its food data came from. Ignored for a " +
+					'chain branch (its shared menu carries the sources) or a venue added with no menu.'
+			)
+		)
+	),
 	closed_reason: v.optional(
 		v.pipe(
 			v.string(),
@@ -707,9 +726,7 @@ const updateLocationItemArgs = v.pipe(
 					)
 				)
 			)
-		),
-		sources: updateSourcesSchema,
-		add_sources: addSourcesSchema
+		)
 	}),
 	v.check(
 		(p) => (p.latitude === undefined) === (p.longitude === undefined),
@@ -1446,9 +1463,7 @@ const updateItemArgs = v.object({
 			)
 		)
 	),
-	optional_tags: optionalTagsSchema,
-	sources: updateSourcesSchema,
-	add_sources: addSourcesSchema
+	optional_tags: optionalTagsSchema
 });
 
 const updateItemsArgs = v.object({
@@ -1569,6 +1584,21 @@ function assertSourcesNotBoth(sources: unknown, addSources: unknown, label?: str
 		throw new Error(
 			`${label ? `"${label}": ` : ''}pass either \`sources\` (replace the whole set) or ` +
 				'`add_sources` (append), not both.'
+		);
+	}
+}
+
+/**
+ * Enforces the menu-provenance rule: a menu must cite AT LEAST ONE source link
+ * (sources are menu-level now, so this is where "the food data must be verifiable"
+ * is enforced). `label` names the record in the error. Throws when `sources` is
+ * missing or empty.
+ */
+function assertHasSource(sources: { url: string }[] | undefined, label: string): void {
+	if (!sources || sources.length === 0) {
+		throw new Error(
+			`${label}: at least one source link is required — cite where this menu's food data came from ` +
+				`(${SOURCE_KINDS_HINT}). Sources are menu-level; every menu must be verifiable.`
 		);
 	}
 }
@@ -1721,6 +1751,9 @@ async function createLocationsBatch(
 						`no menu. Drop the items to file it as a closed tombstone, or drop closed_reason to add it live.`
 				);
 			}
+			// Inline items build the venue's private menu, so its provenance must be cited
+			// (sources are menu-level). A born-closed tombstone / a bare location has no menu.
+			if (it.menu_items?.length) assertHasSource(it.sources, `"${it.name}"`);
 			const warn = (message: string): void => {
 				warnings.push(`"${it.name}"${it.osm_id ? ` (${it.osm_id})` : ''}: ${message}`);
 			};
@@ -1786,8 +1819,7 @@ async function createLocationsBatch(
 				description: mi.description ?? null,
 				price: mi.price ?? null,
 				tags: mi.tags,
-				optionalTags: mi.optional_tags,
-				sources: normalizeSources(mi.sources)
+				optionalTags: mi.optional_tags
 			};
 		});
 		const insert: LocationInsert = {
@@ -1806,7 +1838,9 @@ async function createLocationsBatch(
 			brand_id: it.brand_id ?? null,
 			menu_id: it.menu_id ?? null,
 			currency: it.currency,
-			sources: core.sources,
+			// Provenance is menu-level: the venue's `sources` cite its private menu (built
+			// from the inline items above); ignored when there are no items / no menu.
+			...(menuItems.length ? { menuSources: normalizeSources(it.sources) } : {}),
 			// A born-closed tombstone: stamp closed_at now so it's hidden from the map yet
 			// still blocks re-creation / search_poi re-suggestion (migration 0015).
 			...(it.closed_reason ? { closed_at: Date.now(), closed_reason: it.closed_reason } : {}),
@@ -1863,7 +1897,7 @@ async function createLocationsBatch(
 	};
 }
 
-/** Coordinates + normalized address + category + sources, ready for insertLocations. */
+/** Coordinates + normalized address + category, ready for insertLocations. */
 interface ResolvedLocationCore {
 	latitude: number;
 	longitude: number;
@@ -1873,25 +1907,23 @@ interface ResolvedLocationCore {
 	region: string;
 	postcode: string | null;
 	country: string;
-	sources: { url: string; label: string | null }[] | undefined;
 }
 
 /**
  * Resolves one create_locations item's coordinates + address, enforcing the
  * OSM-based coordinate policy. With `osm_id` the coordinates come VERBATIM from the
- * matching staging-store POI (and its osm_url is auto-cited); the address defaults
- * to the POI's best available parts — its own addr:* tags, then the enriched
- * address line (containing building / Overture), then the extract-time
- * admin-boundary city/region — with any caller-supplied part overriding. Without
- * `osm_id`, latitude/longitude and street/city/region are required and used as
- * given. Throws an MCP-friendly error on unresolved or conflicting input;
- * non-fatal oddities (a dropped partial postcode) go through `warn`.
+ * matching staging-store POI; the address defaults to the POI's best available
+ * parts — its own addr:* tags, then the enriched address line (containing building
+ * / Overture), then the extract-time admin-boundary city/region — with any
+ * caller-supplied part overriding. Without `osm_id`, latitude/longitude and
+ * street/city/region are required and used as given. Throws an MCP-friendly error on
+ * unresolved or conflicting input; non-fatal oddities (a dropped partial postcode)
+ * go through `warn`.
  */
 function resolveLocationInsertCore(
 	it: CreateLocationItem,
 	warn: (message: string) => void
 ): ResolvedLocationCore {
-	const sources = normalizeSources(it.sources);
 	if (it.osm_id) {
 		if (it.latitude !== undefined || it.longitude !== undefined) {
 			throw new Error(
@@ -1939,17 +1971,11 @@ function resolveLocationInsertCore(
 			},
 			warn
 		);
-		const osmHref = osmUrl(poi.osm_type, poi.numeric_id);
-		const hasOsmSource = sources?.some((s) => s.url === osmHref) ?? false;
-		const withOsmSource: { url: string; label: string | null }[] = hasOsmSource
-			? (sources as { url: string; label: string | null }[])
-			: [{ url: osmHref, label: 'OpenStreetMap' }, ...(sources ?? [])];
 		return {
 			latitude: poi.latitude,
 			longitude: poi.longitude,
 			category: it.category ?? poi.suggested_category ?? null,
-			...addr,
-			sources: withOsmSource
+			...addr
 		};
 	}
 	if (it.latitude === undefined || it.longitude === undefined) {
@@ -1975,8 +2001,7 @@ function resolveLocationInsertCore(
 				country: it.country
 			},
 			warn
-		),
-		sources
+		)
 	};
 }
 
@@ -2099,7 +2124,8 @@ const tools = [
 		annotations: READ_ONLY,
 		outputSchema: getLocationOutput,
 		description:
-			'Get a single location with its source URLs and its inline `menu` (the items owned directly ' +
+			"Get a single location with its `sources` (its menu's source URLs — provenance is menu-level) " +
+			'and its inline `menu` (the items owned directly ' +
 			'by this venue on its own private menu; each omits the menu-level `currency`/`menu_id`, ' +
 			'surfaced once as the top-level `currency`). `view` controls the `menu` payload and DEFAULTS ' +
 			'to "full" (every item in detail, since a single venue\'s menu is typically small); pass ' +
@@ -2111,15 +2137,21 @@ const tools = [
 		handler: async ({ id, view }) => {
 			const location = await getLocationById(getDb(), id);
 			if (!location) return null;
-			const [menu, overrides] = await Promise.all([
+			const [menu, overrides, menuRow] = await Promise.all([
 				getFoodByLocation(getDb(), id),
-				getLocationItemOverrides(getDb(), id)
+				getLocationItemOverrides(getDb(), id),
+				// Provenance is menu-level: surface the venue's menu sources as its `sources`.
+				location.menu_id ? getMenuById(getDb(), location.menu_id) : Promise.resolve(null)
 			]);
 			// An independent venue's items all live on one private menu, so the menu-level
 			// currency/menu_id are identical across them: surface currency once at the top
 			// and drop the per-item copies (see itemWithinParent).
 			const currency = menu[0]?.currency;
-			const base = { ...location, ...(currency ? { currency } : {}) };
+			const base = {
+				...location,
+				sources: menuRow?.sources ?? [],
+				...(currency ? { currency } : {})
+			};
 			if (view === 'summary') {
 				// counts + tag histogram, no item list (mirrors get_menu's summary view).
 				return { ...base, ...menuItemsSummary(menu), overrides };
@@ -2181,18 +2213,11 @@ const tools = [
 				checkedPairs.add(key);
 				await assertBrandMenuRefs(getDb(), it.brand_id, it.menu_id);
 			}
-			const patches = items.map(
-				({ id, sources, add_sources, street, city, region, postcode, country, ...patch }) => {
-					assertSourcesNotBoth(sources, add_sources, id);
-					return {
-						id,
-						...patch,
-						...normalizeAddressPatch({ street, city, region, postcode, country }),
-						sources: normalizeSources(sources),
-						addSources: normalizeSources(add_sources)
-					};
-				}
-			);
+			const patches = items.map(({ id, street, city, region, postcode, country, ...patch }) => ({
+				id,
+				...patch,
+				...normalizeAddressPatch({ street, city, region, postcode, country })
+			}));
 			const { updatedIds, notFoundIds } = await updateLocations(getDb(), patches);
 			return { updated: updatedIds.length, updated_ids: updatedIds, not_found_ids: notFoundIds };
 		}
@@ -2203,7 +2228,7 @@ const tools = [
 		outputSchema: deleteLocationsOutput,
 		description:
 			'HARD-delete one or more location rows in a single batch (1-100 ids), mirroring the batched ' +
-			"update_locations. Each delete cascades that row's sources, per-item overrides and any user " +
+			"update_locations. Each delete cascades that row's per-item overrides and any user " +
 			'LIKES (liked_locations), and orphans its private menu + items. PREFER close_location for a real ' +
 			'venue that has permanently closed — that preserves the likes and keeps the record for analysis; ' +
 			'reserve delete for mistaken/duplicate rows that should never have existed. Ids matching no row ' +
@@ -2217,24 +2242,18 @@ const tools = [
 		annotations: DESTRUCTIVE,
 		description:
 			'Mark a location that is ALREADY on the map as PERMANENTLY CLOSED (soft-delete), or reopen one. ' +
-			'The row is kept — so its user likes, menu and sources survive for analysis — and simply hidden ' +
+			'The row is kept — so its user likes and menu survive for analysis — and simply hidden ' +
 			'from the map, search, list_locations, get_location and the coverage stats; it still blocks ' +
 			're-creation and search_poi re-suggestion, so a closed venue never resurfaces to waste research ' +
-			'time. Pass `reason` (closure evidence) and optionally `sources` to cite it; pass `reopen: true` ' +
+			'time. Pass `reason` (closure evidence, INCLUDING the source link) to record it; pass `reopen: true` ' +
 			'to bring it back. Returns { closed: true } / { reopened: true }, or { not_found: true } if no ' +
 			'such id. For a venue NOT yet on the map that you have verified is closed, use create_locations ' +
 			'with `closed_reason` instead (a born-closed tombstone) rather than adding it and closing it.',
 		schema: closeLocationArgs,
-		handler: async ({ id, reason, reopen, sources }) => {
+		handler: async ({ id, reason, reopen }) => {
 			const ok = reopen
 				? await setLocationClosed(getDb(), id, null, null)
-				: await setLocationClosed(
-						getDb(),
-						id,
-						Date.now(),
-						reason ?? null,
-						normalizeSources(sources)
-					);
+				: await setLocationClosed(getDb(), id, Date.now(), reason ?? null);
 			if (!ok) return { closed: false, not_found: true, id };
 			return reopen ? { reopened: true, id } : { closed: true, id };
 		}
@@ -2252,7 +2271,8 @@ const tools = [
 			'one call. Returns { created, item_ids, skipped_existing_ids, name_collisions } — ids already present ' +
 			'are skipped (retries are safe); `name_collisions` lists incoming names that already exist on the ' +
 			'target menu so you can update the existing item instead of duplicating it. Read full items with ' +
-			'get_item / get_location / get_menu if needed.',
+			'get_item / get_location / get_menu if needed. (Provenance is menu-level: cite the menu with ' +
+			'create_menu / update_menu, or via create_locations inline for an independent venue — not per item.)',
 		schema: createItemsArgs,
 		handler: async (input) => {
 			// Resolve the target menu: an independent venue's private menu (location_id), or a
@@ -2305,8 +2325,7 @@ const tools = [
 									description: it.description ?? null,
 									price: it.price ?? null,
 									tags: it.tags,
-									optionalTags: it.optional_tags,
-									sources: normalizeSources(it.sources)
+									optionalTags: it.optional_tags
 								})),
 								input.currency
 							)
@@ -2319,8 +2338,7 @@ const tools = [
 									description: it.description ?? null,
 									price: it.price ?? null,
 									tags: it.tags,
-									optionalTags: it.optional_tags,
-									sources: normalizeSources(it.sources)
+									optionalTags: it.optional_tags
 								}))
 							);
 			}
@@ -2338,7 +2356,8 @@ const tools = [
 		outputSchema: getItemOutput,
 		description:
 			"Get any menu item by id — a venue's own item or a chain's shared one — with its tags " +
-			"(dietary, course) and source URLs. To browse a venue's items use get_location; " +
+			"(dietary, course). Provenance is menu-level — read a menu's sources with get_menu. To browse a " +
+			"venue's items use get_location; " +
 			'for a chain menu use get_menu. Returns null if not found.',
 		schema: idArgs,
 		handler: async ({ id }) => getItemById(getDb(), id)
@@ -2352,22 +2371,17 @@ const tools = [
 			'edit one. Each patch carries an `id` plus only the fields to change; editing a shared chain item ' +
 			'changes it for EVERY branch serving its menu — for a one-branch difference use ' +
 			'set_location_item_override instead. Replace-set semantics per item: `tags`/`optional_tags` ' +
-			'together replace the dietary/course set; `sources` replaces sources (pass []/"" to clear) ' +
-			'while `add_sources` appends without resending the rest (not both). Ideal for menu-wide ' +
+			'together replace the dietary/course set. (Provenance is menu-level — edit sources with ' +
+			'update_menu, not per item.) Ideal for menu-wide ' +
 			'corrections in one call. Ids that do not exist are reported in `not_found_ids`. ' +
 			'Returns { updated, updated_ids, not_found_ids }.',
 		schema: updateItemsArgs,
 		handler: async ({ items }) => {
-			const patches = items.map(({ id, sources, add_sources, optional_tags, ...patch }) => {
-				assertSourcesNotBoth(sources, add_sources, id);
-				return {
-					id,
-					...patch,
-					optionalTags: optional_tags,
-					sources: normalizeSources(sources),
-					addSources: normalizeSources(add_sources)
-				};
-			});
+			const patches = items.map(({ id, optional_tags, ...patch }) => ({
+				id,
+				...patch,
+				optionalTags: optional_tags
+			}));
 			const { updatedIds, notFoundIds } = await updateItems(getDb(), patches);
 			return {
 				updated: updatedIds.length,
@@ -2407,8 +2421,10 @@ const chainTools = [
 			'reply carries the committed ids (partial_failure) — re-run passing those ids back (no-ops) to ' +
 			'resume.',
 		schema: createChainArgs,
-		handler: (input) =>
-			createChainBundle(getDb(), {
+		handler: (input) => {
+			// Provenance is menu-level: the chain's shared menu must cite at least one source link.
+			assertHasSource(input.menu.sources, `menu "${input.menu.name}"`);
+			return createChainBundle(getDb(), {
 				brand: input.brand,
 				menu: {
 					name: input.menu.name,
@@ -2424,10 +2440,10 @@ const chainTools = [
 					description: it.description ?? null,
 					price: it.price ?? null,
 					tags: it.tags,
-					optionalTags: it.optional_tags,
-					sources: normalizeSources(it.sources)
+					optionalTags: it.optional_tags
 				}))
-			})
+			});
+		}
 	}),
 	defineTool({
 		name: 'create_brand',
@@ -2504,8 +2520,9 @@ const chainTools = [
 			'Create a regional menu under a brand (e.g. name "Subway UK", region "GB", currency "GBP"). Add its ' +
 			'shared items with create_items (using this menu_id), then point each branch at it via ' +
 			'location.menu_id. Set ' +
-			`\`currency\` so item prices are unambiguous (defaults to ${DEFAULT_CURRENCY}). Optionally cite the ` +
-			'official menu once via `sources`, and bank HOW to re-fetch it in `refresh_notes` (feed ' +
+			`\`currency\` so item prices are unambiguous (defaults to ${DEFAULT_CURRENCY}). Cite the menu via ` +
+			'`sources` — AT LEAST ONE link is required (the menu / ordering link, official nutrition or dietary ' +
+			'page) — and bank HOW to re-fetch it in `refresh_notes` (feed ' +
 			"endpoint + caveats) so the next verification skips source re-discovery. The menu's freshness " +
 			'date (last_verified) is set automatically to today here and on every later write — never pass ' +
 			'it. Returns { id } — read it back with get_menu.',
@@ -2518,6 +2535,8 @@ const chainTools = [
 			if (input.id && (await getMenuById(getDb(), input.id))) {
 				return { id: input.id, already_existed: true };
 			}
+			// Provenance is menu-level: a new menu must cite at least one source link.
+			assertHasSource(input.sources, `menu "${input.name}"`);
 			// Flag (don't block) a same-name menu under this brand as a likely duplicate.
 			const dupIds = await findMenuIdsByName(getDb(), input.brand_id, input.name);
 			const id = await insertMenu(getDb(), {
@@ -2558,7 +2577,7 @@ const chainTools = [
 			'chain menu is not returned in full unless asked. Pass view: "full" to get every item WITH its ' +
 			'description, sources and optional-tag detail (REQUIRED to verify dietary tags or read ' +
 			'descriptions); "summary" returns no item list, just counts (item_count, a per-tag histogram, ' +
-			'how many items have a price / a source). Each full-view item omits the menu-level ' +
+			'how many items have a price). Each full-view item omits the menu-level ' +
 			'`currency`/`menu_id`, which the menu itself carries once. Returns null if not found.',
 		schema: getMenuArgs,
 		handler: async ({ id, view }) => {

@@ -174,9 +174,10 @@ test('the viewport read sends each menu once, with per-branch overrides and a pr
 
 // The viewport payload is LEAN (#83): the map UI renders only item names (plus
 // tags for the client diet re-filter), so the bulk reads (the viewport read,
-// filtered or not) must not ship description/price/sources —
+// filtered or not) must not ship description/price —
 // only the by-id detail read (getLocationMapData, behind the open venue's panel)
-// carries the full item shape, its sources merged with the menu-level sources.
+// carries the full item shape. Provenance is menu-level, delivered on menuMeta,
+// only in detail mode.
 test('viewport items are lean; the by-id detail read keeps the full shape', async () => {
 	const db = freshDb();
 
@@ -193,8 +194,7 @@ test('viewport items are lean; the by-id detail read keeps the full shape', asyn
 			item_name: 'Falafel Pita',
 			description: 'Chickpea falafel with veg',
 			price: 9,
-			tags: ['vegan'],
-			sources: [{ url: 'https://pitapit.ca/menu/falafel', label: 'Item page' }]
+			tags: ['vegan']
 		}
 	]);
 	const [branch] = await insertLocations(db, [
@@ -224,8 +224,10 @@ test('viewport items are lean; the by-id detail read keeps the full shape', asyn
 	expect('description' in leanItem).toBe(false);
 	expect('price' in leanItem).toBe(false);
 	expect('sources' in leanItem).toBe(false);
-	// Menu freshness metadata still travels with the lean payload.
+	// Menu freshness metadata still travels with the lean payload; sources do NOT
+	// (they are surfaced only in the detail read behind the open venue's panel).
 	expect(viewport.menuMeta[menuId].last_verified).not.toBeNull();
+	expect(viewport.menuMeta[menuId].sources).toEqual([]);
 
 	// The filtered (search) read shares the lean shape.
 	const search = await searchMapData(
@@ -235,16 +237,15 @@ test('viewport items are lean; the by-id detail read keeps the full shape', asyn
 	);
 	expect('price' in search.menus[menuId][0]).toBe(false);
 
-	// The by-id detail read: the full item, its own source first, menu source appended.
+	// The by-id detail read: the full item (description/price/currency), and the
+	// menu's sources on menuMeta (provenance is menu-level, not on the item).
 	const detail = await getLocationMapData(db, branch);
 	const fullItem = detail.menus[menuId][0];
 	expect(fullItem.description).toBe('Chickpea falafel with veg');
 	expect(fullItem.price).toBe(9);
 	expect(fullItem.currency).toBe('CAD');
-	expect(fullItem.sources.map((s) => s.url)).toEqual([
-		'https://pitapit.ca/menu/falafel',
-		'https://pitapit.ca/menu'
-	]);
+	expect('sources' in fullItem).toBe(false);
+	expect(detail.menuMeta[menuId].sources.map((s) => s.url)).toEqual(['https://pitapit.ca/menu']);
 });
 
 // A wide (zoomed-out) viewport is spatially downsampled: the box is tiled into a grid

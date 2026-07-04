@@ -11,6 +11,7 @@ import {
 	chunkLocationInserts,
 	getLocationById,
 	getFoodByLocation,
+	getMenuById,
 	insertBrand,
 	insertMenu
 } from '../src/lib/server/db';
@@ -25,7 +26,7 @@ const ADDR = {
 	country: 'CA'
 };
 
-test('insertLocations writes a batch with sources and chain links', async () => {
+test('insertLocations writes a batch with menu sources and chain links', async () => {
 	const db = freshDb();
 	// Real parent rows: the harness enforces foreign keys like production D1.
 	await insertBrand(db, { id: 'brand-1', name: 'KFC', website: null, logo_url: null });
@@ -38,7 +39,10 @@ test('insertLocations writes a batch with sources and chain links', async () => 
 			longitude: -123.12,
 			...ADDR,
 			phone: null,
-			website: null
+			website: null,
+			// Provenance is menu-level: the venue's sources ride on its private menu, created from these items.
+			menuSources: [{ url: 'https://independent.example/menu', label: 'Menu' }],
+			items: [{ item_name: 'Latte', price: 4.5 }]
 		},
 		{
 			name: 'KFC',
@@ -53,8 +57,7 @@ test('insertLocations writes a batch with sources and chain links', async () => 
 			phone: null,
 			website: 'https://www.kfc.ca',
 			brand_id: 'brand-1',
-			menu_id: 'menu-1',
-			sources: [{ url: 'https://www.openstreetmap.org/node/1', label: 'OpenStreetMap' }]
+			menu_id: 'menu-1'
 		}
 	]);
 	expect(ids).toHaveLength(2);
@@ -62,9 +65,13 @@ test('insertLocations writes a batch with sources and chain links', async () => 
 	const independent = await getLocationById(db, ids[0]);
 	expect(independent?.name).toBe('Independent Spot');
 	expect(independent?.brand_id).toBeNull();
-	expect(independent?.sources).toEqual([]);
 	// The single-line address is derived from the structured parts on read.
 	expect(independent?.address).toBe('1 Test St, Vancouver, BC V6J 1M5');
+	// The venue's sources live on its auto-created private menu.
+	const privateMenu = await getMenuById(db, `pm-${ids[0]}`);
+	expect(privateMenu?.sources).toEqual([
+		{ url: 'https://independent.example/menu', label: 'Menu' }
+	]);
 
 	const kfc = await getLocationById(db, ids[1]);
 	expect(kfc?.name).toBe('KFC');
@@ -74,9 +81,6 @@ test('insertLocations writes a batch with sources and chain links', async () => 
 	expect(kfc?.street).toBe('123 Yonge St');
 	expect(kfc?.region).toBe('ON');
 	expect(kfc?.address).toBe('123 Yonge St, Toronto, ON M5C 2K1');
-	expect(kfc?.sources).toEqual([
-		{ url: 'https://www.openstreetmap.org/node/1', label: 'OpenStreetMap' }
-	]);
 });
 
 test('a null postcode is allowed and omitted from the display line', async () => {
@@ -285,7 +289,7 @@ test('insertLocations rejects inline items on a chain branch and writes nothing'
 // insertLocations calls of at most ~MAX statements at LOCATION boundaries.
 // ---------------------------------------------------------------------------
 
-/** An independent venue with `nItems` inline items, each carrying tags + a source. */
+/** An independent venue with `nItems` inline items (each carrying tags) + one menu source. */
 function venueWithItems(name: string, i: number, nItems: number) {
 	return {
 		name,
@@ -295,13 +299,13 @@ function venueWithItems(name: string, i: number, nItems: number) {
 		...ADDR,
 		phone: null,
 		website: null,
-		sources: [{ url: `https://example.com/${name}`, label: null }],
+		// Provenance is menu-level: sources ride on the private menu (only written when items exist).
+		menuSources: [{ url: `https://example.com/${name}/menu`, label: null }],
 		items: Array.from({ length: nItems }, (_, j) => ({
 			item_name: `Dish ${j}`,
 			price: 10,
 			tags: ['vegan' as const],
-			optionalTags: ['gluten_free' as const],
-			sources: [{ url: `https://example.com/${name}/menu`, label: null }]
+			optionalTags: ['gluten_free' as const]
 		}))
 	};
 }
@@ -317,11 +321,11 @@ test('locationInsertStatementCount matches the statements insertLocations actual
 		}
 	};
 	const cases = [
-		// bare venue: 1 location row
-		[venueWithItems('Bare', 0, 0)].map((l) => ({ ...l, sources: undefined, items: undefined })),
-		// venue + 1 source, no items: 2
+		// bare venue (no menu): 1 location row (menuSources are ignored without items)
+		[venueWithItems('Bare', 0, 0)].map((l) => ({ ...l, menuSources: undefined, items: undefined })),
+		// venue with a menu source but no items: still just the 1 location row (no menu created)
 		[venueWithItems('Sourced', 1, 0)].map((l) => ({ ...l, items: undefined })),
-		// venue + source + private menu + 3 items × (row + tag + optional tag + source): 3 + 12
+		// venue + private menu + 1 menu source + 3 items × (row + tag + optional tag): 3 + 9
 		[venueWithItems('Full', 2, 3)],
 		// two venues in one batch: counts add
 		[venueWithItems('A', 3, 1), venueWithItems('B', 4, 2)]
@@ -335,21 +339,21 @@ test('locationInsertStatementCount matches the statements insertLocations actual
 });
 
 test('chunkLocationInserts splits at location boundaries under the statement cap', () => {
-	// Each venue is 1 (menu) + 1 (location) + 1 (source) + 4×(1+1+1+1) = 19 statements.
+	// Each venue is 1 (menu) + 1 (menu source) + 1 (location) + 4×(1+1+1) = 15 statements.
 	const locs = Array.from({ length: 10 }, (_, i) => venueWithItems(`V${i}`, i, 4));
 	const per = locationInsertStatementCount(locs[0]);
-	expect(per).toBe(19);
-	const chunks = chunkLocationInserts(locs, 60); // 3 venues (57) fit, a 4th (76) would not
+	expect(per).toBe(15);
+	const chunks = chunkLocationInserts(locs, 45); // 3 venues (45) fit, a 4th (60) would not
 	expect(chunks.map((c) => c.length)).toEqual([3, 3, 3, 1]);
 	// Order preserved: concatenating the chunks reproduces the input.
 	expect(chunks.flat()).toEqual(locs);
 	for (const chunk of chunks) {
-		expect(chunk.reduce((n, l) => n + locationInsertStatementCount(l), 0)).toBeLessThanOrEqual(60);
+		expect(chunk.reduce((n, l) => n + locationInsertStatementCount(l), 0)).toBeLessThanOrEqual(45);
 	}
 });
 
 test('a single location over the cap gets its own chunk rather than being split', () => {
-	const big = venueWithItems('Big Menu', 0, 50); // 2 + 1 + 200 statements, way over any cap
+	const big = venueWithItems('Big Menu', 0, 50); // 3 + 150 statements, way over any cap
 	const small = venueWithItems('Small', 1, 1);
 	const chunks = chunkLocationInserts([small, big, small], 20);
 	expect(chunks.map((c) => c.length)).toEqual([1, 1, 1]);
