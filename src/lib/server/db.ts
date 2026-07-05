@@ -1428,9 +1428,11 @@ export async function insertLocations(db: D1Like, locs: LocationInsert[]): Promi
 /**
  * How many statements {@link insertLocations} builds for one location: the
  * private-menu row and its menu-source links (only when it has inline `items`),
- * the location row, and per item its row plus one per tag/optional-tag link.
- * Kept next to insertLocations so the count and the statement builder stay in
- * sync (see the parity test in create-locations.test.ts).
+ * the location row, and per item its row plus one per tag/optional-tag link —
+ * counting only the links tagLinkStmts actually emits (entailed-redundant tags
+ * are stripped, see DIET_TAG_IMPLIES). Kept next to insertLocations so the
+ * count and the statement builder stay in sync (see the parity test in
+ * create-locations.test.ts).
  */
 export function locationInsertStatementCount(loc: LocationInsert): number {
 	const items = loc.items ?? [];
@@ -1439,10 +1441,13 @@ export function locationInsertStatementCount(loc: LocationInsert): number {
 		(hasItems ? 1 : 0) +
 		(hasItems ? (loc.menuSources?.length ?? 0) : 0) +
 		1 +
-		items.reduce(
-			(n, item) => n + 1 + (item.tags?.length ?? 0) + (item.optionalTags?.length ?? 0),
-			0
-		)
+		items.reduce((n, item) => {
+			const implied = impliedDietTagIds((item.tags ?? []).map((id) => ({ id, optional: false })));
+			const links = [...(item.tags ?? []), ...(item.optionalTags ?? [])].filter(
+				(id) => !implied.has(id)
+			).length;
+			return n + 1 + links;
+		}, 0)
 	);
 }
 

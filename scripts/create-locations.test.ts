@@ -330,7 +330,22 @@ test('locationInsertStatementCount matches the statements insertLocations actual
 		// venue + private menu + 1 menu source + 3 items × (row + tag + optional tag): 3 + 9
 		[venueWithItems('Full', 2, 3)],
 		// two venues in one batch: counts add
-		[venueWithItems('A', 3, 1), venueWithItems('B', 4, 2)]
+		[venueWithItems('A', 3, 1), venueWithItems('B', 4, 2)],
+		// entailed-redundant tags are STRIPPED by tagLinkStmts (asserted vegan drops
+		// vegetarian + optional dairy_free) — the count must drop them identically.
+		[
+			{
+				...venueWithItems('Stripped', 5, 0),
+				items: [
+					{
+						item_name: 'Vegan Bowl',
+						price: 9,
+						tags: ['vegan' as const, 'vegetarian' as const],
+						optionalTags: ['dairy_free' as const, 'gluten_free' as const]
+					}
+				]
+			}
+		]
 	];
 	for (const locs of cases) {
 		batchSizes.length = 0;
