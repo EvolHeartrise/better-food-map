@@ -6,6 +6,10 @@
 	--color-border: #e3e3e8;
 	--color-accent: #2f6f4f;
 	--color-accent-hover: #245a40;
+	/* Allergen-avoidance dietary icons (dairy-/nut-/gluten-free) read in this orange,
+	   set against the accent green of the positive-diet icons (vegan/vegetarian/halal).
+	   Muted to sit alongside the accent, and dark enough to stay legible at ~15px. */
+	--color-caution: #c2410c;
 
 	--container-width: 72rem;
 	--radius: 0.5rem;
