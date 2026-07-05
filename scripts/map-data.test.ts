@@ -97,7 +97,10 @@ test('the viewport read sends each menu once, with per-branch overrides and a pr
 			location_id: cafeId,
 			item_name: 'Veggie Bowl',
 			tags: ['vegan'],
-			optionalTags: ['vegetarian'],
+			// gluten_free, not vegetarian: vegan ENTAILS vegetarian, so the write
+			// path would strip it (see DIET_TAG_IMPLIES) — this fixture pins the
+			// per-item optional flag, so it needs a tag that survives the write.
+			optionalTags: ['gluten_free'],
 			price: 12
 		},
 		{ location_id: cafeId, item_name: 'Latte', price: 5 }
@@ -149,12 +152,12 @@ test('the viewport read sends each menu once, with per-branch overrides and a pr
 	expect(justCafe.menus[cafeMenuId].map((i) => i.item_name)).toEqual(['Latte', 'Veggie Bowl']);
 
 	// Dietary tags are recorded with their per-item `optional` flag (vegan asserted,
-	// vegetarian optional — "can be made vegetarian").
+	// gluten-free optional — "can be made gluten-free").
 	const bowl = justCafe.menus[cafeMenuId].find((i) => i.item_name === 'Veggie Bowl');
 	expect(bowl).toBeDefined();
 	expect(bowl?.tags.map((t) => `${t.id}:${t.optional}`).toSorted()).toEqual([
-		'vegan:false',
-		'vegetarian:true'
+		'gluten_free:true',
+		'vegan:false'
 	]);
 
 	// ...while a chain branch brings its overrides plus the shared menu it serves.

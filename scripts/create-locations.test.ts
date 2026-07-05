@@ -239,7 +239,9 @@ test('insertLocations creates an independent venue and its own menu in one batch
 			phone: null,
 			website: null,
 			items: [
-				{ item_name: 'Oat Latte', price: 5, tags: ['vegan'], optionalTags: ['vegetarian'] },
+				// gluten_free, not vegetarian: vegan entails vegetarian, so the write path
+				// would strip it (DIET_TAG_IMPLIES) — this pins the optional-flag wiring.
+				{ item_name: 'Oat Latte', price: 5, tags: ['vegan'], optionalTags: ['gluten_free'] },
 				{ item_name: 'Croissant', price: 3 }
 			]
 		}
@@ -254,8 +256,8 @@ test('insertLocations creates an independent venue and its own menu in one batch
 	const latte = menu.find((i) => i.item_name === 'Oat Latte');
 	expect(latte?.price).toBe(5);
 	expect(latte?.tags.some((t) => t.id === 'vegan')).toBe(true);
-	// An optional dietary tag is stored with optional = true ("can be made vegetarian").
-	expect(latte?.tags.find((t) => t.id === 'vegetarian')?.optional).toBe(true);
+	// An optional dietary tag is stored with optional = true ("can be made gluten-free").
+	expect(latte?.tags.find((t) => t.id === 'gluten_free')?.optional).toBe(true);
 });
 
 test('insertLocations rejects inline items on a chain branch and writes nothing', async () => {
@@ -328,7 +330,22 @@ test('locationInsertStatementCount matches the statements insertLocations actual
 		// venue + private menu + 1 menu source + 3 items × (row + tag + optional tag): 3 + 9
 		[venueWithItems('Full', 2, 3)],
 		// two venues in one batch: counts add
-		[venueWithItems('A', 3, 1), venueWithItems('B', 4, 2)]
+		[venueWithItems('A', 3, 1), venueWithItems('B', 4, 2)],
+		// entailed-redundant tags are STRIPPED by tagLinkStmts (asserted vegan drops
+		// vegetarian + optional dairy_free) — the count must drop them identically.
+		[
+			{
+				...venueWithItems('Stripped', 5, 0),
+				items: [
+					{
+						item_name: 'Vegan Bowl',
+						price: 9,
+						tags: ['vegan' as const, 'vegetarian' as const],
+						optionalTags: ['dairy_free' as const, 'gluten_free' as const]
+					}
+				]
+			}
+		]
 	];
 	for (const locs of cases) {
 		batchSizes.length = 0;

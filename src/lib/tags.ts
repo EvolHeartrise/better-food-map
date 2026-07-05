@@ -49,6 +49,59 @@ export const TAGS: readonly Tag[] = [
 	{ id: 'drink', name: 'Drink', tag_type: 'course' }
 ];
 
+// ---------------------------------------------------------------------------
+// Dietary-tag implication (vegan ⊃ vegetarian, dairy-free)
+// ---------------------------------------------------------------------------
+
+// An ASSERTED vegan designation logically entails these two: a vegan dish is by
+// definition vegetarian and contains no dairy. Storing/showing the entailed tags
+// alongside vegan is therefore pure redundancy, so writes strip them, the icon
+// row hides them, and the diet filter matches vegan items under either entailed
+// diet. Halal is deliberately NOT here — vegan food can still be non-halal
+// (e.g. alcohol), so halal stays independent: always stored, always shown, and
+// its filter matches only explicitly halal-tagged items. An OPTIONAL vegan tag
+// ("can be made vegan") never dominates — only the asserted form entails.
+export const DIET_TAG_IMPLIES: Partial<Record<TagId, readonly TagId[]>> = {
+	vegan: ['vegetarian', 'dairy_free']
+};
+
+/**
+ * The tag ids whose presence on an item satisfies the diet filter `diet`: the
+ * diet itself plus any tag that entails it (Vegetarian and Dairy-free each also
+ * match vegan-tagged items). Both filter halves — `searchMembership` in
+ * `$lib/server/db` and the client mirror in `$lib/search-match` — resolve the
+ * selected diet through this ONE closure so they can't drift. Matching stays
+ * optional-agnostic like the base filter: "can be made vegan" already matches
+ * the Vegan filter, and can-be-made-vegan entails can-be-made-vegetarian, so
+ * the same looseness carries over soundly.
+ */
+export function dietFilterTagIds(diet: string): string[] {
+	const ids = [diet];
+	for (const [implier, implied] of Object.entries(DIET_TAG_IMPLIES)) {
+		if (implied.includes(diet as TagId)) ids.push(implier);
+	}
+	return ids;
+}
+
+/**
+ * The tag ids made redundant by the item's ASSERTED tags — e.g. an item with a
+ * non-optional vegan tag makes vegetarian/dairy_free redundant (in either their
+ * asserted or optional form: a vegan dish "can be made vegetarian" says
+ * nothing). Optional tags never dominate. Used by the icon row to hide
+ * redundant marks and by the item-write path to strip them before they're
+ * stored.
+ */
+export function impliedDietTagIds(
+	tags: ReadonlyArray<{ id: string; optional: boolean }>
+): Set<string> {
+	const implied = new Set<string>();
+	for (const tag of tags) {
+		if (tag.optional) continue;
+		for (const id of DIET_TAG_IMPLIES[tag.id as TagId] ?? []) implied.add(id);
+	}
+	return implied;
+}
+
 /**
  * How a tag's name should read in the UI. Curated dietary/course tags are stored
  * already capitalised ("Vegan", "Dessert"); title-casing the first letter is a

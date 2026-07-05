@@ -193,6 +193,68 @@ test('diet queries: narrowing on the SAME item agrees through both halves', asyn
 	await expectParity(db, ids, '', 'gluten_free'); // nothing carries it → both empty
 });
 
+// The diet filter resolves the selected diet through the implication closure
+// (dietFilterTagIds, $lib/tags): an asserted vegan tag entails vegetarian and
+// dairy_free — the write path strips those entailed tags from vegan items, and
+// the closure is what keeps such items matching the entailed diets. Halal is
+// deliberately OUTSIDE the closure (vegan food can be non-halal, e.g. alcohol).
+test('diet implication: vegan items match vegetarian/dairy_free but not halal, through both halves', async () => {
+	const db = freshDb();
+	const ids = await fixtures(db);
+	const [palace] = ids;
+
+	// The fixtures' vegan items carry ONLY the vegan tag (as the write path
+	// guarantees) — the entailed diets must still find them.
+	for (const diet of ['vegetarian', 'dairy_free']) {
+		await expectParity(db, ids, '', diet);
+		await expectParity(db, ids, 'burrito', diet);
+		const server = await searchMapData(db, BOX, { query: '', dietTagId: diet });
+		expect(server.locations.map((l) => l.id)).toContain(palace);
+	}
+	// Halal stays independent: nothing here is halal-tagged, so both halves are empty.
+	await expectParity(db, ids, '', 'halal');
+	const halal = await searchMapData(db, BOX, { query: '', dietTagId: 'halal' });
+	expect(halal.locations).toEqual([]);
+});
+
+// The write path silently strips tags an asserted vegan entails (from the
+// required AND optional sets), while an OPTIONAL vegan strips nothing.
+test('item writes strip vegan-entailed tags; optional vegan does not dominate', async () => {
+	const db = freshDb();
+	const [stripped, kept] = await insertLocations(db, [venue('Strip Test'), venue('Keep Test', 1)]);
+	// Asserted vegan + redundant asserted vegetarian + redundant optional dairy_free.
+	await insertFoods(db, [
+		{
+			location_id: stripped,
+			item_name: 'Vegan Bowl',
+			tags: ['vegan', 'vegetarian'],
+			optionalTags: ['dairy_free'],
+			price: 9
+		}
+	]);
+	// Only OPTIONAL vegan ("can be made vegan") → vegetarian must survive.
+	await insertFoods(db, [
+		{
+			location_id: kept,
+			item_name: 'Veggie Bowl',
+			tags: ['vegetarian'],
+			optionalTags: ['vegan'],
+			price: 9
+		}
+	]);
+
+	const strippedData = await getLocationMapData(db, stripped);
+	const strippedMenu = resolveMenu(strippedData.locations[0], strippedData);
+	expect(strippedMenu[0].tags.map((t) => t.id).toSorted()).toEqual(['vegan']);
+	const keptData = await getLocationMapData(db, kept);
+	const keptMenu = resolveMenu(keptData.locations[0], keptData);
+	expect(keptMenu[0].tags.map((t) => t.id).toSorted()).toEqual(['vegan', 'vegetarian']);
+
+	// And the stripped item still matches the entailed diets through both halves.
+	await expectParity(db, [stripped, kept], '', 'vegetarian');
+	await expectParity(db, [stripped, kept], '', 'dairy_free');
+});
+
 // Case folding is ASCII-ONLY on BOTH halves: SQLite's LIKE folds A-Z alone, so
 // 'É' and 'é' stay distinct on the server — and the client folds with
 // foldAsciiCase to match exactly. (Unicode .toLowerCase() on the client would
