@@ -19,6 +19,7 @@
  */
 
 import { foldAsciiCase } from './search';
+import { dietFilterTagIds } from './tags';
 
 /** The item fields membership reads: its name, and the ids of its tags. */
 export interface SearchableItem {
@@ -61,9 +62,12 @@ export function matchedItems<I extends SearchableItem>(
 		queryTerm === '' || nameMatches(loc.name, queryTerm)
 			? loc.menu
 			: loc.menu.filter((menuItem) => foldAsciiCase(menuItem.item_name).includes(queryTerm));
-	return diet === null
-		? textItems
-		: textItems.filter((menuItem) => menuItem.tags.some((tag) => tag.id === diet));
+	if (diet === null) return textItems;
+	// The selected diet resolves through the same implication closure as the
+	// server half (dietFilterTagIds): Vegetarian / Dairy-free also match
+	// vegan-tagged items, whose entailed tags are stripped at write time.
+	const dietIds = dietFilterTagIds(diet);
+	return textItems.filter((menuItem) => menuItem.tags.some((tag) => dietIds.includes(tag.id)));
 }
 
 /**

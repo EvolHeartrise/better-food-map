@@ -28,7 +28,7 @@ import type { Tag, TagId, TagType } from '../tags';
 // Value imports (tiny, pure, client-safe): the canonical display-address formatter,
 // so the single-line `address` is composed identically wherever a location is read,
 // and the canonical tag vocabulary.
-import { TAGS } from '../tags';
+import { TAGS, dietFilterTagIds, impliedDietTagIds } from '../tags';
 import { formatAddress } from '../address';
 import { longestLiteralRun, searchableQuery } from '../search';
 import { cellKey, cellsCoverBounds, levelCell } from '../grid';
@@ -852,7 +852,12 @@ function searchMembership(filter: SearchFilter): { cond: string; params: string[
 	// chain's SHARED menu once per branch, while the uncorrelated set is
 	// materialized once per statement and probed per row. (`NULL IN (…)` is
 	// never true, so a venue with no menu is excluded exactly as EXISTS would.)
-	const dietMenus = `SELECT i.menu_id FROM items i JOIN item_tags it ON it.item_id = i.id WHERE it.tag_id = ?`;
+	// The selected diet resolves to its implication closure (dietFilterTagIds):
+	// Vegetarian / Dairy-free also match vegan-tagged items — writes strip those
+	// entailed tags from vegan items, so the closure is what keeps them matching.
+	const dietIds = hasDiet ? dietFilterTagIds(filter.dietTagId as string) : [];
+	const dietIdList = dietIds.map(() => '?').join(', ');
+	const dietMenus = `SELECT i.menu_id FROM items i JOIN item_tags it ON it.item_id = i.id WHERE it.tag_id IN (${dietIdList})`;
 
 	// Membership is an OR of independent disjuncts, built so each disjunct's `?`
 	// placeholders are pushed onto `params` in the exact left-to-right order they
@@ -870,7 +875,7 @@ function searchMembership(filter: SearchFilter): { cond: string; params: string[
 	// (diet always narrows), so a name-only match with no diet-matching item drops.
 	if (hasText && hasDiet) {
 		disjuncts.push(`(${nameMatch} AND l.menu_id IN (${dietMenus}))`);
-		params.push(...textParams, filter.dietTagId as string);
+		params.push(...textParams, ...dietIds);
 	}
 	// An item satisfying every active predicate: its name contains `query` (when set)
 	// AND it carries the diet tag (when set). The SAME item `i` must satisfy both. The
@@ -886,14 +891,14 @@ function searchMembership(filter: SearchFilter): { cond: string; params: string[
 		params.push(...textParams);
 		if (hasDiet) {
 			itemConds.push(
-				`EXISTS (SELECT 1 FROM item_tags it WHERE it.item_id = i.id AND it.tag_id = ?)`
+				`EXISTS (SELECT 1 FROM item_tags it WHERE it.item_id = i.id AND it.tag_id IN (${dietIdList}))`
 			);
-			params.push(filter.dietTagId as string);
+			params.push(...dietIds);
 		}
 		disjuncts.push(`l.menu_id IN (SELECT i.menu_id FROM items i WHERE ${itemConds.join(' AND ')})`);
 	} else {
 		disjuncts.push(`l.menu_id IN (${dietMenus})`);
-		params.push(filter.dietTagId as string);
+		params.push(...dietIds);
 	}
 
 	return { cond: disjuncts.join(' OR '), params };
@@ -1251,12 +1256,19 @@ function linkTagStmt(db: D1Like, itemId: string, tagId: string, optional: 0 | 1)
 /**
  * Statements that link an item to its curated dietary/course tags, from `tags`
  * (required) and `optionalTags` (the per-edge `optional` flag — e.g. a dish that
- * can be made vegan on request).
+ * can be made vegan on request). Tags an asserted stronger diet entails are
+ * silently dropped (DIET_TAG_IMPLIES: an asserted vegan strips vegetarian /
+ * dairy_free from BOTH sets — a vegan dish "can be made vegetarian" says
+ * nothing); the diet filter matches vegan items under the entailed diets via
+ * the same closure, so nothing is lost. An optional vegan strips nothing.
  */
 function tagLinkStmts(db: D1Like, itemId: string, content: ItemContent): D1PreparedLike[] {
+	const implied = impliedDietTagIds((content.tags ?? []).map((id) => ({ id, optional: false })));
 	const stmts: D1PreparedLike[] = [];
-	for (const tagId of content.tags ?? []) stmts.push(linkTagStmt(db, itemId, tagId, 0));
-	for (const tagId of content.optionalTags ?? []) stmts.push(linkTagStmt(db, itemId, tagId, 1));
+	for (const tagId of content.tags ?? [])
+		if (!implied.has(tagId)) stmts.push(linkTagStmt(db, itemId, tagId, 0));
+	for (const tagId of content.optionalTags ?? [])
+		if (!implied.has(tagId)) stmts.push(linkTagStmt(db, itemId, tagId, 1));
 	return stmts;
 }
 
@@ -1714,7 +1726,8 @@ function itemUpdateStmts(db: D1Like, id: string, patch: ItemUpdate): D1PreparedL
 	}
 
 	// Replace the dietary/course tag set (every tag is dietary/course, so this
-	// clears all of an item's tag links before re-linking the new set).
+	// clears all of an item's tag links before re-linking the new set, which
+	// tagLinkStmts strips of entailed-redundant tags).
 	if (patch.tags !== undefined || patch.optionalTags !== undefined) {
 		stmts.push(
 			db
@@ -1724,8 +1737,7 @@ function itemUpdateStmts(db: D1Like, id: string, patch: ItemUpdate): D1PreparedL
 				)
 				.bind(id)
 		);
-		for (const tagId of patch.tags ?? []) stmts.push(linkTagStmt(db, id, tagId, 0));
-		for (const tagId of patch.optionalTags ?? []) stmts.push(linkTagStmt(db, id, tagId, 1));
+		stmts.push(...tagLinkStmts(db, id, patch));
 	}
 
 	return stmts;
