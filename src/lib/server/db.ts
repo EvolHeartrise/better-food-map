@@ -30,6 +30,7 @@ import type { Tag, TagId, TagType } from '../tags';
 // and the canonical tag vocabulary.
 import { TAGS, dietFilterTagIds, impliedDietTagIds } from '../tags';
 import { formatAddress } from '../address';
+import { decodeHtmlEntities } from '../text';
 import { longestLiteralRun, searchableQuery } from '../search';
 import { cellKey, cellsCoverBounds, levelCell } from '../grid';
 
@@ -361,7 +362,12 @@ function groupItemTags(rows: ItemTagRow[]): Map<string, ItemTag[]> {
 	const byOwner = new Map<string, ItemTag[]>();
 	for (const row of rows) {
 		const list = byOwner.get(row.owner_id) ?? [];
-		list.push({ id: row.id, name: row.name, tag_type: row.tag_type, optional: row.optional !== 0 });
+		list.push({
+			id: row.id,
+			name: row.name,
+			tag_type: row.tag_type,
+			optional: row.optional !== 0
+		});
 		byOwner.set(row.owner_id, list);
 	}
 	return byOwner;
@@ -1036,7 +1042,9 @@ async function queryMapData(
 		menuSourceRes
 	] = (await db.batch([...coreStatements, ...detailStatements])) as [
 		{ results: ItemRow[] },
-		{ results: { id: string; currency: string; last_verified: string | null }[] },
+		{
+			results: { id: string; currency: string; last_verified: string | null }[];
+		},
 		{ results: ItemTagRow[] },
 		{ results: OverrideRow[] },
 		{ results: SourceRow[] }?
@@ -1280,6 +1288,17 @@ export interface ItemInsertSpec extends ItemContent {
 	price?: number | null;
 }
 
+/**
+ * Display text is cleaned of HTML character references on EVERY write (`&amp;` →
+ * `&`): menu research scrapes web sources, so encoded entities occasionally leak
+ * into item/location/menu/brand names. Decoding at the db funnels covers every
+ * ingestion path (MCP tools, chain imports, inline `menu_items`) at once. The
+ * html_entities audit should therefore always come back clean.
+ */
+const cleanText = decodeHtmlEntities;
+const cleanTextOrNull = (value: string | null | undefined): string | null =>
+	value === null || value === undefined ? null : decodeHtmlEntities(value);
+
 /** Builds the full statement list to insert one item (row + tags). */
 function insertItemStmts(
 	db: D1Like,
@@ -1292,7 +1311,13 @@ function insertItemStmts(
 			.prepare(
 				`INSERT INTO items (id, menu_id, item_name, description, price) VALUES (?, ?, ?, ?, ?)`
 			)
-			.bind(id, menuId, spec.item_name, spec.description ?? null, spec.price ?? null),
+			.bind(
+				id,
+				menuId,
+				cleanText(spec.item_name),
+				cleanTextOrNull(spec.description),
+				spec.price ?? null
+			),
 		...tagLinkStmts(db, id, spec)
 	];
 }
@@ -1353,6 +1378,7 @@ export async function insertLocations(db: D1Like, locs: LocationInsert[]): Promi
 	for (const loc of locs) {
 		const id = loc.id ?? crypto.randomUUID();
 		ids.push(id);
+		const name = cleanText(loc.name);
 		const hasItems = loc.items !== undefined && loc.items.length > 0;
 		if (hasItems && (loc.brand_id || loc.menu_id)) {
 			throw new Error(
@@ -1374,12 +1400,7 @@ export async function insertLocations(db: D1Like, locs: LocationInsert[]): Promi
 					)
 					// last_verified is required (migration 0012); a new private menu is
 					// verified as of its creation date.
-					.bind(
-						privateMenuId,
-						loc.name,
-						loc.currency ?? DEFAULT_CURRENCY,
-						currentVerificationDate()
-					)
+					.bind(privateMenuId, name, loc.currency ?? DEFAULT_CURRENCY, currentVerificationDate())
 			);
 			// Provenance lives on the menu now: attach the venue's sources to its private menu.
 			for (const source of loc.menuSources ?? []) {
@@ -1398,7 +1419,7 @@ export async function insertLocations(db: D1Like, locs: LocationInsert[]): Promi
 				)
 				.bind(
 					id,
-					loc.name,
+					name,
 					loc.category,
 					loc.latitude,
 					loc.longitude,
@@ -1514,9 +1535,10 @@ function locationUpdateStmts(db: D1Like, patch: LocationPatch): D1PreparedLike[]
 	const assignments: string[] = [];
 	const values: (string | number | null)[] = [];
 	for (const col of LOCATION_COLUMNS) {
-		if (patch[col] !== undefined) {
+		const value = patch[col];
+		if (value !== undefined) {
 			assignments.push(`${col} = ?`);
-			values.push(patch[col]);
+			values.push(col === 'name' && typeof value === 'string' ? cleanText(value) : value);
 		}
 	}
 	if (assignments.length > 0) {
@@ -1721,7 +1743,11 @@ function itemUpdateStmts(db: D1Like, id: string, patch: ItemUpdate): D1PreparedL
 		const value = patch[col];
 		if (value !== undefined) {
 			assignments.push(`${col} = ?`);
-			values.push(value);
+			values.push(
+				(col === 'item_name' || col === 'description') && typeof value === 'string'
+					? cleanText(value)
+					: value
+			);
 		}
 	}
 	if (assignments.length > 0) {
@@ -1812,7 +1838,7 @@ export async function insertBrand(
 	const id = brand.id ?? crypto.randomUUID();
 	await db
 		.prepare(`INSERT INTO brands (id, name, website, logo_url) VALUES (?, ?, ?, ?)`)
-		.bind(id, brand.name, brand.website ?? null, brand.logo_url ?? null)
+		.bind(id, cleanText(brand.name), brand.website ?? null, brand.logo_url ?? null)
 		.run();
 	return id;
 }
@@ -1828,9 +1854,10 @@ export async function updateBrand(
 	const assignments: string[] = [];
 	const values: (string | null)[] = [];
 	for (const col of BRAND_COLUMNS) {
-		if (patch[col] !== undefined) {
+		const value = patch[col];
+		if (value !== undefined) {
 			assignments.push(`${col} = ?`);
-			values.push(patch[col] ?? null);
+			values.push(col === 'name' && typeof value === 'string' ? cleanText(value) : (value ?? null));
 		}
 	}
 	if (assignments.length > 0) {
@@ -1989,7 +2016,7 @@ export async function insertMenu(
 			.bind(
 				id,
 				menu.brand_id ?? null,
-				menu.name,
+				cleanText(menu.name),
 				menu.region ?? null,
 				menu.currency ?? DEFAULT_CURRENCY,
 				// last_verified is always "now": a just-created menu is verified as of its
@@ -2035,9 +2062,10 @@ export async function updateMenu(
 	const assignments: string[] = ['last_verified = ?'];
 	const values: (string | null)[] = [currentVerificationDate()];
 	for (const col of MENU_COLUMNS) {
-		if (patch[col] !== undefined) {
+		const value = patch[col];
+		if (value !== undefined) {
 			assignments.push(`${col} = ?`);
-			values.push(patch[col] ?? null);
+			values.push(col === 'name' && typeof value === 'string' ? cleanText(value) : (value ?? null));
 		}
 	}
 	stmts.push(

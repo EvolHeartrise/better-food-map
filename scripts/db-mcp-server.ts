@@ -85,6 +85,7 @@ import { findCoordinateDrift } from './osm/find-coordinate-drift';
 import { findMissingAddress } from './osm/find-missing-address';
 import { findDuplicateLocations } from './osm/find-duplicate-locations';
 import { findIncompleteMenus } from './osm/find-incomplete-menus';
+import { findHtmlEntities } from './osm/find-html-entities';
 import {
 	resolveListLimit,
 	resolveListOffset,
@@ -350,7 +351,13 @@ function normalizeAddressParts(
 		country?: string | null;
 	},
 	warn: (message: string) => void
-): { street: string; city: string; region: string; postcode: string | null; country: string } {
+): {
+	street: string;
+	city: string;
+	region: string;
+	postcode: string | null;
+	country: string;
+} {
 	const country = normalizeCountry(args.country ?? 'CA') ?? 'CA';
 	const region = normalizeRegion(args.region, country);
 	if (!region) {
@@ -372,7 +379,13 @@ function normalizeAddressParts(
 			);
 		}
 	}
-	return { street: args.street.trim(), city: args.city.trim(), region, postcode, country };
+	return {
+		street: args.street.trim(),
+		city: args.city.trim(),
+		region,
+		postcode,
+		country
+	};
 }
 
 /**
@@ -932,7 +945,12 @@ const bboxSchema = v.object({
 
 /** MCP wire bbox (snake_case) → the shared {@link Bounds} shape everything internal uses. */
 function toBounds(b: v.InferOutput<typeof bboxSchema>): Bounds {
-	return { minLat: b.min_lat, maxLat: b.max_lat, minLng: b.min_lon, maxLng: b.max_lon };
+	return {
+		minLat: b.min_lat,
+		maxLat: b.max_lat,
+		minLng: b.min_lon,
+		maxLng: b.max_lon
+	};
 }
 
 const searchPoiArgs = v.pipe(
@@ -1185,7 +1203,13 @@ const importChainArgs = v.pipe(
 // (flagged in their descriptions) and simply ignored by the audit they don't apply to.
 const auditLocationsArgs = v.object({
 	check: v.pipe(
-		v.picklist(['coordinate_drift', 'missing_address', 'duplicate_locations', 'empty_menu']),
+		v.picklist([
+			'coordinate_drift',
+			'missing_address',
+			'duplicate_locations',
+			'empty_menu',
+			'html_entities'
+		]),
 		v.description(
 			'Which audit to run:\n' +
 				'• "coordinate_drift" — locations whose stored coordinates do NOT coincide with their ' +
@@ -1212,7 +1236,14 @@ const auditLocationsArgs = v.object({
 				'this branch overrode to unavailable; a location with no menu counts as 0. Surfaces venues that ' +
 				'violate the EXHAUSTIVE-menu policy — a create_locations never followed by create_items, an ' +
 				'import_chain onto an empty menu. Each `locations` entry is { id, name, address, item_count, ' +
-				'brand_id, menu_id }, worst-first (0-item menus lead). Reads only the live D1.'
+				'brand_id, menu_id }, worst-first (0-item menus lead). Reads only the live D1.\n' +
+				'• "html_entities" — display text still carrying HTML-ENCODED character references ' +
+				'("Bacon &amp; Egg", "&#39;") instead of the decoded character. Every write path decodes on ' +
+				'ingestion, so this should always be EMPTY — a hit means encoded text predates the decoder or ' +
+				'slipped in some other way. Scans item names/descriptions plus location/menu/brand names; ' +
+				'returns { items, locations, menus, brands } where every entry carries the stored `value`/`name` ' +
+				'and the `decoded` text to write back (via update_items / update_locations / update_menu / ' +
+				'update_brand), and each flagged item lists the locations serving its menu. Reads only the live D1.'
 		)
 	),
 	radius_m: v.optional(
@@ -1587,7 +1618,11 @@ function defineTool<S extends AnySchema>(def: ToolDef<S>): ToolDef<S> {
 //     set_location_item_override is a PARTIAL patch (an omitted field keeps its stored
 //     value), but it is still marked destructive because it overwrites existing override data.
 const READ_ONLY = { readOnlyHint: true, openWorldHint: false } as const;
-const CREATE = { readOnlyHint: false, destructiveHint: false, openWorldHint: false } as const;
+const CREATE = {
+	readOnlyHint: false,
+	destructiveHint: false,
+	openWorldHint: false
+} as const;
 const DESTRUCTIVE = {
 	readOnlyHint: false,
 	destructiveHint: true,
@@ -1812,9 +1847,15 @@ async function createLocationsBatch(
 	// earlier in THIS batch, is skipped rather than creating a duplicate pin.
 	const existingAtCoords = await existingLocationsAtCoords(
 		getDb(),
-		resolved.map(({ core }) => ({ latitude: core.latitude, longitude: core.longitude }))
+		resolved.map(({ core }) => ({
+			latitude: core.latitude,
+			longitude: core.longitude
+		}))
 	);
-	const skippedDuplicateLocations: { name: string; existing_id: string | null }[] = [];
+	const skippedDuplicateLocations: {
+		name: string;
+		existing_id: string | null;
+	}[] = [];
 	const seenCoords = new Set<string>();
 	const toInsert = resolved.filter(({ it, core }) => {
 		const key = coordinateKey(core.latitude, core.longitude);
@@ -2084,7 +2125,13 @@ async function queryLocations(opts: {
 		const page = withinCircle.slice(start, limit === undefined ? undefined : start + limit);
 		return page.map((x) => projectLocationOverview(x.r));
 	}
-	const rows = await getLocationsWithTags(getDb(), { category, nameLike, brandId, limit, offset });
+	const rows = await getLocationsWithTags(getDb(), {
+		category,
+		nameLike,
+		brandId,
+		limit,
+		offset
+	});
 	return rows.map(projectLocationOverview);
 }
 
@@ -2124,11 +2171,20 @@ const tools = [
 			if (count_only) {
 				// `near` counts refine to the exact circle via the same query path.
 				if (near) {
-					const rows = await queryLocations({ near, category, nameLike: query, brandId: brand_id });
+					const rows = await queryLocations({
+						near,
+						category,
+						nameLike: query,
+						brandId: brand_id
+					});
 					return { count: rows.length };
 				}
 				return {
-					count: await countLocations(getDb(), { category, nameLike: query, brandId: brand_id })
+					count: await countLocations(getDb(), {
+						category,
+						nameLike: query,
+						brandId: brand_id
+					})
 				};
 			}
 			// Cap + truncation signal, mirroring search_poi/audit_locations. Over-fetch one
@@ -2247,7 +2303,11 @@ const tools = [
 				...normalizeAddressPatch({ street, city, region, postcode, country })
 			}));
 			const { updatedIds, notFoundIds } = await updateLocations(getDb(), patches);
-			return { updated: updatedIds.length, updated_ids: updatedIds, not_found_ids: notFoundIds };
+			return {
+				updated: updatedIds.length,
+				updated_ids: updatedIds,
+				not_found_ids: notFoundIds
+			};
 		}
 	}),
 	defineTool({
@@ -2499,7 +2559,11 @@ const chainTools = [
 							`brand (${id}) anyway — if this is the same chain, delete it and reuse the existing brand.`
 					]
 				: [];
-			return { id, already_existed: false, ...(warnings.length ? { warnings } : {}) };
+			return {
+				id,
+				already_existed: false,
+				...(warnings.length ? { warnings } : {})
+			};
 		}
 	}),
 	defineTool({
@@ -2582,7 +2646,11 @@ const chainTools = [
 							`Created a new menu (${id}) anyway — reuse the existing one if this is a duplicate.`
 					]
 				: [];
-			return { id, already_existed: false, ...(warnings.length ? { warnings } : {}) };
+			return {
+				id,
+				already_existed: false,
+				...(warnings.length ? { warnings } : {})
+			};
 		}
 	}),
 	defineTool({
@@ -2912,10 +2980,12 @@ const osmTools = [
 			"radius — probably one venue stored twice; verify against the venue's own locator, then EITHER " +
 			'delete_locations the extra row OR record a confirmed two-real-venues pair with ' +
 			'mark_not_duplicate so it stops being re-flagged — such pairs are counted in ' +
-			'`suppressed_reviewed`, never re-listed), or "empty_menu" (open venues whose effective menu is ' +
+			'`suppressed_reviewed`, never re-listed), "empty_menu" (open venues whose effective menu is ' +
 			'empty or thinner than `min_items` — they violate the EXHAUSTIVE-menu policy; backfill with ' +
-			'create_items). The address/coordinate checks compare against the LOCAL OSM staging store; ' +
-			'duplicate_locations and empty_menu read only the live D1. ' +
+			'create_items), or "html_entities" (text still carrying HTML-encoded references like "&amp;" — ' +
+			'ingestion decodes these, so any hit is legacy/anomalous data; fix with the matching update tool). ' +
+			'The address/coordinate checks compare against the LOCAL OSM staging store; the other checks read ' +
+			'only the live D1. ' +
 			'Results are worst-first / actionable-first; `limit` caps how many are returned and `additional` ' +
 			"is how many more exist beyond it. See the `check` field for each mode's entry shape and which " +
 			'options apply.',
@@ -2943,6 +3013,10 @@ const osmTools = [
 					min_items: input.min_items,
 					limit: input.limit
 				});
+			}
+			if (input.check === 'html_entities') {
+				// Reads only the live D1 — no staging store needed.
+				return findHtmlEntities(getDb(), { limit: input.limit });
 			}
 			return findMissingAddress(getOsmStore(), getDb(), {
 				limit: input.limit,
