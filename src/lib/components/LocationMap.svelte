@@ -591,6 +591,13 @@
 				center: toLngLat(initialCenter ?? DEFAULT_CENTER),
 				zoom: initialZoom ?? DEFAULT_ZOOM,
 				maxZoom: MAX_ZOOM,
+				// The camera stays flat: no tilt from any input. `maxPitch: 0` is the hard
+				// cap (covers keyboard and any future handler); the two gesture flags stop
+				// the touch two-finger drag and the right-click drag from even trying, so
+				// they don't eat pointer input for a no-op. Rotation stays enabled.
+				maxPitch: 0,
+				touchPitch: false,
+				pitchWithRotate: false,
 				// The OSM credit is shown; MapLibre adds no self-attribution of its own.
 				attributionControl: { compact: false }
 			});
