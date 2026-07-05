@@ -821,8 +821,8 @@
 		setItemLiked({ itemId: id, liked: !liked }).catch(() => pendingItemLikes.set(id, liked));
 	}
 
-	function formatPrice(price: number | null, code: string): string {
-		return price === null ? '—' : moneyFormatter(code).format(price);
+	function formatPrice(price: number, code: string): string {
+		return moneyFormatter(code).format(price);
 	}
 
 	// --- Menu freshness --------------------------------------------------------
@@ -1015,6 +1015,11 @@
 										<span class="placecard__item-name">{menuItem.item_name}</span>
 										<DietaryIcons tags={menuItem.tags} />
 									</span>
+									{#if menuItem.price !== null}
+										<span class="placecard__item-price">
+											{formatPrice(menuItem.price, menuItem.currency)}
+										</span>
+									{/if}
 									{#if user}
 										<span class="placecard__item-like">
 											<LikeButton
@@ -1027,9 +1032,6 @@
 											/>
 										</span>
 									{/if}
-									<span class="placecard__item-price">
-										{formatPrice(menuItem.price, menuItem.currency)}
-									</span>
 								</span>
 								{#if menuItem.description}
 									<p class="placecard__item-desc">{menuItem.description}</p>
@@ -1545,9 +1547,10 @@
 	}
 
 	/* Name + dietary icons, grouped so the icons sit directly to the right of the name
-	   text. This group soaks the spare width (flex: 1) so the like heart (when signed
-	   in) and the price sit together at the row's right edge; the icons wrap under the
-	   name only when the row is too narrow to hold them inline. */
+	   text. This group soaks the spare width (flex: 1) so the price (when the item has
+	   one) and the like heart (when signed in) sit together at the row's right edge;
+	   the icons wrap under the name only when the row is too narrow to hold them
+	   inline. */
 	.placecard__item-main {
 		flex: 1;
 		min-width: 0;
