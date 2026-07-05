@@ -827,17 +827,16 @@
 
 	// --- Menu freshness --------------------------------------------------------
 	// A menu carries a `last_verified` ISO date (the day it was last checked against
-	// its source). We surface it as a relative phrase so a stale chain menu reads as
-	// such; past this many days it's flagged as possibly out of date.
+	// its source). We surface it as a relative "Scanned …" phrase beside the Menu
+	// header so a stale chain menu reads as such.
 	//
 	// The stored value is a plain calendar day, not an instant, so we compare
 	// calendar dates in the user's LOCAL timezone. `new Date('YYYY-MM-DD')` would
 	// parse as UTC midnight, and diffing that against Date.now() makes a menu
-	// verified today read "Verified yesterday" for part of the day anywhere west
+	// scanned today read "Scanned yesterday" for part of the day anywhere west
 	// of UTC (at 5pm PDT the clock is already ≥24h past UTC midnight). So we pull
 	// the y/m/d out ourselves, build both sides as local midnights, and Math.round
 	// the difference to absorb the ±1h a DST boundary injects.
-	const VERIFIED_STALE_DAYS = 180;
 	function verifiedDaysAgo(iso: string): number | null {
 		const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
 		if (!match) return null;
@@ -846,20 +845,16 @@
 		const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 		return Math.round((today.getTime() - then.getTime()) / 86_400_000);
 	}
-	function formatVerified(iso: string): string {
+	function formatScanned(iso: string): string {
 		const days = verifiedDaysAgo(iso);
-		if (days === null) return `Verified ${iso}`;
-		if (days <= 0) return 'Verified today';
-		if (days === 1) return 'Verified yesterday';
-		if (days < 30) return `Verified ${days} days ago`;
+		if (days === null) return `Scanned ${iso}`;
+		if (days <= 0) return 'Scanned today';
+		if (days === 1) return 'Scanned yesterday';
+		if (days < 30) return `Scanned ${days} days ago`;
 		const months = Math.round(days / 30);
-		if (months < 12) return `Verified ${months} month${months === 1 ? '' : 's'} ago`;
+		if (months < 12) return `Scanned ${months} month${months === 1 ? '' : 's'} ago`;
 		const years = Math.round(days / 365);
-		return `Verified ${years} year${years === 1 ? '' : 's'} ago`;
-	}
-	function verifiedIsStale(iso: string): boolean {
-		const days = verifiedDaysAgo(iso);
-		return days !== null && days > VERIFIED_STALE_DAYS;
+		return `Scanned ${years} year${years === 1 ? '' : 's'} ago`;
 	}
 </script>
 
@@ -984,12 +979,24 @@
 					</dl>
 				{/if}
 
-				<!-- Menu header: the "Menu" label plus, when the venue cites provenance,
-				     a button opening the sources modal (sources are menu-level now). Shown
-				     whenever there's a menu or sources to head. -->
+				<!-- Menu header: the "Menu" label, a subtle item-count/freshness note, and —
+				     when the venue cites provenance — a button opening the sources modal
+				     (sources are menu-level now). Shown whenever there's a menu or sources
+				     to head. -->
 				{#if loc.menu.length > 0 || loc.sources.length > 0}
 					<div class="placecard__menu-head">
 						<h3 class="placecard__menu-title">Menu</h3>
+						{#if loc.menu.length > 0}
+							{@const itemsLabel = `${loc.menu.length} ${loc.menu.length === 1 ? 'item' : 'items'}`}
+							<span
+								class="placecard__menu-meta"
+								title={loc.lastVerified ? `Menu last scanned on ${loc.lastVerified}` : undefined}
+							>
+								{loc.lastVerified
+									? `${itemsLabel} · ${formatScanned(loc.lastVerified)}`
+									: itemsLabel}
+							</span>
+						{/if}
 						{#if loc.sources.length > 0}
 							<button
 								type="button"
@@ -1043,25 +1050,11 @@
 				{/if}
 			</div>
 
-			<footer class="placecard__foot">
-				{#if loc.lastVerified}
-					<span
-						class="menu__verified"
-						class:menu__verified--stale={verifiedIsStale(loc.lastVerified)}
-						title={`Menu last verified on ${loc.lastVerified}`}
-					>
-						{formatVerified(loc.lastVerified)}
-					</span>
-				{/if}
-				{#if loc.menu.length === 0}
+			{#if loc.menu.length === 0}
+				<footer class="placecard__foot">
 					<span class="placecard__hint">No menu on file yet.</span>
-				{:else}
-					<span class="placecard__hint">
-						{loc.menu.length}
-						{loc.menu.length === 1 ? 'item' : 'items'}
-					</span>
-				{/if}
-			</footer>
+				</footer>
+			{/if}
 
 			<SourcesModal sources={loc.sources} bind:open={sourcesModalOpen} />
 		</aside>
@@ -1629,12 +1622,12 @@
 		word-break: break-word;
 	}
 
-	/* The Menu header row: the "Menu" label with the sources button pushed to the
-	   trailing edge. */
+	/* The Menu header row: the "Menu" label with its item-count/freshness note
+	   sitting quietly beside it, and the sources button pushed to the trailing
+	   edge. */
 	.placecard__menu-head {
 		display: flex;
-		align-items: center;
-		justify-content: space-between;
+		align-items: baseline;
 		gap: 0.5rem;
 	}
 
@@ -1643,10 +1636,18 @@
 		font-size: 0.95rem;
 	}
 
+	/* The subtle note beside the Menu header: "12 items · Scanned 3 days ago". */
+	.placecard__menu-meta {
+		font-size: 0.72rem;
+		color: var(--color-text-muted);
+		white-space: nowrap;
+	}
+
 	/* The "N Sources" button opening the sources modal: a quiet outlined pill that
 	   reads as a control without competing with the menu items below it. */
 	.placecard__sources-btn {
 		flex-shrink: 0;
+		margin-left: auto;
 		padding: 0.2rem 0.6rem;
 		font-size: 0.72rem;
 		font-weight: 600;
@@ -1663,25 +1664,6 @@
 	.placecard__sources-btn:hover {
 		background: color-mix(in srgb, var(--color-accent) 16%, #fff);
 		border-color: color-mix(in srgb, var(--color-accent) 45%, #fff);
-	}
-
-	/* Menu freshness ("Verified 3 months ago"): a quiet accent pill, turning amber
-	   and muted once the menu is past VERIFIED_STALE_DAYS. */
-	.menu__verified {
-		font-size: 0.68rem;
-		font-weight: 600;
-		color: var(--color-accent);
-		background-color: color-mix(in srgb, var(--color-accent) 10%, #fff);
-		border: 1px solid color-mix(in srgb, var(--color-accent) 30%, #fff);
-		border-radius: 999px;
-		padding: 0.05rem 0.45rem;
-		white-space: nowrap;
-	}
-
-	.menu__verified--stale {
-		color: #9a6a00;
-		background-color: #fff6e5;
-		border-color: #f0d28a;
 	}
 
 	/* The course-tag pill row under a menu item in the card. The pills themselves are
