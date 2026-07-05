@@ -31,16 +31,20 @@ export interface Tag {
 }
 
 // The canonical tag list (dietary first, then course) — the display/filter order
-// on the frontend. These are app-defined, never created from the UI, and seeded
-// into D1 by migrations/0001_init.sql (renamed to (name, tag_type) by 0004). This
-// is the WHOLE tag vocabulary: there are no data-created tags.
+// on the frontend (e.g. the diet selector's option order). These are app-defined,
+// never created from the UI, and seeded into D1 by migrations/0001_init.sql
+// (renamed to (name, tag_type) by 0004); this array — not the DB row order — is the
+// authoritative display order. The dietary tags are grouped by kind: the positive
+// diets (vegan, vegetarian, halal) first, then the "-free" allergen-avoidance tags
+// (gluten/dairy/nut) — matching the green/orange split the icons use. This is the
+// WHOLE tag vocabulary: there are no data-created tags.
 export const TAGS: readonly Tag[] = [
 	{ id: 'vegan', name: 'Vegan', tag_type: 'dietary' },
 	{ id: 'vegetarian', name: 'Vegetarian', tag_type: 'dietary' },
+	{ id: 'halal', name: 'Halal', tag_type: 'dietary' },
 	{ id: 'gluten_free', name: 'Gluten-free', tag_type: 'dietary' },
 	{ id: 'dairy_free', name: 'Dairy-free', tag_type: 'dietary' },
 	{ id: 'nut_free', name: 'Nut-free', tag_type: 'dietary' },
-	{ id: 'halal', name: 'Halal', tag_type: 'dietary' },
 	{ id: 'dessert', name: 'Dessert', tag_type: 'course' },
 	{ id: 'drink', name: 'Drink', tag_type: 'course' }
 ];

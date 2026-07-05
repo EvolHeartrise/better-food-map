@@ -1,12 +1,6 @@
 <script lang="ts">
-	import type { Component } from 'svelte';
-	import Vegan from '@lucide/svelte/icons/vegan';
-	import Leaf from '@lucide/svelte/icons/leaf';
-	import MilkOff from '@lucide/svelte/icons/milk-off';
-	import NutOff from '@lucide/svelte/icons/nut-off';
-	import WheatOff from '@lucide/svelte/icons/wheat-off';
-	import FoodHalal from './icons/FoodHalal.svelte';
-	import { tagDisplayName, type TagId } from '$lib/tags';
+	import { tagDisplayName } from '$lib/tags';
+	import { dietIcon } from '$lib/dietary-icons';
 
 	// An item's DIETARY tags shown as small colored icons, sat to the right of the item
 	// name in the venue panel. Positive-diet tags (vegan / vegetarian / halal) read
@@ -28,25 +22,12 @@
 
 	let { tags }: { tags: ItemDietTag[] } = $props();
 
-	type Tone = 'green' | 'orange';
-	// Both the Lucide icons and the inlined FoodHalal accept a `size` prop and drive
-	// their color from currentColor, so one component type covers both.
-	type IconComponent = Component<{ size?: number | string }>;
-
-	const ICONS: Partial<Record<TagId, { icon: IconComponent; tone: Tone }>> = {
-		vegan: { icon: Vegan, tone: 'green' },
-		vegetarian: { icon: Leaf, tone: 'green' },
-		halal: { icon: FoodHalal, tone: 'green' },
-		dairy_free: { icon: MilkOff, tone: 'orange' },
-		nut_free: { icon: NutOff, tone: 'orange' },
-		gluten_free: { icon: WheatOff, tone: 'orange' }
-	};
-
-	// Resolve each dietary tag to its glyph, dropping any tag we have no icon for
-	// (dessert / drink). Order follows however the item lists its tags.
+	// Resolve each dietary tag to its glyph (shared with the diet selector via
+	// $lib/dietary-icons), dropping any tag we have no icon for (dessert / drink).
+	// Order follows however the item lists its tags.
 	const marks = $derived(
 		tags.flatMap((tag) => {
-			const spec = ICONS[tag.id as TagId];
+			const spec = dietIcon(tag.id);
 			return spec ? [{ tag, spec }] : [];
 		})
 	);
