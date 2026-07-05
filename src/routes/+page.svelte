@@ -14,6 +14,7 @@
 	import MapStatsOverlay from '$lib/components/MapStatsOverlay.svelte';
 	import DietSelector from '$lib/components/DietSelector.svelte';
 	import FoodTag from '$lib/components/FoodTag.svelte';
+	import DietaryIcons from '$lib/components/DietaryIcons.svelte';
 	import AccountMenu from '$lib/components/AccountMenu.svelte';
 	import SourcesModal from '$lib/components/SourcesModal.svelte';
 	import LikeButton from '$lib/components/LikeButton.svelte';
@@ -1021,7 +1022,10 @@
 						{#each loc.menu as menuItem (menuItem.id)}
 							<li class="placecard__item">
 								<span class="placecard__item-line">
-									<span class="placecard__item-name">{menuItem.item_name}</span>
+									<span class="placecard__item-main">
+										<span class="placecard__item-name">{menuItem.item_name}</span>
+										<DietaryIcons tags={menuItem.tags} />
+									</span>
 									{#if user}
 										<span class="placecard__item-like">
 											<LikeButton
@@ -1041,7 +1045,6 @@
 								{#if menuItem.description}
 									<p class="placecard__item-desc">{menuItem.description}</p>
 								{/if}
-								{@render dietaryBadges(menuItem)}
 								{@render itemExtras(menuItem)}
 							</li>
 						{/each}
@@ -1197,23 +1200,8 @@
 	     search/viewport fetch. Same always-in-the-DOM rule as the count region. -->
 	<div class="visually-hidden" role="status">{fetchStatus}</div>
 
-	<!-- An item's DIETARY tags (vegan, gluten-free, halal, …) only, rendered inline on
-	     each menu row in the open venue's card so the diet markers are visible at a
-	     glance. Course tags stay in itemExtras.
-	     `optional` (e.g. "can be made vegan") keeps its dashed marker. -->
-	{#snippet dietaryBadges(menuItem: Item)}
-		{@const dietaryTags = menuItem.tags.filter((tag) => tag.tag_type === 'dietary')}
-		{#if dietaryTags.length > 0}
-			<ul class="taglist taglist--inline">
-				{#each dietaryTags as tag (tag.id)}
-					<li><FoodTag {tag} optional={tag.optional} /></li>
-				{/each}
-			</ul>
-		{/if}
-	{/snippet}
-
 	<!-- The item's course tag, shown beneath each menu row in the open venue's card.
-	     Dietary tags are shown inline on the row above (see dietaryBadges), so they're
+	     Dietary tags are shown as icons on the row above (see DietaryIcons), so they're
 	     omitted here to avoid repeating them. An `optional` tag keeps its dashed marker.
 	     Data sources are menu-level now, shown once in the venue info block above. -->
 	{#snippet itemExtras(menuItem: Item)}
@@ -1618,12 +1606,23 @@
 		gap: 0.75rem;
 	}
 
+	/* Name + dietary icons, grouped so the icons sit directly to the right of the name
+	   text. This group soaks the spare width (flex: 1) so the like heart (when signed
+	   in) and the price sit together at the row's right edge; the icons wrap under the
+	   name only when the row is too narrow to hold them inline. */
+	.placecard__item-main {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		column-gap: 0.4rem;
+		row-gap: 0.15rem;
+	}
+
 	.placecard__item-name {
 		font-size: 0.85rem;
 		font-weight: 600;
-		/* Soak up the spare width so the like heart (when signed in) and the price
-		   sit together at the row's right edge. */
-		flex: 1;
 	}
 
 	/* The per-item like heart on a menu row. Centred on the row's height (the line
@@ -1753,12 +1752,6 @@
 		gap: 0.3rem;
 		margin: 0.4rem 0 0;
 		padding: 0;
-	}
-
-	/* Inline variant: the dietary badges shown directly on the menu row, with a tighter
-	   top margin so they hug the row above. */
-	.taglist--inline {
-		margin-top: 0.3rem;
 	}
 
 	/* Below ~48rem let the search row span the top (its items wrapping into their own
