@@ -82,6 +82,7 @@ import { hasNonHttpScheme } from '../src/lib/safe-url';
 import { searchPoi, normalizeName, namesMatch } from './osm/search-poi';
 import { selectChainCandidates, partitionImportable } from './osm/import-chain';
 import { findCoordinateDrift } from './osm/find-coordinate-drift';
+import { findIdentityDrift } from './osm/find-identity-drift';
 import { findMissingAddress } from './osm/find-missing-address';
 import { findDuplicateLocations } from './osm/find-duplicate-locations';
 import { findIncompleteMenus } from './osm/find-incomplete-menus';
@@ -1205,6 +1206,7 @@ const auditLocationsArgs = v.object({
 	check: v.pipe(
 		v.picklist([
 			'coordinate_drift',
+			'identity_drift',
 			'missing_address',
 			'duplicate_locations',
 			'empty_menu',
@@ -1217,6 +1219,16 @@ const auditLocationsArgs = v.object({
 				'`osm_longitude`, `distance_m`, `matched_osm_name`) — pass `osm_latitude`/`osm_longitude` to ' +
 				'update_locations to snap it back, citing `osm_url`. Locations with no name-matching POI nearby ' +
 				'are reported as `no_osm_match` (omit via include_unmatched=false).\n' +
+				'• "identity_drift" — locations whose staging POI AT their exact stored coordinates no longer ' +
+				'carries their name. Coordinates are OSM-verbatim, so the POI at ~0 m IS the source node: ' +
+				'"renamed" means OSM re-tagged that node to a new occupant (`current_osm_name`, `osm_url`) — the ' +
+				'venue was likely replaced or moved; "vanished" means no POI sits there at all (node deleted, ' +
+				'moved, or extract-dropped as closed-tagged; omit via include_vanished=false). Either may carry a ' +
+				'`relocation_lead` (the nearest name-matching POI within `search_radius_m` — a hint the venue ' +
+				"moved, not closed). Verify against the venue's own site, then close_location the departed row, " +
+				'update_locations onto the relocation lead, and/or import the new occupant. Complements ' +
+				'coordinate_drift (which anchors on the NAME; this anchors on the POSITION) — and it is only as ' +
+				'fresh as the staging store, so rebuild that (bun run osm:extract) before trusting a sweep.\n' +
 				'• "missing_address" — locations whose stored address is empty (`reason: "missing"`) or, unless ' +
 				'include_incomplete=false, a streetless fragment like a bare house number/postcode (`reason: ' +
 				'"incomplete"`). Each entry is classified `osm_fix_available` (a nearby name-matching POI HAS an ' +
@@ -1301,8 +1313,9 @@ const auditLocationsArgs = v.object({
 			v.number(),
 			v.minValue(0),
 			v.description(
-				'[coordinate_drift only] A location counts as OSM-aligned when a name-matching POI sits ' +
-					'within this many metres (default 1).'
+				'[coordinate_drift / identity_drift] How close (metres) a POI must sit to count as AT the ' +
+					"location — coordinate_drift's aligned threshold, identity_drift's same-spot threshold " +
+					'(default 1: coordinates are OSM-verbatim, so the source POI is coordinate-exact).'
 			)
 		)
 	),
@@ -1311,6 +1324,15 @@ const auditLocationsArgs = v.object({
 			v.boolean(),
 			v.description(
 				'[coordinate_drift only] Also report locations with no name-matching OSM POI nearby (default true).'
+			)
+		)
+	),
+	include_vanished: v.optional(
+		v.pipe(
+			v.boolean(),
+			v.description(
+				'[identity_drift only] Also report locations whose staging POI is gone entirely from their ' +
+					'coordinates, not just renamed ones (default true).'
 			)
 		)
 	),
@@ -2975,7 +2997,10 @@ const osmTools = [
 		description:
 			'Audit existing locations and surface a work-list. `check` selects the audit: "coordinate_drift" ' +
 			"(stored coordinates that do NOT coincide with the location's OSM POI — fix with " +
-			'update_locations), "missing_address" (empty or streetless addresses, with the OSM address to ' +
+			'update_locations), "identity_drift" (the staging POI at a location\'s exact coordinates was ' +
+			'RENAMED to a new occupant or is gone — the venue likely moved, closed or was replaced; verify, ' +
+			'then close_location / update_locations / import the new occupant), "missing_address" (empty or ' +
+			'streetless addresses, with the OSM address to ' +
 			'backfill where available), "duplicate_locations" (same-name/same-brand pairs within a small ' +
 			"radius — probably one venue stored twice; verify against the venue's own locator, then EITHER " +
 			'delete_locations the extra row OR record a confirmed two-real-venues pair with ' +
@@ -2997,6 +3022,14 @@ const osmTools = [
 					tolerance_m: input.tolerance_m,
 					search_radius_m: input.search_radius_m,
 					include_unmatched: input.include_unmatched
+				});
+			}
+			if (input.check === 'identity_drift') {
+				return findIdentityDrift(getOsmStore(), getDb(), {
+					limit: input.limit,
+					tolerance_m: input.tolerance_m,
+					search_radius_m: input.search_radius_m,
+					include_vanished: input.include_vanished
 				});
 			}
 			if (input.check === 'duplicate_locations') {
