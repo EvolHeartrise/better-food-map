@@ -80,11 +80,8 @@
 	// membership test and the applied-filter commit so they all agree on what
 	// "matches". ASCII-only folding (foldAsciiCase, $lib/search) — the exact case
 	// folding the server's LIKE applies — so the local narrowing can never keep a
-	// venue the filtered cell read drops. `hasQuery` — text query or diet active —
-	// is what makes the cell fetch a SEARCH (and shows the spinner/announcement
-	// machinery).
+	// venue the filtered cell read drops.
 	const queryTerm = $derived(foldAsciiCase(query.trim()));
-	const hasQuery = $derived(queryTerm !== '' || diet !== null);
 	// The text actually sent with the cell fetch: the trimmed query once (and only
 	// once) the server's trigram index can accelerate it — a 3+ character
 	// wildcard-free run ($lib/search). Below that floor a server-side filter would
@@ -421,13 +418,6 @@
 		sources: Source[];
 	};
 
-	// On narrow (mobile) screens the row of floating search items collapses behind a
-	// "Filters" toggle so the map isn't crowded. Open by default so the filters stay
-	// discoverable; the toggle (shown only on narrow screens, via CSS) lets the user
-	// reclaim the map. The wide layout always shows the items and hides the toggle,
-	// so this flag is inert there.
-	let filtersOpen = $state(true);
-
 	// Price formatters, one per ISO-4217 currency code (each item carries its menu's
 	// currency), built lazily and cached so a mixed-currency result set still formats
 	// every price in its own currency rather than a single hard-coded one. A plain
@@ -683,9 +673,8 @@
 			} else if (saved) {
 				// The pre-open element unmounted with the searchbar (a keyboard user
 				// selected from the results list): hand focus to the freshly remounted
-				// search input — unless it's display:none behind the collapsed narrow-
-				// screen filters toggle (offsetParent is null then; focus() would
-				// silently no-op) — else the map canvas (MapLibre gives it a tabindex).
+				// search input — unless it's hidden (offsetParent is null then; focus()
+				// would silently no-op) — else the map canvas (MapLibre gives it a tabindex).
 				const input = document.querySelector<HTMLElement>('.searchpill__input');
 				const target = input?.offsetParent
 					? input
@@ -1084,8 +1073,9 @@
 	{/if}
 
 	<!-- The search controls don't live in a panel: each is its own pill floating
-	     free over the map, laid out as a horizontal row. On narrow screens the row
-	     collapses behind the "Filters" toggle. -->
+	     free over the map, laid out as a horizontal row anchored top-left. On narrow
+	     screens the row floats centered at the bottom of the screen (all items always
+	     visible), while the account control stays pinned to the top-left corner. -->
 	<div class="searchbar" role="search" aria-label="Search and filters">
 		<AccountMenu {user} bind:open={accountMenuOpen} />
 
@@ -1094,26 +1084,7 @@
 		     panel owns the page then); only the account control stays. They return the
 		     moment the visitor leaves the landing state or closes the location. -->
 		{#if !landing && !selectedId}
-			<!-- Shown only on narrow screens (CSS): collapses the items to free the map. -->
-			<button
-				type="button"
-				class="searchbar__toggle"
-				aria-expanded={filtersOpen}
-				aria-controls="search-items"
-				onclick={() => (filtersOpen = !filtersOpen)}
-			>
-				<span>{filtersOpen ? 'Hide' : 'Filters'}</span>
-				{#if !filtersOpen && hasQuery}
-					<span class="searchbar__dot" aria-hidden="true"></span>
-				{/if}
-				<span class="searchbar__toggle-icon" aria-hidden="true">{filtersOpen ? '▴' : '▾'}</span>
-			</button>
-
-			<div
-				class="searchbar__items"
-				id="search-items"
-				class:searchbar__items--collapsed={!filtersOpen}
-			>
+			<div class="searchbar__items">
 				<!-- The combined search: one pill matching a venue by name OR by an item
 			     name. A label so a click anywhere in the pill (the search icon included)
 			     focuses the input; the input is the only control inside it. -->
@@ -1258,42 +1229,9 @@
 
 	/* On wide screens the items flow as direct children of the row (the wrapper is
 	   laid out as display: contents so it adds no box of its own); the narrow media
-	   query below turns it into its own wrapping row and lets the toggle fold it away. */
+	   query below turns it into its own centered row at the bottom of the screen. */
 	.searchbar__items {
 		display: contents;
-	}
-
-	/* Collapse control for the items. Hidden on wide screens (which always show the
-	   items); the media query at the bottom reveals it on narrow screens, where
-	   folding the row hands the map back its space. */
-	.searchbar__toggle {
-		display: none;
-		align-items: center;
-		gap: 0.35rem;
-		padding: 0.45rem 0.7rem;
-		border: 1px solid rgba(255, 255, 255, 0.6);
-		border-radius: 0.7rem;
-		background: rgba(255, 255, 255, 0.72);
-		backdrop-filter: blur(16px) saturate(180%);
-		-webkit-backdrop-filter: blur(16px) saturate(180%);
-		box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
-		color: var(--color-text);
-		font-size: 0.8rem;
-		font-weight: 600;
-	}
-
-	.searchbar__toggle-icon {
-		font-size: 0.7rem;
-		line-height: 1;
-	}
-
-	/* A small accent dot shown when the row is collapsed but filters are active, so
-	   the user knows a search is still in effect behind the folded controls. */
-	.searchbar__dot {
-		width: 0.45rem;
-		height: 0.45rem;
-		border-radius: 999px;
-		background: var(--color-accent);
 	}
 
 	/* A plain search pill: a glassy floating field matching the tag pickers, so every
@@ -1754,30 +1692,40 @@
 		padding: 0;
 	}
 
-	/* Below ~48rem let the search row span the top (its items wrapping into their own
-	   row, foldable by the toggle); the map card already adapts via its own width clamp. */
+	/* Below ~48rem the search row floats centered at the BOTTOM of the screen (all
+	   items always visible — no collapse toggle), while the account/sign-in control is
+	   pulled out to the top-left corner. The map card already adapts via its own width
+	   clamp. Center via symmetric left/right rather than a transform: a transformed
+	   ancestor would become the containing block for the position:fixed account below,
+	   pinning it to the bottom searchbar instead of the viewport. */
 	@media (max-width: 48rem) {
 		.searchbar {
+			top: auto;
+			left: calc(1rem + env(safe-area-inset-left));
 			right: calc(1rem + env(safe-area-inset-right));
+			bottom: calc(1rem + env(safe-area-inset-bottom));
 			max-width: none;
+			flex-direction: column;
+			flex-wrap: nowrap;
+			align-items: center;
 		}
 
-		/* The items become their own full-width wrapping row beneath the brand/toggle
-		   line, so the collapse toggle can fold just them away. */
+		/* The account/sign-in control stays anchored in the top-left corner, out of the
+		   bottom search row's flow (fixed to the viewport, not the searchbar). */
+		.searchbar :global(.account) {
+			position: fixed;
+			top: calc(1rem + env(safe-area-inset-top));
+			left: calc(1rem + env(safe-area-inset-left));
+			z-index: 11;
+		}
+
+		/* The items become a centered, full-width wrapping row. */
 		.searchbar__items {
 			display: flex;
 			flex-wrap: wrap;
+			justify-content: center;
 			gap: 0.5rem;
 			width: 100%;
-		}
-
-		.searchbar__items--collapsed {
-			display: none;
-		}
-
-		/* The toggle leads its own line; the items wrap into the full-width row below. */
-		.searchbar__toggle {
-			display: inline-flex;
 		}
 
 		/* 16px inputs stop iOS Safari from auto-zooming the page when one is focused. */

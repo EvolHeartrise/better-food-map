@@ -305,5 +305,13 @@
 		.diet__trigger {
 			font-size: 1rem;
 		}
+
+		/* On narrow screens the search row (and this selector with it) floats at the
+		   BOTTOM of the screen, so a downward dropdown would spill off-screen. Open it
+		   upward instead, anchored to the trigger's top edge. */
+		.menu {
+			top: auto;
+			bottom: calc(100% + 0.3rem);
+		}
 	}
 </style>

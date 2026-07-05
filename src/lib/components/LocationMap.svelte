@@ -921,4 +921,14 @@
 		margin-bottom: env(safe-area-inset-bottom);
 		margin-right: env(safe-area-inset-right);
 	}
+
+	/* On narrow (mobile) screens, hide the +/- zoom control: pinch-to-zoom is the
+	   native gesture there, and dropping the buttons hands the map back its corner
+	   (the search row now floats along the bottom edge). The zoom control is the only
+	   thing docked bottom-left, so hiding that corner removes just those buttons. */
+	@media (max-width: 48rem) {
+		.map :global(.maplibregl-ctrl-bottom-left) {
+			display: none;
+		}
+	}
 </style>

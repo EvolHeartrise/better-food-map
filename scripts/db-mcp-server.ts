@@ -532,12 +532,19 @@ const closeLocationArgs = v.object({
 	)
 });
 
+// The item `description` is the source's own words, never authored. Reused by
+// itemSchema (create) and updateItemArgs.
+const ITEM_DESCRIPTION_DESC =
+	"The item's description COPIED VERBATIM from the official menu source (the venue's own blurb " +
+	'for this item). Never write, paraphrase or embellish one yourself — if the source shows no ' +
+	'description, leave this null.';
+
 // One menu item. Shared by create_items (the batch's location_id/menu_id is given
 // once), and by the inline `menu_items` of an independent venue created via
 // create_locations.
 const itemSchema = v.object({
 	item_name: v.pipe(v.string(), v.minLength(1), v.description('Name of the menu item.')),
-	description: v.optional(v.nullable(v.string())),
+	description: v.optional(v.nullable(v.pipe(v.string(), v.description(ITEM_DESCRIPTION_DESC)))),
 	price: v.optional(
 		v.nullable(
 			v.pipe(
@@ -1471,7 +1478,9 @@ const updateItemArgs = v.object({
 		v.pipe(v.string(), v.minLength(1), v.description('Move the item to a different menu (rare).'))
 	),
 	item_name: v.optional(v.pipe(v.string(), v.minLength(1))),
-	description: v.optional(v.nullable(v.string())),
+	description: v.optional(
+		v.nullable(v.pipe(v.string(), v.description(ITEM_DESCRIPTION_DESC + ' Pass null to clear.')))
+	),
 	price: v.optional(v.nullable(priceSchema)),
 	tags: v.optional(
 		v.pipe(
