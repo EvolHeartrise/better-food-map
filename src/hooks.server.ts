@@ -16,6 +16,7 @@ import {
 	createLazySessionResolver,
 	setSessionCookie
 } from '$lib/server/auth';
+import { LOCALE_COOKIE } from '$lib/server/locale-cookie';
 import { deleteExpiredSessions } from '$lib/server/db';
 
 // betterfoodmaps.com is the canonical domain. The canonical www host, the
@@ -129,32 +130,36 @@ const authenticate: Handle = async ({ event, resolve }) => {
 const localeStorage = new AsyncLocalStorage<Locale>();
 overwriteGetLocale(() => localeStorage.getStore() ?? baseLocale);
 
-// Name of the explicit locale-preference cookie. Phase 1 only ever READS it (it
-// is never set here); Phase 4 owns writing it (and may host-lock the name, cf.
-// hostCookieName in $lib/server/cookie-name). Keep this in sync with Phase 4.
-const LOCALE_COOKIE = 'locale';
-
 // Resolves the request locale with a fixed precedence:
-//   1. explicit preference cookie, if present   (Phase-4 write path; read here)
-//   2. signed-in user's saved locale            (Phase-4 STUB — see below)
+//   1. explicit preference cookie, if present   (LOCALE_COOKIE, written by the
+//      setLocale command on an active pick — see $lib/server/locale-cookie)
+//   2. signed-in user's saved locale            (folded into getSessionWithUser)
 //   3. Accept-Language header, q-value weighted  (Paraglide's own negotiator,
 //      which matches full tags then base tags against the supported locales)
 //   4. baseLocale ('en')
 //
-// Async on purpose so Phase 4 can `await event.locals.getSession()` at step 2
-// without reshaping the handle. It is deliberately NOT awaited eagerly today:
-// resolving the session here would defeat the lazy `getSession` resolver and
-// make every public (signed-out) request pay a D1 read — see `authenticate`.
+// Async because step 2 awaits the session lookup. `authenticate` runs before
+// `localize` in the sequence (below), so `event.locals.getSession` is installed
+// by the time we get here — but we still gate the call on a session cookie being
+// present so a signed-out request never pays a D1 read just to resolve its locale.
 async function resolveLocale(event: Parameters<Handle>[0]['event']): Promise<Locale> {
-	// 1. Explicit preference cookie (stub until Phase 4 sets it).
+	// 1. Explicit preference cookie: this browser's active pick wins over
+	//    everything, even a later sign-in's saved locale on THIS device.
 	const cookieLocale = event.cookies.get(LOCALE_COOKIE);
 	if (cookieLocale && isLocale(cookieLocale)) return cookieLocale;
 
-	// 2. TODO(i18n Phase 4): signed-in user's saved locale. Resolve it here with
-	//    `const session = await event.locals.getSession();` and return the user's
-	//    persisted locale (user_dietary_profile-style row) when set. Do NOT call
-	//    getSession on the public path unconditionally — gate it so signed-out
-	//    requests stay D1-free. Left unresolved in Phase 1 (falls through).
+	// 2. Signed-in user's saved locale, read from the SAME memoized session lookup
+	//    the auth hook uses — getSessionWithUser LEFT JOINs user_locale, so this
+	//    adds no extra D1 round trip. Gate on a session cookie being present: a
+	//    signed-OUT request must stay D1-free (the lazy resolver would return null
+	//    for it anyway; we don't even ask). A signed-in user pays the one session
+	//    read here — but only when they have NOT made an explicit pick on this
+	//    device (step 1's cookie would have returned above), i.e. the cross-device
+	//    case that actually needs the saved value.
+	if (event.cookies.get(SESSION_COOKIE) ?? event.cookies.get(LEGACY_SESSION_COOKIE)) {
+		const resolved = await event.locals.getSession();
+		if (resolved && isLocale(resolved.locale)) return resolved.locale;
+	}
 
 	// 3. Accept-Language, q-weighted. Returns undefined when no tag maps to a
 	//    supported locale (e.g. `de,es;q=0.8`), so it falls through to step 4.
@@ -165,10 +170,11 @@ async function resolveLocale(event: Parameters<Handle>[0]['event']): Promise<Loc
 	return baseLocale;
 }
 
-// Runs after `canonicalHost` (a redirected host never needs a locale) and
-// wraps `authenticate` + the app resolve, so `getLocale()` is live for the whole
-// request. Fills `<html lang="%lang%">` via transformPageChunk. `sequence`
-// merges this transformPageChunk with any others. No cookie is written.
+// Runs after `authenticate` (so `event.locals.getSession` exists for step 2 of
+// resolveLocale) and wraps the app resolve, so `getLocale()` is live for the whole
+// render. Fills `<html lang="%lang%">` via transformPageChunk. `sequence` merges
+// this transformPageChunk with any others. No cookie is written here — the locale
+// cookie is written only by the setLocale command on an active pick.
 const localize: Handle = async ({ event, resolve }) => {
 	const locale = await resolveLocale(event);
 	event.locals.locale = locale;
@@ -242,7 +248,10 @@ const securityHeaders: Handle = async ({ event, resolve }) => {
 // diet) is resolved on demand, and the user-scoped remote functions guard
 // themselves with `requireUser()`.
 //
-// `localize` sits after `canonicalHost` (so a 301'd host skips locale work) and
-// before `authenticate`, establishing the per-request Paraglide locale context
-// around the rest of the chain.
-export const handle = sequence(securityHeaders, canonicalHost, localize, authenticate);
+// `authenticate` runs before `localize` so the lazy `getSession` resolver is
+// installed by the time resolveLocale's step 2 reads the signed-in user's saved
+// locale from it (a signed-out request skips that read — the step is gated on a
+// session cookie). `localize` then establishes the per-request Paraglide locale
+// context around the app resolve. Both sit after `canonicalHost`, so a 301'd host
+// skips the auth + locale work entirely.
+export const handle = sequence(securityHeaders, canonicalHost, authenticate, localize);

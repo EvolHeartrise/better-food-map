@@ -80,6 +80,7 @@
 	"account_signed_in": "Connecté",
 	"account_sign_out": "Se déconnecter",
 	"account_sign_in": "Se connecter",
+	"language_label": "Langue",
 
 	"sources_dialog_aria": "Sources de données",
 	"sources_title": "Sources",

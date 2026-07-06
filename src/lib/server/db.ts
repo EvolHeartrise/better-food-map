@@ -26,6 +26,7 @@ import type { Category } from '../category';
 import type { Bounds } from '../bounds';
 import type { Tag, TagId, TagType } from '../tags';
 import type { SitemapEntry } from './sitemap';
+import type { Locale } from '../paraglide/runtime';
 // Value imports (tiny, pure, client-safe): the canonical display-address formatter,
 // so the single-line `address` is composed identically wherever a location is read,
 // and the canonical tag vocabulary.
@@ -33,6 +34,7 @@ import { TAGS, dietFilterTagIds } from '../tags';
 import { formatAddress } from '../address';
 import { longestLiteralRun, searchableQuery } from '../search';
 import { cellKey, cellsCoverBounds, levelCell } from '../grid';
+import { isLocale } from '../paraglide/runtime';
 
 // ---------------------------------------------------------------------------
 // Minimal D1 interface (the real `D1Database` binding and the HTTP shim in
@@ -1315,16 +1317,27 @@ export async function createSession(
 	return { id: sessionId, user_id: userId, expires_at: expiresAt };
 }
 
-/** Loads a session and its user in one read (the per-request auth lookup), or null. */
+/**
+ * Loads a session and its user in one read (the per-request auth lookup), or null.
+ * The user's saved UI locale (migration 0024) is folded in via a LEFT JOIN so the
+ * request-path locale resolution (resolveLocale in hooks.server.ts) reads it from
+ * this one memoized lookup instead of issuing its own D1 round trip — `locale` is
+ * null when the user has never saved one. The raw stored value is returned as-is
+ * (typed `string | null`); the caller validates it to a supported locale with
+ * `isLocale`, exactly as `getUserDiet`'s value is sanitized by its caller.
+ */
 export async function getSessionWithUser(
 	db: D1Like,
 	sessionId: string
-): Promise<{ session: Session; user: User } | null> {
+): Promise<{ session: Session; user: User; locale: string | null } | null> {
 	const row = await db
 		.prepare(
 			`SELECT s.id AS session_id, s.user_id AS user_id, s.expires_at AS expires_at,
-				u.email AS email, u.email_verified AS email_verified, u.name AS name, u.picture AS picture
-			 FROM sessions s JOIN users u ON u.id = s.user_id
+				u.email AS email, u.email_verified AS email_verified, u.name AS name, u.picture AS picture,
+				l.locale AS locale
+			 FROM sessions s
+			 JOIN users u ON u.id = s.user_id
+			 LEFT JOIN user_locale l ON l.user_id = s.user_id
 			 WHERE s.id = ?`
 		)
 		.bind(sessionId)
@@ -1336,6 +1349,7 @@ export async function getSessionWithUser(
 			email_verified: number;
 			name: string | null;
 			picture: string | null;
+			locale: string | null;
 		}>();
 	if (!row) return null;
 	return {
@@ -1350,7 +1364,8 @@ export async function getSessionWithUser(
 			email_verified: row.email_verified,
 			name: row.name,
 			picture: row.picture
-		})
+		}),
+		locale: row.locale ?? null
 	};
 }
 
@@ -1482,5 +1497,51 @@ export async function setUserDiet(
 				updated_at = excluded.updated_at`
 		)
 		.bind(userId, diet, now)
+		.run();
+}
+
+// ---------------------------------------------------------------------------
+// Saved UI locale (migration 0024) — i18n phase 4
+// ---------------------------------------------------------------------------
+
+/**
+ * A signed-in user's saved UI locale (e.g. 'en' or 'fr'), or `null` when none is
+ * saved (no row). Validated on read via `isLocale`, so a stored value no longer in
+ * the supported set reads as "no saved locale" and the caller falls back to
+ * Accept-Language — mirroring how `getUserDiet`'s value is sanitized. Note the
+ * request path does NOT call this: it reads the locale folded into
+ * `getSessionWithUser` (one memoized lookup, no extra round trip). This is the
+ * standalone accessor that mirrors `getUserDiet`.
+ */
+export async function getUserLocale(db: D1Like, userId: string): Promise<Locale | null> {
+	const row = await db
+		.prepare(`SELECT locale FROM user_locale WHERE user_id = ?`)
+		.bind(userId)
+		.first<{ locale: string | null }>();
+	const locale = row?.locale;
+	return isLocale(locale) ? locale : null;
+}
+
+/**
+ * Saves (upserts) a user's UI locale so it follows them across devices. One row
+ * per user, keyed by user_id, in its OWN table — fully independent of the dietary
+ * profile, so neither setter clobbers the other. The caller validates `locale` to
+ * a supported tag before calling (see the setLocale command).
+ */
+export async function setUserLocale(
+	db: D1Like,
+	userId: string,
+	locale: Locale,
+	now: number
+): Promise<void> {
+	await db
+		.prepare(
+			`INSERT INTO user_locale (user_id, locale, updated_at)
+			 VALUES (?, ?, ?)
+			 ON CONFLICT(user_id) DO UPDATE SET
+				locale = excluded.locale,
+				updated_at = excluded.updated_at`
+		)
+		.bind(userId, locale, now)
 		.run();
 }

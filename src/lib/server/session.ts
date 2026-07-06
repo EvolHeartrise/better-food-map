@@ -58,6 +58,12 @@ export async function createUserSession(
 export interface SessionValidation {
 	session: Session;
 	user: User;
+	/**
+	 * The user's saved UI locale (migration 0024), or null when unsaved. Folded in
+	 * by getSessionWithUser so the request-path locale resolution reads it here.
+	 * Raw as stored (typed `string | null`); the caller validates it with isLocale.
+	 */
+	locale: string | null;
 	/** True if the expiry was just slid forward, so the caller should re-set the cookie. */
 	refreshed: boolean;
 }
@@ -89,7 +95,7 @@ export async function validateSessionToken(
 		refreshed = true;
 	}
 
-	return { session: found.session, user: found.user, refreshed };
+	return { session: found.session, user: found.user, locale: found.locale, refreshed };
 }
 
 /** Invalidates the session behind a cookie token (sign-out). */
@@ -101,6 +107,12 @@ export async function invalidateSessionToken(db: D1Like, token: string): Promise
 export interface ResolvedSession {
 	session: Session;
 	user: User;
+	/**
+	 * The user's saved UI locale (migration 0024), or null when unsaved — folded
+	 * into the session lookup so resolveLocale (hooks.server.ts) can read it from
+	 * this one memoized read. Raw as stored; validate with isLocale before use.
+	 */
+	locale: string | null;
 }
 
 /**
@@ -145,7 +157,7 @@ export function createLazySessionResolver(
 		}
 		// A sliding refresh moved the row's expiry; keep the cookie's in step.
 		if (result.refreshed) cookies.setCookie(token, result.session.expires_at);
-		return { session: result.session, user: result.user };
+		return { session: result.session, user: result.user, locale: result.locale };
 	}
 
 	return () => (memo ??= resolve());
