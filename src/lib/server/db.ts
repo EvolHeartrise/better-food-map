@@ -765,7 +765,7 @@ export async function getMapCellsData(
 					${membership === null ? '' : `AND (${membership.cond})`}
 			),
 			ranked AS (
-				SELECT id, ck,
+				SELECT id, ck, likes,
 					ROW_NUMBER() OVER (
 						PARTITION BY ck
 						ORDER BY (menu_id IS NOT NULL) DESC, likes DESC, name, id
@@ -773,7 +773,7 @@ export async function getMapCellsData(
 				FROM boxed
 				WHERE ck IN (SELECT value FROM json_each(?))
 			)
-			SELECT id, ck FROM ranked WHERE rn <= ? ORDER BY ck, rn`
+			SELECT id, ck, likes FROM ranked WHERE rn <= ? ORDER BY ck, rn`
 		)
 		.bind(
 			cellDeg,
@@ -786,7 +786,7 @@ export async function getMapCellsData(
 			JSON.stringify(keys),
 			perCellCap
 		)
-		.all<{ id: string; ck: string }>();
+		.all<{ id: string; ck: string; likes: number }>();
 
 	// Every requested cell is present in the result — an empty one as [] — so
 	// callers can cache "known empty" rather than re-asking.
@@ -799,11 +799,17 @@ export async function getMapCellsData(
 	// The ids are already capped per cell above, so the trailing LIMIT is sized
 	// to pass them all through — MAP_RESULT_LIMIT would silently drop winners on
 	// a full-level batch and corrupt the per-cell membership.
+	// The ranking CTE above already computed every winner's like count; hand it
+	// through as the precomputed `score` so queryMapData skips re-running the
+	// identical correlated COUNT per winner (up to a full-level batch's worth of
+	// redundant index probes on every cell-cache block miss).
 	const data = await queryMapData(
 		db,
 		`id IN (SELECT value FROM json_each(?))`,
 		[JSON.stringify(picked.map((row) => row.id))],
-		`ORDER BY name, id LIMIT ${picked.length}`
+		`ORDER BY name, id LIMIT ${picked.length}`,
+		false,
+		new Map(picked.map((row) => [row.id, row.likes]))
 	);
 	return { ...data, cells: byCell };
 }
@@ -996,26 +1002,33 @@ async function queryMapData(
 	locFilter: string,
 	params: (string | number)[],
 	capClause?: string,
-	detail?: false
+	detail?: false,
+	scores?: Map<string, number>
 ): Promise<MapData>;
 async function queryMapData(
 	db: D1Like,
 	locFilter: string,
 	params: (string | number)[],
 	capClause: string = DEFAULT_MAP_CAP,
-	detail: boolean = false
+	detail: boolean = false,
+	scores?: Map<string, number>
 ): Promise<MapData> {
 	// The one evaluation of `locFilter`: the capped, `capClause`-ordered location
 	// rows themselves. `closed_at IS NULL` hides soft-deleted (permanently-closed)
 	// venues from every map/detail/search read this powers (migration 0015). It
 	// carries no bind param, so the `.bind(...params)` alignment is untouched.
-	// `score` is the like count as a correlated index probe per returned row
-	// (bounded by the cap, same shape as getMapCellsData's ranking term) —
-	// aliased to its opaque wire name here so no later step needs to rename it.
+	// `score` is the like count, aliased to its opaque wire name here so no later
+	// step needs to rename it. When the caller already computed the counts
+	// (getMapCellsData's ranking CTE probes them per candidate — `scores`), they
+	// attach in JS below; otherwise it's a correlated index probe per returned
+	// row (bounded by the cap, same shape as that ranking term).
+	const scoreSelect =
+		scores === undefined
+			? `, (SELECT COUNT(*) FROM liked_locations lk WHERE lk.location_id = locations.id) AS score`
+			: '';
 	const { results: locations } = await db
 		.prepare(
-			`SELECT ${LOCATION_FIELDS},
-				(SELECT COUNT(*) FROM liked_locations lk WHERE lk.location_id = locations.id) AS score
+			`SELECT ${LOCATION_FIELDS}${scoreSelect}
 			 FROM locations WHERE closed_at IS NULL AND (${locFilter}) ${capClause}`
 		)
 		.bind(...params)
@@ -1151,8 +1164,12 @@ async function queryMapData(
 		overridesByLocation.set(row.location_id, list);
 	}
 
+	// A precomputed `score` attaches here instead of via the SQL subquery; the
+	// explicit key sits where the projected column would, so the payload shape
+	// (including key order) is identical on both paths.
 	const mapLocations: MapLocation[] = locations.map((loc) => ({
 		...loc,
+		score: scores === undefined ? loc.score : (scores.get(loc.id) ?? 0),
 		address: formatAddress(loc),
 		overrides: overridesByLocation.get(loc.id) ?? []
 	}));
