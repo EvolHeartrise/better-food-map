@@ -2,32 +2,25 @@
 	import { resolve } from '$app/paths';
 	import { pushState, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
-	import { fly } from 'svelte/transition';
 	import { SvelteSet, SvelteMap, MediaQuery } from 'svelte/reactivity';
 	import { getMapCells, getLocationData, getStats, getUserLocation } from '$lib/data.remote';
-	import { cellKey, cellsForBounds, levelCell, levelForBounds } from '$lib/grid';
-	import { mergeCellSlices, splitCellSlices, type CellSlice } from '$lib/map-cells';
-	import { CellStore } from '$lib/cell-store';
+	import { ViewportData } from '$lib/viewport-data.svelte';
 	import { getCurrentUser, getLikes, setLocationLiked, setItemLiked } from '$lib/user.remote';
 	import { createLikeQueue } from '$lib/like-queue';
 	import { getDiet, setDiet } from '$lib/profile.remote';
 	import LocationMap from '$lib/components/LocationMap.svelte';
 	import MapStatsOverlay from '$lib/components/MapStatsOverlay.svelte';
 	import DietSelector from '$lib/components/DietSelector.svelte';
-	import FoodTag from '$lib/components/FoodTag.svelte';
-	import DietaryIcons from '$lib/components/DietaryIcons.svelte';
 	import AccountMenu from '$lib/components/AccountMenu.svelte';
-	import SourcesModal from '$lib/components/SourcesModal.svelte';
-	import LikeButton from '$lib/components/LikeButton.svelte';
+	import VenueDetail from '$lib/components/VenueDetail.svelte';
 	import Search from '@lucide/svelte/icons/search';
 	import { categoryLabel } from '$lib/category';
 	import { matchedItems, searchResults } from '$lib/search-match';
 	import { idFromPath } from '$lib/location-path';
 	import { DEFAULT_MAP_CENTER } from '$lib/map-defaults';
 	import { foldAsciiCase, searchableQuery } from '$lib/search';
-	import { safeHttpUrl } from '$lib/safe-url';
-	import { resolveLocation } from '$lib/resolve-location';
-	import type { MapData, MapLocation, Item, Source, Bounds } from '$lib/server/db';
+	import { resolveLocation, type ResolvedLocation } from '$lib/resolve-location';
+	import type { Item, Bounds } from '$lib/server/db';
 
 	// The visible map area, reported by <LocationMap> (debounced) as the user pans
 	// and zooms, plus once on load. Together with the applied search filter this
@@ -88,8 +81,9 @@
 		// resolved yet — arm the seed guard so a late-arriving value can't clobber it.
 		dietSeeded = true;
 		// One deliberate click, not a keystroke burst: let the search fire at once
-		// (see the debounce-bypass note above SEARCH_DEBOUNCE_MS).
-		searchImmediate = true;
+		// (see the debounce-bypass note above SEARCH_DEBOUNCE_MS in
+		// $lib/viewport-data.svelte.ts).
+		viewportStore.searchImmediate = true;
 		diet = id;
 		if (user) setDiet(id).catch(() => {});
 	}
@@ -108,59 +102,21 @@
 	// ('' here) and the server applies the same gate (getMapCells).
 	const searchText = $derived(searchableQuery(query));
 
-	// --- Map data --------------------------------------------------------------
-	// The one rendered payload: what's in the current box under the current
-	// APPLIED filter (see appliedFilter below). Updated imperatively (rather than
-	// via an awaited $derived) so the markers already on screen stay put while
-	// the next set loads — the map never blanks, and a filter change keeps the
-	// previous markers (re-narrowed locally by `results`) until the filtered
-	// cells land.
-	const EMPTY_MAP_DATA: MapData = { locations: [], menus: {}, menuMeta: {} };
-	let viewportData = $state<MapData>(EMPTY_MAP_DATA);
-
-	// --- Fetch status ----------------------------------------------------------
-	// The cell fetch below keeps the previous markers on screen while a request is
-	// in flight or after it fails — right for the map, but invisible to the user.
-	// `searching` is true while a FILTERED fetch is in flight and drives a spinner
-	// in the search pill; `fetchFailed` feeds the floating status line (plus its
-	// always-mounted aria-live twin) so a failed fetch says so instead of silently
-	// showing old data. It records WHICH KIND of fetch failed — the wording must
-	// describe the request that actually broke, not whatever the query box holds
-	// by the time the line renders (typing a character mustn't relabel a browse
-	// failure as a search failure). Imperative flags rather than
-	// $effect.pending(): these are .then() chains, not awaits a boundary could
-	// count.
-	let searching = $state(false);
-	let fetchFailed = $state<false | 'browse' | 'search'>(false);
+	// --- Viewport data (the cell-fetch orchestration) ---------------------------
+	// The client cell store, in-flight bookkeeping, debounced filter commit and
+	// searching/fetchFailed status flags all live in $lib/viewport-data.svelte.ts
+	// (unit-tested in scripts/viewport-data.test.ts); the page consumes its
+	// reactive surface (`data`, `searching`, `fetchFailed`, `appliedFilter`) and
+	// drives it with the two thin effects below.
+	const viewportStore = new ViewportData(getMapCells);
 	const fetchStatus = $derived(
-		fetchFailed === 'search'
+		viewportStore.fetchFailed === 'search'
 			? 'Search failed - showing previous results.'
-			: fetchFailed === 'browse'
+			: viewportStore.fetchFailed === 'browse'
 				? 'Couldn’t load places for this area - showing previous results.'
 				: ''
 	);
 
-	// --- Applied filter (the debounced commit) ----------------------------------
-	// The filter the cell fetch below actually sends: the gated text + diet as of
-	// the last COMMIT. Typing edits `query` live (and the local `results`
-	// narrowing tracks every keystroke instantly), but the server round trips
-	// only happen against this committed copy, so a keystroke burst settles into
-	// one fetch. Discrete inputs bypass the wait — see SEARCH_DEBOUNCE_MS.
-	let appliedFilter = $state<{ q: string; diet: string | null }>({ q: '', diet: null });
-
-	// Debounce before a query change commits (and so hits the server), so a burst
-	// of keystrokes settles into one fetch. Applied to TYPED changes only —
-	// discrete inputs (a diet click, Enter, paste) are single deliberate actions
-	// with no burst to coalesce, so waiting the full debounce there is pure lag.
-	// Two bypass channels, both plain non-reactive plumbing (like `focusNonce`):
-	// `searchImmediate` is a one-shot flag consumed by the commit effect's next
-	// run, for inputs whose change re-runs the effect (diet click, paste);
-	// `flushSearch` fires a pending debounce timer at once, for Enter — the
-	// signature hasn't changed then, so the effect won't re-run. Null whenever no
-	// timer is pending (already fired, or flushed), making a stray Enter a no-op.
-	const SEARCH_DEBOUNCE_MS = 250;
-	let searchImmediate = false;
-	let flushSearch: (() => void) | null = null;
 	// The query, reduced to a stable string — the reactive trigger for the commit
 	// effect. Built from the GATED text (`searchText`), ASCII-folded EXACTLY like
 	// the server's LIKE folds (foldAsciiCase — Unicode lowercasing would merge
@@ -170,170 +126,22 @@
 	// ASCII-case-only edit (which can't change the results) doesn't either.
 	const querySignature = $derived(JSON.stringify({ query: foldAsciiCase(searchText), diet }));
 
-	// Commit the live query into `appliedFilter` whenever its signature changes:
-	// after the typing debounce, at once for a discrete input, and at once when
-	// the filter empties — clearing must drop back to unfiltered data without a
-	// lag the user would read as a stuck search. The committed text is the
-	// FOLDED form — semantically identical to the raw text on the server (LIKE
-	// folds ASCII itself), and it canonicalizes the wire arg so ASCII case
-	// variants share one colo cache entry.
+	// Commit the live query into the store's `appliedFilter` whenever its
+	// signature changes (the debounce and its bypass channels live in
+	// ViewportData.scheduleCommit, which also hands back this effect's cleanup).
 	$effect(() => {
 		// Read the signature so the effect re-runs when (and only when) the
 		// effective query changes; the value itself isn't otherwise needed.
 		void querySignature;
-		const commit = () => {
-			flushSearch = null;
-			appliedFilter = { q: foldAsciiCase(searchText), diet };
-		};
-		if (searchText === '' && diet === null) {
-			searchImmediate = false;
-			commit();
-			return;
-		}
-		// A discrete input (diet click, paste) armed the one-shot bypass: fire on
-		// the next tick instead of sitting out the typing debounce.
-		const immediate = searchImmediate;
-		searchImmediate = false;
-		const timer = setTimeout(commit, immediate ? 0 : SEARCH_DEBOUNCE_MS);
-		// Let Enter fire the pending debounce early (commit nulls this once run).
-		flushSearch = () => {
-			clearTimeout(timer);
-			commit();
-		};
-		return () => {
-			clearTimeout(timer);
-			flushSearch = null;
-		};
+		return viewportStore.scheduleCommit(searchText, diet);
 	});
 
-	// Load the visible box, one GRID CELL at a time, under the APPLIED filter.
-	// The padded viewport picks a grid level and enumerates the cells covering it
-	// ($lib/grid); cells already in the client store replay locally, so panning
-	// fetches only the newly uncovered strip and panning back costs nothing (#84)
-	// — the 20% bounds padding is a genuine prefetch ring, not dead weight. With
-	// a filter active the SAME read narrows server-side to matching venues (a rep
-	// cell keeps its top-ranked MATCH, so a non-matching neighbour can't hide
-	// it), which is what makes panning under a search actually search the new
-	// area; store keys carry the filter, so browse cells and each filter's cells
-	// coexist without cross-talk and clearing the search replays warm browse
-	// cells with no round trip.
-	//
-	// The store is a plain non-reactive memo (filter+level-prefixed cell key →
-	// payload slice, LRU + TTL): consulting or filling it must never re-run this
-	// effect.
-	const cellStore = new CellStore();
-	// Store keys with a fetch currently on the wire. The viewport now streams in
-	// THROTTLED reports while a gesture is still moving (see LocationMap), so
-	// consecutive effect runs overlap in time and would otherwise re-request the
-	// same not-yet-banked cells; a run treats an in-flight cell as neither hit
-	// nor missing and simply waits for it. Non-reactive on purpose, like the store.
-	// eslint-disable-next-line svelte/prefer-svelte-reactivity -- a memo mutated inside the effect; reactivity would re-run the effect it serves
-	const inflightCells = new Set<string>();
-	// How many FILTERED fetches are on the wire right now. The spinner must stay
-	// up while ANY search fetch is still in flight — a stale BROWSE fetch failing
-	// mid-search must not kill it — so completions consult this count instead of
-	// clobbering `searching` unconditionally. Non-reactive, like the sets above.
-	let filteredFetchesInFlight = 0;
-	// Snapshot of the LATEST effect run's store keys and mode, so a late failure
-	// can tell whether it still describes what's on screen: a failing fetch sets
-	// `fetchFailed` only if its kind matches the current mode (the accepted brief
-	// over-warn on plain viewport moves) or its cells are still in the current
-	// key set (a successor run may be waiting on that very fetch — see the catch).
-	// A stale fetch relevant on NEITHER count (e.g. a browse fetch failing after
-	// the user started a search) stays silent rather than mislabeling the status.
-	let visibleCellKeys = new Set<string>();
-	let currentModeFiltered = false;
-	// Bumped when a fetch banks its cells, so the effect re-runs against the
-	// CURRENT viewport and re-merges from the store. This replaces the old
-	// per-run "merge my own response" callback: with overlapping runs, the run
-	// that issued a fetch is routinely superseded before its response lands, and
-	// the bump is what surfaces those banked cells regardless.
-	let storeVersion = $state(0);
+	// Load the visible box, one GRID CELL at a time, under the APPLIED filter —
+	// the whole read lives in ViewportData.sync (see its doc comment for the
+	// cell-store/prefetch design). Reactive on the viewport passed here plus the
+	// store's own `appliedFilter` and store-version reads inside sync().
 	$effect(() => {
-		void storeVersion;
-		if (!viewport) return;
-		const bounds = viewport;
-		const filter = appliedFilter;
-		const filtered = filter.q !== '' || filter.diet !== null;
-		const level = levelForBounds(bounds);
-		const cells = cellsForBounds(bounds, levelCell(level));
-		// `filter.q` is committed pre-folded (see the commit effect), so the key
-		// equivalence-classes exactly the queries the server answers identically —
-		// no wider. The unit-separator delimiters keep the (q, diet, level)
-		// segments collision-free (free text could otherwise run into the diet id).
-		const prefix = filtered ? `${filter.q}\u001f${filter.diet ?? ''}\u001f` : '';
-		const storeKey = ([i, j]: [number, number]) => `${prefix}${level}/${cellKey(i, j)}`;
-		// Refresh the relevance snapshot for late completions (see the declarations
-		// above): this run is now the current view, in the current mode.
-		visibleCellKeys = new Set(cells.map(storeKey));
-		currentModeFiltered = filtered;
-		const hits: CellSlice[] = [];
-		const missing: [number, number][] = [];
-		let pending = 0;
-		for (const c of cells) {
-			const slice = cellStore.get(storeKey(c));
-			if (slice !== null) hits.push(slice);
-			else if (inflightCells.has(storeKey(c))) pending++;
-			else missing.push(c);
-		}
-		if (missing.length === 0 && pending === 0) {
-			// Everything in view is already local — the "known empty" negative
-			// entries included — so render without a round trip.
-			viewportData = mergeCellSlices(hits);
-			fetchFailed = false;
-			searching = false;
-			return;
-		}
-		// The spinner tracks FILTERED fetches only: it lives in the search pill,
-		// where it reads as "your search is still filling this area".
-		searching = filtered;
-		// In-flight cells cover the rest of the view: their landing bumps
-		// storeVersion, re-running this effect to merge them. Until then the
-		// previous viewportData stays up, so mid-gesture frames never blank.
-		if (missing.length === 0) return;
-		const missingKeys = missing.map(storeKey);
-		for (const key of missingKeys) inflightCells.add(key);
-		if (filtered) filteredFetchesInFlight++;
-		getMapCells({ level, cells: missing, q: filter.q, diet: filter.diet })
-			.then((data) => {
-				const fresh = splitCellSlices(data);
-				for (const [key, slice] of fresh) {
-					cellStore.set(`${prefix}${level}/${key}`, slice);
-				}
-				for (const key of missingKeys) inflightCells.delete(key);
-				if (filtered) filteredFetchesInFlight--;
-				storeVersion++;
-			})
-			// A failed fetch must not blank the map — keep the markers already on
-			// screen — but flag it so the status line can say the visible markers
-			// are stale, worded for the kind of fetch that actually broke. Its
-			// cells leave the in-flight set with NO version bump: an automatic
-			// retry could loop against a broken backend, so, exactly as before,
-			// the next viewport change is what asks for them again.
-			.catch((err) => {
-				console.error('map cells fetch failed', bounds, filter, err);
-				for (const key of missingKeys) inflightCells.delete(key);
-				if (filtered) filteredFetchesInFlight--;
-				// The spinner clears only once NO filtered fetch remains in flight:
-				// a stale browse fetch failing mid-search must not kill the spinner
-				// the live search still owns (the status invariants up top).
-				if (filteredFetchesInFlight === 0) searching = false;
-				// Flag the failure only while it's still RELEVANT — its kind matches
-				// the current mode (this keeps the accepted brief over-warn when the
-				// viewport has merely moved off the cells), or its cells are still in
-				// the current key set. The key-set arm matters even for a superseded
-				// run: the in-flight dedup means the run that replaced this one did
-				// NOT refetch these cells — it saw them as pending and is WAITING on
-				// this very fetch, with no dependency left to change. Skipping the
-				// flag there would leave that successor a silent hole (cells neither
-				// rendered, retried, nor flagged) until the next pan/filter change.
-				// A fetch relevant on neither count (mode changed AND cells gone from
-				// view) stays silent: its wording would describe a request the user
-				// has already abandoned, clobbering the live one's status.
-				const relevant =
-					filtered === currentModeFiltered || missingKeys.some((key) => visibleCellKeys.has(key));
-				if (relevant) fetchFailed = filtered ? 'search' : 'browse';
-			});
+		viewportStore.sync(viewport);
 	});
 
 	// Fallback opening centre (the shared Vancouver default, $lib/map-defaults),
@@ -355,7 +163,7 @@
 	// the effective menu — overrides applied — and attaches the menu's freshness
 	// date and sources.
 	const locations = $derived(
-		viewportData.locations.map((loc) => resolveLocation(loc, viewportData))
+		viewportStore.data.locations.map((loc) => resolveLocation(loc, viewportStore.data))
 	);
 
 	// --- Landing: zoomed-out globe + stats overlay ----------------------------
@@ -421,23 +229,7 @@
 	// its menu's `last_verified` freshness date (null for unverified/private menus)
 	// and its menu-level `sources`. This is the detail-panel shape — only the by-id
 	// fetch carries full Items; the in-view set resolves to lean MapItems (#83).
-	type LocationData = MapLocation & {
-		menu: Item[];
-		lastVerified: string | null;
-		sources: Source[];
-	};
-
-	// Price formatters, one per ISO-4217 currency code (each item carries its menu's
-	// currency), built lazily and cached so a mixed-currency result set still formats
-	// every price in its own currency rather than a single hard-coded one. A plain
-	// record, not a Map — it's a non-reactive memo cache, never component state.
-	const moneyFormatters: Record<string, Intl.NumberFormat> = {};
-	function moneyFormatter(code: string): Intl.NumberFormat {
-		return (moneyFormatters[code] ??= new Intl.NumberFormat('en-CA', {
-			style: 'currency',
-			currency: code
-		}));
-	}
+	type LocationData = ResolvedLocation<Item>;
 
 	// One entry per location to show, paired with the items to tease under its marker.
 	// The candidate set is whatever is currently visible on the map (`locations`). The
@@ -469,11 +261,11 @@
 	// search must read as failed, not announce a definitive count computed from
 	// stale markers.
 	const searchSettled = $derived(
-		(appliedFilter.q !== '' || appliedFilter.diet !== null) &&
-			!searching &&
-			fetchFailed === false &&
-			appliedFilter.q === foldAsciiCase(searchText) &&
-			appliedFilter.diet === diet
+		(viewportStore.appliedFilter.q !== '' || viewportStore.appliedFilter.diet !== null) &&
+			!viewportStore.searching &&
+			viewportStore.fetchFailed === false &&
+			viewportStore.appliedFilter.q === foldAsciiCase(searchText) &&
+			viewportStore.appliedFilter.diet === diet
 	);
 	const resultsAnnouncement = $derived(
 		searchSettled ? `${results.length} ${results.length === 1 ? 'place' : 'places'} found` : ''
@@ -863,42 +655,6 @@
 			() => pendingItemLikes.set(id, liked)
 		);
 	}
-
-	function formatPrice(price: number, code: string): string {
-		return moneyFormatter(code).format(price);
-	}
-
-	// --- Menu freshness --------------------------------------------------------
-	// A menu carries a `last_verified` ISO date (the day it was last checked against
-	// its source). We surface it as a relative "Scanned …" phrase beside the Menu
-	// header so a stale chain menu reads as such.
-	//
-	// The stored value is a plain calendar day, not an instant, so we compare
-	// calendar dates in the user's LOCAL timezone. `new Date('YYYY-MM-DD')` would
-	// parse as UTC midnight, and diffing that against Date.now() makes a menu
-	// scanned today read "Scanned yesterday" for part of the day anywhere west
-	// of UTC (at 5pm PDT the clock is already ≥24h past UTC midnight). So we pull
-	// the y/m/d out ourselves, build both sides as local midnights, and Math.round
-	// the difference to absorb the ±1h a DST boundary injects.
-	function verifiedDaysAgo(iso: string): number | null {
-		const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
-		if (!match) return null;
-		const then = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
-		const now = new Date();
-		const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-		return Math.round((today.getTime() - then.getTime()) / 86_400_000);
-	}
-	function formatScanned(iso: string): string {
-		const days = verifiedDaysAgo(iso);
-		if (days === null) return `Scanned ${iso}`;
-		if (days <= 0) return 'Scanned today';
-		if (days === 1) return 'Scanned yesterday';
-		if (days < 30) return `Scanned ${days} days ago`;
-		const months = Math.round(days / 30);
-		if (months < 12) return `Scanned ${months} month${months === 1 ? '' : 's'} ago`;
-		const years = Math.round(days / 365);
-		return `Scanned ${years} year${years === 1 ? '' : 's'} ago`;
-	}
 </script>
 
 <svelte:window onkeydown={onWindowKeydown} />
@@ -949,158 +705,18 @@
 	     the content reads the retained `selectedLocation`, which stays valid through
 	     the outro. -->
 	{#if selectedId && selectedLocation}
-		{@const loc = selectedLocation}
-		{@const label = categoryLabel(loc.category)}
-		<aside
-			class="placecard"
-			aria-label="Location details"
-			tabindex="-1"
-			bind:this={placecardEl}
-			transition:fly={panelFly}
-		>
-			<button
-				type="button"
-				class="placecard__close"
-				aria-label="Close place details"
-				onclick={closeDetail}
-			>
-				✕
-			</button>
-			<header class="placecard__head">
-				<h2 class="placecard__name">{loc.name}</h2>
-				{#if label}
-					<span class="badge">{label}</span>
-				{/if}
-				{#if user}
-					<span class="placecard__like">
-						<LikeButton
-							liked={likedLocationIds.has(loc.id)}
-							onToggle={() => toggleLocationLike(loc.id)}
-							label={likedLocationIds.has(loc.id) ? 'Unlike this place' : 'Like this place'}
-							size={18}
-						/>
-					</span>
-				{/if}
-			</header>
-
-			<!-- Everything between the header and the footer scrolls as one column, so a
-			     long menu (or a tall info block on the bottom sheet) never overflows the
-			     panel. -->
-			<div class="placecard__body">
-				{#if loc.address || loc.phone || loc.website}
-					<dl class="info">
-						{#if loc.address}
-							<div class="info__row">
-								<dt>Address</dt>
-								<dd>{loc.address}</dd>
-							</div>
-						{/if}
-						{#if loc.phone}
-							<div class="info__row">
-								<dt>Phone</dt>
-								<dd><a href="tel:{loc.phone}">{loc.phone}</a></dd>
-							</div>
-						{/if}
-						{#if loc.website}
-							<!-- Website and source URLs come from world-editable feeds (OSM tags,
-							     agent-cited sources), so an anchor is only rendered for an
-							     http(s)-scheme URL; anything else shows as plain text. -->
-							{@const websiteHref = safeHttpUrl(loc.website)}
-							<div class="info__row">
-								<dt>Website</dt>
-								<dd>
-									{#if websiteHref}
-										<a href={websiteHref} target="_blank" rel="external noopener noreferrer">
-											{loc.website}
-										</a>
-									{:else}
-										{loc.website}
-									{/if}
-								</dd>
-							</div>
-						{/if}
-					</dl>
-				{/if}
-
-				<!-- Menu header: the "Menu" label, a subtle item-count/freshness note, and —
-				     when the venue cites provenance — a button opening the sources modal
-				     (sources are menu-level now). Shown whenever there's a menu or sources
-				     to head. -->
-				{#if loc.menu.length > 0 || loc.sources.length > 0}
-					<div class="placecard__menu-head">
-						<h3 class="placecard__menu-title">Menu</h3>
-						{#if loc.menu.length > 0}
-							{@const itemsLabel = `${loc.menu.length} ${loc.menu.length === 1 ? 'item' : 'items'}`}
-							<span
-								class="placecard__menu-meta"
-								title={loc.lastVerified ? `Menu last scanned on ${loc.lastVerified}` : undefined}
-							>
-								{loc.lastVerified
-									? `${itemsLabel} · ${formatScanned(loc.lastVerified)}`
-									: itemsLabel}
-							</span>
-						{/if}
-						{#if loc.sources.length > 0}
-							<button
-								type="button"
-								class="placecard__sources-btn"
-								onclick={() => (sourcesModalOpen = true)}
-							>
-								{loc.sources.length}
-								{loc.sources.length === 1 ? 'Source' : 'Sources'}
-							</button>
-						{/if}
-					</div>
-				{/if}
-
-				<!-- The venue's full menu. The map labels only rotate a teaser item per
-				     venue, so this is where the whole menu — each item's price, description,
-				     dietary markers and course — is read. -->
-				{#if loc.menu.length > 0}
-					<ul class="placecard__menu">
-						{#each loc.menu as menuItem (menuItem.id)}
-							<li class="placecard__item">
-								<span class="placecard__item-line">
-									<span class="placecard__item-main">
-										<span class="placecard__item-name">{menuItem.item_name}</span>
-										<DietaryIcons tags={menuItem.tags} />
-									</span>
-									{#if menuItem.price !== null}
-										<span class="placecard__item-price">
-											{formatPrice(menuItem.price, menuItem.currency)}
-										</span>
-									{/if}
-									{#if user}
-										<span class="placecard__item-like">
-											<LikeButton
-												liked={likedItemIds.has(menuItem.id)}
-												onToggle={() => toggleItemLike(menuItem.id)}
-												label={likedItemIds.has(menuItem.id)
-													? 'Unlike this item'
-													: 'Like this item'}
-												size={14}
-											/>
-										</span>
-									{/if}
-								</span>
-								{#if menuItem.description}
-									<p class="placecard__item-desc">{menuItem.description}</p>
-								{/if}
-								{@render itemExtras(menuItem)}
-							</li>
-						{/each}
-					</ul>
-				{/if}
-			</div>
-
-			{#if loc.menu.length === 0}
-				<footer class="placecard__foot">
-					<span class="placecard__hint">No menu on file yet.</span>
-				</footer>
-			{/if}
-
-			<SourcesModal sources={loc.sources} bind:open={sourcesModalOpen} />
-		</aside>
+		<VenueDetail
+			location={selectedLocation}
+			{user}
+			{likedLocationIds}
+			{likedItemIds}
+			onToggleLocationLike={toggleLocationLike}
+			onToggleItemLike={toggleItemLike}
+			onClose={closeDetail}
+			flyParams={panelFly}
+			bind:sourcesOpen={sourcesModalOpen}
+			bind:el={placecardEl}
+		/>
 	{/if}
 
 	<!-- The landing overlay: coverage stats + entry buttons, shown over the zoomed-out
@@ -1136,15 +752,15 @@
 						onkeydown={(event) => {
 							// Enter is a deliberate "search now": fire any pending debounce
 							// at once (no-op when nothing is pending — see flushSearch).
-							if (event.key === 'Enter') flushSearch?.();
+							if (event.key === 'Enter') viewportStore.flushSearch?.();
 						}}
 						onpaste={() => {
 							// A paste lands whole, with no keystroke burst to coalesce: arm
 							// the one-shot bypass so the value change fires immediately.
-							searchImmediate = true;
+							viewportStore.searchImmediate = true;
 						}}
 					/>
-					{#if searching}
+					{#if viewportStore.searching}
 						<!-- Replaces the search glyph while the global search round trip is
 						     in flight, so latency is visible right where the user typed. -->
 						<span class="searchpill__spinner" aria-hidden="true"></span>
@@ -1208,21 +824,6 @@
 	<!-- The aria-live twin of the visible status line above: announces a failed
 	     search/viewport fetch. Same always-in-the-DOM rule as the count region. -->
 	<div class="visually-hidden" role="status">{fetchStatus}</div>
-
-	<!-- The item's course tag, shown beneath each menu row in the open venue's card.
-	     Dietary tags are shown as icons on the row above (see DietaryIcons), so they're
-	     omitted here to avoid repeating them. An `optional` tag keeps its dashed marker.
-	     Data sources are menu-level now, shown once in the venue info block above. -->
-	{#snippet itemExtras(menuItem: Item)}
-		{@const courseTags = menuItem.tags.filter((tag) => tag.tag_type === 'course')}
-		{#if courseTags.length > 0}
-			<ul class="taglist">
-				{#each courseTags as tag (tag.id)}
-					<li><FoodTag {tag} optional={tag.optional} /></li>
-				{/each}
-			</ul>
-		{/if}
-	{/snippet}
 </div>
 
 <style>
@@ -1455,271 +1056,6 @@
 		color: var(--color-text-muted);
 	}
 
-	/* --- Location detail panel (docked to the right of the map) --------------- */
-	/* The open location's page details: a full-height glass column pinned to the
-	   right edge, over the map (which insets its camera by the same width, so the
-	   venue centres in the visible area to its left). Slides in/out via the fly
-	   transition on the element. The 26rem width is mirrored by PANEL_WIDTH_PX. */
-	.placecard {
-		position: absolute;
-		z-index: 12;
-		top: 0;
-		right: 0;
-		bottom: 0;
-		width: min(26rem, 100vw);
-		display: flex;
-		flex-direction: column;
-		gap: 0.6rem;
-		padding: calc(0.85rem + env(safe-area-inset-top)) calc(0.95rem + env(safe-area-inset-right))
-			calc(0.85rem + env(safe-area-inset-bottom)) 0.95rem;
-		background: rgba(255, 255, 255, 0.94);
-		backdrop-filter: blur(16px) saturate(180%);
-		-webkit-backdrop-filter: blur(16px) saturate(180%);
-		border-left: 1px solid rgba(255, 255, 255, 0.6);
-		box-shadow: -12px 0 34px rgba(0, 0, 0, 0.22);
-	}
-
-	/* The panel takes programmatic focus on open (tabindex="-1"); it isn't
-	   tab-reachable, so a focus ring on the whole panel is noise. */
-	.placecard:focus {
-		outline: none;
-	}
-
-	/* The scrolling middle of the panel (info block + menu), between the fixed
-	   header and footer. min-height: 0 lets it actually shrink inside the flex
-	   column so overflow-y can take over. */
-	.placecard__body {
-		flex: 1;
-		min-height: 0;
-		overflow-y: auto;
-		display: flex;
-		flex-direction: column;
-		gap: 0.6rem;
-	}
-
-	.placecard__close {
-		position: absolute;
-		top: 0.5rem;
-		right: 0.5rem;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 1.6rem;
-		height: 1.6rem;
-		padding: 0;
-		font-size: 0.8rem;
-		line-height: 1;
-		color: var(--color-text-muted);
-		background: rgba(0, 0, 0, 0.04);
-		border: 1px solid rgba(0, 0, 0, 0.08);
-		border-radius: 999px;
-		transition:
-			background-color 0.12s,
-			color 0.12s;
-	}
-
-	.placecard__close:hover {
-		color: var(--color-text);
-		background: rgba(0, 0, 0, 0.09);
-	}
-
-	.placecard__head {
-		display: flex;
-		align-items: center;
-		flex-wrap: wrap;
-		gap: 0.5rem;
-		/* Clear the absolutely-positioned close button. */
-		padding-right: 1.8rem;
-	}
-
-	.placecard__name {
-		margin: 0;
-		font-size: 1.1rem;
-	}
-
-	.placecard__like {
-		display: inline-flex;
-	}
-
-	.placecard__foot {
-		display: flex;
-		align-items: center;
-		flex-wrap: wrap;
-		gap: 0.5rem;
-	}
-
-	.placecard__hint {
-		font-size: 0.78rem;
-		color: var(--color-text-muted);
-	}
-
-	/* The open venue's full menu, listed inside the panel body (which owns the
-	   scrolling — see .placecard__body). */
-	.placecard__menu {
-		list-style: none;
-		margin: 0;
-		padding: 0;
-		display: flex;
-		flex-direction: column;
-	}
-
-	.placecard__item {
-		display: flex;
-		flex-direction: column;
-		gap: 0.2rem;
-		border-top: 1px solid rgba(0, 0, 0, 0.06);
-		padding: 0.5rem 0.1rem;
-	}
-
-	.placecard__menu li:first-child {
-		border-top: none;
-	}
-
-	.placecard__item-line {
-		display: flex;
-		justify-content: space-between;
-		align-items: baseline;
-		gap: 0.75rem;
-	}
-
-	/* Name + dietary icons, grouped so the icons sit directly to the right of the name
-	   text. This group soaks the spare width (flex: 1) so the price (when the item has
-	   one) and the like heart (when signed in) sit together at the row's right edge;
-	   the icons wrap under the name only when the row is too narrow to hold them
-	   inline. */
-	.placecard__item-main {
-		flex: 1;
-		min-width: 0;
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		column-gap: 0.4rem;
-		row-gap: 0.15rem;
-	}
-
-	.placecard__item-name {
-		font-size: 0.85rem;
-		font-weight: 600;
-	}
-
-	/* The per-item like heart on a menu row. Centred on the row's height (the line
-	   aligns on baselines, which a button doesn't share) so the row stays one line. */
-	.placecard__item-like {
-		display: inline-flex;
-		align-self: center;
-	}
-
-	.placecard__item-price {
-		font-size: 0.82rem;
-		font-variant-numeric: tabular-nums;
-		white-space: nowrap;
-		color: var(--color-text-muted);
-	}
-
-	.placecard__item-desc {
-		margin: 0;
-		font-size: 0.78rem;
-		color: var(--color-text-muted);
-	}
-
-	.badge {
-		display: inline-block;
-		padding: 0.15rem 0.55rem;
-		border-radius: 999px;
-		background-color: var(--color-accent);
-		color: #fff;
-		font-size: 0.72rem;
-		font-weight: 600;
-		line-height: 1.4;
-		white-space: nowrap;
-	}
-
-	.info {
-		display: grid;
-		gap: 0.4rem;
-		margin: 0;
-		padding: 0.75rem 0.85rem;
-		background: rgba(255, 255, 255, 0.6);
-		border: 1px solid var(--color-border);
-		border-radius: 0.7rem;
-	}
-
-	.info__row {
-		display: grid;
-		grid-template-columns: 5rem 1fr;
-		gap: 0.25rem 0.75rem;
-		align-items: baseline;
-	}
-
-	.info dt {
-		color: var(--color-text-muted);
-		font-size: 0.7rem;
-		font-weight: 700;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-	}
-
-	.info dd {
-		margin: 0;
-		font-size: 0.85rem;
-		word-break: break-word;
-	}
-
-	/* The Menu header row: the "Menu" label with its item-count/freshness note
-	   sitting quietly beside it, and the sources button pushed to the trailing
-	   edge. */
-	.placecard__menu-head {
-		display: flex;
-		align-items: baseline;
-		gap: 0.5rem;
-	}
-
-	.placecard__menu-title {
-		margin: 0;
-		font-size: 0.95rem;
-	}
-
-	/* The subtle note beside the Menu header: "12 items · Scanned 3 days ago". */
-	.placecard__menu-meta {
-		font-size: 0.72rem;
-		color: var(--color-text-muted);
-		white-space: nowrap;
-	}
-
-	/* The "N Sources" button opening the sources modal: a quiet outlined pill that
-	   reads as a control without competing with the menu items below it. */
-	.placecard__sources-btn {
-		flex-shrink: 0;
-		margin-left: auto;
-		padding: 0.2rem 0.6rem;
-		font-size: 0.72rem;
-		font-weight: 600;
-		color: var(--color-accent);
-		background: color-mix(in srgb, var(--color-accent) 8%, #fff);
-		border: 1px solid color-mix(in srgb, var(--color-accent) 30%, #fff);
-		border-radius: 999px;
-		cursor: pointer;
-		transition:
-			background-color 0.12s,
-			border-color 0.12s;
-	}
-
-	.placecard__sources-btn:hover {
-		background: color-mix(in srgb, var(--color-accent) 16%, #fff);
-		border-color: color-mix(in srgb, var(--color-accent) 45%, #fff);
-	}
-
-	/* The course-tag pill row under a menu item in the card. The pills themselves are
-	   <FoodTag>; this only lays them out. */
-	.taglist {
-		list-style: none;
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.3rem;
-		margin: 0.4rem 0 0;
-		padding: 0;
-	}
-
 	/* Below ~48rem the search row floats centered at the BOTTOM of the screen (all
 	   items always visible — no collapse toggle), while the account/sign-in control is
 	   pulled out to the top-left corner. The map card already adapts via its own width
@@ -1759,23 +1095,6 @@
 		/* 16px inputs stop iOS Safari from auto-zooming the page when one is focused. */
 		.searchpill__input {
 			font-size: 1rem;
-		}
-
-		/* On narrow screens the detail panel becomes a bottom sheet: the map keeps the
-		   top of the screen (and centres the venue there via the matching bottom
-		   camera inset), the details slide up from below. Height mirrors
-		   SHEET_HEIGHT_PX, capped so a short landscape screen keeps some map. */
-		.placecard {
-			top: auto;
-			left: 0;
-			right: 0;
-			width: auto;
-			height: min(calc(320px + env(safe-area-inset-bottom)), 55dvh);
-			padding: 0.85rem 0.95rem calc(0.85rem + env(safe-area-inset-bottom));
-			border-left: none;
-			border-top: 1px solid rgba(255, 255, 255, 0.6);
-			border-radius: 0.9rem 0.9rem 0 0;
-			box-shadow: 0 -12px 34px rgba(0, 0, 0, 0.22);
 		}
 
 		/* The sheet covers the map's bottom edge, so both bottom controls — zoom

@@ -19,10 +19,23 @@
 
 import type { MapData, MapItem, MapLocation, Source } from './server/db';
 
+/**
+ * A location with its FULL effective menu resolved, plus its menu's
+ * `last_verified` freshness date (null for unverified/private menus) and its
+ * menu-level `sources`. Instantiated with the full `Item` this is the
+ * detail-panel shape (VenueDetail.svelte) — only the by-id fetch carries full
+ * Items; the in-view set resolves to lean MapItems (#83).
+ */
+export type ResolvedLocation<I extends MapItem> = MapLocation & {
+	menu: I[];
+	lastVerified: string | null;
+	sources: Source[];
+};
+
 export function resolveLocation<I extends MapItem>(
 	loc: MapLocation,
 	data: MapData<I>
-): MapLocation & { menu: I[]; lastVerified: string | null; sources: Source[] } {
+): ResolvedLocation<I> {
 	const menu: I[] = [];
 	if (loc.menu_id) {
 		const overrideByItem = new Map(loc.overrides.map((o) => [o.item_id, o]));
