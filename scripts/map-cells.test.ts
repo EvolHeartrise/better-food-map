@@ -11,6 +11,7 @@
 import { test, expect } from 'bun:test';
 import {
 	FULL_CELL_CAP,
+	getLocationMapData,
 	getMapCellsData,
 	insertBrand,
 	insertFoods,
@@ -124,6 +125,66 @@ test('locations ship a like-derived score for the client-side label priority', a
 	const byId = new Map(data.locations.map((l) => [l.id, l]));
 	expect(byId.get(liked)?.score).toBe(2);
 	expect(byId.get(plain)?.score).toBe(0);
+});
+
+// The cell read plumbs the ranking CTE's like counts through as `score` instead
+// of re-running the correlated COUNT per winner; this pins the plumbed-through
+// values to the exact like counts (what the subquery would have produced), at
+// both the rep and full levels, and that the by-id read — which has no
+// precomputed counts and still takes the subquery path — agrees.
+test('cell-path scores equal the like counts exactly, and the by-id read agrees', async () => {
+	const db = freshDb();
+	// Distinct cells at the viewport's rep level, with 0 / 1 / 3 likes.
+	const [zero, one, three] = await insertLocations(db, [
+		venue({ name: 'Zero Likes', latitude: 43.6, longitude: -79.4 }),
+		venue({ name: 'One Like', latitude: 45.2, longitude: -77.1 }),
+		venue({ name: 'Three Likes', latitude: 47.3, longitude: -81.9 })
+	]);
+	const likes: [string, number][] = [
+		[zero, 0],
+		[one, 1],
+		[three, 3]
+	];
+	let seq = 0;
+	for (const [loc, n] of likes) {
+		for (let k = 0; k < n; k++) {
+			const user = `u${seq++}`;
+			await db
+				.prepare(`INSERT INTO users (id, email_verified, created_at) VALUES (?, 0, 0)`)
+				.bind(user)
+				.run();
+			await setLocationLike(db, user, loc, true, 123);
+		}
+	}
+
+	const { level, data } = await fetchViewport(db, {
+		minLat: 40,
+		maxLat: 50,
+		minLng: -85,
+		maxLng: -75
+	});
+	expect(level).toBeGreaterThanOrEqual(MIN_REP_LEVEL);
+	const byId = new Map(data.locations.map((l) => [l.id, l.score]));
+	for (const [loc, n] of likes) expect(byId.get(loc)).toBe(n);
+
+	// Full level (FULL_CELL_CAP winners per cell) rides the same plumbing.
+	const cell = levelCell(0);
+	const fullCells: [number, number][] = [
+		[Math.floor((43.6 + 90) / cell), Math.floor((-79.4 + 180) / cell)],
+		[Math.floor((45.2 + 90) / cell), Math.floor((-77.1 + 180) / cell)],
+		[Math.floor((47.3 + 90) / cell), Math.floor((-81.9 + 180) / cell)]
+	];
+	const full = await getMapCellsData(db, 0, fullCells);
+	const fullById = new Map(full.locations.map((l) => [l.id, l.score]));
+	for (const [loc, n] of likes) expect(fullById.get(loc)).toBe(n);
+
+	// The by-id detail read has no precomputed score map; its correlated-subquery
+	// path must return the same counts.
+	for (const [loc, n] of likes) {
+		const detail = await getLocationMapData(db, loc);
+		expect(detail.locations).toHaveLength(1);
+		expect(detail.locations[0].score).toBe(n);
+	}
 });
 
 test('the full level returns whole cells — menus, overrides — and caps per cell', async () => {
