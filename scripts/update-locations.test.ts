@@ -5,6 +5,9 @@
 // the whole batch. Provenance is menu-level, so a location patch never touches sources.
 
 import { test, expect } from 'bun:test';
+import * as v from 'valibot';
+import { toJsonSchema } from '@valibot/to-json-schema';
+import { updateLocationItemArgs } from './db-mcp-server';
 import {
 	insertLocations,
 	updateLocations,
@@ -93,4 +96,48 @@ test('updateLocations with only unknown ids touches nothing', async () => {
 	const res = await updateLocations(db, [{ id: 'ghost', name: 'x' }]);
 	expect(res.updatedIds).toEqual([]);
 	expect(res.notFoundIds).toEqual(['ghost']);
+});
+
+// --- update_locations MCP patch schema (strict) ------------------------------
+// Location-level sources were removed in migration 0021 (provenance is menu-level
+// via update_menu). The patch schema must REJECT unknown keys like `sources` —
+// a lax schema would silently drop them and report `updated: 1`, so an agent
+// would believe a citation was recorded when nothing was written.
+
+test('update_locations patch schema rejects unknown keys (removed `sources`)', () => {
+	expect(() =>
+		v.parse(updateLocationItemArgs, {
+			id: 'a',
+			sources: [{ url: 'https://menu.example', label: 'menu' }]
+		})
+	).toThrow(/sources/);
+	expect(() => v.parse(updateLocationItemArgs, { id: 'a', add_sources: [] })).toThrow(
+		/add_sources/
+	);
+	// A typo'd known field fails too, instead of no-oping.
+	expect(() => v.parse(updateLocationItemArgs, { id: 'a', naem: 'Oops' })).toThrow(/naem/);
+});
+
+test('update_locations patch schema still accepts valid patches', () => {
+	const parsed = v.parse(updateLocationItemArgs, {
+		id: 'a',
+		name: 'Renamed',
+		city: 'Burnaby',
+		website: null
+	});
+	expect(parsed).toEqual({ id: 'a', name: 'Renamed', city: 'Burnaby', website: null });
+	// Coordinate pair still allowed together, and the pair-check still fires.
+	expect(() => v.parse(updateLocationItemArgs, { id: 'a', latitude: 49.2 })).toThrow();
+	expect(v.parse(updateLocationItemArgs, { id: 'a', latitude: 49.2, longitude: -123.1 })).toEqual({
+		id: 'a',
+		latitude: 49.2,
+		longitude: -123.1
+	});
+});
+
+test('update_locations patch schema advertises additionalProperties: false', () => {
+	const json = toJsonSchema(updateLocationItemArgs, { errorMode: 'ignore' }) as {
+		additionalProperties?: unknown;
+	};
+	expect(json.additionalProperties).toBe(false);
 });
