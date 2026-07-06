@@ -43,10 +43,12 @@ export const MIN_GRID_CELL_DEG = 0.004;
  * {@link levelForBounds} coarsens the rung until a box of the viewport's span
  * cannot straddle more than this many absolute cells, so a rep-level fetch is
  * never a top-N cut over the in-view cells (a cut reshuffles as the box slides,
- * flickering labels in and out — see the pan-stability note below). Numerically
- * equal to the server's MAP_RESULT_LIMIT so the rep path never ships more
- * locations than the old capped viewport read did (asserted in grid.test.ts;
- * this module is client-safe, so it cannot import the server constant).
+ * flickering labels in and out — see the pan-stability note below). This bounds
+ * the CELL count; each cell resolves up to REP_CELL_CAP venues ($lib/server/db),
+ * so a rep batch ships up to that many times this — still order-stable per cell,
+ * which is what pan-stability needs. Numerically equal to the server's
+ * MAP_RESULT_LIMIT (asserted in grid.test.ts; this module is client-safe, so it
+ * cannot import the server constant).
  */
 export const GRID_REP_LIMIT = 200;
 
@@ -62,7 +64,8 @@ export const FULL_CELL_DEG = 0.02;
 /**
  * Grid levels: level 0 is the FULL level ({@link FULL_CELL_DEG}, every venue in
  * the cell); level k ≥ 1 is the REPRESENTATIVE rung of {@link CELL_LADDER}[k−1]
- * (one importance-ranked venue per cell). {@link MIN_REP_LEVEL} is the finest
+ * (the top few importance-ranked venues per cell — REP_CELL_CAP in
+ * $lib/server/db). {@link MIN_REP_LEVEL} is the finest
  * rep level {@link levelForBounds} can produce (the first rung at or above
  * {@link MIN_GRID_CELL_DEG}) — the remote schema rejects levels 1..MIN_REP_LEVEL−1,
  * which no real client ever asks for.
