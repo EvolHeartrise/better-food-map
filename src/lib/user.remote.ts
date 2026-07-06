@@ -9,7 +9,12 @@ import {
 	type User,
 	type UserLikes
 } from '$lib/server/db';
-import { SESSION_COOKIE, clearSessionCookie, invalidateSessionToken } from '$lib/server/auth';
+import {
+	LEGACY_SESSION_COOKIE,
+	SESSION_COOKIE,
+	clearSessionCookie,
+	invalidateSessionToken
+} from '$lib/server/auth';
 
 /**
  * The signed-in user for the current request, or null. Backs the account control
@@ -79,7 +84,9 @@ export const setItemLiked = command(
 /** Signs out: invalidates the session row and clears the cookie. */
 export const signOut = command(async () => {
 	const { cookies } = getRequestEvent();
-	const token = cookies.get(SESSION_COOKIE);
+	// Fall back to the legacy unprefixed cookie so a not-yet-migrated session
+	// still gets its row invalidated; clearSessionCookie deletes both names.
+	const token = cookies.get(SESSION_COOKIE) ?? cookies.get(LEGACY_SESSION_COOKIE);
 	if (token) await invalidateSessionToken(requireDb(), token);
 	clearSessionCookie(cookies);
 });
