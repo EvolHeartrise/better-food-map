@@ -105,15 +105,23 @@ main {
 	display: block;
 }
 
-/* Entrance: fade in with a slight fly towards the anchor — the direction the
-   arrow points. Applied only on a fresh open; hopping between triggers while
-   a tooltip is already up repositions without replaying this. */
+/* Entrance: fade in with a slight fly out of the anchor into place — starting
+   nearer the trigger and settling away from it (a top bubble rises, a bottom
+   one drops). Applied only on a fresh open; hopping between triggers while a
+   tooltip is already up repositions without replaying this. */
 .tooltip--in[data-side='top'] {
-	animation: tooltip-fly-down 120ms ease-out;
+	animation: tooltip-fly-up 120ms ease-out;
 }
 
 .tooltip--in[data-side='bottom'] {
-	animation: tooltip-fly-up 120ms ease-out;
+	animation: tooltip-fly-down 120ms ease-out;
+}
+
+@keyframes tooltip-fly-up {
+	from {
+		opacity: 0;
+		transform: translateY(4px);
+	}
 }
 
 @keyframes tooltip-fly-down {
@@ -123,10 +131,10 @@ main {
 	}
 }
 
-@keyframes tooltip-fly-up {
-	from {
-		opacity: 0;
-		transform: translateY(4px);
+@media (prefers-reduced-motion: reduce) {
+	.tooltip--in[data-side='top'],
+	.tooltip--in[data-side='bottom'] {
+		animation: none;
 	}
 }
 
