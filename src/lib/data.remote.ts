@@ -1,7 +1,7 @@
 import * as v from 'valibot';
 import { query, getRequestEvent } from '$app/server';
 import { requireDb as db } from '$lib/server/context';
-import { ttlMemo } from '$lib/server/memo';
+import { requestSafeTtlMemo } from '$lib/server/request-memo';
 import { getMapCellsCached } from '$lib/server/cell-cache';
 import {
 	getLocationMapData,
@@ -133,28 +133,14 @@ export const getLocationData = query(
  * per window. `db()` reads the request-scoped event, so it must be resolved
  * inside the memoised fn — safe, because a cache miss only ever happens while a
  * request is being served.
+ *
+ * The landing page reads this resource non-suspending, so an SSR render can
+ * return before the COUNT scans settle — the never-settling-promise hazard
+ * `requestSafeTtlMemo` exists to guard against (see its doc comment).
  */
-const cachedStats = ttlMemo(5 * 60 * 1000, () => getStatsFromDb(db()));
+const cachedStats = requestSafeTtlMemo(5 * 60 * 1000, () => getStatsFromDb(db()));
 
-export const getStats = query((): Promise<MapStats> => {
-	const promise = cachedStats();
-	// The landing page reads this resource non-suspending, so an SSR render can
-	// return before the COUNT scans settle. The Workers runtime then tears down
-	// the request's I/O and the memo is left holding a promise that NEVER settles
-	// — poisoning every stats consumer (SSR embeds and direct getStats calls
-	// alike) for the rest of the TTL window; the landing overlay sits on its
-	// placeholder figures the whole time. waitUntil keeps the request context
-	// alive until the read completes, so the cached promise always settles.
-	// Rejections are swallowed here only for waitUntil's sake — the memo already
-	// evicts a rejected entry, and awaiting callers still see the error.
-	getRequestEvent().platform?.ctx?.waitUntil(
-		promise.then(
-			() => undefined,
-			() => undefined
-		)
-	);
-	return promise;
-});
+export const getStats = query((): Promise<MapStats> => cachedStats());
 
 /**
  * Best-effort opening location for the map, from Cloudflare's edge IP
