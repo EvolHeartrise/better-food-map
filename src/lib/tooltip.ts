@@ -3,8 +3,9 @@
 // trigger — a singleton by construction, so two tooltips can never be visible
 // at once and hovering quickly between triggers repositions the same bubble
 // instantly instead of replaying open/close animations. It shows with no
-// hover delay, fading in with a slight fly towards the anchor (the direction
-// the arrow points), flips below the anchor when there's no room above, and
+// hover delay, fading in with a slight fly out of the anchor into place
+// (a top bubble rises, a bottom one drops), flips below when there's no
+// room above, and
 // clamps to the viewport (see $lib/tooltip-position for the math). Styling
 // lives in app.css under `.tooltip` since the bubble is appended to
 // document.body, outside any component's scoped styles.
@@ -27,6 +28,7 @@ function ensureBubble(): void {
 	textEl = document.createElement('span');
 	arrowEl = document.createElement('div');
 	arrowEl.className = 'tooltip__arrow';
+	arrowEl.setAttribute('aria-hidden', 'true');
 	bubble.appendChild(textEl);
 	bubble.appendChild(arrowEl);
 	document.body.appendChild(bubble);
@@ -63,7 +65,14 @@ function show(anchor: HTMLElement, text: string): void {
 		currentAnchor.removeAttribute('aria-describedby');
 	}
 	currentAnchor = anchor;
-	anchor.setAttribute('aria-describedby', TOOLTIP_ID);
+	// Describe the anchor by the bubble — unless the tooltip just repeats the
+	// anchor's accessible name (the dietary marks, the like button), where a
+	// description would make screen readers announce the same text twice.
+	if (anchor.getAttribute('aria-label')?.trim() === text.trim()) {
+		anchor.removeAttribute('aria-describedby');
+	} else {
+		anchor.setAttribute('aria-describedby', TOOLTIP_ID);
+	}
 
 	textEl.textContent = text;
 	bubble.classList.add('tooltip--visible');
