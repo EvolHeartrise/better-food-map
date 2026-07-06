@@ -13,17 +13,17 @@ import { SESSION_COOKIE, clearSessionCookie, invalidateSessionToken } from '$lib
 
 /**
  * The signed-in user for the current request, or null. Backs the account control
- * and gates the like UI. Reads `locals.user` (set by the session hook), so
- * it needs no database round-trip of its own.
+ * and gates the like UI. Resolved via the hook's lazy `locals.getSession()` —
+ * the request's one memoized session read, shared with every other consumer.
  */
-export const getCurrentUser = query((): Promise<User | null> => Promise.resolve(currentUser()));
+export const getCurrentUser = query((): Promise<User | null> => currentUser());
 
 /**
  * The location and item ids the current user has liked (newest first), or empty
  * lists when signed out. The map page seeds its optimistic like state from this.
  */
 export const getLikes = query(async (): Promise<UserLikes> => {
-	const user = currentUser();
+	const user = await currentUser();
 	if (!user) return { locationIds: [], itemIds: [] };
 	return getUserLikes(requireDb(), user.id);
 });
@@ -60,7 +60,7 @@ async function badRequestOnFkViolation(write: Promise<void>): Promise<void> {
 export const setLocationLiked = command(
 	v.object({ locationId: LikeIdSchema, liked: v.boolean() }),
 	async ({ locationId, liked }) => {
-		const user = requireUser();
+		const user = await requireUser();
 		await badRequestOnFkViolation(
 			setLocationLike(requireDb(), user.id, locationId, liked, Date.now())
 		);
@@ -71,7 +71,7 @@ export const setLocationLiked = command(
 export const setItemLiked = command(
 	v.object({ itemId: LikeIdSchema, liked: v.boolean() }),
 	async ({ itemId, liked }) => {
-		const user = requireUser();
+		const user = await requireUser();
 		await badRequestOnFkViolation(setItemLike(requireDb(), user.id, itemId, liked, Date.now()));
 	}
 );

@@ -1,18 +1,20 @@
 // See https://svelte.dev/docs/kit/types#app.d.ts
 // for information about these interfaces
 /// <reference types="@cloudflare/workers-types" />
-import type { Session, User } from '$lib/server/db';
+import type { ResolvedSession } from '$lib/server/session';
 
 declare global {
 	namespace App {
 		// interface Error {}
 		/**
-		 * Per-request auth state, populated by the session hook in hooks.server.ts
-		 * from the session cookie. Both are null when signed out.
+		 * Per-request auth state. `getSession` is installed by the session hook in
+		 * hooks.server.ts: a lazy, per-request-memoized resolver of the session
+		 * cookie. The D1 session read happens only on the first call (public paths
+		 * that never ask stay auth-free), and every call in the same request shares
+		 * that one read. Resolves to null when signed out.
 		 */
 		interface Locals {
-			user: User | null;
-			session: Session | null;
+			getSession(): Promise<ResolvedSession | null>;
 		}
 		// interface PageData {}
 		/**

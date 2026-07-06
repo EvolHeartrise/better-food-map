@@ -4,8 +4,8 @@ import { sequence } from '@sveltejs/kit/hooks';
 import {
 	SESSION_COOKIE,
 	clearSessionCookie,
-	setSessionCookie,
-	validateSessionToken
+	createLazySessionResolver,
+	setSessionCookie
 } from '$lib/server/auth';
 import { deleteExpiredSessions } from '$lib/server/db';
 
@@ -27,16 +27,27 @@ const canonicalHost: Handle = async ({ event, resolve }) => {
 	return resolve(event);
 };
 
-// Resolves the session cookie into `event.locals.user` / `event.locals.session`
-// for every request, so remote functions and routes can read who is signed in.
-// An invalid/expired token clears the cookie; a still-valid one whose expiry was
-// slid forward re-sets it (the only time we touch Set-Cookie, to keep responses
-// cacheable otherwise).
+// Installs `event.locals.getSession` — a LAZY, per-request-memoized resolver of
+// the session cookie — so only code that actually asks who is signed in (the
+// user-scoped remote functions, via `currentUser()`/`requireUser()` in
+// $lib/server/context) pays the D1 session read. The map's public paths
+// (getMapCells/getStats/getLocationData, the sitemap routes) never call it, so
+// a signed-in user's cell fetches stay D1-free behind the colo cell cache and
+// don't burn a Workers Free subrequest on auth. Semantics on first call are
+// exactly the old eager hook's: an invalid/expired token clears the cookie; a
+// still-valid one whose expiry was slid forward re-sets it (the only times we
+// touch Set-Cookie, to keep responses cacheable otherwise).
+//
+// Cookie lifecycle note: the resolver closes over THIS hook's `event.cookies`
+// (not the guarded wrapper a `query` remote function sees), which is deliberate
+// — the refresh/clear is hook-level session upkeep that was merely deferred,
+// and it must still land even when the first consumer is a query like
+// getCurrentUser/getLikes, whose own `cookies.set` is forbidden. SvelteKit
+// collects cookies set any time before the response is constructed, so writes
+// from within SSR or a remote-endpoint request still reach Set-Cookie.
 const authenticate: Handle = async ({ event, resolve }) => {
 	const token = event.cookies.get(SESSION_COOKIE);
 	const db = event.platform?.env?.DB;
-	event.locals.user = null;
-	event.locals.session = null;
 
 	// Opportunistically sweep expired session rows on ~1% of requests, in the
 	// background via waitUntil so it adds zero request latency. validateSessionToken
@@ -48,16 +59,10 @@ const authenticate: Handle = async ({ event, resolve }) => {
 		event.platform?.ctx?.waitUntil(deleteExpiredSessions(db, Date.now()).catch(() => {}));
 	}
 
-	if (token && db) {
-		const result = await validateSessionToken(db, token);
-		if (result) {
-			event.locals.user = result.user;
-			event.locals.session = result.session;
-			if (result.refreshed) setSessionCookie(event.cookies, token, result.session.expires_at);
-		} else {
-			clearSessionCookie(event.cookies);
-		}
-	}
+	event.locals.getSession = createLazySessionResolver(db, token, {
+		setCookie: (t, expiresAt) => setSessionCookie(event.cookies, t, expiresAt),
+		clearCookie: () => clearSessionCookie(event.cookies)
+	});
 
 	return resolve(event);
 };
@@ -120,7 +125,8 @@ const securityHeaders: Handle = async ({ event, resolve }) => {
 	return response;
 };
 
-// The map is public — there is no navigation gate. `authenticate` still runs so an
-// optional signed-in user (account menu, likes, saved diet) is resolved for every
-// request; the user-scoped remote functions guard themselves with `requireUser()`.
+// The map is public — there is no navigation gate. `authenticate` only installs
+// the lazy resolver; the optional signed-in user (account menu, likes, saved
+// diet) is resolved on demand, and the user-scoped remote functions guard
+// themselves with `requireUser()`.
 export const handle = sequence(securityHeaders, canonicalHost, authenticate);
