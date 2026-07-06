@@ -1,6 +1,14 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { dev } from '$app/environment';
 import type { Handle } from '@sveltejs/kit';
 import { sequence } from '@sveltejs/kit/hooks';
+import {
+	baseLocale,
+	extractLocaleFromHeader,
+	isLocale,
+	overwriteGetLocale,
+	type Locale
+} from '$lib/paraglide/runtime';
 import {
 	LEGACY_SESSION_COOKIE,
 	SESSION_COOKIE,
@@ -102,6 +110,75 @@ const authenticate: Handle = async ({ event, resolve }) => {
 	return resolve(event);
 };
 
+// --- i18n locale resolution -------------------------------------------------
+//
+// Phase 1 of the localization effort: resolve a request locale and expose it to
+// (a) `event.locals.locale`, (b) Paraglide's server-side message runtime, and
+// (c) the `<html lang>` attribute — WITHOUT any visible UI change and WITHOUT
+// ever writing a cookie. Accept-Language auto-detection is the default and needs
+// no storage (so there are no consent-banner implications).
+//
+// Paraglide's server `getLocale()` is a per-request value. We hold it in an
+// AsyncLocalStorage store (Cloudflare Workers support it via `nodejs_compat`)
+// and point `getLocale()` at that store with `overwriteGetLocale`. Every request
+// — page SSR *and* each remote-function (`*.remote.ts`) invocation, which is its
+// own HTTP request through this same `handle` — runs its downstream inside
+// `localeStorage.run(locale, …)`, so message functions resolve the caller's
+// locale with no cross-request leakage. Outside a request (e.g. prerender) the
+// store is empty and `getLocale()` falls back to `baseLocale`.
+const localeStorage = new AsyncLocalStorage<Locale>();
+overwriteGetLocale(() => localeStorage.getStore() ?? baseLocale);
+
+// Name of the explicit locale-preference cookie. Phase 1 only ever READS it (it
+// is never set here); Phase 4 owns writing it (and may host-lock the name, cf.
+// hostCookieName in $lib/server/cookie-name). Keep this in sync with Phase 4.
+const LOCALE_COOKIE = 'locale';
+
+// Resolves the request locale with a fixed precedence:
+//   1. explicit preference cookie, if present   (Phase-4 write path; read here)
+//   2. signed-in user's saved locale            (Phase-4 STUB — see below)
+//   3. Accept-Language header, q-value weighted  (Paraglide's own negotiator,
+//      which matches full tags then base tags against the supported locales)
+//   4. baseLocale ('en')
+//
+// Async on purpose so Phase 4 can `await event.locals.getSession()` at step 2
+// without reshaping the handle. It is deliberately NOT awaited eagerly today:
+// resolving the session here would defeat the lazy `getSession` resolver and
+// make every public (signed-out) request pay a D1 read — see `authenticate`.
+async function resolveLocale(event: Parameters<Handle>[0]['event']): Promise<Locale> {
+	// 1. Explicit preference cookie (stub until Phase 4 sets it).
+	const cookieLocale = event.cookies.get(LOCALE_COOKIE);
+	if (cookieLocale && isLocale(cookieLocale)) return cookieLocale;
+
+	// 2. TODO(i18n Phase 4): signed-in user's saved locale. Resolve it here with
+	//    `const session = await event.locals.getSession();` and return the user's
+	//    persisted locale (user_dietary_profile-style row) when set. Do NOT call
+	//    getSession on the public path unconditionally — gate it so signed-out
+	//    requests stay D1-free. Left unresolved in Phase 1 (falls through).
+
+	// 3. Accept-Language, q-weighted. Returns undefined when no tag maps to a
+	//    supported locale (e.g. `de,es;q=0.8`), so it falls through to step 4.
+	const headerLocale = extractLocaleFromHeader(event.request);
+	if (headerLocale) return headerLocale;
+
+	// 4. Fallback.
+	return baseLocale;
+}
+
+// Runs after `canonicalHost` (a redirected host never needs a locale) and
+// wraps `authenticate` + the app resolve, so `getLocale()` is live for the whole
+// request. Fills `<html lang="%lang%">` via transformPageChunk. `sequence`
+// merges this transformPageChunk with any others. No cookie is written.
+const localize: Handle = async ({ event, resolve }) => {
+	const locale = await resolveLocale(event);
+	event.locals.locale = locale;
+	return localeStorage.run(locale, () =>
+		resolve(event, {
+			transformPageChunk: ({ html }) => html.replace('%lang%', locale)
+		})
+	);
+};
+
 // Content-Security-Policy, sent in production only: under `vite dev` the HMR
 // websocket and Vite's injected style/script tags would violate the policy and
 // break live reload, so the dev server runs without it. Each directive mirrors
@@ -164,4 +241,8 @@ const securityHeaders: Handle = async ({ event, resolve }) => {
 // the lazy resolver; the optional signed-in user (account menu, likes, saved
 // diet) is resolved on demand, and the user-scoped remote functions guard
 // themselves with `requireUser()`.
-export const handle = sequence(securityHeaders, canonicalHost, authenticate);
+//
+// `localize` sits after `canonicalHost` (so a 301'd host skips locale work) and
+// before `authenticate`, establishing the per-request Paraglide locale context
+// around the rest of the chain.
+export const handle = sequence(securityHeaders, canonicalHost, localize, authenticate);

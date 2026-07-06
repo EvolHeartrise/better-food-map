@@ -1,6 +1,7 @@
 // See https://svelte.dev/docs/kit/types#app.d.ts
 // for information about these interfaces
 /// <reference types="@cloudflare/workers-types" />
+import type { Locale } from '$lib/paraglide/runtime';
 import type { ResolvedSession } from '$lib/server/session';
 
 declare global {
@@ -15,6 +16,13 @@ declare global {
 		 */
 		interface Locals {
 			getSession(): Promise<ResolvedSession | null>;
+			/**
+			 * The locale resolved for this request by the `localize` hook in
+			 * hooks.server.ts (cookie → saved-user → Accept-Language → 'en'). It is
+			 * also what Paraglide's server `getLocale()` returns for the request and
+			 * what fills `<html lang>`. Present on every request.
+			 */
+			locale: Locale;
 		}
 		// interface PageData {}
 		/**
