@@ -678,3 +678,48 @@ test('an active text query leaves the menu uncapped, so client-side item filteri
 	expect(data.menus[menuId].some((i) => i.item_name === 'Zzz Burrito')).toBe(true);
 	expect(data.menuMeta[menuId].matchingItemCount).toBeUndefined();
 });
+
+test('the diet cap honours the implication closure (a vegetarian filter matches vegan items)', async () => {
+	const db = freshDb();
+	const brandId = await insertBrand(db, { name: 'Closure Co', website: null, logo_url: null });
+	const menuId = await insertMenu(db, { brand_id: brandId, name: 'Closure Co CA', region: 'CA' });
+	// Vegan entails vegetarian (the write path strips the entailed tag), so a
+	// vegetarian filter must still match vegan items — exercising the closure's TWO
+	// tag ids in the capped statement's `tag_id IN (?, ?)`.
+	const items: MenuItemInsert[] = [
+		...Array.from({ length: 8 }, (_, k) => ({
+			menu_id: menuId,
+			item_name: `Vegan ${k}`,
+			tags: ['vegan'],
+			price: 5
+		})),
+		...Array.from({ length: 8 }, (_, k) => ({
+			menu_id: menuId,
+			item_name: `Veggie ${k}`,
+			tags: ['vegetarian'],
+			price: 6
+		})),
+		{ menu_id: menuId, item_name: 'Steak', price: 9 }
+	];
+	await insertMenuItems(db, items);
+	const [branch] = await insertLocations(db, [
+		venue({
+			name: 'Closure Branch',
+			latitude: 49.28,
+			longitude: -123.12,
+			brand_id: brandId,
+			menu_id: menuId
+		})
+	]);
+
+	const data = await getMapCellsData(db, 0, [ITEM_CAP_TILE], {
+		query: '',
+		dietTagId: 'vegetarian'
+	});
+	expect(data.locations.map((l) => l.id)).toEqual([branch]);
+	// Sixteen items match vegetarian (8 vegan via the closure + 8 vegetarian); the
+	// cap ships REP_ITEM_CAP, the count reports 16, and the meat item never appears.
+	expect(data.menus[menuId].length).toBe(REP_ITEM_CAP);
+	expect(data.menus[menuId].every((i) => i.item_name !== 'Steak')).toBe(true);
+	expect(data.menuMeta[menuId].matchingItemCount).toBe(16);
+});
