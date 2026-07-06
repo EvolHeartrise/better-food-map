@@ -14,13 +14,18 @@ export type TagId =
 	| 'dairy_free'
 	| 'nut_free'
 	| 'halal'
+	| 'food'
 	| 'dessert'
 	| 'drink';
 
 /**
  * What a tag describes. `dietary` tags (vegan, halal, …) are source-asserted —
  * only applied when a source explicitly designates the item. `course` tags
- * (dessert, drink) describe what kind of item it is and are applied factually.
+ * (food, dessert, drink) say what kind of item it is and are applied factually;
+ * every item carries at least one, so an item with NO course tag means "never
+ * course-reviewed", not "food" — that's what makes the missing-course-tag audit
+ * meaningful. `food` is the explicit not-a-dessert-not-a-drink marker; it never
+ * combines with the other two (a dessert+drink combo like a milkshake is fine).
  */
 export type TagType = 'dietary' | 'course';
 
@@ -45,6 +50,7 @@ export const TAGS: readonly Tag[] = [
 	{ id: 'gluten_free', name: 'Gluten-free', tag_type: 'dietary' },
 	{ id: 'dairy_free', name: 'Dairy-free', tag_type: 'dietary' },
 	{ id: 'nut_free', name: 'Nut-free', tag_type: 'dietary' },
+	{ id: 'food', name: 'Food', tag_type: 'course' },
 	{ id: 'dessert', name: 'Dessert', tag_type: 'course' },
 	{ id: 'drink', name: 'Drink', tag_type: 'course' }
 ];
@@ -106,8 +112,8 @@ export function impliedDietTagIds(
  * How a tag's name should read in the UI. Curated dietary/course tags are stored
  * already capitalised ("Vegan", "Dessert"); title-casing the first letter is a
  * harmless no-op for them and keeps the helper robust if a lower-cased name ever
- * reaches it. Applied in one place — {@link FoodTag} — so a tag reads the same
- * wherever it appears.
+ * reaches it. Applied in one place — {@link DietaryIcons} — so a tag reads the
+ * same wherever it appears.
  */
 export function tagDisplayName(name: string): string {
 	return name.charAt(0).toUpperCase() + name.slice(1);

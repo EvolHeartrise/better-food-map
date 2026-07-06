@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { fly, type FlyParams } from 'svelte/transition';
-	import FoodTag from '$lib/components/FoodTag.svelte';
 	import DietaryIcons from '$lib/components/DietaryIcons.svelte';
 	import SourcesModal from '$lib/components/SourcesModal.svelte';
 	import LikeButton from '$lib/components/LikeButton.svelte';
@@ -11,8 +10,9 @@
 
 	// The open location's detail panel: a column docked to the right edge (a
 	// bottom sheet on narrow screens) beside the map, rendering the venue's info
-	// block and its FULL effective menu — each item's price, description, dietary
-	// markers and course. The page owns the selection (what's open, URL/history,
+	// block and its FULL effective menu — each item's price, description and
+	// dietary markers, browsable by course (All/Food/Dessert/Drinks) rather than
+	// diet-filtered. The page owns the selection (what's open, URL/history,
 	// focus management) and the like state; this component owns the panel's DOM.
 	// `el` is bindable so the page's focus effect can target the aside;
 	// `sourcesOpen` is bindable so the page can layer its window-level Escape
@@ -59,6 +59,51 @@
 	function formatPrice(price: number, code: string): string {
 		return moneyFormatter(code).format(price);
 	}
+
+	// --- Menu course filter ------------------------------------------------------
+	// The segmented pill row above the menu list: All / Food / Dessert / Drinks.
+	// Buckets come from the required course tags — Food is ABSENCE-based (neither
+	// dessert nor drink), so items from before the course-tag mandate (no course
+	// tag at all) still land somewhere sensible while the backlog drains. An item
+	// tagged both dessert and drink (a milkshake) appears under both. An OPTIONAL
+	// course tag never buckets (writes reject those now; pre-mandate data has none).
+	type CourseFilter = 'all' | 'food' | 'dessert' | 'drink';
+	const COURSE_LABELS: Record<Exclude<CourseFilter, 'all'>, string> = {
+		food: 'Food',
+		dessert: 'Dessert',
+		drink: 'Drinks'
+	};
+
+	function hasCourse(item: Item, id: 'dessert' | 'drink'): boolean {
+		return item.tags.some((tag) => tag.id === id && !tag.optional);
+	}
+
+	const courseBuckets = $derived({
+		food: loc.menu.filter((item) => !hasCourse(item, 'dessert') && !hasCourse(item, 'drink')),
+		dessert: loc.menu.filter((item) => hasCourse(item, 'dessert')),
+		drink: loc.menu.filter((item) => hasCourse(item, 'drink'))
+	});
+	// Only categories with items get a pill; the whole row disappears when the
+	// menu is single-category (an all-food diner, an all-drinks tea shop).
+	const courseOptions = $derived(
+		(['food', 'dessert', 'drink'] as const).filter((c) => courseBuckets[c].length > 0)
+	);
+
+	// The selection is remembered per venue id (no effect needed): switching to
+	// another venue reads as 'all' until a pill is clicked there.
+	let pickedCourse = $state<CourseFilter>('all');
+	let pickedForId = $state('');
+	const course = $derived.by((): CourseFilter => {
+		if (pickedForId !== loc.id || pickedCourse === 'all') return 'all';
+		// Guard against a stale pick (menu changed under the same id).
+		return courseBuckets[pickedCourse].length > 0 ? pickedCourse : 'all';
+	});
+	function selectCourse(c: CourseFilter) {
+		pickedForId = loc.id;
+		pickedCourse = c;
+	}
+
+	const visibleMenu = $derived(course === 'all' ? loc.menu : courseBuckets[course]);
 
 	// --- Menu freshness --------------------------------------------------------
 	// A menu carries a `last_verified` ISO date (the day it was last checked against
@@ -184,12 +229,39 @@
 			</div>
 		{/if}
 
-		<!-- The venue's full menu. The map labels only rotate a teaser item per
-		     venue, so this is where the whole menu — each item's price, description,
-		     dietary markers and course — is read. -->
+		<!-- Course filter: shown only when the menu actually spans more than one
+		     course, so a single-category venue keeps a clean header. Replaces the
+		     old per-item Dessert/Drink pills — the course now lives up here as a
+		     browsing category instead of a per-row label. -->
+		{#if courseOptions.length >= 2}
+			<div class="coursebar" role="group" aria-label="Filter menu by course">
+				<button
+					type="button"
+					class="coursebar__btn"
+					aria-pressed={course === 'all'}
+					onclick={() => selectCourse('all')}
+				>
+					All
+				</button>
+				{#each courseOptions as option (option)}
+					<button
+						type="button"
+						class="coursebar__btn"
+						aria-pressed={course === option}
+						onclick={() => selectCourse(option)}
+					>
+						{COURSE_LABELS[option]}
+					</button>
+				{/each}
+			</div>
+		{/if}
+
+		<!-- The venue's full menu (narrowed by the course filter above). The map
+		     labels only rotate a teaser item per venue, so this is where the whole
+		     menu — each item's price, description and dietary markers — is read. -->
 		{#if loc.menu.length > 0}
 			<ul class="placecard__menu">
-				{#each loc.menu as menuItem (menuItem.id)}
+				{#each visibleMenu as menuItem (menuItem.id)}
 					<li class="placecard__item">
 						<span class="placecard__item-line">
 							<span class="placecard__item-main">
@@ -215,7 +287,6 @@
 						{#if menuItem.description}
 							<p class="placecard__item-desc">{menuItem.description}</p>
 						{/if}
-						{@render itemExtras(menuItem)}
 					</li>
 				{/each}
 			</ul>
@@ -230,21 +301,6 @@
 
 	<SourcesModal sources={loc.sources} bind:open={sourcesOpen} />
 </aside>
-
-<!-- The item's course tag, shown beneath each menu row in the open venue's card.
-     Dietary tags are shown as icons on the row above (see DietaryIcons), so they're
-     omitted here to avoid repeating them. An `optional` tag keeps its dashed marker.
-     Data sources are menu-level now, shown once in the venue info block above. -->
-{#snippet itemExtras(menuItem: Item)}
-	{@const courseTags = menuItem.tags.filter((tag) => tag.tag_type === 'course')}
-	{#if courseTags.length > 0}
-		<ul class="taglist">
-			{#each courseTags as tag (tag.id)}
-				<li><FoodTag {tag} optional={tag.optional} /></li>
-			{/each}
-		</ul>
-	{/if}
-{/snippet}
 
 <style>
 	/* --- Location detail panel (docked to the right of the map) --------------- */
@@ -501,15 +557,39 @@
 		border-color: color-mix(in srgb, var(--color-accent) 45%, #fff);
 	}
 
-	/* The course-tag pill row under a menu item in the card. The pills themselves are
-	   <FoodTag>; this only lays them out. */
-	.taglist {
-		list-style: none;
+	/* The course filter row above the menu list: quiet outlined pills matching the
+	   sources button's visual family; the active pill fills with the accent like
+	   the category badge. */
+	.coursebar {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 0.3rem;
-		margin: 0.4rem 0 0;
-		padding: 0;
+		gap: 0.35rem;
+	}
+
+	.coursebar__btn {
+		padding: 0.2rem 0.65rem;
+		font-size: 0.72rem;
+		font-weight: 600;
+		color: var(--color-accent);
+		background: color-mix(in srgb, var(--color-accent) 8%, #fff);
+		border: 1px solid color-mix(in srgb, var(--color-accent) 30%, #fff);
+		border-radius: 999px;
+		cursor: pointer;
+		transition:
+			background-color 0.12s,
+			border-color 0.12s,
+			color 0.12s;
+	}
+
+	.coursebar__btn:hover {
+		background: color-mix(in srgb, var(--color-accent) 16%, #fff);
+		border-color: color-mix(in srgb, var(--color-accent) 45%, #fff);
+	}
+
+	.coursebar__btn[aria-pressed='true'] {
+		color: #fff;
+		background: var(--color-accent);
+		border-color: var(--color-accent);
 	}
 
 	/* On narrow screens the detail panel becomes a bottom sheet: the map keeps the
