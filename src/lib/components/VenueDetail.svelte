@@ -5,6 +5,7 @@
 	import LikeButton from '$lib/components/LikeButton.svelte';
 	import { categoryLabel } from '$lib/category';
 	import { safeHttpUrl } from '$lib/safe-url';
+	import { tooltip } from '$lib/tooltip';
 	import type { ResolvedLocation } from '$lib/resolve-location';
 	import type { Item, User } from '$lib/server/db';
 
@@ -215,7 +216,7 @@
 					{@const itemsLabel = `${loc.menu.length} ${loc.menu.length === 1 ? 'item' : 'items'}`}
 					<span
 						class="placecard__menu-meta"
-						title={loc.lastVerified ? `Menu last scanned on ${loc.lastVerified}` : undefined}
+						use:tooltip={loc.lastVerified ? `Menu last scanned on ${loc.lastVerified}` : undefined}
 					>
 						{loc.lastVerified ? `${itemsLabel} · ${formatScanned(loc.lastVerified)}` : itemsLabel}
 					</span>

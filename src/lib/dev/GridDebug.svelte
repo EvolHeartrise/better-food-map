@@ -19,6 +19,7 @@
 	import type { Feature, FeatureCollection, Polygon } from 'geojson';
 	import { cellKey, cellsForBounds, levelCell, levelForBounds } from '$lib/grid';
 	import { geoCellDegrees, holdZoom } from '$lib/label-layout';
+	import { tooltip } from '$lib/tooltip';
 	import type { Bounds } from '$lib/bounds';
 
 	// The live map instance from <LocationMap> (its style is already loaded — we're only
@@ -311,7 +312,7 @@
 		type="button"
 		class="grid-debug__bar"
 		onclick={toggleCollapsed}
-		title="Toggle grid debug panel"
+		use:tooltip={'Toggle grid debug panel'}
 	>
 		<span class="grid-debug__dot"></span>
 		<span class="grid-debug__title">grid debug</span>

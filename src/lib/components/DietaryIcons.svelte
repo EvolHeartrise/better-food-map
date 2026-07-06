@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { impliedDietTagIds, tagDisplayName, TAGS } from '$lib/tags';
 	import { dietIcon } from '$lib/dietary-icons';
+	import { tooltip } from '$lib/tooltip';
 
 	// An item's DIETARY tags shown as small colored icons, sat to the right of the item
 	// name in the venue panel. Positive-diet tags (vegan / vegetarian / halal) read
@@ -58,7 +59,7 @@
 					class:diet-icons__mark--optional={tag.optional}
 					role="img"
 					aria-label={label}
-					title={label}
+					use:tooltip={label}
 				>
 					<Icon size={15} />
 				</span>

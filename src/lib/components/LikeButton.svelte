@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Heart from '@lucide/svelte/icons/heart';
+	import { tooltip } from '$lib/tooltip';
 
 	// A small heart toggle. Presentational: the parent owns the liked state and the
 	// remote mutation, so this just renders and reports clicks. Rendered as a sibling
@@ -25,7 +26,7 @@
 	class:like--on={liked}
 	aria-pressed={liked}
 	aria-label={label}
-	title={label}
+	use:tooltip={label}
 	onclick={onToggle}
 >
 	<Heart {size} fill={liked ? 'currentColor' : 'none'} aria-hidden="true" />
