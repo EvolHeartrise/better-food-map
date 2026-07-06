@@ -9,7 +9,8 @@
 // (it preserves likes). Reserve this for mistaken/duplicate rows.
 // ---------------------------------------------------------------------------
 
-import { deleteLocation, type D1Like } from '../../src/lib/server/db';
+import { type D1Like } from '../../src/lib/server/db';
+import { deleteLocation } from '../../src/lib/server/db-write';
 import { ToolPartialFailure } from './partial-failure';
 
 export interface DeleteLocationsResult {

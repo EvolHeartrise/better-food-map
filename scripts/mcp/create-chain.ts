@@ -23,6 +23,7 @@
 // — so a retry passing those ids back is an idempotent no-op that resumes.
 // ---------------------------------------------------------------------------
 
+import { type D1Like, type Source } from '../../src/lib/server/db';
 import {
 	getBrandById,
 	getMenuById,
@@ -31,10 +32,8 @@ import {
 	insertBrand,
 	insertMenu,
 	insertMenuItems,
-	type D1Like,
-	type MenuItemInsert,
-	type Source
-} from '../../src/lib/server/db';
+	type MenuItemInsert
+} from '../../src/lib/server/db-write';
 import { ToolPartialFailure } from './partial-failure';
 
 /** One item to add to the chain's shared menu (menu_id is supplied by the bundle). */

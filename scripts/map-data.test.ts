@@ -14,16 +14,15 @@
 // items live in the `menus` payload too — keyed by that private menu id.
 
 import { test, expect } from 'bun:test';
+import { getLocationMapData, MAP_RESULT_LIMIT } from '../src/lib/server/db';
 import {
-	getLocationMapData,
 	insertLocations,
 	insertFoods,
 	insertBrand,
 	insertMenu,
 	insertMenuItems,
-	setLocationItemOverride,
-	MAP_RESULT_LIMIT
-} from '../src/lib/server/db';
+	setLocationItemOverride
+} from '../src/lib/server/db-write';
 import { freshDb, searchMapData, viewportMapData } from './test-d1';
 
 // A box wide enough to contain every location seeded below (Toronto + Vancouver).

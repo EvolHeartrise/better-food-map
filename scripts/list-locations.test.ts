@@ -5,13 +5,13 @@
 // overview still rides along for exactly the rows returned.
 
 import { test, expect } from 'bun:test';
+import { type D1Like } from '../src/lib/server/db';
 import {
 	insertLocations,
 	getLocationsWithTags,
 	countLocations,
-	existingIds,
-	type D1Like
-} from '../src/lib/server/db';
+	existingIds
+} from '../src/lib/server/db-write';
 import { freshDb } from './test-d1';
 import {
 	resolveListLimit,

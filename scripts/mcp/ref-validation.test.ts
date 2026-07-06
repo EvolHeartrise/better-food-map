@@ -8,6 +8,7 @@
 // assertBrandMenuRefs exists to prevent.
 
 import { test, expect } from 'bun:test';
+import { type D1Like } from '../../src/lib/server/db';
 import {
 	insertBrand,
 	insertMenu,
@@ -17,9 +18,8 @@ import {
 	getLocationById,
 	getMenuWithItems,
 	updateItems,
-	updateLocations,
-	type D1Like
-} from '../../src/lib/server/db';
+	updateLocations
+} from '../../src/lib/server/db-write';
 import { assertItemMenuMoves, assertLocationRefPatches } from './ref-validation';
 import { freshDb } from '../test-d1';
 

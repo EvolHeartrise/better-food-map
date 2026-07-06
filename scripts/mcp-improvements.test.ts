@@ -8,6 +8,7 @@
 // All run against the real migration schema via the in-memory D1 adapter.
 
 import { test, expect } from 'bun:test';
+import { type D1Like } from '../src/lib/server/db';
 import {
 	insertLocations,
 	insertFoods,
@@ -33,9 +34,8 @@ import {
 	coordinateKey,
 	findBrandIdsByName,
 	findMenuIdsByName,
-	itemNameCollisions,
-	type D1Like
-} from '../src/lib/server/db';
+	itemNameCollisions
+} from '../src/lib/server/db-write';
 import { freshDb } from './test-d1';
 
 /** Force a menu's freshness date into the past so a later write's auto-stamp is observable. */

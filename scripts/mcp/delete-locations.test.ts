@@ -4,14 +4,14 @@
 // the real migration schema via the in-memory D1 adapter.
 
 import { test, expect } from 'bun:test';
+import { type D1Like } from '../../src/lib/server/db';
 import {
 	insertLocations,
 	getLocationById,
 	insertBrand,
 	insertMenu,
-	getMenuById,
-	type D1Like
-} from '../../src/lib/server/db';
+	getMenuById
+} from '../../src/lib/server/db-write';
 import { freshDb } from '../test-d1';
 import { deleteLocationsBatch } from './delete-locations';
 import { ToolPartialFailure } from './partial-failure';

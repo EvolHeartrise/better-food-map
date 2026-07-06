@@ -24,15 +24,15 @@
 //     scope here; a price override is resolved but never changes membership.
 
 import { test, expect } from 'bun:test';
+import { getLocationMapData } from '../src/lib/server/db';
 import {
-	getLocationMapData,
 	insertLocations,
 	insertFoods,
 	insertBrand,
 	insertMenu,
 	insertMenuItems,
 	setLocationItemOverride
-} from '../src/lib/server/db';
+} from '../src/lib/server/db-write';
 import type { Item, MapData, MapLocation } from '../src/lib/server/db';
 import { searchResults } from '../src/lib/search-match';
 import { resolveLocation } from '../src/lib/resolve-location';
