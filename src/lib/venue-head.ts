@@ -17,12 +17,12 @@
 
 import { categoryLabel, type Category } from './category';
 import { TAGS } from './tags';
+import { locationPath } from './location-path';
+import { CANONICAL_ORIGIN } from './canonical';
 
-/**
- * The canonical public origin for `og:url` — a shared `/locations/<id>` link
- * should unfurl against the production URL regardless of which host served it.
- */
-export const CANONICAL_ORIGIN = 'https://betterfoodmaps.com';
+// Re-exported for backward compatibility: the shared origin now lives in
+// ./canonical (one definition for the head, the sitemap and the browse pages).
+export { CANONICAL_ORIGIN };
 
 /** The fields the head metadata reads off a resolved venue. */
 export interface HeadVenue {
@@ -112,6 +112,9 @@ export function venueHeadMeta(venue: HeadVenue): HeadMeta {
 	return {
 		title,
 		description: `${lead} ${tail}`,
-		url: `${CANONICAL_ORIGIN}/locations/${encodeURIComponent(venue.id)}`
+		// The canonical descriptive URL (`/locations/<name>-<city>-<uuid>`, issue
+		// #221) — the SAME address the sitemap emits and the server 301s bare/
+		// wrong-slug URLs onto, shared through locationPath so all three can't drift.
+		url: `${CANONICAL_ORIGIN}${locationPath(venue)}`
 	};
 }

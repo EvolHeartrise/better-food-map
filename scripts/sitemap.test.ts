@@ -4,11 +4,11 @@
 // sitemap-cache.ts reaches $app/server transitively and cannot load under
 // `bun test`. The invariants that matter: page-count math (an empty dataset is
 // still one page); the map root on page 1 alone; each entry becomes a
-// /locations/<id> <loc> with <lastmod> exactly when last_verified is known;
-// the index numbers its pages and carries each page's MAX lastmod; and every
-// interpolated value is XML-escaped so a hostile id can never break the
-// document. Page-size-dependent cases pass a small synthetic pageSize rather
-// than materialising 40k-entry arrays.
+// /locations/<name>-<city>-<uuid> <loc> with <lastmod> exactly when
+// last_verified is known; the index numbers its pages and carries each page's
+// MAX lastmod; and every interpolated value is XML-escaped so a hostile field
+// can never break the document. Page-size-dependent cases pass a small synthetic
+// pageSize rather than materialising 40k-entry arrays.
 
 import { expect, test } from 'bun:test';
 import {
@@ -18,6 +18,14 @@ import {
 	sitemapPageCount,
 	type SitemapEntry
 } from '../src/lib/server/sitemap';
+
+const UUID_A = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
+const UUID_B = 'f6e5d4c3-b2a1-4f8e-9d0c-1b2a3f4e5d6c';
+
+/** A UUID-id entry (gets a descriptive slug), with sensible name/city defaults. */
+function entry(over: Partial<SitemapEntry> & { id: string }): SitemapEntry {
+	return { name: 'Prado Cafe', city: 'Vancouver', last_verified: null, ...over };
+}
 
 test('page count is ceil(total / pageSize), never zero', () => {
 	expect(sitemapPageCount(0)).toBe(1); // empty dataset → one (root-only) page
@@ -37,44 +45,61 @@ test('an empty page 1 still yields a well-formed urlset with the map root', () =
 	expect(xml.trimEnd().endsWith('</urlset>')).toBe(true);
 });
 
-test('each entry becomes a /locations/<id> loc, root first, in input order', () => {
+test('each entry becomes a slugged /locations/<…> loc, root first, in input order', () => {
 	const xml = buildSitemapPageXml(
 		[
-			{ id: 'venue-a', last_verified: '2026-06-30' },
-			{ id: 'venue-b', last_verified: null }
+			entry({ id: UUID_A, name: 'Revolver', city: 'Vancouver', last_verified: '2026-06-30' }),
+			entry({ id: UUID_B, name: 'Prado Cafe', city: 'Vancouver' })
 		],
 		{ includeRoot: true }
 	);
 	const root = xml.indexOf('<loc>https://betterfoodmaps.com/</loc>');
-	const a = xml.indexOf('<loc>https://betterfoodmaps.com/locations/venue-a</loc>');
-	const b = xml.indexOf('<loc>https://betterfoodmaps.com/locations/venue-b</loc>');
+	const a = xml.indexOf(
+		`<loc>https://betterfoodmaps.com/locations/revolver-vancouver-${UUID_A}</loc>`
+	);
+	const b = xml.indexOf(
+		`<loc>https://betterfoodmaps.com/locations/prado-cafe-vancouver-${UUID_B}</loc>`
+	);
 	expect(root).toBeGreaterThan(-1);
 	expect(a).toBeGreaterThan(root);
 	expect(b).toBeGreaterThan(a);
 });
 
+test('a legacy short-slug id gets no descriptive prefix', () => {
+	// A non-UUID id (the ~20 seed venues) is already a readable slug and stays
+	// bare — a prefixed form would be unparseable by idFromPath.
+	const xml = buildSitemapPageXml([entry({ id: 'wr-damianos', name: "Damiano's Pizza" })], {
+		includeRoot: false
+	});
+	expect(xml).toContain('<loc>https://betterfoodmaps.com/locations/wr-damianos</loc>');
+});
+
 test('pages after the first omit the map root', () => {
-	const xml = buildSitemapPageXml([{ id: 'venue-a', last_verified: null }], {
+	const xml = buildSitemapPageXml([entry({ id: UUID_A, name: 'Revolver' })], {
 		includeRoot: false
 	});
 	expect(xml).not.toContain('<loc>https://betterfoodmaps.com/</loc>');
-	expect(xml).toContain('<loc>https://betterfoodmaps.com/locations/venue-a</loc>');
+	expect(xml).toContain(
+		`<loc>https://betterfoodmaps.com/locations/revolver-vancouver-${UUID_A}</loc>`
+	);
 });
 
 test('lastmod carries last_verified when known and is omitted when null', () => {
 	const xml = buildSitemapPageXml(
 		[
-			{ id: 'dated', last_verified: '2026-06-30' },
-			{ id: 'undated', last_verified: null }
+			entry({ id: UUID_A, name: 'Dated', last_verified: '2026-06-30' }),
+			entry({ id: UUID_B, name: 'Undated', last_verified: null })
 		],
 		{ includeRoot: true }
 	);
 	expect(xml).toContain(
-		'<url><loc>https://betterfoodmaps.com/locations/dated</loc><lastmod>2026-06-30</lastmod></url>'
+		`<url><loc>https://betterfoodmaps.com/locations/dated-vancouver-${UUID_A}</loc><lastmod>2026-06-30</lastmod></url>`
 	);
 	// The undated venue's <url> closes straight after its <loc> — no empty or
 	// invented <lastmod>.
-	expect(xml).toContain('<url><loc>https://betterfoodmaps.com/locations/undated</loc></url>');
+	expect(xml).toContain(
+		`<url><loc>https://betterfoodmaps.com/locations/undated-vancouver-${UUID_B}</loc></url>`
+	);
 	expect(xml.split('<lastmod>').length - 1).toBe(1);
 });
 
@@ -83,11 +108,11 @@ test('the index numbers one sitemap per page and carries each page max lastmod',
 	// of all-null lastmods omits the element, and a lone dated entry carries its
 	// own date.
 	const entries: SitemapEntry[] = [
-		{ id: 'a', last_verified: '2026-01-05' },
-		{ id: 'b', last_verified: '2026-03-20' },
-		{ id: 'c', last_verified: null },
-		{ id: 'd', last_verified: null },
-		{ id: 'e', last_verified: '2025-12-31' }
+		entry({ id: UUID_A, last_verified: '2026-01-05' }),
+		entry({ id: UUID_B, last_verified: '2026-03-20' }),
+		entry({ id: 'c', last_verified: null }),
+		entry({ id: 'd', last_verified: null }),
+		entry({ id: 'e', last_verified: '2025-12-31' })
 	];
 	const xml = buildSitemapIndexXml(entries, 2);
 	expect(xml.startsWith('<?xml version="1.0" encoding="UTF-8"?>\n')).toBe(true);
@@ -109,18 +134,17 @@ test('an empty dataset still yields an index referencing /sitemaps/1.xml', () =>
 	expect(xml).not.toContain('/sitemaps/2.xml');
 });
 
-test('interpolated values are XML-escaped, so a hostile id cannot break the document', () => {
-	// encodeURIComponent percent-encodes & < > " out of the path but leaves '
-	// untouched — the XML escaping must catch what URL-encoding lets through.
+test('interpolated values are XML-escaped, so a hostile field cannot break the document', () => {
+	// A legacy non-UUID id embeds verbatim (percent-encoded), and a hostile name
+	// folds through slugify to a plain slug — both then XML-escaped. Feed both a
+	// specials-laden id and lastmod to prove escaping catches what URL-encoding
+	// leaves through (notably `'`).
 	const xml = buildSitemapPageXml(
-		[{ id: `o'malley&sons <"deli">`, last_verified: '2026 & later' }],
-		{
-			includeRoot: true
-		}
+		[{ id: `o'malley&sons`, name: 'Deli', city: 'Town', last_verified: '2026 & later' }],
+		{ includeRoot: true }
 	);
-	expect(xml).toContain(
-		`<loc>https://betterfoodmaps.com/locations/o&apos;malley%26sons%20%3C%22deli%22%3E</loc>`
-	);
+	// encodeURIComponent leaves `'` (→ escaped to &apos;) but encodes & to %26.
+	expect(xml).toContain(`<loc>https://betterfoodmaps.com/locations/o&apos;malley%26sons</loc>`);
 	expect(xml).toContain('<lastmod>2026 &amp; later</lastmod>');
 	// No raw specials survive anywhere in the document body: every remaining `&`
 	// starts an entity, and the only angle brackets are the markup's own tags.
@@ -129,7 +153,7 @@ test('interpolated values are XML-escaped, so a hostile id cannot break the docu
 });
 
 test('the index escapes lastmod values under the same discipline', () => {
-	const xml = buildSitemapIndexXml([{ id: 'a', last_verified: `<'2026' & "later">` }], 2);
+	const xml = buildSitemapIndexXml([entry({ id: UUID_A, last_verified: `<'2026' & "later">` })], 2);
 	expect(xml).toContain('<lastmod>&lt;&apos;2026&apos; &amp; &quot;later&quot;&gt;</lastmod>');
 	expect(xml).not.toMatch(/&(?!amp;|lt;|gt;|quot;|apos;)/);
 	expect(xml).not.toMatch(/<(?!\?|\/?(?:sitemapindex|sitemap|loc|lastmod)[ >])/);

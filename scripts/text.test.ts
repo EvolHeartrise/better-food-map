@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { decodeHtmlEntities } from '../src/lib/text';
+import { decodeHtmlEntities, slugify } from '../src/lib/text';
 
 test('decodes common named entities', () => {
 	expect(decodeHtmlEntities('Bacon &amp; Egg English Muffin')).toBe('Bacon & Egg English Muffin');
@@ -56,4 +56,30 @@ test('out-of-range and surrogate numeric references pass through', () => {
 	expect(decodeHtmlEntities('&#0;x')).toBe('&#0;x');
 	expect(decodeHtmlEntities('&#1114112;x')).toBe('&#1114112;x');
 	expect(decodeHtmlEntities('&#xD800;x')).toBe('&#xD800;x');
+});
+
+test('slugify folds diacritics, lowercases, and hyphenates', () => {
+	expect(slugify('Prado Café')).toBe('prado-cafe');
+	expect(slugify('CHARLIE don’t SURF')).toBe('charlie-don-t-surf');
+	expect(slugify('The Bund Shanghai Cuisine & Bar')).toBe('the-bund-shanghai-cuisine-bar');
+	expect(slugify('Saint-Jean-sur-Richelieu')).toBe('saint-jean-sur-richelieu');
+});
+
+test('slugify trims leading/trailing separators and collapses runs', () => {
+	expect(slugify('  --Hello,  World!--  ')).toBe('hello-world');
+	expect(slugify('a & b / c')).toBe('a-b-c');
+});
+
+test('slugify returns empty string when nothing alphanumeric survives', () => {
+	expect(slugify('—')).toBe('');
+	expect(slugify('!!! ??? ...')).toBe('');
+});
+
+test('slugify truncates long input without a trailing hyphen', () => {
+	// 60-char cap: a name long enough to hit it never ends on a dangling hyphen.
+	const long = slugify('a'.repeat(58) + ' bcdefghij');
+	expect(long.length).toBeLessThanOrEqual(60);
+	expect(long.endsWith('-')).toBe(false);
+	// A word boundary landing exactly on the cap is trimmed, not left hanging.
+	expect(slugify('x'.repeat(60) + ' tail')).toBe('x'.repeat(60));
 });

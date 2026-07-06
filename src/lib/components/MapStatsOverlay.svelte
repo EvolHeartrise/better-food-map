@@ -2,6 +2,7 @@
 	import { fade } from 'svelte/transition';
 	import { Spring, prefersReducedMotion } from 'svelte/motion';
 	import MapPin from '@lucide/svelte/icons/map-pin';
+	import { PLACES_PATH } from '$lib/browse';
 
 	// Coverage totals shown on the zoomed-out landing. Structural (not imported from
 	// the server db module) so the overlay carries no server-only import — mirroring
@@ -74,6 +75,12 @@
 			<MapPin size={18} aria-hidden="true" />
 			Start using the map
 		</button>
+
+		<!-- A crawlable entry into the geographic browse tree (#217), so the whole
+		     interlinked city/diet index is reachable from `/` — this <a> is in the
+		     SSR'd landing (the overlay renders at the opening zoom). -->
+		<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- static internal href ($lib/browse); no base path — see +page.svelte precedent -->
+		<a class="browse-link" href={PLACES_PATH}>Or browse food by city →</a>
 	</section>
 </div>
 
@@ -202,5 +209,18 @@
 	.cta:focus-visible {
 		outline: 2px solid var(--color-accent);
 		outline-offset: 2px;
+	}
+
+	/* The secondary browse entry under the CTA. pointer-events re-enabled (the
+	   floating container passes them through); carries the same soft halo as the
+	   other landing text so it stays legible over live map tiles. */
+	.browse-link {
+		pointer-events: auto;
+		font-size: 0.9rem;
+		font-weight: 600;
+		color: var(--color-accent);
+		text-shadow:
+			0 1px 2px rgba(255, 255, 255, 0.9),
+			0 0 12px rgba(255, 255, 255, 0.7);
 	}
 </style>

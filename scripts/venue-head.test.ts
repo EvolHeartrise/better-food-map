@@ -84,7 +84,17 @@ describe('venueHeadMeta description', () => {
 });
 
 describe('venueHeadMeta url', () => {
-	test('is the canonical origin plus the encoded id', () => {
+	test('is the canonical descriptive slug for a UUID id (issue #221)', () => {
+		expect(
+			venueHeadMeta(
+				venue({ id: '9f0e8d7c-6b5a-4321-8765-4321fedcba98', name: 'Prado Café', city: 'Vancouver' })
+			).url
+		).toBe(
+			`${CANONICAL_ORIGIN}/locations/prado-cafe-vancouver-9f0e8d7c-6b5a-4321-8765-4321fedcba98`
+		);
+	});
+
+	test('is the canonical origin plus the encoded bare id for a legacy short-slug id', () => {
 		expect(venueHeadMeta(venue({ id: 'a b/c' })).url).toBe(
 			`${CANONICAL_ORIGIN}/locations/a%20b%2Fc`
 		);

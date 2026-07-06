@@ -16,7 +16,8 @@
 	import Search from '@lucide/svelte/icons/search';
 	import { venueHeadMeta } from '$lib/venue-head';
 	import { matchedItems, searchResults } from '$lib/search-match';
-	import { idFromPath } from '$lib/location-path';
+	import { idFromPath, locationPath } from '$lib/location-path';
+	import { CANONICAL_ORIGIN } from '$lib/canonical';
 	import { DEFAULT_MAP_CENTER } from '$lib/map-defaults';
 	import { foldAsciiCase, searchableQuery } from '$lib/search';
 	import { resolveLocation, type ResolvedLocation } from '$lib/resolve-location';
@@ -387,7 +388,8 @@
 	// Title, description and canonical URL for the venue head (SEO copy lives in
 	// $lib/venue-head so scripts/venue-head.test.ts can pin it): the title leads
 	// with the city and the description surfaces the menu's dietary coverage
-	// (issue #222). Null keeps the static site-wide head.
+	// (issue #222), and `url` is the canonical descriptive slug (issue #221). Null
+	// keeps the static site-wide head.
 	const headMeta = $derived(headVenue ? venueHeadMeta(headVenue) : null);
 
 	// The selected venue, trimmed to what <LocationMap> needs and carrying its own
@@ -524,15 +526,29 @@
 		closeDetail();
 	}
 
+	// The canonical descriptive `/locations/<slug>` path for a to-be-selected id, so
+	// the shallow-routing URL below carries the slug rather than a bare id. The
+	// name/city come from the in-view set (`locations`, resolved) or the open venue
+	// — the only ids a selection can name. An id in neither (a rare edge) falls back
+	// to the bare form, which the server 301s to canonical on the next hard load.
+	// A find() over the ≤200 in-view locations runs only on a select (a user action),
+	// so it needs no memoised index.
+	function locationHref(id: string): string {
+		const loc =
+			locations.find((l) => l.id === id) ?? (selectedLocation?.id === id ? selectedLocation : null);
+		return loc ? locationPath(loc) : `/locations/${encodeURIComponent(id)}`;
+	}
+
 	function selectLocation(id: string): void {
 		// Selecting a place (e.g. tapping a name pill on the map) sets `selectedId`,
 		// which leaves the landing (see `landing`) so the detail card can show.
-		// `/locations/<id>` is a synthetic shallow-routing URL: there is no such route
-		// (the `reroute` hook serves this root map page for it), so the address bar can
-		// reflect the open location — and the link stays shareable — without a real
-		// navigation. Because it isn't a real route it can't go through the typed
-		// `resolve(routeId)`, hence the lint exception on the calls below.
-		const url = `/locations/${encodeURIComponent(id)}`;
+		// `/locations/<slug>` is a synthetic shallow-routing URL: there is no such
+		// route (the `reroute` hook serves this root map page for it), so the address
+		// bar can reflect the open location — as the canonical, shareable descriptive
+		// URL — without a real navigation. Because it isn't a real route it can't go
+		// through the typed `resolve(routeId)`, hence the lint exception on the calls
+		// below.
+		const url = locationHref(id);
 		const state = { selected: id };
 		// Reuse the current history entry when switching between locations, so Back
 		// always returns to the prior view rather than the previously viewed place.
@@ -652,6 +668,10 @@
 		     fields need no hand-escaping. -->
 		<title>{headMeta.title}</title>
 		<meta name="description" content={headMeta.description} />
+		<!-- The canonicalization signal (og:url is not one): points query-string or
+		     stale-slug variants of this venue's URL at the one address the sitemap
+		     lists, matching the server's 301 target. -->
+		<link rel="canonical" href={headMeta.url} />
 		<meta property="og:title" content={headMeta.title} />
 		<meta property="og:description" content={headMeta.description} />
 		<meta property="og:site_name" content="BetterFoodMaps" />
@@ -663,6 +683,9 @@
 			name="description"
 			content="Explore cafes, fast food and restaurants around the world on an interactive map."
 		/>
+		<!-- The map root canonicalizes to the bare origin, so query-string variants
+		     (shared links, campaign params) don't fragment its indexing. -->
+		<link rel="canonical" href="{CANONICAL_ORIGIN}/" />
 	{/if}
 </svelte:head>
 
