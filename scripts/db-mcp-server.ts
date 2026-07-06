@@ -77,6 +77,7 @@ import { createHttpD1 } from '../src/lib/server/d1-http';
 import { CATEGORIES } from '../src/lib/category';
 import { sourceInputSchema } from './mcp/source-input';
 import { ToolPartialFailure, partialFailureBody } from './mcp/partial-failure';
+import { normalizeAddressPatch } from './mcp/address-patch';
 import { normalizeRegion, normalizePostcode, normalizeCountry } from '../src/lib/address';
 import { hasNonHttpScheme } from '../src/lib/safe-url';
 import { searchPoi, normalizeName, namesMatch } from './osm/search-poi';
@@ -387,56 +388,6 @@ function normalizeAddressParts(
 		postcode,
 		country
 	};
-}
-
-/**
- * Normalizes only the address parts PRESENT in an update patch (a partial update
- * may touch just one part). region/postcode are validated against the patch's
- * country when given, else auto-detected (CA/US). Throws on an unresolvable value;
- * `postcode: null`/'' clears it.
- */
-function normalizeAddressPatch(patch: {
-	street?: string;
-	city?: string;
-	region?: string;
-	postcode?: string | null;
-	country?: string;
-}): Partial<{
-	street: string;
-	city: string;
-	region: string;
-	postcode: string | null;
-	country: string;
-}> {
-	const out: Partial<{
-		street: string;
-		city: string;
-		region: string;
-		postcode: string | null;
-		country: string;
-	}> = {};
-	if (patch.country !== undefined) {
-		const c = normalizeCountry(patch.country);
-		if (!c) throw new Error(`country "${patch.country}" is not a recognized country.`);
-		out.country = c;
-	}
-	if (patch.street !== undefined) out.street = patch.street.trim();
-	if (patch.city !== undefined) out.city = patch.city.trim();
-	if (patch.region !== undefined) {
-		const r = normalizeRegion(patch.region, out.country);
-		if (!r) throw new Error(`region "${patch.region}" is not a recognized province/state.`);
-		out.region = r;
-	}
-	if (patch.postcode !== undefined) {
-		if (patch.postcode === null || patch.postcode.trim() === '') {
-			out.postcode = null;
-		} else {
-			const p = normalizePostcode(patch.postcode, out.country);
-			if (!p) throw new Error(`postcode "${patch.postcode}" is not a valid postal/ZIP code.`);
-			out.postcode = p;
-		}
-	}
-	return out;
 }
 
 // A single citation: a URL the data came from, plus an optional human label.
@@ -2319,11 +2270,26 @@ const tools = [
 				checkedPairs.add(key);
 				await assertBrandMenuRefs(getDb(), it.brand_id, it.menu_id);
 			}
-			const patches = items.map(({ id, street, city, region, postcode, country, ...patch }) => ({
-				id,
-				...patch,
-				...normalizeAddressPatch({ street, city, region, postcode, country })
-			}));
+			const patches = await Promise.all(
+				items.map(async ({ id, street, city, region, postcode, country, ...patch }) => {
+					// A patch that touches region/postcode WITHOUT a country must validate
+					// against the row's STORED country (a region-only patch would otherwise
+					// resolve through the CA∪US fallback and could store a US state code on
+					// a CA row). A missing row skips the lookup — updateLocations reports it
+					// in not_found_ids and the patch is never applied.
+					const needsStoredCountry =
+						country === undefined &&
+						(region !== undefined || (postcode !== undefined && postcode !== null));
+					const storedCountry = needsStoredCountry
+						? (await getLocationById(getDb(), id))?.country
+						: undefined;
+					return {
+						id,
+						...patch,
+						...normalizeAddressPatch({ street, city, region, postcode, country }, storedCountry)
+					};
+				})
+			);
 			const { updatedIds, notFoundIds } = await updateLocations(getDb(), patches);
 			return {
 				updated: updatedIds.length,
