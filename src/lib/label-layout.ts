@@ -620,5 +620,6 @@ export class LabelEngine {
 	clear(): void {
 		this.nodes.clear();
 		this.visibleIds = [];
+		this.admitted.clear();
 	}
 }
