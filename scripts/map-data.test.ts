@@ -223,7 +223,10 @@ test('viewport items are lean; the by-id detail read keeps the full shape', asyn
 	expect(viewport.locations.map((l) => l.id)).toEqual([branch]);
 	const leanItem = viewport.menus[menuId][0];
 	expect(leanItem.item_name).toBe('Falafel Pita');
-	expect(leanItem.tags.map((t) => t.id)).toEqual(['vegan']);
+	// Lean tag edges carry only { id, optional }: name/tag_type are derivable
+	// client-side from the bundled TAGS vocabulary, so they don't ship on the
+	// thousands of edges of a dense viewport.
+	expect(leanItem.tags).toEqual([{ id: 'vegan', optional: false }]);
 	expect('description' in leanItem).toBe(false);
 	expect('price' in leanItem).toBe(false);
 	expect('sources' in leanItem).toBe(false);
@@ -244,6 +247,10 @@ test('viewport items are lean; the by-id detail read keeps the full shape', asyn
 	// menu's sources on menuMeta (provenance is menu-level, not on the item).
 	const detail = await getLocationMapData(db, branch);
 	const fullItem = detail.menus[menuId][0];
+	// The detail read keeps the full, self-describing tag shape.
+	expect(fullItem.tags).toEqual([
+		{ id: 'vegan', name: 'Vegan', tag_type: 'dietary', optional: false }
+	]);
 	expect(fullItem.description).toBe('Chickpea falafel with veg');
 	expect(fullItem.price).toBe(9);
 	expect(fullItem.currency).toBe('CAD');
