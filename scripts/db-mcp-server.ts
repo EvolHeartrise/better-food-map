@@ -731,9 +731,12 @@ const createLocationsArgs = v.object({
 });
 
 // One location patch within an update_locations batch. Every field but `id` is
-// optional; only the fields present are changed.
-const updateLocationItemArgs = v.pipe(
-	v.object({
+// optional; only the fields present are changed. Strict so an unknown field
+// (e.g. the removed location-level `sources`, now menu-level on update_menu)
+// fails loudly instead of being silently dropped and reported as updated.
+// Exported for scripts/update-locations.test.ts.
+export const updateLocationItemArgs = v.pipe(
+	v.strictObject({
 		id: v.pipe(v.string(), v.minLength(1), v.description('Id of the location to update.')),
 		name: v.optional(
 			v.pipe(v.string(), v.minLength(1), v.description(`Replace the name. ${NAME_DESC_SHORT}`))
@@ -2302,9 +2305,9 @@ const tools = [
 		outputSchema: updateLocationsOutput,
 		description:
 			'Update one or more existing locations in a single atomic batch — pass a one-item `items` array to ' +
-			'edit one place. Each patch carries an `id` plus only the fields to change; a given `sources` array ' +
-			"replaces that location's whole source set (pass [] to clear), or use `add_sources` to append a " +
-			'citation without resending the rest. Set `menu_id`/`brand_id` (together) to attach a ' +
+			'edit one place. Each patch carries an `id` plus only the fields to change; unknown fields are ' +
+			'rejected. Provenance is MENU-level, so there is no `sources` field here — cite sources on the ' +
+			"venue's menu via update_menu instead. Set `menu_id`/`brand_id` (together) to attach a " +
 			'branch to a chain menu, or null to detach it. region/postcode/country are normalized for you. ' +
 			'Ideal for mass backfills from audit_locations. Ids that do not exist ' +
 			'are skipped and listed in `not_found_ids`. Returns { updated, updated_ids, not_found_ids }.',
@@ -3187,6 +3190,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 	}
 });
 
-const transport = new StdioServerTransport();
-await server.connect(transport);
-console.error('[better-food-map-db] MCP server ready on stdio');
+// Only wire up stdio when run as the entrypoint (bun run db:mcp) — tests import
+// this module for its exported schemas and must not capture the test runner's stdio.
+if (import.meta.main) {
+	const transport = new StdioServerTransport();
+	await server.connect(transport);
+	console.error('[better-food-map-db] MCP server ready on stdio');
+}
