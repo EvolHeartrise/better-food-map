@@ -153,8 +153,9 @@ export const getBrandOutput = v.object({
 
 /**
  * audit_locations returns a different shape per `check` (coordinate_drift,
- * missing_address, duplicate_locations, empty_menu, html_entities). `additional`
- * is the only field common to all five; the rest ride through as allowed extras.
+ * identity_drift, missing_address, duplicate_locations, empty_menu,
+ * html_entities, missing_course_tag). `additional` is the only field common to
+ * all of them; the rest ride through as allowed extras.
  */
 export const auditLocationsOutput = v.object({
 	additional: v.optional(v.number())
