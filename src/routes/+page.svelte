@@ -255,11 +255,6 @@
 		// storeVersion, re-running this effect to merge them. Until then the
 		// previous viewportData stays up, so mid-gesture frames never blank.
 		if (missing.length === 0) return;
-		// Guards the FAILURE flag only: a superseded run's late failure shouldn't
-		// mark the current (refetched) view stale. Success needs no guard — a
-		// cell's contents don't depend on the viewport, so a superseded response
-		// still banks, and the bump re-merges for whichever run is current.
-		let cancelled = false;
 		const missingKeys = missing.map(storeKey);
 		for (const key of missingKeys) inflightCells.add(key);
 		getMapCells({ level, cells: missing, q: filter.q, diet: filter.diet })
@@ -280,17 +275,17 @@
 			.catch((err) => {
 				console.error('map cells fetch failed', bounds, filter, err);
 				for (const key of missingKeys) inflightCells.delete(key);
-				// Clear the spinner even when superseded: the run that replaced this
-				// one saw these cells as in-flight and is WAITING on them, so nothing
-				// else would turn it off. (If another fetch is still pending, its
-				// landing re-runs the effect and re-raises the spinner as needed.)
+				// Flag and clear the spinner even when this run has been superseded:
+				// the in-flight dedup means the run that replaced this one did NOT
+				// refetch these cells — it saw them as pending and is WAITING on this
+				// very fetch, with no dependency left to change. Skipping the flag
+				// here would leave that successor a silent hole (cells neither
+				// rendered, retried, nor flagged) until the next pan/filter change.
+				// If the viewport has since moved off these cells the flag may
+				// over-warn for a moment; the next fully-local render clears it.
 				searching = false;
-				if (cancelled) return;
 				fetchFailed = filtered ? 'search' : 'browse';
 			});
-		return () => {
-			cancelled = true;
-		};
 	});
 
 	// Fallback opening centre (the shared Vancouver default, $lib/map-defaults),
