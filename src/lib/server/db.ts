@@ -66,6 +66,20 @@ export interface ItemTag extends Tag {
 }
 
 /**
+ * The LEAN per-edge tag shape the bulk viewport/search payloads carry: just the
+ * tag id and the per-edge `optional` flag. The tag vocabulary is closed (the six
+ * dietary + two course tags) and bundled client-side as `TAGS` ($lib/tags), so
+ * `name`/`tag_type` are derivable from the id and shipping them on every
+ * item-tag edge of a dense viewport was pure payload weight. The detail/MCP
+ * reads keep the full {@link ItemTag} (which satisfies this shape structurally).
+ */
+export interface MapItemTag {
+	id: string;
+	/** True if this tag is optional for the item (e.g. "can be made vegan"). */
+	optional: boolean;
+}
+
+/**
  * A citation for where a record's data was obtained. A record may have any
  * number of sources (including none); each is a URL with an optional label.
  */
@@ -122,15 +136,22 @@ export interface MapItem {
 	id: string;
 	menu_id: string;
 	item_name: string;
-	/** Tags applied to this item (dietary and course), with `optional`. */
-	tags: ItemTag[];
+	/**
+	 * Tags applied to this item (dietary and course), as lean id+`optional`
+	 * edges — the client resolves display name/type from the bundled TAGS
+	 * vocabulary (see {@link MapItemTag}).
+	 */
+	tags: MapItemTag[];
 }
 
 /**
  * A menu item, in full. Belongs to a {@link Menu} — private to one venue, or
- * shared across a chain's branches.
+ * shared across a chain's branches. Unlike the lean {@link MapItem}, its tags
+ * are full {@link ItemTag}s (name/tag_type included) — the detail and MCP reads
+ * keep the self-describing shape.
  */
 export interface Item extends MapItem {
+	tags: ItemTag[];
 	/** Short free-text description of the item (may be null). */
 	description: string | null;
 	price: number | null;
@@ -329,13 +350,17 @@ interface SourceRow {
 	label: string | null;
 }
 
-/** An (item, tag) join row, with the per-edge `optional` flag (0/1). */
-interface ItemTagRow {
+/** A LEAN (item, tag) join row: just the edge, no `tags`-table columns. */
+interface MapItemTagRow {
 	owner_id: string;
 	id: string;
+	optional: number;
+}
+
+/** An (item, tag) join row, with the per-edge `optional` flag (0/1). */
+interface ItemTagRow extends MapItemTagRow {
 	name: string;
 	tag_type: TagType;
-	optional: number;
 }
 
 /** A (location, tag) join row used for the location-level tag overview (no `optional`). */
@@ -373,6 +398,17 @@ function groupItemTags(rows: ItemTagRow[]): Map<string, ItemTag[]> {
 	return byOwner;
 }
 
+/** Groups LEAN (item, tag) join rows into a {@link MapItemTag} list per item. */
+function groupMapItemTags(rows: MapItemTagRow[]): Map<string, MapItemTag[]> {
+	const byOwner = new Map<string, MapItemTag[]>();
+	for (const row of rows) {
+		const list = byOwner.get(row.owner_id) ?? [];
+		list.push({ id: row.id, optional: row.optional !== 0 });
+		byOwner.set(row.owner_id, list);
+	}
+	return byOwner;
+}
+
 /** Groups (location, tag) join rows into a distinct {@link Tag} list per location. */
 function groupLocationTagsDistinct(rows: LocationTagRow[]): Map<string, Tag[]> {
 	const byOwner = new Map<string, Tag[]>();
@@ -403,6 +439,13 @@ const ITEM_FIELDS = `id, menu_id, item_name, description, price`;
 const MAP_ITEM_FIELDS = `id, menu_id, item_name`;
 /** Item-tag join projection (aliased to {@link ItemTagRow}). */
 const ITEM_TAG_SELECT = `t.id AS id, t.name AS name, t.tag_type AS tag_type, it.optional AS optional`;
+/**
+ * The LEAN item-tag projection the bulk viewport/search reads use (aliased to
+ * {@link MapItemTagRow}): both columns live on `item_tags` itself, so nothing
+ * from the `tags` table ships — the client resolves display fields from the
+ * bundled TAGS vocabulary (see {@link MapItemTag}).
+ */
+const MAP_ITEM_TAG_SELECT = `it.tag_id AS id, it.optional AS optional`;
 
 /**
  * Hard cap on how many locations a single search/list read returns. The map's
@@ -1008,9 +1051,15 @@ async function queryMapData(
 		db
 			.prepare(`SELECT id, currency, last_verified FROM menus WHERE id IN (${inMenus})`)
 			.bind(menuIds),
+		// Tag edges: the lean read projects only (tag_id, optional) straight off
+		// `item_tags` — no join to `tags` and no name/tag_type on the wire (the
+		// closed vocabulary is bundled client-side; see MapItemTag). The detail
+		// read keeps the full self-describing shape. Both order by the vocabulary
+		// (tags.rowid) so an item's tags list identically in either mode; the lean
+		// statement keeps the join for that ordering but ships none of its columns.
 		db
 			.prepare(
-				`SELECT it.item_id AS owner_id, ${ITEM_TAG_SELECT}
+				`SELECT it.item_id AS owner_id, ${detail ? ITEM_TAG_SELECT : MAP_ITEM_TAG_SELECT}
 				 FROM item_tags it
 				 JOIN tags t ON t.id = it.tag_id
 				 WHERE it.item_id IN (${inItems})
@@ -1053,7 +1102,10 @@ async function queryMapData(
 	// Resolve each menu item once (tags) and group by menu. The client applies the
 	// per-location price/availability deltas as it expands a menu onto each branch.
 	// Menu-level sources (detail mode only) ride on `menuMeta` per menu, not per item.
-	const tagsByItem = groupItemTags(itemTagRows);
+	// The tag rows are the shape the statement above projected: full ItemTagRows in
+	// detail mode, lean MapItemTagRows otherwise (name/tag_type undefined at runtime
+	// there, same convention as ItemRow's lean columns).
+	const tagsByItem = detail ? groupItemTags(itemTagRows) : groupMapItemTags(itemTagRows);
 	const sourcesByMenu = groupSources(menuSourceRes?.results ?? []);
 	const currencyByMenu = new Map(menuCurrencyRows.map((r) => [r.id, r.currency]));
 	const menuMeta: MapData['menuMeta'] = {};
@@ -1072,9 +1124,12 @@ async function queryMapData(
 			item_name: row.item_name,
 			tags: tagsByItem.get(row.id) ?? []
 		};
+		// The cast on `tags` is sound: in detail mode tagsByItem came from
+		// groupItemTags, so the edges really are full ItemTags.
 		const full: Item | null = detail
 			? {
 					...lean,
+					tags: lean.tags as ItemTag[],
 					description: row.description,
 					price: row.price,
 					currency: currencyByMenu.get(row.menu_id) ?? DEFAULT_CURRENCY
