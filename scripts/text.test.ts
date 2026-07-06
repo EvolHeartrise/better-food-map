@@ -26,6 +26,22 @@ test('leaves plain ampersands and non-entities untouched', () => {
 	expect(decodeHtmlEntities('')).toBe('');
 });
 
+test('decodes HTML5 uppercase legacy aliases', () => {
+	expect(decodeHtmlEntities('Bacon &AMP; Egg')).toBe('Bacon & Egg');
+	expect(decodeHtmlEntities('&LT;special&GT;')).toBe('<special>');
+	expect(decodeHtmlEntities('&QUOT;Famous&QUOT; Fries')).toBe('"Famous" Fries');
+	expect(decodeHtmlEntities('Big Mac&TRADE;')).toBe('Big Mac™');
+	expect(decodeHtmlEntities('Coca-Cola&REG;')).toBe('Coca-Cola®');
+	expect(decodeHtmlEntities('&COPY; 2026')).toBe('© 2026');
+});
+
+test('mixed-case forms are not valid HTML5 and pass through unchanged', () => {
+	expect(decodeHtmlEntities('Fish &Amp; Chips')).toBe('Fish &Amp; Chips');
+	expect(decodeHtmlEntities('&Quot;Famous&Quot;')).toBe('&Quot;Famous&Quot;');
+	expect(decodeHtmlEntities('&Trade;')).toBe('&Trade;');
+	expect(decodeHtmlEntities('&NBSP;')).toBe('&NBSP;');
+});
+
 test('unknown named references pass through unchanged', () => {
 	expect(decodeHtmlEntities('&bogusref; Salad')).toBe('&bogusref; Salad');
 	expect(decodeHtmlEntities('salt&pepper; mix')).toBe('salt&pepper; mix');
