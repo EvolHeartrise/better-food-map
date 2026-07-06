@@ -1,4 +1,131 @@
 {
 	"$schema": "https://inlang.com/schema/inlang-message-format",
-	"i18n_scaffold": "Localization is configured."
+
+	"search_bar_aria": "Search and filters",
+	"search_placeholder": "Search places & dishes…",
+	"search_input_aria": "Search by place or dish name",
+	"results_nav_aria": "Matching places",
+	"results_cap": "Showing the first {max} of {total} places. Refine the search to narrow the list.",
+	"places_found": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} place found",
+				"countPlural=other": "{count} places found"
+			}
+		}
+	],
+	"search_failed": "Search failed - showing previous results.",
+	"browse_failed": "Couldn’t load places for this area - showing previous results.",
+
+	"venue_details_aria": "Location details",
+	"venue_close_aria": "Close place details",
+	"venue_like": "Like this place",
+	"venue_unlike": "Unlike this place",
+	"venue_address_label": "Address",
+	"venue_phone_label": "Phone",
+	"venue_website_label": "Website",
+	"venue_menu_label": "Menu",
+	"venue_no_menu": "No menu on file yet.",
+	"menu_items_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} item",
+				"countPlural=other": "{count} items"
+			}
+		}
+	],
+	"menu_last_scanned": "Menu last scanned on {date}",
+	"sources_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} Source",
+				"countPlural=other": "{count} Sources"
+			}
+		}
+	],
+	"course_filter_aria": "Filter menu by course",
+	"course_all": "All",
+	"item_like": "Like this item",
+	"item_unlike": "Unlike this item",
+
+	"scanned_date": "Scanned {date}",
+	"scanned_today": "Scanned today",
+	"scanned_yesterday": "Scanned yesterday",
+	"scanned_days_ago": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "Scanned {count} day ago",
+				"countPlural=other": "Scanned {count} days ago"
+			}
+		}
+	],
+	"scanned_months_ago": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "Scanned {count} month ago",
+				"countPlural=other": "Scanned {count} months ago"
+			}
+		}
+	],
+	"scanned_years_ago": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "Scanned {count} year ago",
+				"countPlural=other": "Scanned {count} years ago"
+			}
+		}
+	],
+
+	"tag_vegan": "Vegan",
+	"tag_vegetarian": "Vegetarian",
+	"tag_halal": "Halal",
+	"tag_gluten_free": "Gluten-free",
+	"tag_dairy_free": "Dairy-free",
+	"tag_nut_free": "Nut-free",
+	"tag_food": "Food",
+	"tag_dessert": "Dessert",
+	"tag_drink": "Drinks",
+
+	"category_cafe": "Cafe",
+	"category_fast_food": "Fast food",
+	"category_restaurant": "Restaurant",
+	"category_bakery": "Bakery",
+
+	"diet_any": "Any diet",
+	"diet_filter_aria": "Dietary filter",
+	"diet_can_be_made": "Can be made {diet}",
+
+	"account_default_name": "Account",
+	"account_signed_in": "Signed in",
+	"account_sign_out": "Sign out",
+	"account_sign_in": "Sign in",
+
+	"sources_dialog_aria": "Data sources",
+	"sources_title": "Sources",
+	"sources_close_aria": "Close sources",
+
+	"landing_intro_aria": "About BetterFoodMaps",
+	"landing_title": "Find food that fits your diet, anywhere on the map.",
+	"landing_actions_aria": "Coverage and getting started",
+	"stat_venues": "venues",
+	"stat_menu_items": "menu items",
+	"stat_cities": "cities",
+	"landing_cta": "Start using the map",
+	"landing_browse_link": "Or browse food by city →",
+
+	"error_not_found": "This page doesn't exist",
+	"error_generic": "Something went wrong",
+	"error_back": "Back to the map"
 }

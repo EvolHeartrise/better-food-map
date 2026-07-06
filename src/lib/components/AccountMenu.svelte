@@ -5,6 +5,7 @@
 	import { page } from '$app/state';
 	import { signOut } from '$lib/user.remote';
 	import { safeInternalPath } from '$lib/redirect';
+	import { m } from '$lib/paraglide/messages';
 	import type { User } from '$lib/server/db';
 
 	// The account control: a "Sign in" pill when signed out, or an avatar that opens
@@ -25,7 +26,7 @@
 	// DietSelector's always-rendered trigger).
 	let triggerEl: HTMLButtonElement | undefined = $state();
 
-	const displayName = $derived(user?.name ?? user?.email ?? 'Account');
+	const displayName = $derived(user?.name ?? user?.email ?? m.account_default_name());
 	const initial = $derived(
 		(user?.name ?? user?.email ?? '?').trim().charAt(0).toUpperCase() || '?'
 	);
@@ -96,7 +97,7 @@
 			     require menuitem children these aren't. -->
 			<div class="account__popover">
 				<div class="account__header">
-					<span class="account__header-name">{user.name ?? 'Signed in'}</span>
+					<span class="account__header-name">{user.name ?? m.account_signed_in()}</span>
 					{#if user.email}
 						<span class="account__header-email">{user.email}</span>
 					{/if}
@@ -104,7 +105,7 @@
 
 				<button type="button" class="account__signout" onclick={handleSignOut}>
 					<LogOut size={15} aria-hidden="true" />
-					Sign out
+					{m.account_sign_out()}
 				</button>
 			</div>
 		{/if}
@@ -112,7 +113,7 @@
 		<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- resolved login path with the redirectTo query the login route reads -->
 		<a class="account__signin" href={loginHref}>
 			<LogIn size={16} aria-hidden="true" />
-			Sign in
+			{m.account_sign_in()}
 		</a>
 	{/if}
 </div>
