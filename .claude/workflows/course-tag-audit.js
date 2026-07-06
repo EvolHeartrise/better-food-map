@@ -3,8 +3,8 @@ export const meta = {
 	description:
 		'Classify menu items as food/dessert/drink with parallel Haiku agents (classification ONLY)',
 	whenToUse:
-		'The classification stage of a course-tag audit session — the ONLY stage that needs a model. Fetch the page first with `bun scripts/course-tag-audit/fetch-batch.ts <limit>` (deterministic), pass its items array as args: { items: [...] }, then apply the returned classifications with `bun scripts/course-tag-audit/apply-classifications.ts` (deterministic, additive inserts, reversibility log). Every agent is Haiku.',
-	phases: [{ title: 'Classify', detail: 'parallel Haiku course classification', model: 'haiku' }]
+		'The classification stage of a course-tag audit session — the ONLY stage that needs a model. Fetch the page first with `bun scripts/course-tag-audit/fetch-batch.ts <limit>` (deterministic), pass its items array as args: { items: [...], model?: "sonnet" | "haiku" } (default sonnet — haiku is ~5% wrong on culturally-specific dishes), then apply the returned classifications with `bun scripts/course-tag-audit/apply-classifications.ts` (deterministic, additive inserts, reversibility log).',
+	phases: [{ title: 'Classify', detail: 'parallel course classification' }]
 };
 
 // args.items: [{ id, item_name, menu_name, description?, hint? }] from fetch-batch.ts.
@@ -17,6 +17,10 @@ if (!Array.isArray(items) || items.length === 0) {
 	);
 }
 const BATCH = 40;
+// Sonnet by default: Haiku measured ~95% on this task, and the misses were
+// exactly the judgment calls the session exists to settle (e.g. it called a
+// taro-coconut dessert soup "food"). Pass model: 'haiku' for a cheap rough pass.
+const model = input?.model === 'haiku' ? 'haiku' : 'sonnet';
 
 const CLASSIFY_SCHEMA = {
 	type: 'object',
@@ -60,7 +64,7 @@ const results = await pipeline(batches, (batch, _item, i) =>
 	agent(
 		`${CLASSIFY_RULES}\n\nItems (JSON):\n${JSON.stringify(batch)}\n\n` +
 			'Return structured output with one classification per item id — every id exactly once.',
-		{ label: `classify-${i}`, phase: 'Classify', schema: CLASSIFY_SCHEMA, model: 'haiku' }
+		{ label: `classify-${i}`, phase: 'Classify', schema: CLASSIFY_SCHEMA, model }
 	)
 );
 
