@@ -15,6 +15,7 @@
 	import VenueDetail from '$lib/components/VenueDetail.svelte';
 	import Search from '@lucide/svelte/icons/search';
 	import { venueHeadMeta } from '$lib/venue-head';
+	import { venueJsonLdScript } from '$lib/venue-jsonld';
 	import { matchedItems, searchResults } from '$lib/search-match';
 	import { idFromPath, locationPath } from '$lib/location-path';
 	import { CANONICAL_ORIGIN } from '$lib/canonical';
@@ -392,6 +393,15 @@
 	// keeps the static site-wide head.
 	const headMeta = $derived(headVenue ? venueHeadMeta(headVenue) : null);
 
+	// The schema.org FoodEstablishment JSON-LD for the same venue (issue #218): the
+	// structured-data twin of the head copy above, carrying the venue's address,
+	// coordinates and full menu (prices + per-item diet suitability) for rich
+	// results. A ready-to-inject ld+json script string whose content is escaped in
+	// $lib/venue-jsonld so a menu name or description can't break out of the script
+	// tag, so the head renders it with {@html}. Null (no venue) keeps the head
+	// markup-free.
+	const headJsonLd = $derived(headVenue ? venueJsonLdScript(headVenue) : null);
+
 	// The selected venue, trimmed to what <LocationMap> needs and carrying its own
 	// rotating item line. Passed as `selected` so the map keeps its label (and rotation)
 	// even when the venue isn't among `mapLocations` — opened from a `/locations/<id>`
@@ -677,6 +687,14 @@
 		<meta property="og:site_name" content="BetterFoodMaps" />
 		<meta property="og:type" content="website" />
 		<meta property="og:url" content={headMeta.url} />
+		<!-- schema.org JSON-LD (issue #218): the machine-readable venue graph
+		     crawlers parse for rich results, built in $lib/venue-jsonld and injected
+		     raw — its content is escaped there so a menu name or description can't
+		     break out of the script tag. -->
+		{#if headJsonLd}
+			<!-- eslint-disable-next-line svelte/no-at-html-tags -->
+			{@html headJsonLd}
+		{/if}
 	{:else}
 		<title>BetterFoodMaps</title>
 		<meta
