@@ -427,3 +427,23 @@ test('country scope drops foreign-signalled POIs, keeps unknowns, and counts the
 	expect(unscoped.candidates.length).toBe(3);
 	expect('excluded_foreign' in unscoped).toBe(false);
 });
+
+test('exclude_existing catches a same-name venue stored just OUTSIDE the query bbox', async () => {
+	// The stored venue's OSM node moved since import: it now sits ~100 m north of
+	// the bbox's top edge while the staging POI is just inside. Fetching only the
+	// exact bbox would miss it and re-surface the POI as a duplicate candidate;
+	// the SAME_NAME_M padding on the dedup fetch keeps it blocking.
+	const store = storeWith([
+		row({ osm_id: 'n1', latitude: 49.2899, longitude: -123.1207, name: 'Tim Hortons' }),
+		row({ osm_id: 'n2', latitude: 49.28, longitude: -123.1207, name: 'Fresh Spot' })
+	]);
+	const bbox = { minLat: 49.27, maxLat: 49.29, minLng: -123.2, maxLng: -123.0 };
+	const db = fakeD1([
+		// ~100 m from n1, ~89 m outside the bbox — inside the padded fetch box.
+		{ id: 'a', name: 'Tim Hortons', latitude: 49.2908, longitude: -123.1207 }
+	]);
+	const res = await searchPoi(store, db, { bbox });
+	expect(res.candidates.map((c) => c.osm_id)).toEqual(['n2']);
+	expect(res.excluded_existing).toBe(1);
+	store.close();
+});
