@@ -9,12 +9,18 @@ import {
 } from '$lib/server/auth';
 import { deleteExpiredSessions } from '$lib/server/db';
 
-// betterfoodmaps.com is the canonical domain. The legacy bare domain
-// betterfoodmap.com is also routed to this Worker (see wrangler.jsonc) purely so
-// it can be 301-redirected here, preserving the path and query string. The
-// redirect runs before `resolve`, so betterfoodmap.com never serves app content.
+// betterfoodmaps.com is the canonical domain. The canonical www host, the
+// legacy bare domain betterfoodmap.com, and its www are also routed to this
+// Worker (see wrangler.jsonc routes — this set must stay in sync with them;
+// scripts/redirect.test.ts enforces that) purely so they can be 301-redirected
+// here, preserving the path and query string. The redirect runs before
+// `resolve`, so none of these hosts ever serves app content.
 const CANONICAL_HOST = 'betterfoodmaps.com';
-const REDIRECT_HOSTS = new Set(['betterfoodmap.com', 'www.betterfoodmap.com']);
+const REDIRECT_HOSTS = new Set([
+	'www.betterfoodmaps.com',
+	'betterfoodmap.com',
+	'www.betterfoodmap.com'
+]);
 
 const canonicalHost: Handle = async ({ event, resolve }) => {
 	const { hostname, pathname, search } = event.url;
