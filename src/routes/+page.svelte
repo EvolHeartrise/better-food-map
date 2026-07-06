@@ -14,7 +14,7 @@
 	import AccountMenu from '$lib/components/AccountMenu.svelte';
 	import VenueDetail from '$lib/components/VenueDetail.svelte';
 	import Search from '@lucide/svelte/icons/search';
-	import { categoryLabel } from '$lib/category';
+	import { venueHeadMeta } from '$lib/venue-head';
 	import { matchedItems, searchResults } from '$lib/search-match';
 	import { idFromPath } from '$lib/location-path';
 	import { DEFAULT_MAP_CENTER } from '$lib/map-defaults';
@@ -384,27 +384,11 @@
 	// defaults.
 	const headVenue = $derived(selectedId ? (selectedLocation ?? landingVenue) : null);
 
-	// The canonical public origin for og:url — a shared /locations/<id> link should
-	// unfurl against the production URL regardless of which host served the page.
-	const CANONICAL_ORIGIN = 'https://betterfoodmaps.com';
-
-	// Title, description and canonical URL for the venue head. The description
-	// leads with the category label and address, plus the menu size when there is
-	// one; null keeps the static site-wide head.
-	const headMeta = $derived.by(() => {
-		if (!headVenue) return null;
-		const count = headVenue.menu.length;
-		const parts = [
-			categoryLabel(headVenue.category),
-			headVenue.address,
-			count > 0 ? `${count} menu item${count === 1 ? '' : 's'}` : ''
-		].filter(Boolean);
-		return {
-			title: `${headVenue.name} - BetterFoodMaps`,
-			description: `${headVenue.name} on BetterFoodMaps${parts.length > 0 ? ` - ${parts.join(' · ')}` : ''}.`,
-			url: `${CANONICAL_ORIGIN}/locations/${encodeURIComponent(headVenue.id)}`
-		};
-	});
+	// Title, description and canonical URL for the venue head (SEO copy lives in
+	// $lib/venue-head so scripts/venue-head.test.ts can pin it): the title leads
+	// with the city and the description surfaces the menu's dietary coverage
+	// (issue #222). Null keeps the static site-wide head.
+	const headMeta = $derived(headVenue ? venueHeadMeta(headVenue) : null);
 
 	// The selected venue, trimmed to what <LocationMap> needs and carrying its own
 	// rotating item line. Passed as `selected` so the map keeps its label (and rotation)
