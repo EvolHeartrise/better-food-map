@@ -12,6 +12,7 @@ import {
 	type MapStats
 } from '$lib/server/db';
 import { searchableQuery } from '$lib/search';
+import { sanitizeDiet } from '$lib/diet-profile';
 import {
 	FULL_LEVEL_MAX_CELLS,
 	MAX_GRID_LEVEL,
@@ -35,7 +36,12 @@ import {
  * batches by narrow-viewport geometry, so a forged request can't fan a
  * full-menu read across hundreds of cells), each index must lie inside the
  * lat/lng data domain, and the filter lengths bound what reaches the FTS index
- * (200 far exceeds any real search term; diet tag ids are short fixed tokens).
+ * (200 far exceeds any real search term). `diet` is only length-capped here;
+ * the handler collapses anything outside the six-id dietary vocabulary to null
+ * via `sanitizeDiet` ($lib/diet-profile) — matching what the client renders for
+ * no selection — so a forged value can't mint junk colo-cache keys per block or
+ * force guaranteed-empty D1 reads (the cache design assumes the documented
+ * 6-value diet cardinality).
  */
 const CellIndexSchema = v.pipe(v.number(), v.integer(), v.minValue(0));
 const MapCellsQuerySchema = v.pipe(
@@ -89,7 +95,11 @@ export const getMapCells = query(
 	MapCellsQuerySchema,
 	async ({ level, cells, q, diet }): Promise<MapCellsData> => {
 		const text = searchableQuery(q);
-		const search = text !== '' || diet !== null ? { query: text, dietTagId: diet } : null;
+		// Collapse anything outside the six known diet ids to null (plain browse),
+		// like the searchable gate above: only a forged request can send junk here,
+		// and it must degrade rather than key the shared colo cache with it.
+		const dietTagId = sanitizeDiet(diet);
+		const search = text !== '' || dietTagId !== null ? { query: text, dietTagId } : null;
 		return getMapCellsCached(level, cells, search);
 	}
 );
