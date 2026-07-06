@@ -224,6 +224,27 @@ export function isExistingDuplicate(poi: StoredPoi, existing: ExistingLocation[]
 	return false;
 }
 
+/**
+ * Pads `bbox` by SAME_NAME_M on every side, for the dedup fetch. A stored venue
+ * can sit just OUTSIDE the query bbox (e.g. its OSM node moved since import)
+ * while still within SAME_NAME_M of an in-bbox POI; fetching only the exact bbox
+ * would let that POI escape same-name dedup and become a duplicate pin.
+ * {@link bboxAround} supplies the metres→degrees math at the bbox's worst
+ * (widest-longitude) latitude, mirroring nearDuplicateWarnings in db-mcp-server.
+ */
+export function padBboxForDedup(bbox: Bounds): Bounds {
+	const worstLat = Math.max(Math.abs(bbox.minLat), Math.abs(bbox.maxLat));
+	const pad = bboxAround(worstLat, 0, SAME_NAME_M / 1000);
+	const padLat = pad.maxLat - worstLat; // degrees covering SAME_NAME_M in latitude
+	const padLon = pad.maxLng; // and in longitude at the worst latitude (centre lng 0)
+	return {
+		minLat: Math.max(bbox.minLat - padLat, -90),
+		maxLat: Math.min(bbox.maxLat + padLat, 90),
+		minLng: Math.max(bbox.minLng - padLon, -180),
+		maxLng: Math.min(bbox.maxLng + padLon, 180)
+	};
+}
+
 /** Fetches existing locations whose point falls within `bbox` from D1. */
 export async function existingInBbox(db: D1Like, bbox: Bounds): Promise<ExistingLocation[]> {
 	const { results } = await db
@@ -319,7 +340,9 @@ export async function searchPoi(
 	let excluded = 0;
 	if (excludeExisting) {
 		if (!db) throw new Error('exclude_existing requires a database handle.');
-		const existing = await existingInBbox(db, bbox);
+		// Padded past SAME_NAME_M: a moved-node venue just outside the bbox must
+		// still block same-name dedup for an in-bbox edge POI (see padBboxForDedup).
+		const existing = await existingInBbox(db, padBboxForDedup(bbox));
 		const kept: typeof withDistance = [];
 		for (const x of withDistance) {
 			if (isExistingDuplicate(x.poi, existing)) excluded++;

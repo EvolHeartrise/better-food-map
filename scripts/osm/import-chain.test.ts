@@ -436,3 +436,21 @@ test('country scope folds spelling variants through normalizeCountry and samples
 		{ osm_id: 'ca1', name: 'Chain', country: 'CA' }
 	]);
 });
+
+test('drops a branch whose stored venue moved just OUTSIDE the query bbox', async () => {
+	// The stored branch's OSM node moved since import: it now sits ~100 m above
+	// the bbox's top edge while the staging POI is just inside. The SAME_NAME_M
+	// padding on the dedup fetch must still let it block the in-bbox POI.
+	const store = storeWith([
+		row({ osm_id: 'n1', latitude: 50.9992, longitude: -123.1, name: 'Booster Juice' }),
+		row({ osm_id: 'n2', latitude: 49.5, longitude: -123.5, name: 'Booster Juice' })
+	]);
+	// AREA's maxLat is 51; the stored row sits ~100 m north of it.
+	const db = fakeD1([{ id: 'loc1', name: 'Booster Juice', latitude: 51.0001, longitude: -123.1 }]);
+	const selection = await selectChainCandidates(store, db, {
+		area: AREA,
+		nameMatch: ['Booster Juice']
+	});
+	expect(selection.matched.map((p) => p.osm_id)).toEqual(['n2']);
+	expect(selection.excluded_existing).toBe(1);
+});
