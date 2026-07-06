@@ -1,7 +1,6 @@
 // ---------------------------------------------------------------------------
-// Per-`view` menu projections shared by get_menu and get_location. Kept in their
-// own module so they are unit-testable without importing db-mcp-server.ts (which
-// opens a stdio transport on import).
+// Per-`view` menu projections shared by get_menu and get_location. Split out of
+// the large db-mcp-server.ts into a focused, directly unit-testable module.
 //
 // The three views trade payload size for detail:
 //   • "full"    — every item in full detail (the caller strips the menu-level

@@ -1,12 +1,119 @@
 /// <reference types="bun-types" />
-// Tests normalizeAddressPatch (the address normalization behind the
-// update_locations MCP tool). The key invariant: a patch that touches
-// region/postcode WITHOUT a country validates against the row's STORED country
-// (passed in by the handler), never the unscoped CA∪US fallback — so a
-// region-only patch can't store a US state code on a country='CA' row.
+// Tests normalizeAddressParts (the CREATE-path address normalization behind
+// create_locations / import_chain) and normalizeAddressPatch (the address
+// normalization behind the update_locations MCP tool). The key PATCH invariant:
+// a patch that touches region/postcode WITHOUT a country validates against the
+// row's STORED country (passed in by the handler), never the unscoped CA∪US
+// fallback — so a region-only patch can't store a US state code on a
+// country='CA' row.
 
 import { test, expect } from 'bun:test';
-import { normalizeAddressPatch } from './address-patch';
+import { normalizeAddressParts, normalizeAddressPatch } from './address-patch';
+
+// ---------------------------------------------------------------------------
+// normalizeAddressParts (create path)
+// ---------------------------------------------------------------------------
+
+/** Collects warnings so each test can assert on drops without a mock library. */
+function collectWarnings(): { warn: (m: string) => void; warnings: string[] } {
+	const warnings: string[] = [];
+	return { warn: (m) => warnings.push(m), warnings };
+}
+
+test('create path normalizes region/country spellings to stored codes', () => {
+	const { warn, warnings } = collectWarnings();
+	expect(
+		normalizeAddressParts(
+			{ street: ' 1909 W 4th Ave ', city: ' Vancouver ', region: 'British Columbia' },
+			warn
+		)
+	).toEqual({
+		street: '1909 W 4th Ave',
+		city: 'Vancouver',
+		region: 'BC',
+		postcode: null,
+		country: 'CA' // country defaults to CA when omitted
+	});
+	// A country name normalizes to its ISO-2 code and scopes the region lookup.
+	expect(
+		normalizeAddressParts(
+			{ street: '1 Pike Pl', city: 'Seattle', region: 'Washington', country: 'United States' },
+			warn
+		)
+	).toEqual({
+		street: '1 Pike Pl',
+		city: 'Seattle',
+		region: 'WA',
+		postcode: null,
+		country: 'US'
+	});
+	expect(warnings).toEqual([]);
+});
+
+test('create path rejects a region that does not belong to the record country', () => {
+	const { warn } = collectWarnings();
+	// US state on the defaulted-CA record: the error nudges toward passing country.
+	expect(() =>
+		normalizeAddressParts({ street: '1 Pike Pl', city: 'Seattle', region: 'WA' }, warn)
+	).toThrow(/for CA.*country defaulted to CA/s);
+	// With an explicit country, the same mismatch fails without the defaulting hint.
+	expect(() =>
+		normalizeAddressParts(
+			{ street: '123 Main St', city: 'Calgary', region: 'BC', country: 'US' },
+			warn
+		)
+	).toThrow(/for US\./);
+});
+
+test('create path normalizes a valid postcode for the record country', () => {
+	const { warn, warnings } = collectWarnings();
+	expect(
+		normalizeAddressParts(
+			{ street: '1 Test St', city: 'Vancouver', region: 'BC', postcode: 'v6j1m5' },
+			warn
+		).postcode
+	).toBe('V6J 1M5');
+	expect(
+		normalizeAddressParts(
+			{ street: '1 Pike Pl', city: 'Seattle', region: 'WA', postcode: '98101', country: 'US' },
+			warn
+		).postcode
+	).toBe('98101');
+	expect(warnings).toEqual([]);
+});
+
+test('create path DROPS a partial/invalid postcode with a warning instead of failing', () => {
+	const { warn, warnings } = collectWarnings();
+	// A bare FSA (half a CA postal code) is dropped, not stored (the stated policy).
+	const result = normalizeAddressParts(
+		{ street: '1 Test St', city: 'Edmonton', region: 'AB', postcode: 'T5R' },
+		warn
+	);
+	expect(result.postcode).toBeNull();
+	expect(warnings).toEqual([expect.stringContaining('"T5R" is not a valid CA postal/ZIP code')]);
+	// A cross-country postcode is equally invalid for the record's country.
+	const { warn: warn2, warnings: warnings2 } = collectWarnings();
+	expect(
+		normalizeAddressParts(
+			{ street: '1 Test St', city: 'Vancouver', region: 'BC', postcode: '98101' },
+			warn2
+		).postcode
+	).toBeNull();
+	expect(warnings2).toHaveLength(1);
+});
+
+test('create path treats a missing/blank postcode as absent, without a warning', () => {
+	const { warn, warnings } = collectWarnings();
+	const base = { street: '1 Test St', city: 'Vancouver', region: 'BC' };
+	expect(normalizeAddressParts(base, warn).postcode).toBeNull();
+	expect(normalizeAddressParts({ ...base, postcode: null }, warn).postcode).toBeNull();
+	expect(normalizeAddressParts({ ...base, postcode: '  ' }, warn).postcode).toBeNull();
+	expect(warnings).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------
+// normalizeAddressPatch (update path)
+// ---------------------------------------------------------------------------
 
 test('region-only patch validates against the stored country', () => {
 	// A valid same-country region normalizes as usual (full name → code).
