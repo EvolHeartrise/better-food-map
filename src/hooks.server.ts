@@ -2,6 +2,7 @@ import { dev } from '$app/environment';
 import type { Handle } from '@sveltejs/kit';
 import { sequence } from '@sveltejs/kit/hooks';
 import {
+	LEGACY_SESSION_COOKIE,
 	SESSION_COOKIE,
 	clearSessionCookie,
 	createLazySessionResolver,
@@ -52,7 +53,17 @@ const canonicalHost: Handle = async ({ event, resolve }) => {
 // collects cookies set any time before the response is constructed, so writes
 // from within SSR or a remote-endpoint request still reach Set-Cookie.
 const authenticate: Handle = async ({ event, resolve }) => {
-	const token = event.cookies.get(SESSION_COOKIE);
+	// `__Host-` migration: sessions opened before the cookie rename still arrive
+	// under the legacy unprefixed name. Fall back to that token for this request;
+	// once it validates (lazily, below) the token is re-set under the prefixed
+	// name and the legacy cookie is deleted, so deployed users stay signed in.
+	// In dev the two names are identical and `legacyToken` is always undefined.
+	const prefixedToken = event.cookies.get(SESSION_COOKIE);
+	const legacyToken =
+		!prefixedToken && SESSION_COOKIE !== LEGACY_SESSION_COOKIE
+			? event.cookies.get(LEGACY_SESSION_COOKIE)
+			: undefined;
+	const token = prefixedToken ?? legacyToken;
 	const db = event.platform?.env?.DB;
 
 	// Opportunistically sweep expired session rows on ~1% of requests, in the
@@ -65,10 +76,28 @@ const authenticate: Handle = async ({ event, resolve }) => {
 		event.platform?.ctx?.waitUntil(deleteExpiredSessions(db, Date.now()).catch(() => {}));
 	}
 
-	event.locals.getSession = createLazySessionResolver(db, token, {
+	const getSession = createLazySessionResolver(db, token, {
 		setCookie: (t, expiresAt) => setSessionCookie(event.cookies, t, expiresAt),
+		// clearSessionCookie drops the legacy name too, so an invalid/expired
+		// legacy token doesn't keep coming back on every request.
 		clearCookie: () => clearSessionCookie(event.cookies)
 	});
+
+	// When the token rode in on the legacy cookie, migrate it on first successful
+	// resolution: re-set it under the prefixed name (keeping the row's expiry) and
+	// drop the legacy cookie. Stays lazy — public paths that never resolve the
+	// session write no cookies, exactly as before; the migration then simply
+	// happens on a later request that does.
+	event.locals.getSession = !legacyToken
+		? getSession
+		: async () => {
+				const resolved = await getSession();
+				if (resolved) {
+					setSessionCookie(event.cookies, legacyToken, resolved.session.expires_at);
+					event.cookies.delete(LEGACY_SESSION_COOKIE, { path: '/' });
+				}
+				return resolved;
+			};
 
 	return resolve(event);
 };

@@ -5,13 +5,22 @@
 // built per-request rather than as a module singleton.
 import { Google } from 'arctic';
 import type { RequestEvent } from '@sveltejs/kit';
+import { dev } from '$app/environment';
+import { hostCookieName } from './cookie-name';
 
 /** OAuth scopes we request: identity + basic profile + email. */
 export const GOOGLE_SCOPES = ['openid', 'profile', 'email'];
 
-/** Short-lived cookies holding the in-flight `state` and PKCE verifier. */
-export const STATE_COOKIE = 'google_oauth_state';
-export const CODE_VERIFIER_COOKIE = 'google_code_verifier';
+/**
+ * Short-lived cookies holding the in-flight `state` and PKCE verifier.
+ * `__Host-`-prefixed in production (host-locked — see cookie-name.ts) so a
+ * subdomain can't toss a shadowing state/verifier and steer the OAuth round
+ * trip; unprefixed under `vite dev` where the required `Secure` is dropped.
+ * These live only for the ~10-minute round trip, so no legacy-name fallback
+ * is needed: a rename mid-flight just fails state validation once.
+ */
+export const STATE_COOKIE = hostCookieName('google_oauth_state', dev);
+export const CODE_VERIFIER_COOKIE = hostCookieName('google_code_verifier', dev);
 
 /**
  * Short-lived cookie holding where to send the user after a successful sign-in (a
@@ -19,7 +28,7 @@ export const CODE_VERIFIER_COOKIE = 'google_code_verifier';
  * cleared by the callback. Stored server-side for the round trip rather than in the
  * OAuth `state` so it can't influence state validation.
  */
-export const REDIRECT_COOKIE = 'oauth_redirect';
+export const REDIRECT_COOKIE = hostCookieName('oauth_redirect', dev);
 
 /** The path Google redirects back to; must match a URI registered in the console. */
 export const CALLBACK_PATH = '/auth/callback/google';
