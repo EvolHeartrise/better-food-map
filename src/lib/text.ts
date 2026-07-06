@@ -55,7 +55,17 @@ const NAMED_ENTITIES: Record<string, string> = {
 	ntilde: 'ñ',
 	auml: 'ä',
 	ouml: 'ö',
-	uuml: 'ü'
+	uuml: 'ü',
+	// HTML5-defined UPPERCASE legacy aliases (the spec's named-references list
+	// defines exactly these — mixed-case forms like "&Amp;" are NOT valid HTML5,
+	// so no general case folding here).
+	AMP: '&',
+	LT: '<',
+	GT: '>',
+	QUOT: '"',
+	COPY: '©',
+	REG: '®',
+	TRADE: '™'
 };
 
 const ENTITY_PATTERN = /&(?:#(\d+)|#[xX]([0-9a-fA-F]+)|([a-zA-Z][a-zA-Z0-9]{1,8}));/g;
