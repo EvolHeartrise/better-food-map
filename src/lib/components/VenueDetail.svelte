@@ -1,0 +1,533 @@
+<script lang="ts">
+	import { fly, type FlyParams } from 'svelte/transition';
+	import FoodTag from '$lib/components/FoodTag.svelte';
+	import DietaryIcons from '$lib/components/DietaryIcons.svelte';
+	import SourcesModal from '$lib/components/SourcesModal.svelte';
+	import LikeButton from '$lib/components/LikeButton.svelte';
+	import { categoryLabel } from '$lib/category';
+	import { safeHttpUrl } from '$lib/safe-url';
+	import type { ResolvedLocation } from '$lib/resolve-location';
+	import type { Item, User } from '$lib/server/db';
+
+	// The open location's detail panel: a column docked to the right edge (a
+	// bottom sheet on narrow screens) beside the map, rendering the venue's info
+	// block and its FULL effective menu — each item's price, description, dietary
+	// markers and course. The page owns the selection (what's open, URL/history,
+	// focus management) and the like state; this component owns the panel's DOM.
+	// `el` is bindable so the page's focus effect can target the aside;
+	// `sourcesOpen` is bindable so the page can layer its window-level Escape
+	// handling under the modal's (Escape closes only the topmost layer).
+	let {
+		location,
+		user,
+		likedLocationIds,
+		likedItemIds,
+		onToggleLocationLike,
+		onToggleItemLike,
+		onClose,
+		flyParams,
+		sourcesOpen = $bindable(false),
+		el = $bindable(null)
+	}: {
+		location: ResolvedLocation<Item>;
+		user: User | null;
+		likedLocationIds: ReadonlySet<string>;
+		likedItemIds: ReadonlySet<string>;
+		onToggleLocationLike: (id: string) => void;
+		onToggleItemLike: (id: string) => void;
+		onClose: () => void;
+		flyParams: FlyParams;
+		sourcesOpen?: boolean;
+		el?: HTMLElement | null;
+	} = $props();
+
+	const loc = $derived(location);
+	const label = $derived(categoryLabel(loc.category));
+
+	// Price formatters, one per ISO-4217 currency code (each item carries its menu's
+	// currency), built lazily and cached so a mixed-currency result set still formats
+	// every price in its own currency rather than a single hard-coded one. A plain
+	// record, not a Map — it's a non-reactive memo cache, never component state.
+	const moneyFormatters: Record<string, Intl.NumberFormat> = {};
+	function moneyFormatter(code: string): Intl.NumberFormat {
+		return (moneyFormatters[code] ??= new Intl.NumberFormat('en-CA', {
+			style: 'currency',
+			currency: code
+		}));
+	}
+
+	function formatPrice(price: number, code: string): string {
+		return moneyFormatter(code).format(price);
+	}
+
+	// --- Menu freshness --------------------------------------------------------
+	// A menu carries a `last_verified` ISO date (the day it was last checked against
+	// its source). We surface it as a relative "Scanned …" phrase beside the Menu
+	// header so a stale chain menu reads as such.
+	//
+	// The stored value is a plain calendar day, not an instant, so we compare
+	// calendar dates in the user's LOCAL timezone. `new Date('YYYY-MM-DD')` would
+	// parse as UTC midnight, and diffing that against Date.now() makes a menu
+	// scanned today read "Scanned yesterday" for part of the day anywhere west
+	// of UTC (at 5pm PDT the clock is already ≥24h past UTC midnight). So we pull
+	// the y/m/d out ourselves, build both sides as local midnights, and Math.round
+	// the difference to absorb the ±1h a DST boundary injects.
+	function verifiedDaysAgo(iso: string): number | null {
+		const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+		if (!match) return null;
+		const then = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+		const now = new Date();
+		const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+		return Math.round((today.getTime() - then.getTime()) / 86_400_000);
+	}
+	function formatScanned(iso: string): string {
+		const days = verifiedDaysAgo(iso);
+		if (days === null) return `Scanned ${iso}`;
+		if (days <= 0) return 'Scanned today';
+		if (days === 1) return 'Scanned yesterday';
+		if (days < 30) return `Scanned ${days} days ago`;
+		const months = Math.round(days / 30);
+		if (months < 12) return `Scanned ${months} month${months === 1 ? '' : 's'} ago`;
+		const years = Math.round(days / 365);
+		return `Scanned ${years} year${years === 1 ? '' : 's'} ago`;
+	}
+</script>
+
+<aside
+	class="placecard"
+	aria-label="Location details"
+	tabindex="-1"
+	bind:this={el}
+	transition:fly={flyParams}
+>
+	<button type="button" class="placecard__close" aria-label="Close place details" onclick={onClose}>
+		✕
+	</button>
+	<header class="placecard__head">
+		<h2 class="placecard__name">{loc.name}</h2>
+		{#if label}
+			<span class="badge">{label}</span>
+		{/if}
+		{#if user}
+			<span class="placecard__like">
+				<LikeButton
+					liked={likedLocationIds.has(loc.id)}
+					onToggle={() => onToggleLocationLike(loc.id)}
+					label={likedLocationIds.has(loc.id) ? 'Unlike this place' : 'Like this place'}
+					size={18}
+				/>
+			</span>
+		{/if}
+	</header>
+
+	<!-- Everything between the header and the footer scrolls as one column, so a
+	     long menu (or a tall info block on the bottom sheet) never overflows the
+	     panel. -->
+	<div class="placecard__body">
+		{#if loc.address || loc.phone || loc.website}
+			<dl class="info">
+				{#if loc.address}
+					<div class="info__row">
+						<dt>Address</dt>
+						<dd>{loc.address}</dd>
+					</div>
+				{/if}
+				{#if loc.phone}
+					<div class="info__row">
+						<dt>Phone</dt>
+						<dd><a href="tel:{loc.phone}">{loc.phone}</a></dd>
+					</div>
+				{/if}
+				{#if loc.website}
+					<!-- Website and source URLs come from world-editable feeds (OSM tags,
+					     agent-cited sources), so an anchor is only rendered for an
+					     http(s)-scheme URL; anything else shows as plain text. -->
+					{@const websiteHref = safeHttpUrl(loc.website)}
+					<div class="info__row">
+						<dt>Website</dt>
+						<dd>
+							{#if websiteHref}
+								<a href={websiteHref} target="_blank" rel="external noopener noreferrer">
+									{loc.website}
+								</a>
+							{:else}
+								{loc.website}
+							{/if}
+						</dd>
+					</div>
+				{/if}
+			</dl>
+		{/if}
+
+		<!-- Menu header: the "Menu" label, a subtle item-count/freshness note, and —
+		     when the venue cites provenance — a button opening the sources modal
+		     (sources are menu-level now). Shown whenever there's a menu or sources
+		     to head. -->
+		{#if loc.menu.length > 0 || loc.sources.length > 0}
+			<div class="placecard__menu-head">
+				<h3 class="placecard__menu-title">Menu</h3>
+				{#if loc.menu.length > 0}
+					{@const itemsLabel = `${loc.menu.length} ${loc.menu.length === 1 ? 'item' : 'items'}`}
+					<span
+						class="placecard__menu-meta"
+						title={loc.lastVerified ? `Menu last scanned on ${loc.lastVerified}` : undefined}
+					>
+						{loc.lastVerified ? `${itemsLabel} · ${formatScanned(loc.lastVerified)}` : itemsLabel}
+					</span>
+				{/if}
+				{#if loc.sources.length > 0}
+					<button type="button" class="placecard__sources-btn" onclick={() => (sourcesOpen = true)}>
+						{loc.sources.length}
+						{loc.sources.length === 1 ? 'Source' : 'Sources'}
+					</button>
+				{/if}
+			</div>
+		{/if}
+
+		<!-- The venue's full menu. The map labels only rotate a teaser item per
+		     venue, so this is where the whole menu — each item's price, description,
+		     dietary markers and course — is read. -->
+		{#if loc.menu.length > 0}
+			<ul class="placecard__menu">
+				{#each loc.menu as menuItem (menuItem.id)}
+					<li class="placecard__item">
+						<span class="placecard__item-line">
+							<span class="placecard__item-main">
+								<span class="placecard__item-name">{menuItem.item_name}</span>
+								<DietaryIcons tags={menuItem.tags} />
+							</span>
+							{#if menuItem.price !== null}
+								<span class="placecard__item-price">
+									{formatPrice(menuItem.price, menuItem.currency)}
+								</span>
+							{/if}
+							{#if user}
+								<span class="placecard__item-like">
+									<LikeButton
+										liked={likedItemIds.has(menuItem.id)}
+										onToggle={() => onToggleItemLike(menuItem.id)}
+										label={likedItemIds.has(menuItem.id) ? 'Unlike this item' : 'Like this item'}
+										size={14}
+									/>
+								</span>
+							{/if}
+						</span>
+						{#if menuItem.description}
+							<p class="placecard__item-desc">{menuItem.description}</p>
+						{/if}
+						{@render itemExtras(menuItem)}
+					</li>
+				{/each}
+			</ul>
+		{/if}
+	</div>
+
+	{#if loc.menu.length === 0}
+		<footer class="placecard__foot">
+			<span class="placecard__hint">No menu on file yet.</span>
+		</footer>
+	{/if}
+
+	<SourcesModal sources={loc.sources} bind:open={sourcesOpen} />
+</aside>
+
+<!-- The item's course tag, shown beneath each menu row in the open venue's card.
+     Dietary tags are shown as icons on the row above (see DietaryIcons), so they're
+     omitted here to avoid repeating them. An `optional` tag keeps its dashed marker.
+     Data sources are menu-level now, shown once in the venue info block above. -->
+{#snippet itemExtras(menuItem: Item)}
+	{@const courseTags = menuItem.tags.filter((tag) => tag.tag_type === 'course')}
+	{#if courseTags.length > 0}
+		<ul class="taglist">
+			{#each courseTags as tag (tag.id)}
+				<li><FoodTag {tag} optional={tag.optional} /></li>
+			{/each}
+		</ul>
+	{/if}
+{/snippet}
+
+<style>
+	/* --- Location detail panel (docked to the right of the map) --------------- */
+	/* The open location's page details: a full-height glass column pinned to the
+	   right edge, over the map (which insets its camera by the same width, so the
+	   venue centres in the visible area to its left). Slides in/out via the fly
+	   transition on the element. The 26rem width is mirrored by PANEL_WIDTH_PX. */
+	.placecard {
+		position: absolute;
+		z-index: 12;
+		top: 0;
+		right: 0;
+		bottom: 0;
+		width: min(26rem, 100vw);
+		display: flex;
+		flex-direction: column;
+		gap: 0.6rem;
+		padding: calc(0.85rem + env(safe-area-inset-top)) calc(0.95rem + env(safe-area-inset-right))
+			calc(0.85rem + env(safe-area-inset-bottom)) 0.95rem;
+		background: rgba(255, 255, 255, 0.94);
+		backdrop-filter: blur(16px) saturate(180%);
+		-webkit-backdrop-filter: blur(16px) saturate(180%);
+		border-left: 1px solid rgba(255, 255, 255, 0.6);
+		box-shadow: -12px 0 34px rgba(0, 0, 0, 0.22);
+	}
+
+	/* The panel takes programmatic focus on open (tabindex="-1"); it isn't
+	   tab-reachable, so a focus ring on the whole panel is noise. */
+	.placecard:focus {
+		outline: none;
+	}
+
+	/* The scrolling middle of the panel (info block + menu), between the fixed
+	   header and footer. min-height: 0 lets it actually shrink inside the flex
+	   column so overflow-y can take over. */
+	.placecard__body {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+		display: flex;
+		flex-direction: column;
+		gap: 0.6rem;
+	}
+
+	.placecard__close {
+		position: absolute;
+		top: 0.5rem;
+		right: 0.5rem;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 1.6rem;
+		height: 1.6rem;
+		padding: 0;
+		font-size: 0.8rem;
+		line-height: 1;
+		color: var(--color-text-muted);
+		background: rgba(0, 0, 0, 0.04);
+		border: 1px solid rgba(0, 0, 0, 0.08);
+		border-radius: 999px;
+		transition:
+			background-color 0.12s,
+			color 0.12s;
+	}
+
+	.placecard__close:hover {
+		color: var(--color-text);
+		background: rgba(0, 0, 0, 0.09);
+	}
+
+	.placecard__head {
+		display: flex;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+		/* Clear the absolutely-positioned close button. */
+		padding-right: 1.8rem;
+	}
+
+	.placecard__name {
+		margin: 0;
+		font-size: 1.1rem;
+	}
+
+	.placecard__like {
+		display: inline-flex;
+	}
+
+	.placecard__foot {
+		display: flex;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+	}
+
+	.placecard__hint {
+		font-size: 0.78rem;
+		color: var(--color-text-muted);
+	}
+
+	/* The open venue's full menu, listed inside the panel body (which owns the
+	   scrolling — see .placecard__body). */
+	.placecard__menu {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+	}
+
+	.placecard__item {
+		display: flex;
+		flex-direction: column;
+		gap: 0.2rem;
+		border-top: 1px solid rgba(0, 0, 0, 0.06);
+		padding: 0.5rem 0.1rem;
+	}
+
+	.placecard__menu li:first-child {
+		border-top: none;
+	}
+
+	.placecard__item-line {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		gap: 0.75rem;
+	}
+
+	/* Name + dietary icons, grouped so the icons sit directly to the right of the name
+	   text. This group soaks the spare width (flex: 1) so the price (when the item has
+	   one) and the like heart (when signed in) sit together at the row's right edge;
+	   the icons wrap under the name only when the row is too narrow to hold them
+	   inline. */
+	.placecard__item-main {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		column-gap: 0.4rem;
+		row-gap: 0.15rem;
+	}
+
+	.placecard__item-name {
+		font-size: 0.85rem;
+		font-weight: 600;
+	}
+
+	/* The per-item like heart on a menu row. Centred on the row's height (the line
+	   aligns on baselines, which a button doesn't share) so the row stays one line. */
+	.placecard__item-like {
+		display: inline-flex;
+		align-self: center;
+	}
+
+	.placecard__item-price {
+		font-size: 0.82rem;
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
+		color: var(--color-text-muted);
+	}
+
+	.placecard__item-desc {
+		margin: 0;
+		font-size: 0.78rem;
+		color: var(--color-text-muted);
+	}
+
+	.badge {
+		display: inline-block;
+		padding: 0.15rem 0.55rem;
+		border-radius: 999px;
+		background-color: var(--color-accent);
+		color: #fff;
+		font-size: 0.72rem;
+		font-weight: 600;
+		line-height: 1.4;
+		white-space: nowrap;
+	}
+
+	.info {
+		display: grid;
+		gap: 0.4rem;
+		margin: 0;
+		padding: 0.75rem 0.85rem;
+		background: rgba(255, 255, 255, 0.6);
+		border: 1px solid var(--color-border);
+		border-radius: 0.7rem;
+	}
+
+	.info__row {
+		display: grid;
+		grid-template-columns: 5rem 1fr;
+		gap: 0.25rem 0.75rem;
+		align-items: baseline;
+	}
+
+	.info dt {
+		color: var(--color-text-muted);
+		font-size: 0.7rem;
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+	}
+
+	.info dd {
+		margin: 0;
+		font-size: 0.85rem;
+		word-break: break-word;
+	}
+
+	/* The Menu header row: the "Menu" label with its item-count/freshness note
+	   sitting quietly beside it, and the sources button pushed to the trailing
+	   edge. */
+	.placecard__menu-head {
+		display: flex;
+		align-items: baseline;
+		gap: 0.5rem;
+	}
+
+	.placecard__menu-title {
+		margin: 0;
+		font-size: 0.95rem;
+	}
+
+	/* The subtle note beside the Menu header: "12 items · Scanned 3 days ago". */
+	.placecard__menu-meta {
+		font-size: 0.72rem;
+		color: var(--color-text-muted);
+		white-space: nowrap;
+	}
+
+	/* The "N Sources" button opening the sources modal: a quiet outlined pill that
+	   reads as a control without competing with the menu items below it. */
+	.placecard__sources-btn {
+		flex-shrink: 0;
+		margin-left: auto;
+		padding: 0.2rem 0.6rem;
+		font-size: 0.72rem;
+		font-weight: 600;
+		color: var(--color-accent);
+		background: color-mix(in srgb, var(--color-accent) 8%, #fff);
+		border: 1px solid color-mix(in srgb, var(--color-accent) 30%, #fff);
+		border-radius: 999px;
+		cursor: pointer;
+		transition:
+			background-color 0.12s,
+			border-color 0.12s;
+	}
+
+	.placecard__sources-btn:hover {
+		background: color-mix(in srgb, var(--color-accent) 16%, #fff);
+		border-color: color-mix(in srgb, var(--color-accent) 45%, #fff);
+	}
+
+	/* The course-tag pill row under a menu item in the card. The pills themselves are
+	   <FoodTag>; this only lays them out. */
+	.taglist {
+		list-style: none;
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.3rem;
+		margin: 0.4rem 0 0;
+		padding: 0;
+	}
+
+	/* On narrow screens the detail panel becomes a bottom sheet: the map keeps the
+	   top of the screen (and centres the venue there via the matching bottom
+	   camera inset), the details slide up from below. Height mirrors
+	   SHEET_HEIGHT_PX, capped so a short landscape screen keeps some map. */
+	@media (max-width: 48rem) {
+		.placecard {
+			top: auto;
+			left: 0;
+			right: 0;
+			width: auto;
+			height: min(calc(320px + env(safe-area-inset-bottom)), 55dvh);
+			padding: 0.85rem 0.95rem calc(0.85rem + env(safe-area-inset-bottom));
+			border-left: none;
+			border-top: 1px solid rgba(255, 255, 255, 0.6);
+			border-radius: 0.9rem 0.9rem 0 0;
+			box-shadow: 0 -12px 34px rgba(0, 0, 0, 0.22);
+		}
+	}
+</style>
