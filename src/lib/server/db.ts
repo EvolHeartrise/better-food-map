@@ -213,8 +213,17 @@ export interface MapData<I extends MapItem = MapItem> {
 	 * by-id detail read (the lean viewport payload ships `[]` — the map never renders
 	 * them); every menu carries a `last_verified` date (enforced by migration 0012's
 	 * triggers), typed nullable only because the read column is.
+	 *
+	 * `matchingItemCount` rides only on the lean, item-capped viewport/search reads
+	 * (see {@link REP_ITEM_CAP}): the number of the menu's items that MATCH the
+	 * active filter BEFORE the top-N cut (the whole menu in browse). `menus[id]`
+	 * carries at most `REP_ITEM_CAP` of them, so this keeps the true total for a
+	 * "showing 10 of N" affordance. Absent on the uncapped by-id detail read.
 	 */
-	menuMeta: Record<string, { last_verified: string | null; sources: Source[] }>;
+	menuMeta: Record<
+		string,
+		{ last_verified: string | null; sources: Source[]; matchingItemCount?: number }
+	>;
 }
 
 // ---------------------------------------------------------------------------
@@ -427,10 +436,52 @@ export function escapeLikePattern(value: string): string {
  * Per-cell venue cap on the FULL level: a 0.02°(~2.2 km) tile in a dense core
  * ships at most this many venues, importance-ranked — a venue WITH a menu
  * outranks one without, then more-liked outranks less (matching the rep-level
- * ranking) — so one downtown tile can't blow up the payload. Representative
- * levels cap at 1 by construction.
+ * ranking) — so one downtown tile can't blow up the payload.
  */
 export const FULL_CELL_CAP = 100;
+
+/**
+ * Per-cell venue cap on a REPRESENTATIVE level: each rung-k cell ships its top
+ * {@link REP_CELL_CAP} venues by the same importance ranking (menu'd first,
+ * then more-liked, then name/id), not just its single winner. A handful per
+ * cell reads as a legible spread while still surfacing runners-up a lone
+ * representative would hide — a cell's whole contents remain a pure function of
+ * the data (the top-N of a partition is order-stable), so it caches per-cell
+ * across pans and visitors exactly as the 1-per-cell read did. The per-request
+ * cell count is still bounded by the coarsening invariant (GRID_REP_LIMIT), so
+ * a rep batch resolves at most REP_CELL_CAP × that many locations.
+ */
+export const REP_CELL_CAP = 3;
+
+/**
+ * Per-menu item cap on the lean viewport/search payload: a referenced menu
+ * ships at most this many items — its most-liked MATCHING items (see
+ * {@link ItemCap}) — instead of its whole card. A 300-item chain menu that the
+ * map only draws a pin for no longer serializes 300 lean items per viewport;
+ * the full menu still loads on demand through the by-id detail read (which is
+ * never capped) when a venue's panel opens. The true pre-cap count rides on
+ * {@link MapData.menuMeta}'s `matchingItemCount` so a "showing 10 of N"
+ * affordance keeps the total.
+ */
+export const REP_ITEM_CAP = 10;
+
+/**
+ * How {@link queryMapData} caps a menu's items on the lean path. `dietTagIds`
+ * is the active dietary selector's implication closure ({@link dietFilterTagIds})
+ * — empty for plain browse, in which case every item is a "match"; when set,
+ * only items carrying one of those tags are kept. The kept set is then ranked by
+ * item-like count (desc, name/id for determinism) and cut to `limit`. Passed
+ * ONLY when there is no active free-text term: a text query matches per-VENUE
+ * (name OR item, across a SHARED menu), so capping a shared menu's items could
+ * drop the very item a branch matched on — the client re-filter would then hide
+ * that marker. With no cap under text, the client's item-level text filter still
+ * sees the whole menu. Never passed on the detail read (the panel needs the full
+ * menu).
+ */
+export interface ItemCap {
+	dietTagIds: string[];
+	limit: number;
+}
 
 /**
  * A {@link MapData} payload plus the per-cell membership it was asked for:
@@ -476,10 +527,26 @@ export async function getMapCellsData(
 	// nothing to ask — and the cover of an empty set would be an infinite box.
 	if (cells.length === 0) return { locations: [], menus: {}, menuMeta: {}, cells: {} };
 	const cellDeg = levelCell(level);
-	const perCellCap = level === 0 ? FULL_CELL_CAP : 1;
+	const perCellCap = level === 0 ? FULL_CELL_CAP : REP_CELL_CAP;
 	const cover = cellsCoverBounds(cells, cellDeg);
 	const keys = cells.map(([i, j]) => cellKey(i, j));
 	const membership = search === null ? null : searchMembership(search);
+
+	// The lean payload caps each menu to its top {@link REP_ITEM_CAP} items, but
+	// only when no free-text term is active — under text the client re-filters the
+	// SHARED menu per venue (name OR item), so a cap could hide the item a branch
+	// matched on (see {@link ItemCap}). The diet selector, by contrast, is a pure
+	// per-item tag predicate the cap can honour: pass its closure so the kept ten
+	// are the diet-matching ones. Browse (no filter at all) caps over the whole
+	// menu. The cap is (filter, cell)-pure like the rest of the read, so it caches
+	// identically per block.
+	const hasText = search !== null && search.query !== '';
+	const itemCap: ItemCap | null = hasText
+		? null
+		: {
+				dietTagIds: search?.dietTagId ? dietFilterTagIds(search.dietTagId) : [],
+				limit: REP_ITEM_CAP
+			};
 
 	// `ck` is built to be string-identical to $lib/grid's cellKey: coordinates
 	// shifted non-negative (+90/+180) so the truncating CAST floors exactly like
@@ -544,7 +611,8 @@ export async function getMapCellsData(
 		[JSON.stringify(picked.map((row) => row.id))],
 		`ORDER BY name, id LIMIT ${picked.length}`,
 		false,
-		new Map(picked.map((row) => [row.id, row.likes]))
+		new Map(picked.map((row) => [row.id, row.likes])),
+		itemCap
 	);
 	return { ...data, cells: byCell };
 }
@@ -738,7 +806,8 @@ async function queryMapData(
 	params: (string | number)[],
 	capClause?: string,
 	detail?: false,
-	scores?: Map<string, number>
+	scores?: Map<string, number>,
+	itemCap?: ItemCap | null
 ): Promise<MapData>;
 async function queryMapData(
 	db: D1Like,
@@ -746,7 +815,8 @@ async function queryMapData(
 	params: (string | number)[],
 	capClause: string = DEFAULT_MAP_CAP,
 	detail: boolean = false,
-	scores?: Map<string, number>
+	scores?: Map<string, number>,
+	itemCap: ItemCap | null = null
 ): Promise<MapData> {
 	// The one evaluation of `locFilter`: the capped, `capClause`-ordered location
 	// rows themselves. `closed_at IS NULL` hides soft-deleted (permanently-closed)
@@ -783,6 +853,46 @@ async function queryMapData(
 	const inMenus = `SELECT value FROM json_each(?)`;
 	const inItems = `SELECT id FROM items WHERE menu_id IN (SELECT value FROM json_each(?))`;
 
+	// The item read. Uncapped by default (the by-id detail read wants the whole
+	// menu; so does any lean read with no cap): every item of the referenced
+	// menus, ordered by name. With an {@link ItemCap} (the lean viewport/search
+	// path) it instead keeps each menu's top `limit` items — filtered to the diet
+	// closure when set, then ranked by item-like count (desc, name/id to break
+	// ties deterministically so the cut is order-stable and cache-pure) — and
+	// carries each menu's pre-cut match count through `COUNT(*) OVER` so the
+	// caller can surface "N of `limit`". `match_count` is identical on every row
+	// of a menu; the assembly below reads it once per menu.
+	const itemStatement =
+		itemCap === null
+			? db
+					.prepare(
+						`SELECT ${detail ? ITEM_FIELDS : MAP_ITEM_FIELDS} FROM items WHERE menu_id IN (${inMenus}) ORDER BY menu_id, item_name`
+					)
+					.bind(menuIds)
+			: db
+					.prepare(
+						`WITH matched AS (
+							SELECT i.id AS id, i.menu_id AS menu_id, i.item_name AS item_name,
+								(SELECT COUNT(*) FROM liked_items li WHERE li.item_id = i.id) AS ilikes
+							FROM items i
+							WHERE i.menu_id IN (${inMenus})${
+								itemCap.dietTagIds.length === 0
+									? ''
+									: ` AND i.id IN (SELECT item_id FROM item_tags WHERE tag_id IN (${itemCap.dietTagIds
+											.map(() => '?')
+											.join(', ')}))`
+							}
+						),
+						ranked AS (
+							SELECT id, menu_id, item_name,
+								ROW_NUMBER() OVER (PARTITION BY menu_id ORDER BY ilikes DESC, item_name, id) AS irn,
+								COUNT(*) OVER (PARTITION BY menu_id) AS match_count
+							FROM matched
+						)
+						SELECT id, menu_id, item_name, match_count FROM ranked WHERE irn <= ? ORDER BY menu_id, irn`
+					)
+					.bind(menuIds, ...itemCap.dietTagIds, itemCap.limit);
+
 	// The tuple cast mirrors each statement's projection 1:1 — `batch` itself is
 	// typed `unknown[]` on D1Like because the two backends (Worker binding,
 	// d1-http shim) type their per-statement results differently, though both
@@ -791,11 +901,7 @@ async function queryMapData(
 	// on the lean map payload), appended after the fixed core statements so the
 	// destructuring holds in both modes — its slot is simply absent on a lean read.
 	const coreStatements = [
-		db
-			.prepare(
-				`SELECT ${detail ? ITEM_FIELDS : MAP_ITEM_FIELDS} FROM items WHERE menu_id IN (${inMenus}) ORDER BY menu_id, item_name`
-			)
-			.bind(menuIds),
+		itemStatement,
 		db
 			.prepare(`SELECT id, currency, last_verified FROM menus WHERE id IN (${inMenus})`)
 			.bind(menuIds),
@@ -838,7 +944,7 @@ async function queryMapData(
 		{ results: overrideRows },
 		menuSourceRes
 	] = (await db.batch([...coreStatements, ...detailStatements])) as [
-		{ results: ItemRow[] },
+		{ results: (ItemRow & { match_count?: number })[] },
 		{
 			results: { id: string; currency: string; last_verified: string | null }[];
 		},
@@ -856,11 +962,23 @@ async function queryMapData(
 	const tagsByItem = detail ? groupItemTags(itemTagRows) : groupMapItemTags(itemTagRows);
 	const sourcesByMenu = groupSources(menuSourceRes?.results ?? []);
 	const currencyByMenu = new Map(menuCurrencyRows.map((r) => [r.id, r.currency]));
+	// Per-menu pre-cut match count (item-capped reads only): every row of a menu
+	// carries the same `COUNT(*) OVER` total, so the first one seen wins. A menu
+	// with zero matching items ships no item rows, so it defaults to 0 below.
+	const matchCountByMenu = new Map<string, number>();
+	if (itemCap !== null) {
+		for (const row of itemRows) {
+			if (row.match_count !== undefined && !matchCountByMenu.has(row.menu_id)) {
+				matchCountByMenu.set(row.menu_id, row.match_count);
+			}
+		}
+	}
 	const menuMeta: MapData['menuMeta'] = {};
 	for (const row of menuCurrencyRows) {
 		menuMeta[row.id] = {
 			last_verified: row.last_verified,
-			sources: sourcesByMenu.get(row.id) ?? []
+			sources: sourcesByMenu.get(row.id) ?? [],
+			...(itemCap === null ? {} : { matchingItemCount: matchCountByMenu.get(row.id) ?? 0 })
 		};
 	}
 
