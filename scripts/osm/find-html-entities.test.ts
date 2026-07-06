@@ -9,7 +9,7 @@ import {
 	updateLocations,
 	updateBrand,
 	updateMenu
-} from '../../src/lib/server/db';
+} from '../../src/lib/server/db-write';
 import { freshDb } from '../test-d1';
 
 /** A minimal location insert; override per test. */

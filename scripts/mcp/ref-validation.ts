@@ -12,13 +12,8 @@
 //     assertBrandMenuRefs exists to prevent (a brandless location serving a
 //     shared brand menu; a cross-brand brand/menu link).
 
-import {
-	assertBrandMenuRefs,
-	getItemById,
-	getMenuById,
-	type D1Like,
-	type Location
-} from '../../src/lib/server/db';
+import { type D1Like, type Location } from '../../src/lib/server/db';
+import { assertBrandMenuRefs, getItemById, getMenuById } from '../../src/lib/server/db-write';
 
 /** The fields of an update_items patch this validation cares about. */
 export interface ItemMovePatch {

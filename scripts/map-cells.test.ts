@@ -13,14 +13,16 @@ import {
 	FULL_CELL_CAP,
 	getLocationMapData,
 	getMapCellsData,
+	setLocationLike,
+	type MapCellsData
+} from '../src/lib/server/db';
+import {
 	insertBrand,
 	insertFoods,
 	insertLocations,
 	insertMenu,
-	setLocationLike,
-	type LocationInsert,
-	type MapCellsData
-} from '../src/lib/server/db';
+	type LocationInsert
+} from '../src/lib/server/db-write';
 import { assembleCellsData, mergeCellSlices, splitCellSlices } from '../src/lib/map-cells';
 import { cellKey, cellsForBounds, levelCell, levelForBounds, MIN_REP_LEVEL } from '../src/lib/grid';
 import { CellStore, CELL_STORE_MAX, CELL_TTL_MS } from '../src/lib/cell-store';

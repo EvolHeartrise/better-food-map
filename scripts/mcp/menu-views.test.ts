@@ -5,14 +5,13 @@
 // same {@link Item} shape getMenuWithItems / getFoodByLocation return.
 
 import { test, expect } from 'bun:test';
+import { type D1Like, type MenuWithItems } from '../../src/lib/server/db';
 import {
 	insertBrand,
 	insertMenu,
 	insertMenuItems,
-	getMenuWithItems,
-	type D1Like,
-	type MenuWithItems
-} from '../../src/lib/server/db';
+	getMenuWithItems
+} from '../../src/lib/server/db-write';
 import { freshDb } from '../test-d1';
 import { itemNameView, menuItemsSummary } from './menu-views';
 

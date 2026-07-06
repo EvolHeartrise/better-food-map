@@ -27,6 +27,15 @@ import * as v from 'valibot';
 import { toJsonSchema } from '@valibot/to-json-schema';
 
 import {
+	DEFAULT_CURRENCY,
+	TAGS,
+	type Bounds,
+	type D1Like,
+	type Item,
+	type Location,
+	type LocationWithTags
+} from '../src/lib/server/db';
+import {
 	assertBrandMenuRefs,
 	countMenuItems,
 	getLocationsWithTags,
@@ -65,15 +74,8 @@ import {
 	itemNameCollisions,
 	markLocationsDistinct,
 	unmarkLocationsDistinct,
-	DEFAULT_CURRENCY,
-	TAGS,
-	type Bounds,
-	type D1Like,
-	type Item,
-	type Location,
-	type LocationInsert,
-	type LocationWithTags
-} from '../src/lib/server/db';
+	type LocationInsert
+} from '../src/lib/server/db-write';
 import { createHttpD1 } from '../src/lib/server/d1-http';
 import { CATEGORIES } from '../src/lib/category';
 import { sourceInputSchema } from './mcp/source-input';

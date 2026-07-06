@@ -37,7 +37,7 @@ import {
 	deleteItem,
 	deleteMenu,
 	setLocationClosed
-} from '../src/lib/server/db';
+} from '../src/lib/server/db-write';
 import { searchableQuery, longestLiteralRun } from '../src/lib/search';
 import { freshDb, searchMapData } from './test-d1';
 import type { TestD1 } from './test-d1';

@@ -14,6 +14,7 @@
 
 import { test, expect } from 'bun:test';
 import * as v from 'valibot';
+import { type Item, type LocationWithTags, type D1Like } from '../../src/lib/server/db';
 import {
 	insertLocations,
 	insertBrand,
@@ -29,11 +30,8 @@ import {
 	getFoodByLocation,
 	getLocationItemOverrides,
 	getLocationsWithTags,
-	countLocations,
-	type Item,
-	type LocationWithTags,
-	type D1Like
-} from '../../src/lib/server/db';
+	countLocations
+} from '../../src/lib/server/db-write';
 import { freshDb } from '../test-d1';
 import { findIncompleteMenus } from '../osm/find-incomplete-menus';
 import { findHtmlEntities } from '../osm/find-html-entities';

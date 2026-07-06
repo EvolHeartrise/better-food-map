@@ -14,7 +14,7 @@ import {
 	getMenuById,
 	insertBrand,
 	insertMenu
-} from '../src/lib/server/db';
+} from '../src/lib/server/db-write';
 import { freshDb } from './test-d1';
 
 /** Structured address parts shared by fixtures (all required parts present). */

@@ -15,7 +15,8 @@
 // find-duplicate-locations.test.ts against the real migration schema.
 // ---------------------------------------------------------------------------
 
-import { orderedPair, reviewedPairKeys, type D1Like } from '../../src/lib/server/db';
+import { type D1Like } from '../../src/lib/server/db';
+import { orderedPair, reviewedPairKeys } from '../../src/lib/server/db-write';
 import { SpatialGrid, haversineMeters } from './geo';
 import { namesMatch, normalizeName } from './search-poi';
 
