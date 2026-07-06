@@ -51,15 +51,24 @@ function d1(sql: string): unknown[] {
 	return JSON.parse(run.stdout.slice(run.stdout.indexOf('[')))[0].results;
 }
 
+// Chunked so a many-thousand-item session never builds a statement past D1's
+// per-query size limits.
+function chunks<T>(arr: T[], size: number): T[][] {
+	const out: T[][] = [];
+	for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+	return out;
+}
+
 // Rail 1: drop verdicts for items that already carry a required course tag.
-const idList = verdicts.map((c) => `'${c.id}'`).join(',');
-const alreadyTagged = new Set(
-	(
-		d1(
-			`SELECT DISTINCT item_id FROM item_tags WHERE optional = 0 AND tag_id IN (${courseList}) AND item_id IN (${idList})`
-		) as Array<{ item_id: string }>
-	).map((r) => r.item_id)
-);
+const alreadyTagged = new Set<string>();
+for (const chunk of chunks(verdicts, 400)) {
+	const idList = chunk.map((c) => `'${c.id}'`).join(',');
+	for (const r of d1(
+		`SELECT DISTINCT item_id FROM item_tags WHERE optional = 0 AND tag_id IN (${courseList}) AND item_id IN (${idList})`
+	) as Array<{ item_id: string }>) {
+		alreadyTagged.add(r.item_id);
+	}
+}
 const toApply = verdicts.filter((c) => !alreadyTagged.has(c.id));
 
 const rows = toApply.flatMap((c) =>
@@ -68,8 +77,8 @@ const rows = toApply.flatMap((c) =>
 		tag
 	}))
 );
-if (rows.length > 0) {
-	const values = rows.map((r) => `('${r.id}', '${r.tag}', 0)`).join(',\n');
+for (const chunk of chunks(rows, 400)) {
+	const values = chunk.map((r) => `('${r.id}', '${r.tag}', 0)`).join(',\n');
 	d1(`INSERT OR IGNORE INTO item_tags (item_id, tag_id, optional) VALUES ${values}`);
 }
 

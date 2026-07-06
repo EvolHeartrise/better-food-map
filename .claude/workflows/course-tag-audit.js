@@ -15,7 +15,15 @@ export const meta = {
 //   for small pages; classifications are returned in the workflow result.
 const input = typeof args === 'string' ? JSON.parse(args) : args;
 const items = input?.items;
-const fileBatches = input?.batches;
+// Dir shorthand: { dir, count } expands to batches [{src: dir/b<i>.json, out: dir/c<i>.json}].
+const fileBatches =
+	input?.batches ??
+	(input?.dir && input?.count
+		? Array.from({ length: input.count }, (_, i) => ({
+				src: `${input.dir}/b${i}.json`,
+				out: `${input.dir}/c${i}.json`
+			}))
+		: undefined);
 if (
 	(!Array.isArray(items) || items.length === 0) &&
 	(!Array.isArray(fileBatches) || fileBatches.length === 0)

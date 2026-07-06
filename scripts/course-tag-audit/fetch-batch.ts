@@ -15,7 +15,7 @@
 import { spawnSync } from 'node:child_process';
 import { TAGS } from '../../src/lib/tags';
 
-const limit = Math.min(Math.max(Number(process.argv[2] ?? 200), 1), 1000);
+const limit = Math.min(Math.max(Number(process.argv[2] ?? 200), 1), 20000);
 const courseIds = TAGS.filter((t) => t.tag_type === 'course').map((t) => t.id);
 
 const sql =
