@@ -88,3 +88,28 @@ export function decodeHtmlEntities(value: string): string {
 		return NAMED_ENTITIES[named] ?? match;
 	});
 }
+
+/**
+ * Longest slug we ever emit. A descriptive URL slug is for humans/crawlers to
+ * read, not to round-trip data (the id carries identity), so a runaway venue
+ * name is truncated rather than producing a 300-character URL. 60 comfortably
+ * fits a name + city and stays inside what Google renders in a SERP.
+ */
+const MAX_SLUG_LENGTH = 60;
+
+/**
+ * A URL-safe, lowercase, hyphen-separated slug: diacritics folded (Québec →
+ * quebec), every run of non-alphanumerics collapsed to a single hyphen, and the
+ * ends trimmed of hyphens. Truncated to {@link MAX_SLUG_LENGTH} without leaving
+ * a trailing hyphen. Returns `''` when the input has no alphanumerics at all
+ * (e.g. a name that is pure punctuation) — callers decide the fallback. Pure and
+ * client-safe, so the map page, the sitemap builder and the browse routes all
+ * mint identical slugs from the same fields.
+ */
+export function slugify(value: string): string {
+	const slug = stripDiacritics(value)
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, '-')
+		.replace(/^-+|-+$/g, '');
+	return slug.length > MAX_SLUG_LENGTH ? slug.slice(0, MAX_SLUG_LENGTH).replace(/-+$/, '') : slug;
+}

@@ -3,14 +3,18 @@
 // (src/routes/sitemaps/[page=int].xml/+server.ts). Like db.ts, this module is
 // RUNTIME-AGNOSTIC — no `bun:`/`node:` imports and no SvelteKit request
 // context — so the same code runs in the Worker isolate and under `bun test`.
+// (locationPath and its slugify transitively, and CANONICAL_ORIGIN, are all
+// pure/client-safe too, imported relatively — never via `$lib` — so `bun test`
+// resolves them.)
+import { locationPath } from '../location-path';
+import { CANONICAL_ORIGIN } from '../canonical';
 
 /**
- * The canonical public origin. Hard-coded rather than derived from the request:
- * hooks.server.ts 301-redirects every alias host here, and a sitemap must list
- * the URLs crawlers should index, not whichever host happened to serve the
- * fetch. Mirrors CANONICAL_ORIGIN in +page.svelte (the venue og:url).
+ * The canonical public origin (shared with the venue head and browse pages).
+ * A sitemap must list the URLs crawlers should index, not whichever alias host
+ * happened to serve the fetch — hooks.server.ts 301s every alias onto this one.
  */
-const ORIGIN = 'https://betterfoodmaps.com';
+const ORIGIN = CANONICAL_ORIGIN;
 
 /**
  * Venue entries per sitemap page. The sitemap protocol caps a file at 50,000
@@ -19,9 +23,16 @@ const ORIGIN = 'https://betterfoodmaps.com';
  */
 export const SITEMAP_PAGE_SIZE = 40_000;
 
-/** One sitemap row: a venue id plus its menu's last-verification date, or null. */
+/**
+ * One sitemap row: a venue's id plus the `name`/`city` that build its canonical
+ * descriptive slug (see `locationSlug`), and its menu's last-verification date
+ * (or null). name/city ride along so a page can be emitted at its slugged URL
+ * without a second read.
+ */
 export interface SitemapEntry {
 	id: string;
+	name: string;
+	city: string;
 	last_verified: string | null;
 }
 
@@ -68,7 +79,12 @@ export function buildSitemapPageXml(
 ): string {
 	const urls = includeRoot ? [`<url><loc>${escapeXml(ORIGIN)}/</loc></url>`] : [];
 	for (const entry of entries) {
-		const loc = escapeXml(`${ORIGIN}/locations/${encodeURIComponent(entry.id)}`);
+		// The canonical descriptive URL — the SAME address the venue head's
+		// <link rel="canonical"> emits and the server 301s bare/wrong-slug URLs
+		// onto (all three share locationPath). Still XML-escaped: locationPath
+		// percent-encodes the id but not the human slug prefix, so escaping keeps
+		// the document well-formed no matter what a name folds down to.
+		const loc = escapeXml(`${ORIGIN}${locationPath(entry)}`);
 		const lastmod = entry.last_verified
 			? `<lastmod>${escapeXml(entry.last_verified)}</lastmod>`
 			: '';

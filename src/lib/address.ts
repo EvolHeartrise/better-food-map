@@ -375,6 +375,113 @@ export function normalizeCountry(value: string | null | undefined): string | nul
 	return COUNTRY_NAMES[foldName(raw)] ?? null;
 }
 
+// ---------------------------------------------------------------------------
+// Display labels: the inverse of the normalizers above — a stored 2-letter
+// region/country code back to a human name, for the geographic browse pages
+// (src/routes/[country]/…). Written out explicitly rather than inverting the
+// name→code maps, whose keys are lower-cased and many-to-one (so inversion would
+// lose the canonical casing and pick an arbitrary spelling). The CA and US code
+// sets are disjoint (see {@link regionCountry}), so one code→name map is
+// unambiguous across both.
+// ---------------------------------------------------------------------------
+
+/** Province/state code → canonical display name (CA provinces, then US states). */
+const REGION_LABELS: Record<string, string> = {
+	AB: 'Alberta',
+	BC: 'British Columbia',
+	MB: 'Manitoba',
+	NB: 'New Brunswick',
+	NL: 'Newfoundland and Labrador',
+	NS: 'Nova Scotia',
+	NT: 'Northwest Territories',
+	NU: 'Nunavut',
+	ON: 'Ontario',
+	PE: 'Prince Edward Island',
+	QC: 'Quebec',
+	SK: 'Saskatchewan',
+	YT: 'Yukon',
+	AL: 'Alabama',
+	AK: 'Alaska',
+	AZ: 'Arizona',
+	AR: 'Arkansas',
+	CA: 'California',
+	CO: 'Colorado',
+	CT: 'Connecticut',
+	DE: 'Delaware',
+	FL: 'Florida',
+	GA: 'Georgia',
+	HI: 'Hawaii',
+	ID: 'Idaho',
+	IL: 'Illinois',
+	IN: 'Indiana',
+	IA: 'Iowa',
+	KS: 'Kansas',
+	KY: 'Kentucky',
+	LA: 'Louisiana',
+	ME: 'Maine',
+	MD: 'Maryland',
+	MA: 'Massachusetts',
+	MI: 'Michigan',
+	MN: 'Minnesota',
+	MS: 'Mississippi',
+	MO: 'Missouri',
+	MT: 'Montana',
+	NE: 'Nebraska',
+	NV: 'Nevada',
+	NH: 'New Hampshire',
+	NJ: 'New Jersey',
+	NM: 'New Mexico',
+	NY: 'New York',
+	NC: 'North Carolina',
+	ND: 'North Dakota',
+	OH: 'Ohio',
+	OK: 'Oklahoma',
+	OR: 'Oregon',
+	PA: 'Pennsylvania',
+	RI: 'Rhode Island',
+	SC: 'South Carolina',
+	SD: 'South Dakota',
+	TN: 'Tennessee',
+	TX: 'Texas',
+	UT: 'Utah',
+	VT: 'Vermont',
+	VA: 'Virginia',
+	WA: 'Washington',
+	WV: 'West Virginia',
+	WI: 'Wisconsin',
+	WY: 'Wyoming',
+	DC: 'District of Columbia'
+};
+
+/** ISO-3166-1 alpha-2 country code → display name (the countries we cover). */
+const COUNTRY_LABELS: Record<string, string> = {
+	CA: 'Canada',
+	US: 'United States',
+	GB: 'United Kingdom',
+	AU: 'Australia',
+	NZ: 'New Zealand',
+	IE: 'Ireland'
+};
+
+/**
+ * A stored region code back to its display name (e.g. "ON" → "Ontario"). Falls
+ * back to the upper-cased code for anything not in the CA/US table, so an
+ * unexpected value still renders sanely rather than blank.
+ */
+export function regionLabel(code: string): string {
+	const upper = code.toUpperCase();
+	return REGION_LABELS[upper] ?? upper;
+}
+
+/**
+ * A stored country code back to its display name (e.g. "CA" → "Canada"). Falls
+ * back to the upper-cased code for anything outside the covered set.
+ */
+export function countryLabel(code: string): string {
+	const upper = code.toUpperCase();
+	return COUNTRY_LABELS[upper] ?? upper;
+}
+
 /**
  * Composes the single-line `street` part from its pieces. Unit is rendered in the
  * Canadian hyphen style (`100-6485 120 St`) when both unit and house number are

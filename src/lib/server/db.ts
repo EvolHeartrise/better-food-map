@@ -25,6 +25,7 @@
 import type { Category } from '../category';
 import type { Bounds } from '../bounds';
 import type { Tag, TagId, TagType } from '../tags';
+import type { SitemapEntry } from './sitemap';
 // Value imports (tiny, pure, client-safe): the canonical display-address formatter,
 // so the single-line `address` is composed identically wherever a location is read,
 // and the canonical tag vocabulary.
@@ -911,48 +912,60 @@ async function queryMapData(
 	return { locations: mapLocations, menus, menuMeta };
 }
 
-/**
- * Whether an OPEN location with this id exists. The existence probe behind the
- * map page's `/locations/<id>` 404 gate (src/routes/+page.server.ts): it runs
- * on every hard load of a venue URL, so it deliberately reads one column of one
- * row rather than paying {@link getLocationById}'s full row read whose result
- * the gate would throw away. Closed (soft-deleted) venues
- * count as absent, matching every display read (migration 0015) — their pages
- * should 404, not render.
- */
-export async function locationExists(db: D1Like, id: string): Promise<boolean> {
-	const row = await db
-		.prepare(`SELECT 1 AS one FROM locations WHERE id = ? AND closed_at IS NULL`)
-		.bind(id)
-		.first<{ one: number }>();
-	return row !== null;
+/** The identity fields the `/locations/<id>` gate needs to build the canonical
+ *  descriptive URL: the id (echoed back), plus the name and city that fold into
+ *  the slug prefix (see `locationSlug` in $lib/location-path). */
+export interface LocationSlugFields {
+	id: string;
+	name: string;
+	city: string;
 }
 
 /**
- * The lean projection behind `/sitemap.xml`: every open venue's id plus its
- * menu's `last_verified` date, the honest `<lastmod>` signal — the menu IS the
- * page's substance, so the date it was last checked against its source is when
- * the page last meaningfully changed (NULL for a venue without a menu yet).
- * Closed (soft-deleted) venues are excluded: their pages are hidden from the
- * map (migration 0015), so listing them would only hand crawlers soft-404s.
- * LIMIT 250000 is a Worker-memory bound, not a protocol one: the sitemap
- * index (src/routes/sitemap.xml) pages past the protocol's 50k-per-file cap,
- * but sitemap-cache.ts holds the whole result as one in-memory array — at
- * ~150 B per entry that's tens of MB at this cap. Growing past it means
- * per-page keyset-paginated reads instead of one cached full read.
+ * The slug fields of an OPEN location, or null when none exists. Backs the map
+ * page's `/locations/<…>` gate (src/routes/+page.server.ts), which runs on every
+ * hard load of a venue URL: it reads only the three columns needed to (a) prove
+ * the venue exists — null means 404 — and (b) recompute the canonical
+ * `<name>-<city>-<uuid>` path so a bare or wrong-slug URL can 301 to it, rather
+ * than paying {@link getLocationById}'s full row read. Closed (soft-deleted)
+ * venues count as absent, matching every display read (migration 0015) — their
+ * pages should 404, not render or redirect.
  */
-export async function getSitemapEntries(
-	db: D1Like
-): Promise<{ id: string; last_verified: string | null }[]> {
+export async function getLocationSlugFields(
+	db: D1Like,
+	id: string
+): Promise<LocationSlugFields | null> {
+	return db
+		.prepare(`SELECT id, name, city FROM locations WHERE id = ? AND closed_at IS NULL`)
+		.bind(id)
+		.first<LocationSlugFields>();
+}
+
+/**
+ * The lean projection behind `/sitemap.xml`: every open venue's id plus the
+ * `name`/`city` that build its canonical descriptive slug (see
+ * {@link SitemapEntry}), and its menu's `last_verified` date — the honest
+ * `<lastmod>` signal, since the menu IS the page's substance, so the date it was
+ * last checked against its source is when the page last meaningfully changed
+ * (NULL for a venue without a menu yet). Closed (soft-deleted) venues are
+ * excluded: their pages are hidden from the map (migration 0015), so listing
+ * them would only hand crawlers soft-404s. LIMIT 250000 is a Worker-memory
+ * bound, not a protocol one: the sitemap index (src/routes/sitemap.xml) pages
+ * past the protocol's 50k-per-file cap, but sitemap-cache.ts holds the whole
+ * result as one in-memory array — at ~200 B per entry that's tens of MB at this
+ * cap. Growing past it means per-page keyset-paginated reads instead of one
+ * cached full read.
+ */
+export async function getSitemapEntries(db: D1Like): Promise<SitemapEntry[]> {
 	const { results } = await db
 		.prepare(
-			`SELECT l.id AS id, m.last_verified AS last_verified
+			`SELECT l.id AS id, l.name AS name, l.city AS city, m.last_verified AS last_verified
 			 FROM locations l LEFT JOIN menus m ON m.id = l.menu_id
 			 WHERE l.closed_at IS NULL
 			 ORDER BY l.id
 			 LIMIT 250000`
 		)
-		.all<{ id: string; last_verified: string | null }>();
+		.all<SitemapEntry>();
 	return results;
 }
 
@@ -984,6 +997,178 @@ export async function getStats(db: D1Like): Promise<MapStats> {
 		)
 		.first<MapStats>();
 	return row ?? { locations: 0, items: 0, cities: 0 };
+}
+
+// ---------------------------------------------------------------------------
+// Geographic browse pages (src/routes/[country]/…): the crawlable index tree
+// (#217) that turns the sitemap's orphan venue pages into an interlinked graph
+// and creates city+diet landing surfaces. Every read excludes closed venues
+// (migration 0015), matching the map. The aggregate GROUP BY reads here run
+// bounded scans; the routes cache their responses (Cache-Control), so they don't
+// run per visitor.
+// ---------------------------------------------------------------------------
+
+/** One bucket of a browse index: a country code, region code, or city name,
+ *  with its open-venue count. */
+export interface BrowseGroup {
+	value: string;
+	count: number;
+}
+
+/** Countries with open venues, most-covered first — the `/places` index. */
+export async function getBrowseCountries(db: D1Like): Promise<BrowseGroup[]> {
+	const { results } = await db
+		.prepare(
+			`SELECT country AS value, COUNT(*) AS count FROM locations
+			 WHERE closed_at IS NULL GROUP BY country ORDER BY count DESC, country`
+		)
+		.all<BrowseGroup>();
+	return results;
+}
+
+/** Regions (provinces/states) with open venues in a country, most-covered first. */
+export async function getBrowseRegions(db: D1Like, country: string): Promise<BrowseGroup[]> {
+	const { results } = await db
+		.prepare(
+			`SELECT region AS value, COUNT(*) AS count FROM locations
+			 WHERE closed_at IS NULL AND country = ? GROUP BY region ORDER BY count DESC, region`
+		)
+		.bind(country)
+		.all<BrowseGroup>();
+	return results;
+}
+
+/** Cities with open venues in a region, most-covered first. Also how a city URL
+ *  slug is resolved back to its real name(s): the route slugifies each `value`
+ *  and keeps the matches (the slug is lossy, so more than one city can share one). */
+export async function getBrowseCities(
+	db: D1Like,
+	country: string,
+	region: string
+): Promise<BrowseGroup[]> {
+	const { results } = await db
+		.prepare(
+			`SELECT city AS value, COUNT(*) AS count FROM locations
+			 WHERE closed_at IS NULL AND country = ? AND region = ?
+			 GROUP BY city ORDER BY count DESC, city`
+		)
+		.bind(country, region)
+		.all<BrowseGroup>();
+	return results;
+}
+
+/** A venue row for a browse listing: the fields to render a link (name + address)
+ *  and to build its canonical `/locations/<slug>` href (id + name + city). */
+export interface BrowseVenue {
+	id: string;
+	name: string;
+	category: Category | null;
+	street: string;
+	city: string;
+	region: string;
+	postcode: string | null;
+	country: string;
+	/** Single-line display address, derived on read (see {@link formatAddress}). */
+	address: string;
+}
+
+const BROWSE_VENUE_COLS = [
+	'id',
+	'name',
+	'category',
+	'street',
+	'city',
+	'region',
+	'postcode',
+	'country'
+];
+
+/** Hard cap on a browse listing's venue rows — a bound on payload/DOM size for a
+ *  huge city, not a real limit today (the largest city is a few hundred). The
+ *  route flags when a page hits it. */
+export const BROWSE_VENUE_LIMIT = 2000;
+
+function toBrowseVenue(row: Omit<BrowseVenue, 'address'>): BrowseVenue {
+	return { ...row, address: formatAddress(row) };
+}
+
+/** Open venues in the given cities (already resolved from a URL slug to real
+ *  names), name-sorted, capped at {@link BROWSE_VENUE_LIMIT} — a city's page. */
+export async function getBrowseVenues(
+	db: D1Like,
+	country: string,
+	region: string,
+	cities: string[],
+	limit = BROWSE_VENUE_LIMIT
+): Promise<BrowseVenue[]> {
+	if (cities.length === 0) return [];
+	const { results } = await db
+		.prepare(
+			`SELECT ${BROWSE_VENUE_COLS.join(', ')} FROM locations
+			 WHERE closed_at IS NULL AND country = ? AND region = ?
+			   AND city IN (SELECT value FROM json_each(?))
+			 ORDER BY name, id LIMIT ?`
+		)
+		.bind(country, region, JSON.stringify(cities), limit)
+		.all<Omit<BrowseVenue, 'address'>>();
+	return results.map(toBrowseVenue);
+}
+
+/**
+ * Open venues in the given cities that serve at least one item carrying one of
+ * `tagIds` — a city+diet page. `tagIds` is the diet's satisfying set (the diet
+ * plus any tag entailing it, via `dietFilterTagIds`), so the page matches the
+ * map's diet filter. An EXISTS subquery (not a DISTINCT join) keeps it one row
+ * per venue; `optional` tags count, matching the map filter's optional-agnostic
+ * membership.
+ */
+export async function getBrowseVenuesByDiet(
+	db: D1Like,
+	country: string,
+	region: string,
+	cities: string[],
+	tagIds: string[],
+	limit = BROWSE_VENUE_LIMIT
+): Promise<BrowseVenue[]> {
+	if (cities.length === 0 || tagIds.length === 0) return [];
+	const { results } = await db
+		.prepare(
+			`SELECT ${BROWSE_VENUE_COLS.map((c) => `l.${c}`).join(', ')} FROM locations l
+			 WHERE l.closed_at IS NULL AND l.country = ? AND l.region = ?
+			   AND l.city IN (SELECT value FROM json_each(?))
+			   AND EXISTS (
+			     SELECT 1 FROM items i JOIN item_tags it ON it.item_id = i.id
+			     WHERE i.menu_id = l.menu_id AND it.tag_id IN (SELECT value FROM json_each(?))
+			   )
+			 ORDER BY l.name, l.id LIMIT ?`
+		)
+		.bind(country, region, JSON.stringify(cities), JSON.stringify(tagIds), limit)
+		.all<Omit<BrowseVenue, 'address'>>();
+	return results.map(toBrowseVenue);
+}
+
+/** The distinct DIETARY tag ids present across a city's open venues — drives the
+ *  city page's per-diet cross-links (a diet is offered here if any of its
+ *  satisfying tags appears). Course tags are excluded via the `tags` join. */
+export async function getCityDietaryTags(
+	db: D1Like,
+	country: string,
+	region: string,
+	cities: string[]
+): Promise<Set<string>> {
+	if (cities.length === 0) return new Set();
+	const { results } = await db
+		.prepare(
+			`SELECT DISTINCT it.tag_id AS tag_id FROM locations l
+			 JOIN items i ON i.menu_id = l.menu_id
+			 JOIN item_tags it ON it.item_id = i.id
+			 JOIN tags t ON t.id = it.tag_id AND t.tag_type = 'dietary'
+			 WHERE l.closed_at IS NULL AND l.country = ? AND l.region = ?
+			   AND l.city IN (SELECT value FROM json_each(?))`
+		)
+		.bind(country, region, JSON.stringify(cities))
+		.all<{ tag_id: string }>();
+	return new Set(results.map((r) => r.tag_id));
 }
 
 // ---------------------------------------------------------------------------
