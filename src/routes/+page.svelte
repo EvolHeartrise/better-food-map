@@ -9,6 +9,7 @@
 	import { mergeCellSlices, splitCellSlices, type CellSlice } from '$lib/map-cells';
 	import { CellStore } from '$lib/cell-store';
 	import { getCurrentUser, getLikes, setLocationLiked, setItemLiked } from '$lib/user.remote';
+	import { createLikeQueue } from '$lib/like-queue';
 	import { getDiet, setDiet } from '$lib/profile.remote';
 	import LocationMap from '$lib/components/LocationMap.svelte';
 	import MapStatsOverlay from '$lib/components/MapStatsOverlay.svelte';
@@ -228,6 +229,20 @@
 	// nor missing and simply waits for it. Non-reactive on purpose, like the store.
 	// eslint-disable-next-line svelte/prefer-svelte-reactivity -- a memo mutated inside the effect; reactivity would re-run the effect it serves
 	const inflightCells = new Set<string>();
+	// How many FILTERED fetches are on the wire right now. The spinner must stay
+	// up while ANY search fetch is still in flight — a stale BROWSE fetch failing
+	// mid-search must not kill it — so completions consult this count instead of
+	// clobbering `searching` unconditionally. Non-reactive, like the sets above.
+	let filteredFetchesInFlight = 0;
+	// Snapshot of the LATEST effect run's store keys and mode, so a late failure
+	// can tell whether it still describes what's on screen: a failing fetch sets
+	// `fetchFailed` only if its kind matches the current mode (the accepted brief
+	// over-warn on plain viewport moves) or its cells are still in the current
+	// key set (a successor run may be waiting on that very fetch — see the catch).
+	// A stale fetch relevant on NEITHER count (e.g. a browse fetch failing after
+	// the user started a search) stays silent rather than mislabeling the status.
+	let visibleCellKeys = new Set<string>();
+	let currentModeFiltered = false;
 	// Bumped when a fetch banks its cells, so the effect re-runs against the
 	// CURRENT viewport and re-merges from the store. This replaces the old
 	// per-run "merge my own response" callback: with overlapping runs, the run
@@ -248,6 +263,10 @@
 		// segments collision-free (free text could otherwise run into the diet id).
 		const prefix = filtered ? `${filter.q}\u001f${filter.diet ?? ''}\u001f` : '';
 		const storeKey = ([i, j]: [number, number]) => `${prefix}${level}/${cellKey(i, j)}`;
+		// Refresh the relevance snapshot for late completions (see the declarations
+		// above): this run is now the current view, in the current mode.
+		visibleCellKeys = new Set(cells.map(storeKey));
+		currentModeFiltered = filtered;
 		const hits: CellSlice[] = [];
 		const missing: [number, number][] = [];
 		let pending = 0;
@@ -274,6 +293,7 @@
 		if (missing.length === 0) return;
 		const missingKeys = missing.map(storeKey);
 		for (const key of missingKeys) inflightCells.add(key);
+		if (filtered) filteredFetchesInFlight++;
 		getMapCells({ level, cells: missing, q: filter.q, diet: filter.diet })
 			.then((data) => {
 				const fresh = splitCellSlices(data);
@@ -281,6 +301,7 @@
 					cellStore.set(`${prefix}${level}/${key}`, slice);
 				}
 				for (const key of missingKeys) inflightCells.delete(key);
+				if (filtered) filteredFetchesInFlight--;
 				storeVersion++;
 			})
 			// A failed fetch must not blank the map — keep the markers already on
@@ -292,16 +313,26 @@
 			.catch((err) => {
 				console.error('map cells fetch failed', bounds, filter, err);
 				for (const key of missingKeys) inflightCells.delete(key);
-				// Flag and clear the spinner even when this run has been superseded:
-				// the in-flight dedup means the run that replaced this one did NOT
-				// refetch these cells — it saw them as pending and is WAITING on this
-				// very fetch, with no dependency left to change. Skipping the flag
-				// here would leave that successor a silent hole (cells neither
+				if (filtered) filteredFetchesInFlight--;
+				// The spinner clears only once NO filtered fetch remains in flight:
+				// a stale browse fetch failing mid-search must not kill the spinner
+				// the live search still owns (the status invariants up top).
+				if (filteredFetchesInFlight === 0) searching = false;
+				// Flag the failure only while it's still RELEVANT — its kind matches
+				// the current mode (this keeps the accepted brief over-warn when the
+				// viewport has merely moved off the cells), or its cells are still in
+				// the current key set. The key-set arm matters even for a superseded
+				// run: the in-flight dedup means the run that replaced this one did
+				// NOT refetch these cells — it saw them as pending and is WAITING on
+				// this very fetch, with no dependency left to change. Skipping the
+				// flag there would leave that successor a silent hole (cells neither
 				// rendered, retried, nor flagged) until the next pan/filter change.
-				// If the viewport has since moved off these cells the flag may
-				// over-warn for a moment; the next fully-local render clears it.
-				searching = false;
-				fetchFailed = filtered ? 'search' : 'browse';
+				// A fetch relevant on neither count (mode changed AND cells gone from
+				// view) stays silent: its wording would describe a request the user
+				// has already abandoned, clobbering the live one's status.
+				const relevant =
+					filtered === currentModeFiltered || missingKeys.some((key) => visibleCellKeys.has(key));
+				if (relevant) fetchFailed = filtered ? 'search' : 'browse';
 			});
 	});
 
@@ -532,7 +563,20 @@
 			.then((data) => {
 				if (cancelled) return;
 				const loc = data.locations[0];
-				selectedLocation = loc ? resolveLocation(loc, data) : null;
+				if (!loc) {
+					// The venue is gone (closed/deleted since the marker or link was
+					// minted — stale cell-cache markers within their TTL, or a
+					// /locations/<id> deep link to a since-closed place). Nulling only
+					// `selectedLocation` would strand the user: the detail panel gates
+					// on `selectedId && selectedLocation` and the searchbar on
+					// `!selectedId`, so neither would render — a bare map with no way
+					// back. Close the selection outright instead. `cancelled` above
+					// guarantees this empty payload is for the CURRENT selection, so a
+					// stale response for a superseded id can never close the new one.
+					closeDetail();
+					return;
+				}
+				selectedLocation = resolveLocation(loc, data);
 			})
 			// On failure keep whatever detail is showing — closing the card over a
 			// transient error would be worse than briefly stale info.
@@ -754,9 +798,15 @@
 	// --- Account & likes -------------------------------------------------------
 	// The signed-in user (null when signed out) drives the account control and gates
 	// the like buttons. getLikes() itself returns empty lists when signed out, so it
-	// needn't wait on the user read.
-	const user = $derived(await getCurrentUser());
-	const serverLikes = $derived(await getLikes());
+	// needn't wait on the user read. Both reads are OPTIONAL account extras over a
+	// public map, so — like the userLocation/landingData awaits above — a transient
+	// failure (a D1 hiccup on the session read) must degrade to the signed-out UI,
+	// never 500 the SSR render or break hydration for the whole page. The catches
+	// fold a failure into exactly the signed-out shapes the reads return themselves.
+	const user = $derived(await getCurrentUser().catch(() => null));
+	const serverLikes = $derived(
+		await getLikes().catch(() => ({ locationIds: [] as string[], itemIds: [] as string[] }))
+	);
 
 	// Optimistic like state: a pending map of just-toggled ids layered over the
 	// server set, so a tap reflects instantly without waiting on the round trip (and
@@ -778,11 +828,22 @@
 
 	const likedLocationIds = $derived(overlayLikes(serverLikes.locationIds, pendingLocationLikes));
 
+	// Serializes the like commands per liked thing ($lib/like-queue): without it,
+	// two rapid taps on one heart race their writes — the unlike can land on D1
+	// before the like it undoes, persisting the opposite of the UI — and an old
+	// failure's revert can clobber a newer tap's optimistic state. The queue sends
+	// writes for a key strictly in tap order, skips superseded ones (the latest
+	// tap carries the final desired state) and gates each revert on still being
+	// the latest. Non-reactive plumbing, like the pending maps' sibling memos.
+	const likeQueue = createLikeQueue();
+
 	function toggleLocationLike(id: string) {
 		const liked = likedLocationIds.has(id);
 		pendingLocationLikes.set(id, !liked);
-		setLocationLiked({ locationId: id, liked: !liked }).catch(() =>
-			pendingLocationLikes.set(id, liked)
+		likeQueue.enqueue(
+			`location:${id}`,
+			() => setLocationLiked({ locationId: id, liked: !liked }),
+			() => pendingLocationLikes.set(id, liked)
 		);
 	}
 
@@ -796,7 +857,11 @@
 	function toggleItemLike(id: string) {
 		const liked = likedItemIds.has(id);
 		pendingItemLikes.set(id, !liked);
-		setItemLiked({ itemId: id, liked: !liked }).catch(() => pendingItemLikes.set(id, liked));
+		likeQueue.enqueue(
+			`item:${id}`,
+			() => setItemLiked({ itemId: id, liked: !liked }),
+			() => pendingItemLikes.set(id, liked)
+		);
 	}
 
 	function formatPrice(price: number, code: string): string {
