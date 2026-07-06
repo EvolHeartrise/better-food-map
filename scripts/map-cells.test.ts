@@ -11,8 +11,11 @@
 import { test, expect } from 'bun:test';
 import {
 	FULL_CELL_CAP,
+	REP_CELL_CAP,
+	REP_ITEM_CAP,
 	getLocationMapData,
 	getMapCellsData,
+	setItemLike,
 	setLocationLike,
 	type MapCellsData
 } from '../src/lib/server/db';
@@ -21,7 +24,9 @@ import {
 	insertFoods,
 	insertLocations,
 	insertMenu,
-	type LocationInsert
+	insertMenuItems,
+	type LocationInsert,
+	type MenuItemInsert
 } from '../src/lib/server/db-write';
 import { assembleCellsData, mergeCellSlices, splitCellSlices } from '../src/lib/map-cells';
 import { cellKey, cellsForBounds, levelCell, levelForBounds, MIN_REP_LEVEL } from '../src/lib/grid';
@@ -55,44 +60,48 @@ async function fetchViewport(
 	return { level, cells, data: await getMapCellsData(db, level, cells) };
 }
 
-test('a representative level keeps one importance-ranked venue per cell, empties included', async () => {
+test('a representative level keeps the top REP_CELL_CAP importance-ranked venues per cell, empties included', async () => {
 	const db = freshDb();
-	// Three venues within a few hundred metres (one shared cell at a wide zoom):
-	// two menu-less and one WITH a menu — the menu'd one must win the cell.
-	const [, , withMenu] = await insertLocations(db, [
+	// FOUR venues within a few hundred metres (one shared cell at a wide zoom):
+	// three menu-less and one WITH a menu. The cap is REP_CELL_CAP (3), so one is
+	// dropped — the menu'd venue ranks first, the rest by name, so the
+	// alphabetically-last menu-less one (Ddd) is the one cut.
+	const [aaa, bbb, ccc, ddd] = await insertLocations(db, [
 		venue({ name: 'Aaa Diner', latitude: 43.6, longitude: -79.4 }),
 		venue({ name: 'Bbb Diner', latitude: 43.61, longitude: -79.41 }),
-		venue({ name: 'Ccc Diner', latitude: 43.62, longitude: -79.42 })
+		venue({ name: 'Ccc Diner', latitude: 43.62, longitude: -79.42 }),
+		venue({ name: 'Ddd Diner', latitude: 43.59, longitude: -79.39 })
 	]);
-	await insertFoods(db, [{ location_id: withMenu, item_name: 'Soup', price: 5 }]);
-	// A fourth venue far away, in a different cell — kept on its own.
+	await insertFoods(db, [{ location_id: ccc, item_name: 'Soup', price: 5 }]);
+	// A fifth venue far away, in a different cell — kept on its own.
 	const [far] = await insertLocations(db, [
-		venue({ name: 'Ddd Cafe', category: 'cafe', latitude: 49.2, longitude: -123.1 })
+		venue({ name: 'Zzz Cafe', category: 'cafe', latitude: 49.2, longitude: -123.1 })
 	]);
 
 	const bounds = { minLat: 40, maxLat: 50, minLng: -130, maxLng: -70 };
 	const { level, cells, data } = await fetchViewport(db, bounds);
 	expect(level).toBeGreaterThanOrEqual(MIN_REP_LEVEL);
 
-	// The clustered three collapse to the menu'd one; the far one survives alone.
-	expect(data.locations.map((l) => l.id).toSorted()).toEqual([withMenu, far].toSorted());
+	// The cluster keeps its top REP_CELL_CAP (menu'd first, then two by name); Ddd
+	// is cut. The far one survives alone in its own cell.
+	expect(data.locations.map((l) => l.id).toSorted()).toEqual([aaa, bbb, ccc, far].toSorted());
+	expect(data.locations.map((l) => l.id)).not.toContain(ddd);
 
-	// EVERY requested cell is present in the membership record — the occupied two
-	// carrying their winner, the rest as the negative [] entries.
+	// EVERY requested cell is present in the membership record — the occupied cells
+	// carrying their (rank-ordered) winners, the rest as the negative [] entries.
 	expect(Object.keys(data.cells).length).toBe(cells.length);
 	const occupied = Object.entries(data.cells).filter(([, ids]) => ids.length > 0);
-	expect(
-		occupied
-			.map(([, ids]) => ids)
-			.flat()
-			.toSorted()
-	).toEqual([withMenu, far].toSorted());
-	expect(occupied.every(([, ids]) => ids.length === 1)).toBe(true);
+	expect(occupied.flatMap(([, ids]) => ids).toSorted()).toEqual([aaa, bbb, ccc, far].toSorted());
+	// The cluster cell holds exactly REP_CELL_CAP ids, ranked menu'd-first then by
+	// name (the rn order the cells record preserves).
+	const clusterCell = occupied.find(([, ids]) => ids.length > 1);
+	expect(clusterCell?.[1]).toEqual([ccc, aaa, bbb]);
+	expect(clusterCell?.[1].length).toBe(REP_CELL_CAP);
 });
 
 test('likes break representative ties, probed per-candidate (not via a whole-table scan)', async () => {
 	const db = freshDb();
-	const [, liked] = await insertLocations(db, [
+	const [unliked, liked] = await insertLocations(db, [
 		venue({ name: 'Aaa Unliked', latitude: 43.6, longitude: -79.4 }),
 		venue({ name: 'Zzz Liked', latitude: 43.61, longitude: -79.41 })
 	]);
@@ -103,8 +112,11 @@ test('likes break representative ties, probed per-candidate (not via a whole-tab
 	await setLocationLike(db, 'u1', liked, true, 123);
 
 	const { data } = await fetchViewport(db, { minLat: 40, maxLat: 50, minLng: -85, maxLng: -75 });
-	// Neither has a menu; the liked one outranks the alphabetically-first one.
-	expect(data.locations.map((l) => l.id)).toEqual([liked]);
+	// Both share a cell and both fit under the cap; neither has a menu, so the
+	// liked one must RANK first (the likes-desc tie-break), ahead of the
+	// alphabetically-first unliked one — the rn order the cells record preserves.
+	const clusterCell = Object.values(data.cells).find((ids) => ids.length > 1);
+	expect(clusterCell).toEqual([liked, unliked]);
 });
 
 test('locations ship a like-derived score for the client-side label priority', async () => {
@@ -447,16 +459,22 @@ test('an item-less menu keeps its menuMeta through slicing', async () => {
 // per-filter negative-cache entry), and the same cell answers identically
 // alone or in a batch — the purity both cache layers key on.
 
-test('a filtered rep cell keeps the top-ranked MATCH, not the browse representative', async () => {
+test('a filtered rep cell keeps the top-ranked MATCH, past the browse cap', async () => {
 	const db = freshDb();
-	// Same rep cell at a wide zoom: the menu'd, alphabetically-first venue wins
-	// browse; only the vegan-tagged one may win the vegan filter.
-	const [plain, greens] = await insertLocations(db, [
+	// One rep cell at a wide zoom holding MORE than REP_CELL_CAP venues, all
+	// menu'd: browse keeps the three alphabetically-first, BURYING the vegan venue
+	// (Zzz). The vegan filter narrows the cell to its sole match, surfacing exactly
+	// the venue browse's cap dropped — the point of filtering before ranking.
+	const [plain, bbb, ccc, greens] = await insertLocations(db, [
 		venue({ name: 'Aaa Diner', latitude: 43.6, longitude: -79.4 }),
-		venue({ name: 'Zzz Greens', latitude: 43.61, longitude: -79.41 })
+		venue({ name: 'Bbb Diner', latitude: 43.61, longitude: -79.41 }),
+		venue({ name: 'Ccc Diner', latitude: 43.62, longitude: -79.42 }),
+		venue({ name: 'Zzz Greens', latitude: 43.63, longitude: -79.43 })
 	]);
 	await insertFoods(db, [
 		{ location_id: plain, item_name: 'Steak Plate', price: 14 },
+		{ location_id: bbb, item_name: 'Rice Bowl', price: 8 },
+		{ location_id: ccc, item_name: 'Bean Stew', price: 9 },
 		{ location_id: greens, item_name: 'Tofu Bowl', tags: ['vegan'], price: 10 }
 	]);
 	const bounds = { minLat: 40, maxLat: 50, minLng: -85, maxLng: -75 };
@@ -464,9 +482,12 @@ test('a filtered rep cell keeps the top-ranked MATCH, not the browse representat
 	const cells = cellsForBounds(bounds, levelCell(level));
 	expect(level).toBeGreaterThanOrEqual(MIN_REP_LEVEL);
 
+	// Browse keeps the top REP_CELL_CAP by name; the vegan venue is buried.
 	const browse = await getMapCellsData(db, level, cells);
-	expect(browse.locations.map((l) => l.id)).toEqual([plain]);
+	expect(browse.locations.map((l) => l.id).toSorted()).toEqual([plain, bbb, ccc].toSorted());
+	expect(browse.locations.map((l) => l.id)).not.toContain(greens);
 
+	// The vegan filter narrows the cell to its only match — the buried venue.
 	const vegan = await getMapCellsData(db, level, cells, { query: '', dietTagId: 'vegan' });
 	expect(vegan.locations.map((l) => l.id)).toEqual([greens]);
 
@@ -518,4 +539,187 @@ test('filtered cells are batch-independent, and the full level returns every mat
 		alone.cells[cellKey(tile[0], tile[1])].toSorted()
 	);
 	expect(together.locations.map((l) => l.id).toSorted()).toEqual([a, b, far].toSorted());
+});
+
+// --- Item cap (the lean payload's per-menu top-N) ----------------------------
+// The lean viewport/search read ships at most REP_ITEM_CAP items per menu — a
+// 300-item chain menu the map draws one pin for no longer serializes 300 lean
+// items. The kept ten are the most-liked MATCHING items (diet-filtered when a
+// diet is active); the pre-cut match total rides on menuMeta so the client can
+// still say "10 of N". The by-id detail read (the open venue's panel) is never
+// capped. A neighbourhood viewport → level 0, which resolves the seeded branch.
+const ITEM_CAP_TILE: [number, number] = [
+	Math.floor((49.28 + 90) / 0.02),
+	Math.floor((-123.12 + 180) / 0.02)
+];
+
+test('the lean read caps a menu to REP_ITEM_CAP items, most-liked first, keeping the true count', async () => {
+	const db = freshDb();
+	const brandId = await insertBrand(db, { name: 'Big Menu Co', website: null, logo_url: null });
+	const menuId = await insertMenu(db, { brand_id: brandId, name: 'Big Menu CA', region: 'CA' });
+	// Twelve items named so alphabetical order is Item 00 … Item 11.
+	const items: MenuItemInsert[] = Array.from({ length: 12 }, (_, k) => ({
+		menu_id: menuId,
+		item_name: `Item ${String(k).padStart(2, '0')}`,
+		price: 5
+	}));
+	const itemIds = await insertMenuItems(db, items);
+	const [branch] = await insertLocations(db, [
+		venue({
+			name: 'Big Branch',
+			latitude: 49.28,
+			longitude: -123.12,
+			brand_id: brandId,
+			menu_id: menuId
+		})
+	]);
+
+	const bounds = { minLat: 49.27, maxLat: 49.29, minLng: -123.13, maxLng: -123.11 };
+	expect(levelForBounds(bounds)).toBe(0);
+	const { data } = await fetchViewport(db, bounds);
+
+	// Exactly REP_ITEM_CAP items ship though the menu has twelve; the true total
+	// rides on menuMeta. With no item likes the cut falls to name order (00…09).
+	expect(data.menus[menuId].length).toBe(REP_ITEM_CAP);
+	expect(data.menuMeta[menuId].matchingItemCount).toBe(12);
+	expect(data.menus[menuId].map((i) => i.item_name)).toEqual(
+		Array.from({ length: REP_ITEM_CAP }, (_, k) => `Item ${String(k).padStart(2, '0')}`)
+	);
+
+	// The by-id detail read behind the panel is never capped: all twelve load, and
+	// no match count rides an uncapped read.
+	const detail = await getLocationMapData(db, branch);
+	expect(detail.menus[menuId].length).toBe(12);
+	expect(detail.menuMeta[menuId].matchingItemCount).toBeUndefined();
+
+	// Liking the alphabetically-LAST item floats it into (and to the top of) the cut,
+	// displacing the tenth-by-name (Item 09).
+	await db
+		.prepare(`INSERT INTO users (id, email_verified, created_at) VALUES (?, 0, 0)`)
+		.bind('u1')
+		.run();
+	await setItemLike(db, 'u1', itemIds[11], true, 1);
+	const { data: liked } = await fetchViewport(db, bounds);
+	expect(liked.menus[menuId].length).toBe(REP_ITEM_CAP);
+	expect(liked.menus[menuId][0].item_name).toBe('Item 11');
+	expect(liked.menus[menuId].map((i) => i.item_name)).not.toContain('Item 09');
+	expect(liked.menuMeta[menuId].matchingItemCount).toBe(12);
+});
+
+test('a diet filter caps to the top MATCHING items and counts only matches', async () => {
+	const db = freshDb();
+	const brandId = await insertBrand(db, { name: 'Veg Co', website: null, logo_url: null });
+	const menuId = await insertMenu(db, { brand_id: brandId, name: 'Veg Co CA', region: 'CA' });
+	// Twelve vegan items + three non-vegan. Under the vegan filter only the vegan
+	// twelve are candidates: the cut keeps ten and the count reports twelve (not 15).
+	const items: MenuItemInsert[] = [
+		...Array.from({ length: 12 }, (_, k) => ({
+			menu_id: menuId,
+			item_name: `Vegan ${String(k).padStart(2, '0')}`,
+			tags: ['vegan'],
+			price: 5
+		})),
+		...Array.from({ length: 3 }, (_, k) => ({
+			menu_id: menuId,
+			item_name: `Meat ${k}`,
+			price: 7
+		}))
+	];
+	await insertMenuItems(db, items);
+	const [branch] = await insertLocations(db, [
+		venue({
+			name: 'Veg Branch',
+			latitude: 49.28,
+			longitude: -123.12,
+			brand_id: brandId,
+			menu_id: menuId
+		})
+	]);
+
+	const data = await getMapCellsData(db, 0, [ITEM_CAP_TILE], { query: '', dietTagId: 'vegan' });
+	expect(data.locations.map((l) => l.id)).toEqual([branch]);
+	// Only vegan items ship, capped at REP_ITEM_CAP; every sent item is vegan.
+	expect(data.menus[menuId].length).toBe(REP_ITEM_CAP);
+	expect(data.menus[menuId].every((i) => i.item_name.startsWith('Vegan'))).toBe(true);
+	// The count is the matching (vegan) total before the cut — 12, not the menu's 15.
+	expect(data.menuMeta[menuId].matchingItemCount).toBe(12);
+});
+
+test('an active text query leaves the menu uncapped, so client-side item filtering stays in parity', async () => {
+	const db = freshDb();
+	const brandId = await insertBrand(db, { name: 'Text Co', website: null, logo_url: null });
+	const menuId = await insertMenu(db, { brand_id: brandId, name: 'Text Co CA', region: 'CA' });
+	// Twelve items; exactly one contains "burrito", named so it would sort LAST and
+	// be cut by a top-10-by-name cap. A cap under text search could drop the very
+	// item the venue matched on — the client re-filter would then hide its marker —
+	// so the read must NOT cap while free text is active.
+	const items: MenuItemInsert[] = Array.from({ length: 11 }, (_, k) => ({
+		menu_id: menuId,
+		item_name: `Item ${String(k).padStart(2, '0')}`,
+		price: 5
+	}));
+	items.push({ menu_id: menuId, item_name: 'Zzz Burrito', price: 6 });
+	await insertMenuItems(db, items);
+	const [branch] = await insertLocations(db, [
+		venue({
+			name: 'Text Branch',
+			latitude: 49.28,
+			longitude: -123.12,
+			brand_id: brandId,
+			menu_id: menuId
+		})
+	]);
+
+	const data = await getMapCellsData(db, 0, [ITEM_CAP_TILE], { query: 'burrito', dietTagId: null });
+	expect(data.locations.map((l) => l.id)).toEqual([branch]);
+	// The whole menu ships (all twelve) so the client's item-name text filter finds
+	// the match; an uncapped read carries no matchingItemCount.
+	expect(data.menus[menuId].length).toBe(12);
+	expect(data.menus[menuId].some((i) => i.item_name === 'Zzz Burrito')).toBe(true);
+	expect(data.menuMeta[menuId].matchingItemCount).toBeUndefined();
+});
+
+test('the diet cap honours the implication closure (a vegetarian filter matches vegan items)', async () => {
+	const db = freshDb();
+	const brandId = await insertBrand(db, { name: 'Closure Co', website: null, logo_url: null });
+	const menuId = await insertMenu(db, { brand_id: brandId, name: 'Closure Co CA', region: 'CA' });
+	// Vegan entails vegetarian (the write path strips the entailed tag), so a
+	// vegetarian filter must still match vegan items — exercising the closure's TWO
+	// tag ids in the capped statement's `tag_id IN (?, ?)`.
+	const items: MenuItemInsert[] = [
+		...Array.from({ length: 8 }, (_, k) => ({
+			menu_id: menuId,
+			item_name: `Vegan ${k}`,
+			tags: ['vegan'],
+			price: 5
+		})),
+		...Array.from({ length: 8 }, (_, k) => ({
+			menu_id: menuId,
+			item_name: `Veggie ${k}`,
+			tags: ['vegetarian'],
+			price: 6
+		})),
+		{ menu_id: menuId, item_name: 'Steak', price: 9 }
+	];
+	await insertMenuItems(db, items);
+	const [branch] = await insertLocations(db, [
+		venue({
+			name: 'Closure Branch',
+			latitude: 49.28,
+			longitude: -123.12,
+			brand_id: brandId,
+			menu_id: menuId
+		})
+	]);
+
+	const data = await getMapCellsData(db, 0, [ITEM_CAP_TILE], {
+		query: '',
+		dietTagId: 'vegetarian'
+	});
+	expect(data.locations.map((l) => l.id)).toEqual([branch]);
+	// Sixteen items match vegetarian (8 vegan via the closure + 8 vegetarian); the
+	// cap ships REP_ITEM_CAP, the count reports 16, and the meat item never appears.
+	expect(data.menus[menuId].length).toBe(REP_ITEM_CAP);
+	expect(data.menus[menuId].every((i) => i.item_name !== 'Steak')).toBe(true);
+	expect(data.menuMeta[menuId].matchingItemCount).toBe(16);
 });

@@ -258,10 +258,10 @@ test('viewport items are lean; the by-id detail read keeps the full shape', asyn
 });
 
 // A wide (zoomed-out) viewport is spatially downsampled: the box is tiled into a grid
-// and only ONE representative per cell is returned, so the map ships a uniform spread
-// rather than thousands of rows it can't legibly draw. The representative is the most
-// "important" venue in the cell — one we have a menu for outranks one we don't.
-test('the viewport read downsamples a wide viewport to one representative per grid cell', async () => {
+// and only the top REP_CELL_CAP representatives per cell are returned, so the map ships
+// a legible spread rather than thousands of rows. The representatives are the most
+// "important" venues in the cell — one we have a menu for outranks one we don't.
+test('the viewport read downsamples a wide viewport to the top venues per grid cell', async () => {
 	const db = freshDb();
 	const addr = {
 		street: '1 Test St',
@@ -272,22 +272,26 @@ test('the viewport read downsamples a wide viewport to one representative per gr
 		phone: null,
 		website: null
 	};
-	// Three venues within a few hundred metres (the same cell at a world-wide zoom):
-	// two with no menu and one WITH — the menu'd one should win the cell.
-	const [, , withMenu] = await insertLocations(db, [
+	// FOUR venues within a few hundred metres (the same cell at a world-wide zoom):
+	// three menu-less and one WITH a menu. The cap keeps the menu'd one plus the two
+	// alphabetically-first menu-less ones; the last (Ddd) is trimmed.
+	const [aaa, bbb, ccc, ddd] = await insertLocations(db, [
 		{ name: 'Aaa Diner', category: 'restaurant', latitude: 43.6, longitude: -79.4, ...addr },
 		{ name: 'Bbb Diner', category: 'restaurant', latitude: 43.61, longitude: -79.41, ...addr },
-		{ name: 'Ccc Diner', category: 'restaurant', latitude: 43.62, longitude: -79.42, ...addr }
+		{ name: 'Ccc Diner', category: 'restaurant', latitude: 43.62, longitude: -79.42, ...addr },
+		{ name: 'Ddd Diner', category: 'restaurant', latitude: 43.59, longitude: -79.39, ...addr }
 	]);
-	await insertFoods(db, [{ location_id: withMenu, item_name: 'Soup', price: 5 }]);
-	// A fourth venue far away, in a different cell — kept on its own.
+	await insertFoods(db, [{ location_id: ccc, item_name: 'Soup', price: 5 }]);
+	// A fifth venue far away, in a different cell — kept on its own.
 	const [far] = await insertLocations(db, [
-		{ name: 'Ddd Cafe', category: 'cafe', latitude: 49.2, longitude: -123.1, ...addr }
+		{ name: 'Zzz Cafe', category: 'cafe', latitude: 49.2, longitude: -123.1, ...addr }
 	]);
 
 	const wide = await viewportMapData(db, WORLD);
-	// The clustered three collapse to the one with a menu; the far one survives alone.
-	expect(wide.locations.map((l) => l.id).toSorted()).toEqual([withMenu, far].toSorted());
+	// The cluster keeps its top three (menu'd + two by name); Ddd is trimmed, and the
+	// far one survives alone.
+	expect(wide.locations.map((l) => l.id).toSorted()).toEqual([aaa, bbb, ccc, far].toSorted());
+	expect(wide.locations.map((l) => l.id)).not.toContain(ddd);
 });
 
 // The wide path returns ALL occupied cells, not a top-N slice of them. The ids used to be

@@ -10,12 +10,18 @@
  * module (not inline in +page.svelte) so scripts/search-parity.test.ts can run
  * the same fixtures through both halves and assert identical membership.
  *
- * The mirror is intentionally not bit-exact in two documented ways:
+ * The mirror is intentionally not bit-exact in three documented ways:
  *   • the server searches a chain's SHARED menu without per-location overrides,
  *     while the client filters the resolved (override-applied) menu — an item
  *     made unavailable at one branch simply drops from that card;
  *   • unsearchable text (below the $lib/search gate) is filtered here over the
- *     unfiltered cells, whereas the server treats such text as absent.
+ *     unfiltered cells, whereas the server treats such text as absent;
+ *   • a TRUNCATED menu (the lean payload caps each menu to its top items, see
+ *     REP_ITEM_CAP in $lib/server/db) fails OPEN — the venue is kept even if none
+ *     of its shipped items match, because a matching item may have been cut. This
+ *     over-includes rather than hide a marker the server did return; the committed
+ *     fetch re-narrows authoritatively (under text the payload is uncapped; under
+ *     a diet the shipped items are already the matching ones).
  */
 
 import { foldAsciiCase } from './search';
@@ -31,6 +37,13 @@ export interface SearchableItem {
 export interface SearchableLocation {
 	name: string;
 	menu: SearchableItem[];
+	/**
+	 * True when the payload capped this menu (see {@link ResolvedLocation}). The
+	 * item dimension then can't rule the venue OUT — a matching item may have been
+	 * cut — so membership fails open. Optional: the uncapped by-id/detail shape and
+	 * the parity fixtures omit it (never truncated).
+	 */
+	menuTruncated?: boolean;
 }
 
 /**
@@ -76,21 +89,25 @@ export function matchedItems<I extends SearchableItem>(
  * Under a search a venue is kept when its NAME matches (show all its items) or
  * at least one item matches; a name match with an active diet still requires a
  * diet-matching item (diet always narrows) — that falls out of `matchedItems`
- * being empty. `query` is normalised (trimmed + ASCII-folded) here, so callers
- * may pass either the raw input or an already-normalised term.
+ * being empty. A venue whose menu was TRUNCATED is also kept regardless — its
+ * shipped items can't rule it out (see the header's third divergence). `query`
+ * is normalised (trimmed + ASCII-folded) here, so callers may pass either the
+ * raw input or an already-normalised term.
  */
-export function searchResults<I extends SearchableItem, L extends { name: string; menu: I[] }>(
-	locations: L[],
-	query: string,
-	diet: string | null
-): Array<{ loc: L; items: I[] }> {
+export function searchResults<
+	I extends SearchableItem,
+	L extends { name: string; menu: I[]; menuTruncated?: boolean }
+>(locations: L[], query: string, diet: string | null): Array<{ loc: L; items: I[] }> {
 	const queryTerm = foldAsciiCase(query.trim());
 	const hasQuery = queryTerm !== '' || diet !== null;
 	const out: Array<{ loc: L; items: I[] }> = [];
 	for (const loc of locations) {
 		const items = matchedItems(loc, queryTerm, diet);
 		const keep =
-			!hasQuery || (nameMatches(loc.name, queryTerm) && diet === null) || items.length > 0;
+			!hasQuery ||
+			(nameMatches(loc.name, queryTerm) && diet === null) ||
+			items.length > 0 ||
+			loc.menuTruncated === true;
 		if (keep) out.push({ loc, items });
 	}
 	return out;
