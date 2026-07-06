@@ -447,6 +447,29 @@ describe('LabelEngine', () => {
 		expect(reversed.map((i) => i.id)).toEqual([expected]);
 	});
 
+	test('clear() resets the fill hysteresis: incumbents re-qualify at the strict admit budget', () => {
+		const opts = (candidates: Candidate[]) => ({ ...makeOpts(candidates, null, 0), cellDeg: 0.5 });
+		const winner: Candidate = { id: 'k1', name: 'Winner', lat: 0, lng: 0, priority: 9 };
+		// Nearly on top of the winner: least-axis penetration ≈ 51.9px (unmeasured
+		// estimate boxes) — under the strict admit budget, so the fill admits it.
+		const loser: Candidate = { id: 'loser', name: 'Loser', lat: 0.01, lng: 0, priority: 1 };
+		// A second kept pill adding ~8px overlap, pushing the loser's summed
+		// penetration to ~59.9px — above the admit budget (56), inside the retain
+		// budget (64): only the hysteresis keeps the loser visible.
+		const flank: Candidate = { id: 'k2', name: 'Flank', lat: 0, lng: 14.4, priority: 9 };
+
+		const engine = new LabelEngine();
+		expect(engine.recompute(opts([winner, loser])).some((i) => i.id === 'loser')).toBe(true);
+		expect(engine.recompute(opts([winner, loser, flank])).some((i) => i.id === 'loser')).toBe(true);
+
+		// clear() forgets everything, the admitted set included — the same scene
+		// recomputed fresh judges the loser at the strict budget and rejects it.
+		engine.clear();
+		expect(engine.recompute(opts([winner, loser, flank])).some((i) => i.id === 'loser')).toBe(
+			false
+		);
+	});
+
 	test('tick re-projects anchors against the live camera', () => {
 		const engine = new LabelEngine();
 		engine.recompute(makeOpts(cands, 'sel', 0));
