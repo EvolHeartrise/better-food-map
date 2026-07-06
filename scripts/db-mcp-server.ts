@@ -70,6 +70,7 @@ import {
 	type Bounds,
 	type D1Like,
 	type Item,
+	type Location,
 	type LocationInsert,
 	type LocationWithTags
 } from '../src/lib/server/db';
@@ -78,6 +79,7 @@ import { CATEGORIES } from '../src/lib/category';
 import { sourceInputSchema } from './mcp/source-input';
 import { ToolPartialFailure, partialFailureBody } from './mcp/partial-failure';
 import { normalizeAddressPatch, normalizeAddressParts } from './mcp/address-patch';
+import { assertItemMenuMoves, assertLocationRefPatches } from './mcp/ref-validation';
 import { normalizeCountry } from '../src/lib/address';
 import { hasNonHttpScheme } from '../src/lib/safe-url';
 import { searchPoi, normalizeName, namesMatch } from './osm/search-poi';
@@ -1427,7 +1429,14 @@ const getMenuArgs = v.object({
 const updateItemArgs = v.object({
 	id: v.pipe(v.string(), v.minLength(1), v.description('Id of the item to update.')),
 	menu_id: v.optional(
-		v.pipe(v.string(), v.minLength(1), v.description('Move the item to a different menu (rare).'))
+		v.pipe(
+			v.string(),
+			v.minLength(1),
+			v.description(
+				'Move the item to a different menu of the SAME brand (rare). A move targeting a ' +
+					"nonexistent menu, another venue's private menu, or another brand's shared menu is rejected."
+			)
+		)
 	),
 	item_name: v.optional(v.pipe(v.string(), v.minLength(1))),
 	description: v.optional(
@@ -2209,15 +2218,23 @@ const tools = [
 			'are skipped and listed in `not_found_ids`. Returns { updated, updated_ids, not_found_ids }.',
 		schema: updateLocationsArgs,
 		handler: async ({ items }) => {
-			// Validate only the DISTINCT brand/menu pairs a patch actually SETS.
-			const checkedPairs = new Set<string>();
-			for (const it of items) {
-				if (it.brand_id === undefined && it.menu_id === undefined) continue;
-				const key = `${it.brand_id ?? ''}|${it.menu_id ?? ''}`;
-				if (checkedPairs.has(key)) continue;
-				checkedPairs.add(key);
-				await assertBrandMenuRefs(getDb(), it.brand_id, it.menu_id);
-			}
+			// Stored rows serve two validations — a single-sided brand/menu patch
+			// merges with the stored pair, and a region/postcode patch scopes to the
+			// stored country — so fetch each id at most once and share the result.
+			const storedRows = new Map<string, Promise<Location | null>>();
+			const getStored = (id: string): Promise<Location | null> => {
+				let row = storedRows.get(id);
+				if (!row) {
+					row = getLocationById(getDb(), id);
+					storedRows.set(id, row);
+				}
+				return row;
+			};
+			// Validate brand/menu references BEFORE any write: a full pair as given,
+			// a single-sided patch against the EFFECTIVE post-patch pair (see
+			// assertLocationRefPatches) — { brand_id: null } alone on a chain branch
+			// or a lone cross-brand brand_id must not slip past assertBrandMenuRefs.
+			await assertLocationRefPatches(getDb(), items, getStored);
 			const patches = await Promise.all(
 				items.map(async ({ id, street, city, region, postcode, country, ...patch }) => {
 					// A patch that touches region/postcode WITHOUT a country must validate
@@ -2228,9 +2245,7 @@ const tools = [
 					const needsStoredCountry =
 						country === undefined &&
 						(region !== undefined || (postcode !== undefined && postcode !== null));
-					const storedCountry = needsStoredCountry
-						? (await getLocationById(getDb(), id))?.country
-						: undefined;
+					const storedCountry = needsStoredCountry ? (await getStored(id))?.country : undefined;
 					return {
 						id,
 						...patch,
@@ -2404,6 +2419,10 @@ const tools = [
 			'Returns { updated, updated_ids, not_found_ids }.',
 		schema: updateItemsArgs,
 		handler: async ({ items }) => {
+			// Validate any menu MOVE before writing: the target must exist and stay
+			// within the item's own brand — never another venue's private menu or
+			// another brand's shared menu (see assertItemMenuMoves).
+			await assertItemMenuMoves(getDb(), items);
 			const patches = items.map(({ id, optional_tags, ...patch }) => ({
 				id,
 				...patch,
