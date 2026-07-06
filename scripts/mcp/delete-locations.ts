@@ -1,7 +1,6 @@
 // ---------------------------------------------------------------------------
-// Batch hard-delete of locations, mirroring the batched update_locations. Kept in
-// its own module so it is unit-testable without importing db-mcp-server.ts (which
-// opens a stdio transport on import).
+// Batch hard-delete of locations, mirroring the batched update_locations. Split
+// out of the large db-mcp-server.ts into a focused, directly unit-testable module.
 //
 // A hard delete cascades a venue's
 // sources/overrides/likes, and removes its private menu (with its items and

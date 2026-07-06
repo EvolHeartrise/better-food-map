@@ -1,7 +1,6 @@
 // ---------------------------------------------------------------------------
-// Paging primitives for the list_locations MCP tool. Kept in their own module so
-// they are unit-testable without importing db-mcp-server.ts (which connects a
-// stdio transport on import).
+// Paging primitives for the list_locations MCP tool. Split out of the large
+// db-mcp-server.ts into a focused, directly unit-testable module.
 //
 // list_locations used to return EVERY matching row as a bare JSON array, with no
 // cap and no signal that the result was complete — enumerating a big chain by

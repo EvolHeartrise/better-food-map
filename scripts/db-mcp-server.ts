@@ -77,8 +77,8 @@ import { createHttpD1 } from '../src/lib/server/d1-http';
 import { CATEGORIES } from '../src/lib/category';
 import { sourceInputSchema } from './mcp/source-input';
 import { ToolPartialFailure, partialFailureBody } from './mcp/partial-failure';
-import { normalizeAddressPatch } from './mcp/address-patch';
-import { normalizeRegion, normalizePostcode, normalizeCountry } from '../src/lib/address';
+import { normalizeAddressPatch, normalizeAddressParts } from './mcp/address-patch';
+import { normalizeCountry } from '../src/lib/address';
 import { hasNonHttpScheme } from '../src/lib/safe-url';
 import { searchPoi, normalizeName, namesMatch } from './osm/search-poi';
 import { selectChainCandidates, partitionImportable } from './osm/import-chain';
@@ -334,61 +334,6 @@ const OSM_ID_DESC =
 	"this venue's coordinates VERBATIM from that OSM POI (never geocoded/copied) and fills its " +
 	"address from the POI's addr:* tags, auto-citing osm_url. OMIT latitude/longitude when using " +
 	'osm_id (passing them is rejected). See the OSM-import policy in the server instructions.';
-
-/**
- * Normalizes raw structured address args into the stored parts, throwing a clear
- * MCP error when a required part cannot be resolved. An invalid/partial postcode
- * is DROPPED with a warning rather than failing the whole record (the stated
- * policy: a half code is worse than none) — sources routinely carry a bare FSA,
- * and one bad optional part must not sink an otherwise-importable venue. Reused
- * by create_locations and import_chain so storage stays uniform regardless of
- * how a source spelled a province / postcode / country.
- */
-function normalizeAddressParts(
-	args: {
-		street: string;
-		city: string;
-		region: string;
-		postcode?: string | null;
-		country?: string | null;
-	},
-	warn: (message: string) => void
-): {
-	street: string;
-	city: string;
-	region: string;
-	postcode: string | null;
-	country: string;
-} {
-	const country = normalizeCountry(args.country ?? 'CA') ?? 'CA';
-	const region = normalizeRegion(args.region, country);
-	if (!region) {
-		throw new Error(
-			`region "${args.region}" is not a recognized province/state for ${country}. ` +
-				'Pass a 2-letter code or full name' +
-				(args.country === null || args.country === undefined
-					? ` (country defaulted to ${country}; if this venue is elsewhere, pass its country too).`
-					: '.')
-		);
-	}
-	let postcode: string | null = null;
-	if (args.postcode && args.postcode.trim()) {
-		postcode = normalizePostcode(args.postcode, country);
-		if (!postcode) {
-			warn(
-				`postcode "${args.postcode}" is not a valid ${country} postal/ZIP code — dropped ` +
-					'(a partial code is worse than none); the location was still created.'
-			);
-		}
-	}
-	return {
-		street: args.street.trim(),
-		city: args.city.trim(),
-		region,
-		postcode,
-		country
-	};
-}
 
 // A single citation: a URL the data came from, plus an optional human label.
 // Sources are MENU-LEVEL (the app only records where a menu's food data came from

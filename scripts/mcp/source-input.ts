@@ -4,8 +4,8 @@
 // string (normalized to { url, label: null } at parse time): agents
 // overwhelmingly hold plain URL lists, and requiring the object wrapper was a
 // recurring remap step — and a recurring source of invalid-arguments errors.
-// Kept in its own module so it is unit-testable (db-mcp-server.ts connects a
-// stdio transport on import, so tests must not import it).
+// Split out of the large db-mcp-server.ts into a focused, directly unit-testable
+// module.
 // ---------------------------------------------------------------------------
 
 import * as v from 'valibot';

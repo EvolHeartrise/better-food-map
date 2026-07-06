@@ -7,9 +7,9 @@
 // so validating real handler-shaped results here means the advertised schema and
 // the real output cannot silently drift.
 //
-// db-mcp-server.ts connects a stdio transport on import, so we can't import the
-// handlers. Instead we rebuild each read tool's result from the SAME db helpers
-// the handler uses (applying the handler's trivial projection), and construct
+// Rather than driving the tool handlers through the server, we rebuild each read
+// tool's result from the SAME db helpers the handler uses (applying the handler's
+// trivial projection), and construct
 // representative write-result objects mirroring the handler return expressions.
 
 import { test, expect } from 'bun:test';
