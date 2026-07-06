@@ -2480,8 +2480,10 @@ const tools = [
 			'Update one or more menu items by id in a single atomic batch — pass a one-item `items` array to ' +
 			'edit one. Each patch carries an `id` plus only the fields to change; editing a shared chain item ' +
 			'changes it for EVERY branch serving its menu — for a one-branch difference use ' +
-			'set_location_item_override instead. Replace-set semantics per item: `tags`/`optional_tags` ' +
-			'together replace the dietary/course set. (Provenance is menu-level — edit sources with ' +
+			'set_location_item_override instead. Per-set replace semantics: `tags` replaces only the ' +
+			'required dietary/course set and `optional_tags` only the optional set — omitting one leaves ' +
+			'it untouched (pass `[]` to clear a set; pass both to replace everything). (Provenance is ' +
+			'menu-level — edit sources with ' +
 			'update_menu, not per item.) Ideal for menu-wide ' +
 			'corrections in one call. Ids that do not exist are reported in `not_found_ids`. ' +
 			'Returns { updated, updated_ids, not_found_ids }.',

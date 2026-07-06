@@ -272,6 +272,61 @@ test('updateItems applies a batch atomically and reports not_found_ids', async (
 	expect(itemB?.tags.map((t) => t.id).toSorted()).toEqual(['halal', 'vegetarian']);
 });
 
+test('updateItems tag patches are per-set: one set never wipes the other', async () => {
+	const db = freshDb();
+	const [locId] = await insertLocations(db, [indieLocation()]);
+	const [id] = await insertFoods(db, [
+		{ location_id: locId, item_name: 'Thali', tags: ['halal'], optionalTags: ['gluten_free'] }
+	]);
+
+	const byId = async () =>
+		new Map(((await getItemById(db, id))?.tags ?? []).map((t) => [t.id, t.optional]));
+
+	// Patching only optional_tags leaves the required (source-asserted) set intact.
+	await updateItems(db, [{ id, optionalTags: ['vegan'] }]);
+	expect(await byId()).toEqual(
+		new Map([
+			['halal', false],
+			['vegan', true]
+		])
+	);
+
+	// Patching only tags leaves the optional set intact.
+	await updateItems(db, [{ id, tags: ['nut_free'] }]);
+	expect(await byId()).toEqual(
+		new Map([
+			['nut_free', false],
+			['vegan', true]
+		])
+	);
+
+	// An empty array clears just its own set.
+	await updateItems(db, [{ id, optionalTags: [] }]);
+	expect(await byId()).toEqual(new Map([['nut_free', false]]));
+
+	// A tag named in the patch moves scope: required nut_free becomes optional.
+	await updateItems(db, [{ id, optionalTags: ['nut_free'] }]);
+	expect(await byId()).toEqual(new Map([['nut_free', true]]));
+
+	// ...and back: optional nut_free asserted required by a tags-only patch.
+	await updateItems(db, [{ id, tags: ['nut_free', 'halal'] }]);
+	expect(await byId()).toEqual(
+		new Map([
+			['nut_free', false],
+			['halal', false]
+		])
+	);
+
+	// Providing both sets is still a full replace.
+	await updateItems(db, [{ id, tags: ['vegetarian'], optionalTags: ['gluten_free'] }]);
+	expect(await byId()).toEqual(
+		new Map([
+			['vegetarian', false],
+			['gluten_free', true]
+		])
+	);
+});
+
 // --- duplicate / collision detection ---------------------------------------
 
 test('existingLocationsAtCoords matches coordinate-exact locations only', async () => {
