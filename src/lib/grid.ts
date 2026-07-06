@@ -214,9 +214,9 @@ export function cellsCoverBounds(cells: [number, number][], cell: number): Bound
 // $lib/server/cell-cache consumes it.
 
 /**
- * Cells per block side. Representative cells are tiny (one venue each), so 8×8
- * blocks stay small; full-level cells carry whole neighbourhoods, so 4×4 bounds
- * the venues a single block miss must compute (≤ 16 × FULL_CELL_CAP).
+ * Cells per block side. Representative cells are small (up to REP_CELL_CAP venues
+ * each), so 8×8 blocks stay light; full-level cells carry whole neighbourhoods, so
+ * 4×4 bounds the venues a single block miss must compute (≤ 16 × FULL_CELL_CAP).
  */
 export function blockSpan(level: number): number {
 	return level === 0 ? 4 : 8;

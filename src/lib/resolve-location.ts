@@ -30,6 +30,16 @@ export type ResolvedLocation<I extends MapItem> = MapLocation & {
 	menu: I[];
 	lastVerified: string | null;
 	sources: Source[];
+	/**
+	 * True when the wire payload CAPPED this menu — it shipped fewer items than
+	 * matched the active filter (its `menuMeta.matchingItemCount` exceeds the
+	 * number of items sent; see REP_ITEM_CAP in $lib/server/db). The client's
+	 * local re-filter must fail OPEN on such a menu: a matching item may have been
+	 * cut, so the venue can't be ruled out by its (partial) items — hiding its
+	 * marker would drop a place the server did return. Always false on the
+	 * uncapped by-id detail read (no `matchingItemCount`).
+	 */
+	menuTruncated: boolean;
 };
 
 export function resolveLocation<I extends MapItem>(
@@ -54,10 +64,17 @@ export function resolveLocation<I extends MapItem>(
 		}
 	}
 	const meta = loc.menu_id ? data.menuMeta[loc.menu_id] : undefined;
+	// The server sent this many items for the menu; `matchingItemCount` (lean,
+	// item-capped reads only) is how many MATCHED before the cut. More matched
+	// than shipped ⇒ the menu was truncated. `!== undefined` so a genuine 0 (an
+	// item-less menu, count 0, nothing sent) reads as not-truncated.
+	const sent = loc.menu_id ? (data.menus[loc.menu_id]?.length ?? 0) : 0;
+	const menuTruncated = meta?.matchingItemCount !== undefined && meta.matchingItemCount > sent;
 	return {
 		...loc,
 		menu,
 		lastVerified: meta?.last_verified ?? null,
-		sources: meta?.sources ?? []
+		sources: meta?.sources ?? [],
+		menuTruncated
 	};
 }

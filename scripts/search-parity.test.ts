@@ -31,12 +31,13 @@ import {
 	insertBrand,
 	insertMenu,
 	insertMenuItems,
-	setLocationItemOverride
+	setLocationItemOverride,
+	type MenuItemInsert
 } from '../src/lib/server/db-write';
 import type { Item, MapData, MapLocation } from '../src/lib/server/db';
 import { searchResults } from '../src/lib/search-match';
 import { resolveLocation } from '../src/lib/resolve-location';
-import { freshDb, searchMapData } from './test-d1';
+import { freshDb, searchMapData, viewportMapData } from './test-d1';
 import type { TestD1 } from './test-d1';
 
 const addr = {
@@ -318,4 +319,77 @@ test('unsearchable text is client-only: the server treats it as absent', async (
 		dietOnly.locations.map((l) => l.id).toSorted()
 	);
 	expect(degraded.locations.map((l) => l.id)).toContain(palace);
+});
+
+// The lean payload CAPS each menu to its top items (REP_ITEM_CAP, $lib/server/db),
+// so the client re-filter can no longer see a matching item that was CUT — and
+// the map plots markers from that re-filter (+page.svelte `results`), so a naive
+// item-based exclusion would VANISH a marker for a venue the server did return.
+// The two tests below drive the REAL capped payload (viewport/search reads,
+// unlike the uncapped by-id read the parity fixtures above use), resolve it the
+// way the page does, and assert the fail-open keeps the venue.
+
+test('cap fail-open: a browse venue whose only sub-gate item match was cut still keeps its marker', async () => {
+	const db = freshDb();
+	const brandId = await insertBrand(db, { name: 'Big Co', website: null, logo_url: null });
+	const menuId = await insertMenu(db, { brand_id: brandId, name: 'Big Co CA', region: 'CA' });
+	// Twelve items; the ONLY item containing "zz" sorts last, so the top-10 cap cuts it.
+	const items: MenuItemInsert[] = Array.from({ length: 11 }, (_, k) => ({
+		menu_id: menuId,
+		item_name: `Item ${String(k).padStart(2, '0')}`,
+		price: 5
+	}));
+	items.push({ menu_id: menuId, item_name: 'Zzz Burrito', price: 6 });
+	await insertMenuItems(db, items);
+	const [branch] = await insertLocations(db, [
+		{ ...venue('Big Branch'), brand_id: brandId, menu_id: menuId }
+	]);
+
+	// The browse payload is capped (12 → 10). The client filters the sub-searchable
+	// term "zz" LOCALLY over these browse cells — and its only match ("Zzz Burrito")
+	// was cut. Pre-fix that hid the marker; the truncation flag must keep it.
+	const browse = await viewportMapData(db, BOX);
+	const resolved = browse.locations.map((l) => resolveLocation(l, browse));
+	expect(resolved.find((l) => l.id === branch)?.menuTruncated).toBe(true);
+	const kept = searchResults(resolved, 'zz', null).map((r) => r.loc.id);
+	expect(kept).toContain(branch);
+});
+
+test('cap fail-open: a diet venue whose shipped matches are all override-hidden still keeps its marker', async () => {
+	const db = freshDb();
+	const brandId = await insertBrand(db, { name: 'Veg Co', website: null, logo_url: null });
+	const menuId = await insertMenu(db, { brand_id: brandId, name: 'Veg Co CA', region: 'CA' });
+	// Eleven vegan items: the cap ships the 10 alphabetically-first; this branch
+	// makes exactly those 10 unavailable, so its ONLY available vegan item (the
+	// 11th) is precisely the one the cap cut.
+	const vegan: MenuItemInsert[] = Array.from({ length: 11 }, (_, k) => ({
+		menu_id: menuId,
+		item_name: `Vegan ${String(k).padStart(2, '0')}`,
+		tags: ['vegan'],
+		price: 5
+	}));
+	const itemIds = await insertMenuItems(db, vegan);
+	const [branch] = await insertLocations(db, [
+		{ ...venue('Veg Branch'), brand_id: brandId, menu_id: menuId }
+	]);
+	for (let k = 0; k < 10; k++) {
+		await setLocationItemOverride(db, branch, itemIds[k], { available: false });
+	}
+
+	// The vegan read ships the 10 (all hidden at this branch); resolveLocation drops
+	// them, leaving an EMPTY resolved menu. Membership is server-correct (the shared
+	// menu has vegan items), and the truncation flag must stop the client hiding it.
+	const vroot = await searchMapData(db, BOX, { query: '', dietTagId: 'vegan' });
+	const branchRes = vroot.locations
+		.map((l) => resolveLocation(l, vroot))
+		.find((l) => l.id === branch);
+	expect(branchRes).toBeDefined();
+	expect(branchRes?.menu.length).toBe(0); // every shipped vegan item hidden here
+	expect(branchRes?.menuTruncated).toBe(true);
+	const kept = searchResults(
+		vroot.locations.map((l) => resolveLocation(l, vroot)),
+		'',
+		'vegan'
+	).map((r) => r.loc.id);
+	expect(kept).toContain(branch);
 });
