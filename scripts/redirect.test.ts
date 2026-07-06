@@ -54,3 +54,65 @@ test('a custom fallback is returned for rejected values and ignored for safe one
 	expect(safeInternalPath(null, '/account')).toBe('/account');
 	expect(safeInternalPath('/settings', '/account')).toBe('/settings');
 });
+
+// ---------------------------------------------------------------------------
+// Canonical-host drift guard. Cloudflare `custom_domain` routes match the
+// EXACT hostname only, so every host that must 301 to the canonical apex needs
+// BOTH a route in wrangler.jsonc AND an entry in REDIRECT_HOSTS in
+// src/hooks.server.ts. hooks.server.ts imports $app/* so it can't be imported
+// under `bun test`; instead we extract both host lists from source text and
+// assert they tell the same story: routes = { canonical } ∪ REDIRECT_HOSTS.
+
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+const root = join(import.meta.dir, '..');
+const hooksSrc = readFileSync(join(root, 'src/hooks.server.ts'), 'utf8');
+const wranglerSrc = readFileSync(join(root, 'wrangler.jsonc'), 'utf8');
+
+function extract(re: RegExp, src: string, label: string): string {
+	const m = src.match(re);
+	if (!m) throw new Error(`could not locate ${label}`);
+	return m[1];
+}
+
+const canonicalHost = extract(
+	/const CANONICAL_HOST = '([^']+)'/,
+	hooksSrc,
+	'CANONICAL_HOST in src/hooks.server.ts'
+);
+const redirectHosts = [
+	...extract(
+		/const REDIRECT_HOSTS = new Set\(\[([\s\S]*?)\]\)/,
+		hooksSrc,
+		'REDIRECT_HOSTS in src/hooks.server.ts'
+	).matchAll(/'([^']+)'/g)
+].map((m) => m[1]);
+const routedHosts = [
+	...extract(/"routes":\s*\[([\s\S]*?)\]/, wranglerSrc, 'routes in wrangler.jsonc').matchAll(
+		/"pattern":\s*"([^"]+)"/g
+	)
+].map((m) => m[1]);
+
+test('every wrangler route is either the canonical host or a redirect host', () => {
+	expect(routedHosts.length).toBeGreaterThan(0);
+	const known = new Set([canonicalHost, ...redirectHosts]);
+	for (const host of routedHosts) expect(known).toContain(host);
+});
+
+test('every redirect host has a wrangler custom-domain route (else it never reaches the Worker)', () => {
+	expect(redirectHosts.length).toBeGreaterThan(0);
+	for (const host of redirectHosts) expect(routedHosts).toContain(host);
+});
+
+test('the canonical host is routed and not redirected to itself', () => {
+	expect(routedHosts).toContain(canonicalHost);
+	expect(redirectHosts).not.toContain(canonicalHost);
+});
+
+test('both www hosts and the alias apex 301 to the canonical apex', () => {
+	expect(canonicalHost).toBe('betterfoodmaps.com');
+	expect(new Set(redirectHosts)).toEqual(
+		new Set(['www.betterfoodmaps.com', 'betterfoodmap.com', 'www.betterfoodmap.com'])
+	);
+});
