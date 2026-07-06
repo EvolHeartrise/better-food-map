@@ -249,6 +249,65 @@ test('splitCellSlices → assembleCellsData round-trips the wire payload', async
 	}
 });
 
+// Cross-cell partitioning only holds within ONE data snapshot: slices banked
+// at different times (client CellStore, or the server cache mixing cached
+// blocks with fresh D1 reads) can both carry a venue whose cell assignment
+// moved within a TTL window. mergeCellSlices must dedupe by id or the page's
+// keyed {#each (loc.id)} gets a duplicate key.
+test('mergeCellSlices dedupes a venue shared across slices, keeping the last occurrence', async () => {
+	const db = freshDb();
+	const [a, b] = await insertLocations(db, [
+		venue({ name: 'Green Spot', latitude: 49.28, longitude: -123.12 }),
+		venue({ name: 'Plain Diner', latitude: 49.19, longitude: -123.01 })
+	]);
+	const { data } = await fetchViewport(db, {
+		minLat: 49.0,
+		maxLat: 49.5,
+		minLng: -123.5,
+		maxLng: -123.0
+	});
+	const slices = [...splitCellSlices(data).values()];
+	const withA = slices.find((s) => s.locations.some((l) => l.id === a));
+	const withB = slices.find((s) => s.locations.some((l) => l.id === b));
+	const freshA = withA?.locations.find((l) => l.id === a);
+	if (!withA || !withB || !freshA) throw new Error('expected each venue in its own slice');
+	// A stale copy of venue `a` banked in the OTHER cell's slice (as if its
+	// coordinates moved across the boundary between two snapshots).
+	const staleA = { ...freshA, name: 'Green Spot (stale)' };
+	const staleSlice = { ...withB, locations: [...withB.locations, staleA] };
+
+	const merged = mergeCellSlices([staleSlice, withA]);
+	expect(merged.locations.filter((l) => l.id === a).length).toBe(1);
+	// The LAST occurrence wins: the fresh copy from the later slice.
+	expect(merged.locations.find((l) => l.id === a)?.name).toBe('Green Spot');
+	expect(merged.locations.map((l) => l.id).toSorted()).toEqual([a, b].toSorted());
+
+	// Reversed order keeps the (then-last) stale copy — still exactly one row.
+	const reversed = mergeCellSlices([withA, staleSlice]);
+	expect(reversed.locations.filter((l) => l.id === a).length).toBe(1);
+	expect(reversed.locations.find((l) => l.id === a)?.name).toBe('Green Spot (stale)');
+});
+
+test('mergeCellSlices leaves disjoint slices unchanged', async () => {
+	const db = freshDb();
+	const [a, b] = await insertLocations(db, [
+		venue({ name: 'Green Spot', latitude: 49.28, longitude: -123.12 }),
+		venue({ name: 'Plain Diner', latitude: 49.19, longitude: -123.01 })
+	]);
+	await insertFoods(db, [{ location_id: a, item_name: 'Tofu Bowl', tags: ['vegan'], price: 10 }]);
+	const { data } = await fetchViewport(db, {
+		minLat: 49.0,
+		maxLat: 49.5,
+		minLng: -123.5,
+		maxLng: -123.0
+	});
+	const slices = splitCellSlices(data);
+	const merged = mergeCellSlices(slices.values());
+	expect(merged.locations.map((l) => l.id).toSorted()).toEqual([a, b].toSorted());
+	expect(Object.keys(merged.menus).toSorted()).toEqual(Object.keys(data.menus).toSorted());
+	expect(merged.menuMeta).toEqual(data.menuMeta);
+});
+
 test('CellStore: TTL expiry and LRU eviction', () => {
 	let now = 0;
 	const store = new CellStore(() => now);
