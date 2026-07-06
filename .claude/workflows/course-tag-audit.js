@@ -7,13 +7,21 @@ export const meta = {
 	phases: [{ title: 'Classify', detail: 'parallel course classification' }]
 };
 
-// args.items: [{ id, item_name, menu_name, description?, hint? }] from fetch-batch.ts.
-// Tolerate a JSON-encoded string arriving instead of a parsed object.
+// Two input modes (tolerate a JSON-encoded string arriving instead of an object):
+// • args.batches: [{ src, out }] — file mode, preferred at scale. Each agent Reads
+//   the items JSON at `src` and Writes its verdict array to `out`; only count
+//   summaries flow back through the orchestrator, keeping token use minimal.
+// • args.items: [{ id, item_name, menu_name, description?, hint? }] — inline mode
+//   for small pages; classifications are returned in the workflow result.
 const input = typeof args === 'string' ? JSON.parse(args) : args;
 const items = input?.items;
-if (!Array.isArray(items) || items.length === 0) {
+const fileBatches = input?.batches;
+if (
+	(!Array.isArray(items) || items.length === 0) &&
+	(!Array.isArray(fileBatches) || fileBatches.length === 0)
+) {
 	throw new Error(
-		'pass args: { items: [...] } — produce it with bun scripts/course-tag-audit/fetch-batch.ts'
+		'pass args: { items: [...] } or { batches: [{src,out}...] } — produce them with bun scripts/course-tag-audit/fetch-batch.ts'
 	);
 }
 const BATCH = 40;
@@ -56,10 +64,48 @@ const CLASSIFY_RULES =
 	'smoothie BOWLS (eaten with a spoon), "Chicken Pop-Ins" (fried chicken), tea-smoked dishes, pancakes and ' +
 	'other breakfast plates. Masala/Kashmiri/Cutting Chai = drink.';
 
+phase('Classify');
+
+if (Array.isArray(fileBatches) && fileBatches.length > 0) {
+	// File mode: agents Read/Write; only counts return.
+	const SUMMARY_SCHEMA = {
+		type: 'object',
+		required: ['count', 'unsure'],
+		properties: {
+			count: { type: 'number' },
+			food: { type: 'number' },
+			dessert: { type: 'number' },
+			drink: { type: 'number' },
+			unsure: { type: 'number' }
+		}
+	};
+	const results = await pipeline(fileBatches, (b, _item, i) =>
+		agent(
+			`${CLASSIFY_RULES}\n\nRead the JSON file at ${b.src} — an array of menu items ` +
+				'(id, item_name, menu_name, description, hint). Classify EVERY item. Then Write (overwrite) ' +
+				`the file ${b.out} containing ONLY a JSON array [{"id","course","note"?}] — one entry per ` +
+				'input id, exactly once, note only for unsure/trap items. Finally return structured output ' +
+				'with your verdict counts: { count, food, dessert, drink, unsure }.',
+			{ label: `classify-${i}`, phase: 'Classify', schema: SUMMARY_SCHEMA, model }
+		)
+	);
+	const failedBatches = [];
+	let count = 0;
+	let unsure = 0;
+	results.forEach((r, i) => {
+		if (!r) return failedBatches.push(fileBatches[i].src);
+		count += r.count;
+		unsure += r.unsure;
+	});
+	log(
+		`Classified ${count} (${unsure} unsure${failedBatches.length ? `, ${failedBatches.length} batch(es) failed` : ''}) — verdicts in the out files`
+	);
+	return { count, unsure, failed_batches: failedBatches };
+}
+
 const batches = [];
 for (let i = 0; i < items.length; i += BATCH) batches.push(items.slice(i, i + BATCH));
 
-phase('Classify');
 const results = await pipeline(batches, (batch, _item, i) =>
 	agent(
 		`${CLASSIFY_RULES}\n\nItems (JSON):\n${JSON.stringify(batch)}\n\n` +
