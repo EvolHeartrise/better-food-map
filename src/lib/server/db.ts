@@ -1729,10 +1729,14 @@ export async function insertFoods(
 
 /**
  * Statements that apply one item patch: the scalar SET (only the columns present
- * in `patch`), plus a full-set replacement for the dietary/course tags when those
- * are provided (`tags: []` clears). No existence check — the caller
- * ({@link updateItems}) resolves which ids exist up front so a whole batch stays a
- * single round trip. Provenance is menu-level, so an item patch never touches sources.
+ * in `patch`), plus per-set replacement for the dietary/course tags. Each tag set
+ * provided replaces only its own scope — `tags` the required links
+ * (`item_tags.optional = 0`), `optionalTags` the optional links (`optional = 1`)
+ * — so patching one set never silently wipes the other (dietary tags are
+ * source-asserted; `tags: []` clears just the required set). Providing both is a
+ * full replace, as before. No existence check — the caller ({@link updateItems})
+ * resolves which ids exist up front so a whole batch stays a single round trip.
+ * Provenance is menu-level, so an item patch never touches sources.
  */
 function itemUpdateStmts(db: D1Like, id: string, patch: ItemUpdate): D1PreparedLike[] {
 	const stmts: D1PreparedLike[] = [];
@@ -1756,17 +1760,28 @@ function itemUpdateStmts(db: D1Like, id: string, patch: ItemUpdate): D1PreparedL
 		);
 	}
 
-	// Replace the dietary/course tag set (every tag is dietary/course, so this
-	// clears all of an item's tag links before re-linking the new set, which
-	// tagLinkStmts strips of entailed-redundant tags).
+	// Replace the dietary/course tag set(s), scoped to the set(s) actually
+	// provided: clear only the patched scope's links (required and/or optional),
+	// then re-link the new set (which tagLinkStmts strips of entailed-redundant
+	// tags). A tag id named in the patch is also cleared from the OTHER scope —
+	// item_tags is keyed (item_id, tag_id), so without that a pre-existing link at
+	// the other optionality would make the re-link an INSERT OR IGNORE no-op and
+	// the patch's explicit required/optional assertion would be lost.
 	if (patch.tags !== undefined || patch.optionalTags !== undefined) {
+		const scopes: string[] = [];
+		if (patch.tags !== undefined) scopes.push('0');
+		if (patch.optionalTags !== undefined) scopes.push('1');
+		const patchedTagIds = [...(patch.tags ?? []), ...(patch.optionalTags ?? [])];
+		const crossScopeClause =
+			patchedTagIds.length > 0 ? ` OR tag_id IN (${patchedTagIds.map(() => '?').join(', ')})` : '';
 		stmts.push(
 			db
 				.prepare(
-					`DELETE FROM item_tags WHERE item_id = ? AND tag_id IN
-					 (SELECT id FROM tags WHERE tag_type IN ('dietary', 'course'))`
+					`DELETE FROM item_tags WHERE item_id = ?
+					 AND (optional IN (${scopes.join(', ')})${crossScopeClause})
+					 AND tag_id IN (SELECT id FROM tags WHERE tag_type IN ('dietary', 'course'))`
 				)
-				.bind(id)
+				.bind(id, ...patchedTagIds)
 		);
 		stmts.push(...tagLinkStmts(db, id, patch));
 	}
