@@ -81,6 +81,17 @@ describe('normalizeRegion', () => {
 		expect(normalizeRegion('BC', 'US')).toBeNull();
 	});
 
+	test('never resolves a region against CA/US tables for a third country', () => {
+		// Australia's "WA" is Western Australia, not Washington.
+		expect(normalizeRegion('WA', 'AU')).toBeNull();
+		expect(normalizeRegion('Washington', 'AU')).toBeNull();
+		expect(normalizeRegion('ON', 'GB')).toBeNull();
+		// The CA/US paths and the no-country auto-detect are unaffected.
+		expect(normalizeRegion('WA', 'US')).toBe('WA');
+		expect(normalizeRegion('ON', 'CA')).toBe('ON');
+		expect(normalizeRegion('WA')).toBe('WA');
+	});
+
 	test('returns null for unknown / empty input', () => {
 		expect(normalizeRegion('Atlantis')).toBeNull();
 		expect(normalizeRegion('')).toBeNull();
