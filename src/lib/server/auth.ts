@@ -9,8 +9,11 @@ export {
 	SESSION_TTL_MS,
 	generateSessionToken,
 	createUserSession,
+	createLazySessionResolver,
 	validateSessionToken,
 	invalidateSessionToken,
+	type ResolvedSession,
+	type SessionCookieSink,
 	type SessionValidation
 } from './session';
 
