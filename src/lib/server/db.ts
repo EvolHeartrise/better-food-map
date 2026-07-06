@@ -2604,13 +2604,19 @@ export async function upsertOAuthUser(
 	now: number
 ): Promise<User> {
 	const verified = profile.email_verified ? 1 : 0;
+	// Only persist an email the provider has verified: Google issues id tokens
+	// with `email_verified: false` whose `email` claim the account holder may
+	// never have proven owning, so storing it would poison any future
+	// email-keyed feature. Applied on every sign-in, so a returning user whose
+	// token flips to unverified has the stale stored email nulled too.
+	const email = profile.email_verified ? profile.email : null;
 	const existing = await getUserByOAuth(db, provider, providerUserId);
 	if (existing) {
 		await db
 			.prepare(`UPDATE users SET email = ?, email_verified = ?, name = ?, picture = ? WHERE id = ?`)
-			.bind(profile.email, verified, profile.name, profile.picture, existing.id)
+			.bind(email, verified, profile.name, profile.picture, existing.id)
 			.run();
-		return { ...existing, ...profile };
+		return { ...existing, ...profile, email };
 	}
 	const id = crypto.randomUUID();
 	try {
@@ -2620,7 +2626,7 @@ export async function upsertOAuthUser(
 					`INSERT INTO users (id, email, email_verified, name, picture, created_at)
 					 VALUES (?, ?, ?, ?, ?, ?)`
 				)
-				.bind(id, profile.email, verified, profile.name, profile.picture, now),
+				.bind(id, email, verified, profile.name, profile.picture, now),
 			db
 				.prepare(
 					`INSERT INTO oauth_accounts (provider, provider_user_id, user_id, created_at)
@@ -2636,7 +2642,7 @@ export async function upsertOAuthUser(
 		if (!raced) throw err;
 		return raced;
 	}
-	return { id, ...profile };
+	return { id, ...profile, email };
 }
 
 export async function createSession(
