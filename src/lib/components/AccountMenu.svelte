@@ -20,6 +20,11 @@
 		open?: boolean;
 	} = $props();
 
+	let rootEl: HTMLDivElement;
+	// The trigger only renders when signed in, so the ref can be unset (unlike
+	// DietSelector's always-rendered trigger).
+	let triggerEl: HTMLButtonElement | undefined = $state();
+
 	const displayName = $derived(user?.name ?? user?.email ?? 'Account');
 	const initial = $derived(
 		(user?.name ?? user?.email ?? '?').trim().charAt(0).toUpperCase() || '?'
@@ -38,11 +43,14 @@
 	// Escape closes the popover from anywhere (the trigger or the sign-out button may
 	// hold focus); a pointerdown outside the control closes it too. Both are handled on
 	// the window — mirroring DietSelector — and `closest('.account')` keeps clicks on
-	// the trigger/popover from closing it.
+	// the trigger/popover from closing it. When focus is inside the control it returns
+	// to the trigger, so closing the popover can't drop it to <body>; an outside click
+	// keeps focus where the user put it.
 	function handleWindowKeydown(event: KeyboardEvent) {
 		if (event.key === 'Escape' && open) {
 			event.preventDefault();
 			open = false;
+			if (rootEl.contains(document.activeElement)) triggerEl?.focus();
 		}
 	}
 
@@ -60,12 +68,13 @@
 
 <svelte:window onkeydown={handleWindowKeydown} onpointerdown={handleWindowPointerDown} />
 
-<div class="account">
+<div class="account" bind:this={rootEl}>
 	{#if user}
 		<button
 			type="button"
 			class="account__trigger"
 			aria-expanded={open}
+			bind:this={triggerEl}
 			onclick={() => (open = !open)}
 		>
 			{#if user.picture}
