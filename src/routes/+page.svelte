@@ -61,6 +61,22 @@
 		dietSeeded = true;
 	});
 
+	// Hydration fallback, mirroring the stats one below: this query instance is
+	// only ever read via `.current` (never awaited or rendered), so no result is
+	// serialized during SSR — and a client-side instance with no serialized result
+	// has been observed to stay pending forever rather than issuing its own fetch
+	// (experimental remoteFunctions). Without this, `current` would sit undefined
+	// and a signed-in user's saved diet would silently never seed the selector.
+	// One explicit refresh() fills it. The effect re-runs only when `current`
+	// changes, so a persistent failure can't loop it, and once a value lands it
+	// never fires again. The seed effect above still applies the value only once
+	// (dietSeeded), so a user's explicit pick is never clobbered.
+	$effect(() => {
+		if (savedDietResource.current === undefined) {
+			void savedDietResource.refresh().catch(() => {});
+		}
+	});
+
 	// Applies a diet selection and persists it for the signed-in user. Called only on
 	// a user action (not the initial seed), so it never echoes the loaded value back.
 	// For an anonymous visitor the choice is session-local — the selector still applies
