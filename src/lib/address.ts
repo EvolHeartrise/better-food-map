@@ -254,6 +254,12 @@ export function normalizeRegion(
 	const upper = raw.toUpperCase();
 	const cc = countryCode?.toUpperCase();
 
+	// Only CA/US regions are known. When the caller says the address is in some
+	// OTHER country, a lookup against the CA/US tables would launder a foreign
+	// region into a CA/US code (Australia's "WA" is not Washington) — so it is
+	// unresolvable, full stop. No country still auto-detects across CA ∪ US.
+	if (cc && cc !== 'CA' && cc !== 'US') return null;
+
 	// Already a code?
 	if (/^[A-Z]{2}$/.test(upper)) {
 		if (cc === 'CA') return CA_REGION_CODES.has(upper) ? upper : null;
