@@ -3,6 +3,7 @@
 // remote module doesn't re-implement the same guards.
 import { getRequestEvent } from '$app/server';
 import { error } from '@sveltejs/kit';
+import { m } from '$lib/paraglide/messages';
 import type { D1Like, User } from './db';
 
 /**
@@ -36,6 +37,6 @@ export async function currentUser(): Promise<User | null> {
 /** Like {@link currentUser} but throws a 401 when signed out — for guarded mutations. */
 export async function requireUser(): Promise<User> {
 	const user = await currentUser();
-	if (!user) error(401, 'You must be signed in to do that.');
+	if (!user) error(401, m.server_error_sign_in_required());
 	return user;
 }

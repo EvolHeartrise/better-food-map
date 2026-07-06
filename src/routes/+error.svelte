@@ -12,7 +12,7 @@
 </script>
 
 <svelte:head>
-	<title>{page.status} · BetterFoodMaps</title>
+	<title>{m.error_page_title({ status: page.status })}</title>
 </svelte:head>
 
 <div class="error">

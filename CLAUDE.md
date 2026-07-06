@@ -14,6 +14,8 @@
 
 - **Don't trust training-cutoff knowledge for Svelte/SvelteKit config — it moves fast.** Pull the latest docs via the Svelte MCP server (`list-sections` → `get-documentation`) before changing framework config, and run new Svelte components through `svelte-autofixer` until it's clean.
 
+- **User-facing strings live in the message catalog, never as literals.** Every string a user can see — in components, `+error.svelte`/`<svelte:head>`, remote functions, `+page.server.ts` loads and `+server.ts` endpoints — goes in `messages/en.json` + `messages/fr.json` (keep the key sets identical) and is called via `import { m } from '$lib/paraglide/messages'` (`m.*()` and `getLocale()` resolve the caller's locale server-side too, per the `localize` hook). DB content (venue/item names, descriptions, addresses) and tag/category ids are data, not UI copy — never translate them. Internal/dev-facing errors (valibot `v.check`, `db-write.ts`, sitemap 404) stay English.
+
 ---
 
 ## Data policy

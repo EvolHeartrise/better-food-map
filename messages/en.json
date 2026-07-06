@@ -97,5 +97,28 @@
 
 	"error_not_found": "This page doesn't exist",
 	"error_generic": "Something went wrong",
-	"error_back": "Back to the map"
+	"error_back": "Back to the map",
+	"error_page_title": "{status} · BetterFoodMaps",
+
+	"server_error_no_location_or_item": "No such location or item.",
+	"server_error_sign_in_required": "You must be signed in to do that.",
+	"server_error_location_not_found": "Location not found",
+	"server_error_database_unavailable": "Database unavailable.",
+	"server_error_oauth_invalid_callback": "Invalid OAuth callback.",
+	"server_error_oauth_code_validation": "Failed to validate the authorization code.",
+	"server_error_oauth_missing_subject": "Google response was missing the subject claim.",
+
+	"head_site_description": "Explore cafes, fast food and restaurants around the world on an interactive map.",
+	"head_desc_no_menu": "See the menu on BetterFoodMaps.",
+	"head_desc_on_brand": "{content} on BetterFoodMaps.",
+	"head_menu_item_noun": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "menu item",
+				"countPlural=other": "menu items"
+			}
+		}
+	]
 }

@@ -698,10 +698,7 @@
 		{/if}
 	{:else}
 		<title>BetterFoodMaps</title>
-		<meta
-			name="description"
-			content="Explore cafes, fast food and restaurants around the world on an interactive map."
-		/>
+		<meta name="description" content={m.head_site_description()} />
 		<!-- The map root canonicalizes to the bare origin, so query-string variants
 		     (shared links, campaign params) don't fragment its indexing. -->
 		<link rel="canonical" href="{CANONICAL_ORIGIN}/" />

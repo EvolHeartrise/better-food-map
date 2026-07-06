@@ -2,7 +2,7 @@
 	"$schema": "https://inlang.com/schema/inlang-message-format",
 
 	"search_bar_aria": "Recherche et filtres",
-	"search_placeholder": "Rechercher lieux et plats…",
+	"search_placeholder": "Rechercher un lieu ou un plat…",
 	"search_input_aria": "Rechercher par nom de lieu ou de plat",
 	"results_nav_aria": "Lieux correspondants",
 	"results_cap": "Affichage des {max} premiers lieux sur {total}. Précisez la recherche pour affiner la liste.",
@@ -73,7 +73,7 @@
 	"category_bakery": "Boulangerie",
 
 	"diet_any": "Tous les régimes",
-	"diet_filter_aria": "Filtre alimentaire",
+	"diet_filter_aria": "Filtre par régime alimentaire",
 	"diet_can_be_made": "Peut être préparé {diet}",
 
 	"account_default_name": "Compte",
@@ -97,5 +97,28 @@
 
 	"error_not_found": "Cette page n’existe pas",
 	"error_generic": "Une erreur s’est produite",
-	"error_back": "Retour à la carte"
+	"error_back": "Retour à la carte",
+	"error_page_title": "{status} · BetterFoodMaps",
+
+	"server_error_no_location_or_item": "Aucun lieu ou article correspondant.",
+	"server_error_sign_in_required": "Vous devez être connecté pour effectuer cette action.",
+	"server_error_location_not_found": "Lieu introuvable",
+	"server_error_database_unavailable": "Base de données indisponible.",
+	"server_error_oauth_invalid_callback": "Réponse OAuth invalide.",
+	"server_error_oauth_code_validation": "Échec de la validation du code d’autorisation.",
+	"server_error_oauth_missing_subject": "La réponse de Google ne contenait pas l’identifiant (subject).",
+
+	"head_site_description": "Explorez cafés, restauration rapide et restaurants du monde entier sur une carte interactive.",
+	"head_desc_no_menu": "Consultez le menu sur BetterFoodMaps.",
+	"head_desc_on_brand": "{content} sur BetterFoodMaps.",
+	"head_menu_item_noun": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "article",
+				"countPlural=other": "articles"
+			}
+		}
+	]
 }
