@@ -19,7 +19,7 @@
 //     below;
 //   • the client filter is fed the same RESOLVED menus the page builds — each
 //     location's menu with its per-item overrides applied (resolveLocation,
-//     +page.svelte). An availability:false override is a documented divergence
+//     $lib/resolve-location). An availability:false override is a documented divergence
 //     (the server searches the shared menu WITHOUT overrides) and is out of
 //     scope here; a price override is resolved but never changes membership.
 
@@ -35,6 +35,7 @@ import {
 } from '../src/lib/server/db';
 import type { Item, MapData, MapLocation } from '../src/lib/server/db';
 import { searchResults } from '../src/lib/search-match';
+import { resolveLocation } from '../src/lib/resolve-location';
 import { freshDb, searchMapData } from './test-d1';
 import type { TestD1 } from './test-d1';
 
@@ -63,26 +64,14 @@ function venue(name: string, i = 0) {
 	};
 }
 
-// Mirror of +page.svelte's resolveLocation, menu part only: the location's menu
-// items with its overrides applied — unavailable items dropped, overridden
-// prices used. (Freshness metadata plays no part in membership.) Fed the FULL
-// item shape (getLocationMapData) — the page's lean viewport shape carries the
-// same name+tags membership reads on, so parity over this shape covers both.
+// The REAL page resolver ($lib/resolve-location, the same function
+// +page.svelte imports), menu part only: the location's menu items with its
+// overrides applied — unavailable items dropped, overridden prices used.
+// (Freshness metadata plays no part in membership.) Fed the FULL item shape
+// (getLocationMapData) — the page's lean viewport shape carries the same
+// name+tags membership reads on, so parity over this shape covers both.
 function resolveMenu(loc: MapLocation, data: MapData<Item>): Item[] {
-	const menu: Item[] = [];
-	if (loc.menu_id) {
-		const overrideByItem = new Map(loc.overrides.map((o) => [o.item_id, o]));
-		for (const menuItem of data.menus[loc.menu_id] ?? []) {
-			const override = overrideByItem.get(menuItem.id);
-			if (override?.available === false) continue;
-			if (override !== undefined && override.price !== null) {
-				menu.push({ ...menuItem, price: override.price });
-			} else {
-				menu.push(menuItem);
-			}
-		}
-	}
-	return menu;
+	return resolveLocation(loc, data).menu;
 }
 
 /**
