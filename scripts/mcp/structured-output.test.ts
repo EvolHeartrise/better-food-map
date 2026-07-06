@@ -36,6 +36,7 @@ import { freshDb } from '../test-d1';
 import { findIncompleteMenus } from '../osm/find-incomplete-menus';
 import { findHtmlEntities } from '../osm/find-html-entities';
 import { findDuplicateLocations } from '../osm/find-duplicate-locations';
+import { findMissingCourseTags } from '../osm/find-missing-course-tags';
 import { buildListLocationsPage } from './list-locations-page';
 import {
 	listLocationsOutput,
@@ -268,6 +269,8 @@ test('audit_locations output validates for the empty_menu and duplicate_location
 	expect(() => v.parse(auditLocationsOutput, dupes)).not.toThrow();
 	const entities = await findHtmlEntities(db);
 	expect(() => v.parse(auditLocationsOutput, entities)).not.toThrow();
+	const missingCourseTag = await findMissingCourseTags(db);
+	expect(() => v.parse(auditLocationsOutput, missingCourseTag)).not.toThrow();
 });
 
 // --- batch-write result shapes (mirroring the handler return expressions) ----

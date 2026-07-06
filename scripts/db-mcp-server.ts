@@ -92,6 +92,7 @@ import { findMissingAddress } from './osm/find-missing-address';
 import { findDuplicateLocations } from './osm/find-duplicate-locations';
 import { findIncompleteMenus } from './osm/find-incomplete-menus';
 import { findHtmlEntities } from './osm/find-html-entities';
+import { findMissingCourseTags } from './osm/find-missing-course-tags';
 import {
 	resolveListLimit,
 	resolveListOffset,
@@ -146,6 +147,37 @@ const tagIdSchema = v.picklist(TAGS.map((t) => t.id) as [string, ...string[]]);
 // below stay in sync automatically as tags are added.
 const dietaryTagIds = TAGS.filter((t) => t.tag_type === 'dietary').map((t) => t.id);
 const courseTagIds = TAGS.filter((t) => t.tag_type === 'course').map((t) => t.id);
+const courseTagIdSet = new Set(courseTagIds);
+
+// --- Course-tag completeness/exclusivity checks (shared by itemSchema and
+// updateItemArgs) — every item needs at least one course tag; "food" (the
+// explicit not-a-dessert-not-a-drink marker) can never combine with "dessert"
+// or "drink"; a course tag is never valid inside `optional_tags` (it describes
+// what the item factually IS, not something addable/omittable on request).
+
+/** True when `tags` includes at least one course tag id. */
+function hasCourseTag(tags: readonly string[]): boolean {
+	return tags.some((t) => courseTagIdSet.has(t));
+}
+
+/** True when `tags` combines "food" with "dessert" and/or "drink" (never allowed). */
+function hasFoodConflict(tags: readonly string[]): boolean {
+	return tags.includes('food') && (tags.includes('dessert') || tags.includes('drink'));
+}
+
+/** True when any course tag id appears among `optionalTags` (never allowed). */
+function hasOptionalCourseTag(optionalTags: readonly string[] | undefined): boolean {
+	return (optionalTags ?? []).some((t) => courseTagIdSet.has(t));
+}
+
+const MISSING_COURSE_TAG_MSG =
+	`every item must carry a course tag: ${courseTagIds.join(', ')} ("food" = explicitly neither ` +
+	'dessert nor drink)';
+const FOOD_COURSE_CONFLICT_MSG =
+	'"food" (explicitly neither dessert nor drink) cannot combine with "dessert" or "drink" in `tags`';
+const OPTIONAL_COURSE_TAG_MSG =
+	'a course tag (food/dessert/drink) describes what the item factually is, not something addable/' +
+	'omittable on request — remove it from `optional_tags`';
 
 // The single source of truth for how tags are applied. Advertised to MCP clients
 // via the server `instructions`, and reused verbatim in every tag-bearing tool
@@ -155,8 +187,14 @@ const TAG_POLICY =
 	`explicitly designates the item — via a dietary marker/label/section heading, or when the item's ` +
 	`name as shown in the source contains the designation (e.g. "Vegan Burger", "Halal Chicken", ` +
 	`"Vegetarian Thali"). Never infer a dietary tag from the ingredient list or general knowledge of ` +
-	`the dish; when unsure, omit it. Course tags (${courseTagIds.join(', ')}) describe what kind of ` +
-	`item it is and are applied factually (a dessert gets "dessert", a beverage gets "drink").`;
+	`the dish; when unsure, omit it. Course tags (${courseTagIds.join(', ')}) are FACTUAL, not source-` +
+	'asserted, and every item REQUIRES at least one: "food" marks it as explicitly neither a dessert ' +
+	'nor a drink (so no course tag at all unambiguously means "never course-reviewed", not "food"), ' +
+	'and it can never combine with "dessert" or "drink". "dessert" and "drink" MAY combine on one item ' +
+	"when it's genuinely both (e.g. a milkshake). When an item's course is ambiguous, tie-break on the " +
+	'source menu\'s OWN section placement ("Desserts", "Drinks", …); if the source is unsectioned, tag ' +
+	'by what the item is served as. Course tags never belong in `optional_tags` — they describe what ' +
+	'the item factually is, not something addable/omittable on request.';
 
 // A one-line pointer to {@link TAG_POLICY} for the many per-field tag descriptions.
 // The full policy is advertised once in the server instructions and the item-tool
@@ -164,8 +202,10 @@ const TAG_POLICY =
 // advertised JSON Schema, so the fields just restate the load-bearing rule.
 const TAG_POLICY_SHORT =
 	'Dietary tags are SOURCE-ASSERTED — apply only when the source explicitly designates the item ' +
-	'(name or marker), never inferred from ingredients; course tags (dessert/drink) are factual. ' +
-	'See the server tag policy.';
+	'(name or marker), never inferred from ingredients. Course tags are factual and REQUIRED — every ' +
+	`item needs at least one of (${courseTagIds.join(', ')}); "food" = explicitly neither dessert nor ` +
+	'drink and never combines with them; dessert+drink may combine when genuinely both; never put a ' +
+	'course tag in `optional_tags`. See the server tag policy.';
 
 // How the two ways of storing a menu relate. Kept terse and advertised to
 // clients so an agent picks the right create_* tool for the situation.
@@ -185,7 +225,10 @@ const MODEL_OVERVIEW =
 	'for one venue. Once created, read/edit/remove items with get_item / update_items / delete_item ' +
 	'(editing a shared chain item changes it for every branch).\n' +
 	'Items carry tags: pass `tags` (dietary/course) and `optional_tags` for things that can be added ' +
-	'or left out (e.g. an item that can be made vegan). Items do NOT store ingredients.';
+	'or left out (e.g. an item that can be made vegan). Every item REQUIRES at least one course tag ' +
+	`(${courseTagIds.join(', ')}) — "food" marks it as explicitly neither dessert nor drink; dessert+` +
+	'drink may combine when genuinely both (a milkshake), but "food" never combines with either. ' +
+	'Items do NOT store ingredients.';
 
 // --- Field policies -------------------------------------------------------
 // The correctness-critical rules that used to be repeated verbatim on every
@@ -456,33 +499,42 @@ const ITEM_DESCRIPTION_DESC =
 // One menu item. Shared by create_items (the batch's location_id/menu_id is given
 // once), and by the inline `menu_items` of an independent venue created via
 // create_locations.
-const itemSchema = v.object({
-	item_name: v.pipe(v.string(), v.minLength(1), v.description('Name of the menu item.')),
-	description: v.optional(v.nullable(v.pipe(v.string(), v.description(ITEM_DESCRIPTION_DESC)))),
-	price: v.optional(
-		v.nullable(
-			v.pipe(
-				priceSchema,
-				v.description(
-					"Price in the menu's currency (a bare number, no symbol; the menu's currency defaults to " +
-						`${DEFAULT_CURRENCY}). For a shared chain item this is the default a branch can override ` +
-						'per-location via set_location_item_override.'
+const itemSchema = v.pipe(
+	v.object({
+		item_name: v.pipe(v.string(), v.minLength(1), v.description('Name of the menu item.')),
+		description: v.optional(v.nullable(v.pipe(v.string(), v.description(ITEM_DESCRIPTION_DESC)))),
+		price: v.optional(
+			v.nullable(
+				v.pipe(
+					priceSchema,
+					v.description(
+						"Price in the menu's currency (a bare number, no symbol; the menu's currency defaults to " +
+							`${DEFAULT_CURRENCY}). For a shared chain item this is the default a branch can override ` +
+							'per-location via set_location_item_override.'
+					)
 				)
 			)
+		),
+		tags: v.pipe(
+			v.array(tagIdSchema),
+			v.description(
+				'Tags to apply to this item. REQUIRED to include at least one course tag. ' +
+					TAG_POLICY_SHORT
+			)
+		),
+		optional_tags: optionalTagsSchema,
+		id: v.optional(
+			v.pipe(
+				v.string(),
+				v.minLength(1),
+				v.description('Optional explicit id; a UUID is generated when omitted.')
+			)
 		)
-	),
-	tags: v.optional(
-		v.pipe(v.array(tagIdSchema), v.description('Tags to apply to this item. ' + TAG_POLICY_SHORT))
-	),
-	optional_tags: optionalTagsSchema,
-	id: v.optional(
-		v.pipe(
-			v.string(),
-			v.minLength(1),
-			v.description('Optional explicit id; a UUID is generated when omitted.')
-		)
-	)
-});
+	}),
+	v.check((item) => hasCourseTag(item.tags), MISSING_COURSE_TAG_MSG),
+	v.check((item) => !hasFoodConflict(item.tags), FOOD_COURSE_CONFLICT_MSG),
+	v.check((item) => !hasOptionalCourseTag(item.optional_tags), OPTIONAL_COURSE_TAG_MSG)
+);
 
 const createLocationArgs = v.object({
 	name: v.pipe(v.string(), v.minLength(1), v.description(NAME_DESC_SHORT)),
@@ -1113,7 +1165,8 @@ const auditLocationsArgs = v.object({
 			'missing_address',
 			'duplicate_locations',
 			'empty_menu',
-			'html_entities'
+			'html_entities',
+			'missing_course_tag'
 		]),
 		v.description(
 			'Which audit to run:\n' +
@@ -1158,7 +1211,16 @@ const auditLocationsArgs = v.object({
 				'slipped in some other way. Scans item names/descriptions plus location/menu/brand names; ' +
 				'returns { items, locations, menus, brands } where every entry carries the stored `value`/`name` ' +
 				'and the `decoded` text to write back (via update_items / update_locations / update_menu / ' +
-				'update_brand), and each flagged item lists the locations serving its menu. Reads only the live D1.'
+				'update_brand), and each flagged item lists the locations serving its menu. Reads only the live D1.\n' +
+				'• "missing_course_tag" — items with NO required (non-optional) course tag (food/dessert/' +
+				'drink). Per the course-tag mandate, no course tag means the item was never course-reviewed ' +
+				'(NOT "food" by default). This audit is PAGED — use `limit`/`offset` (this check only) to work ' +
+				'through the backlog, `total` is the full flagged count. Each entry is { id, item_name, menu_id, ' +
+				'menu_name, location_count, hint }: `location_count` is how many live locations serve that menu; ' +
+				"`hint` ('drink' | 'dessert' | null) is a CHEAP KEYWORD HEURISTIC suggesting the likely tag — " +
+				'verify against the source before applying it, never trust it blindly. Ordered hint-first (drink, ' +
+				'then dessert, then no hint), then by menu. Fix by re-tagging with update_items, passing the full ' +
+				'corrected `tags` set (course tag plus any dietary tags the source supports). Reads only the live D1.'
 		)
 	),
 	radius_m: v.optional(
@@ -1255,6 +1317,17 @@ const auditLocationsArgs = v.object({
 				'[missing_address only] Include locations OSM cannot fix (osm_has_no_address, no_osm_match) in ' +
 					'the list; they are always counted regardless. Set false for just the actionable, OSM-fixable ' +
 					'work list (default true).'
+			)
+		)
+	),
+	offset: v.optional(
+		v.pipe(
+			v.number(),
+			v.integer(),
+			v.minValue(0),
+			v.description(
+				'[missing_course_tag only] Skip this many flagged items (paging) — the backlog is large, so ' +
+					'drain it in pages via `limit`/`offset` rather than in one call.'
 			)
 		)
 	)
@@ -1428,34 +1501,43 @@ const getMenuArgs = v.object({
 
 // One item patch within an update_items batch. Every field but `id` is optional;
 // only the fields present are changed.
-const updateItemArgs = v.object({
-	id: v.pipe(v.string(), v.minLength(1), v.description('Id of the item to update.')),
-	menu_id: v.optional(
-		v.pipe(
-			v.string(),
-			v.minLength(1),
-			v.description(
-				'Move the item to a different menu of the SAME brand (rare). A move targeting a ' +
-					"nonexistent menu, another venue's private menu, or another brand's shared menu is rejected."
+const updateItemArgs = v.pipe(
+	v.object({
+		id: v.pipe(v.string(), v.minLength(1), v.description('Id of the item to update.')),
+		menu_id: v.optional(
+			v.pipe(
+				v.string(),
+				v.minLength(1),
+				v.description(
+					'Move the item to a different menu of the SAME brand (rare). A move targeting a ' +
+						"nonexistent menu, another venue's private menu, or another brand's shared menu is rejected."
+				)
 			)
-		)
-	),
-	item_name: v.optional(v.pipe(v.string(), v.minLength(1))),
-	description: v.optional(
-		v.nullable(v.pipe(v.string(), v.description(ITEM_DESCRIPTION_DESC + ' Pass null to clear.')))
-	),
-	price: v.optional(v.nullable(priceSchema)),
-	tags: v.optional(
-		v.pipe(
-			v.array(tagIdSchema),
-			v.description(
-				'Replaces the full dietary/course tag set for this item (pass [] to clear). ' +
-					TAG_POLICY_SHORT
+		),
+		item_name: v.optional(v.pipe(v.string(), v.minLength(1))),
+		description: v.optional(
+			v.nullable(v.pipe(v.string(), v.description(ITEM_DESCRIPTION_DESC + ' Pass null to clear.')))
+		),
+		price: v.optional(v.nullable(priceSchema)),
+		tags: v.optional(
+			v.pipe(
+				v.array(tagIdSchema),
+				v.description(
+					'Replaces the full dietary/course tag set for this item. Must include at least one course ' +
+						'tag when provided (an item always needs one) — omit `tags` entirely to leave it unchanged. ' +
+						TAG_POLICY_SHORT
+				)
 			)
-		)
+		),
+		optional_tags: optionalTagsSchema
+	}),
+	v.check((item) => item.tags === undefined || hasCourseTag(item.tags), MISSING_COURSE_TAG_MSG),
+	v.check(
+		(item) => item.tags === undefined || !hasFoodConflict(item.tags),
+		FOOD_COURSE_CONFLICT_MSG
 	),
-	optional_tags: optionalTagsSchema
-});
+	v.check((item) => !hasOptionalCourseTag(item.optional_tags), OPTIONAL_COURSE_TAG_MSG)
+);
 
 const updateItemsArgs = v.object({
 	items: v.pipe(
@@ -2945,8 +3027,12 @@ const osmTools = [
 			'mark_not_duplicate so it stops being re-flagged — such pairs are counted in ' +
 			'`suppressed_reviewed`, never re-listed), "empty_menu" (open venues whose effective menu is ' +
 			'empty or thinner than `min_items` — they violate the EXHAUSTIVE-menu policy; backfill with ' +
-			'create_items), or "html_entities" (text still carrying HTML-encoded references like "&amp;" — ' +
-			'ingestion decodes these, so any hit is legacy/anomalous data; fix with the matching update tool). ' +
+			'create_items), "html_entities" (text still carrying HTML-encoded references like "&amp;" — ' +
+			'ingestion decodes these, so any hit is legacy/anomalous data; fix with the matching update tool), ' +
+			'or "missing_course_tag" (items with no required course tag — food/dessert/drink; per the course-' +
+			'tag mandate this means the item was never course-reviewed, NOT that it defaults to "food". PAGED ' +
+			'via `limit`/`offset`, since the pre-mandate backlog is large; each entry carries a heuristic ' +
+			'`hint` to verify, not to auto-apply; fix by re-tagging with update_items). ' +
 			'The address/coordinate checks compare against the LOCAL OSM staging store; the other checks read ' +
 			'only the live D1. ' +
 			'Results are worst-first / actionable-first; `limit` caps how many are returned and `additional` ' +
@@ -2988,6 +3074,10 @@ const osmTools = [
 			if (input.check === 'html_entities') {
 				// Reads only the live D1 — no staging store needed.
 				return findHtmlEntities(getDb(), { limit: input.limit });
+			}
+			if (input.check === 'missing_course_tag') {
+				// Reads only the live D1 — no staging store needed.
+				return findMissingCourseTags(getDb(), { limit: input.limit, offset: input.offset });
 			}
 			return findMissingAddress(getOsmStore(), getDb(), {
 				limit: input.limit,
