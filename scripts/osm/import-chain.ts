@@ -38,6 +38,7 @@ import {
 	existingInBbox,
 	isExistingDuplicate,
 	normalizeName,
+	padBboxForDedup,
 	partitionByCountry,
 	resolveArea,
 	type ForeignDrop,
@@ -250,7 +251,9 @@ export async function selectChainCandidates(
 		if (brandMatched) matchedByBrand++;
 	}
 
-	const existing = matchedRaw.length ? await existingInBbox(db, bbox) : [];
+	// Padded past SAME_NAME_M: a moved-node branch just outside the bbox must
+	// still block same-name dedup for an in-bbox edge POI (see padBboxForDedup).
+	const existing = matchedRaw.length ? await existingInBbox(db, padBboxForDedup(bbox)) : [];
 	const matched: StoredPoi[] = [];
 	let excludedExisting = 0;
 	for (const poi of matchedRaw) {
