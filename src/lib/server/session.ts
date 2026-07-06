@@ -96,3 +96,57 @@ export async function validateSessionToken(
 export async function invalidateSessionToken(db: D1Like, token: string): Promise<void> {
 	await deleteSession(db, await sha256Hex(token));
 }
+
+/** The signed-in user + session behind a request's cookie, or null when signed out. */
+export interface ResolvedSession {
+	session: Session;
+	user: User;
+}
+
+/**
+ * Cookie side effects the lazy resolver needs, injected by the auth hook so this
+ * module stays `$app`-free (the hook binds them to SvelteKit's `event.cookies`).
+ */
+export interface SessionCookieSink {
+	/** Re-set the session cookie after a sliding refresh moved the expiry. */
+	setCookie(token: string, expiresAt: number): void;
+	/** Clear the session cookie because its token matched no live session. */
+	clearCookie(): void;
+}
+
+/**
+ * Builds the lazy, memoized session resolver the auth hook installs as
+ * `event.locals.getSession`. The D1 read (`validateSessionToken`) — plus the
+ * expiry-slide UPDATE and the cookie refresh/clear that hang off its result —
+ * runs only when some consumer first asks who is signed in, and exactly once
+ * per request thereafter (concurrent callers share the same in-flight promise).
+ * Public paths (map cells, stats, sitemaps) never call it, so a signed-in
+ * user's cell fetches no longer pay a serial D1 round trip (or a Workers
+ * subrequest) for auth they don't use.
+ *
+ * The memo lives in this closure — created per request by the hook — never in
+ * module scope: a module-level memo would leak one request's D1 promise into
+ * the next (see the memo/waitUntil notes in $lib/server/memo.ts).
+ */
+export function createLazySessionResolver(
+	db: D1Like | undefined,
+	token: string | undefined,
+	cookies: SessionCookieSink
+): () => Promise<ResolvedSession | null> {
+	let memo: Promise<ResolvedSession | null> | undefined;
+
+	async function resolve(): Promise<ResolvedSession | null> {
+		if (!token || !db) return null;
+		const result = await validateSessionToken(db, token);
+		if (!result) {
+			// Invalid or expired token: same as the old eager hook, drop the cookie.
+			cookies.clearCookie();
+			return null;
+		}
+		// A sliding refresh moved the row's expiry; keep the cookie's in step.
+		if (result.refreshed) cookies.setCookie(token, result.session.expires_at);
+		return { session: result.session, user: result.user };
+	}
+
+	return () => (memo ??= resolve());
+}
