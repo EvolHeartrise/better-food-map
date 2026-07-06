@@ -4,6 +4,7 @@
 	import MapPin from '@lucide/svelte/icons/map-pin';
 	import { PLACES_PATH } from '$lib/browse';
 	import { m } from '$lib/paraglide/messages';
+	import { getLocale } from '$lib/paraglide/runtime';
 
 	// Coverage totals shown on the zoomed-out landing. Structural (not imported from
 	// the server db module) so the overlay carries no server-only import — mirroring
@@ -24,7 +25,9 @@
 		onstart: () => void;
 	} = $props();
 
-	const numberFormat = new Intl.NumberFormat('en-CA');
+	// Built from the active per-page locale (fixed per page load), so coverage
+	// counts group digits the reader's way (en `1,234` vs fr `1 234`).
+	const numberFormat = new Intl.NumberFormat(getLocale());
 	function fmt(value: number): string {
 		return numberFormat.format(Math.round(value));
 	}

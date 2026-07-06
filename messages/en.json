@@ -55,38 +55,7 @@
 	"item_unlike": "Unlike this item",
 
 	"scanned_date": "Scanned {date}",
-	"scanned_today": "Scanned today",
-	"scanned_yesterday": "Scanned yesterday",
-	"scanned_days_ago": [
-		{
-			"declarations": ["input count", "local countPlural = count: plural"],
-			"selectors": ["countPlural"],
-			"match": {
-				"countPlural=one": "Scanned {count} day ago",
-				"countPlural=other": "Scanned {count} days ago"
-			}
-		}
-	],
-	"scanned_months_ago": [
-		{
-			"declarations": ["input count", "local countPlural = count: plural"],
-			"selectors": ["countPlural"],
-			"match": {
-				"countPlural=one": "Scanned {count} month ago",
-				"countPlural=other": "Scanned {count} months ago"
-			}
-		}
-	],
-	"scanned_years_ago": [
-		{
-			"declarations": ["input count", "local countPlural = count: plural"],
-			"selectors": ["countPlural"],
-			"match": {
-				"countPlural=one": "Scanned {count} year ago",
-				"countPlural=other": "Scanned {count} years ago"
-			}
-		}
-	],
+	"scanned": "Scanned {relative}",
 
 	"tag_vegan": "Vegan",
 	"tag_vegetarian": "Vegetarian",

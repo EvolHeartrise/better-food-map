@@ -55,38 +55,7 @@
 	"item_unlike": "Ne plus aimer cet article",
 
 	"scanned_date": "Vérifié le {date}",
-	"scanned_today": "Vérifié aujourd’hui",
-	"scanned_yesterday": "Vérifié hier",
-	"scanned_days_ago": [
-		{
-			"declarations": ["input count", "local countPlural = count: plural"],
-			"selectors": ["countPlural"],
-			"match": {
-				"countPlural=one": "Vérifié il y a {count} jour",
-				"countPlural=other": "Vérifié il y a {count} jours"
-			}
-		}
-	],
-	"scanned_months_ago": [
-		{
-			"declarations": ["input count", "local countPlural = count: plural"],
-			"selectors": ["countPlural"],
-			"match": {
-				"countPlural=one": "Vérifié il y a {count} mois",
-				"countPlural=other": "Vérifié il y a {count} mois"
-			}
-		}
-	],
-	"scanned_years_ago": [
-		{
-			"declarations": ["input count", "local countPlural = count: plural"],
-			"selectors": ["countPlural"],
-			"match": {
-				"countPlural=one": "Vérifié il y a {count} an",
-				"countPlural=other": "Vérifié il y a {count} ans"
-			}
-		}
-	],
+	"scanned": "Vérifié {relative}",
 
 	"tag_vegan": "Végétalien",
 	"tag_vegetarian": "Végétarien",

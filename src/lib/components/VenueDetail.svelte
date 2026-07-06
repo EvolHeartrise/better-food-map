@@ -8,6 +8,7 @@
 	import { safeHttpUrl } from '$lib/safe-url';
 	import { tooltip } from '$lib/tooltip';
 	import { m } from '$lib/paraglide/messages';
+	import { getLocale } from '$lib/paraglide/runtime';
 	import type { ResolvedLocation } from '$lib/resolve-location';
 	import type { Item, User } from '$lib/server/db';
 
@@ -47,13 +48,17 @@
 	const loc = $derived(location);
 	const label = $derived(categoryLabel(loc.category));
 
-	// Price formatters, one per ISO-4217 currency code (each item carries its menu's
-	// currency), built lazily and cached so a mixed-currency result set still formats
-	// every price in its own currency rather than a single hard-coded one. A plain
-	// record, not a Map — it's a non-reactive memo cache, never component state.
+	// Price formatters, one per (locale, ISO-4217 currency code): each item carries
+	// its menu's currency, and the number itself is grouped/positioned per the active
+	// locale (fixed per page load), so a mixed-currency result set still formats every
+	// price in its own currency AND the reader's number format. Built lazily and cached
+	// keyed on `locale:code` — keying on locale too keeps different-locale renders from
+	// colliding on a shared entry. A plain record, not a Map — a non-reactive memo
+	// cache, never component state.
 	const moneyFormatters: Record<string, Intl.NumberFormat> = {};
 	function moneyFormatter(code: string): Intl.NumberFormat {
-		return (moneyFormatters[code] ??= new Intl.NumberFormat('en-CA', {
+		const locale = getLocale();
+		return (moneyFormatters[`${locale}:${code}`] ??= new Intl.NumberFormat(locale, {
 			style: 'currency',
 			currency: code
 		}));
@@ -125,16 +130,26 @@
 		const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 		return Math.round((today.getTime() - then.getTime()) / 86_400_000);
 	}
+	// The relative phrase ("today" / "yesterday" / "3 days ago" / "last month" /
+	// "last year") is produced by Intl.RelativeTimeFormat in the active locale, so
+	// the plural/word forms are localized for free; we keep only the day-bucketing
+	// (which coarse unit to phrase in) and wrap the result in the localized "Scanned
+	// {relative}" so the surrounding verb still translates. `numeric: 'auto'` is what
+	// yields the natural "today"/"yesterday"/"last month" rather than "0 days ago".
 	function formatScanned(iso: string): string {
 		const days = verifiedDaysAgo(iso);
 		if (days === null) return m.scanned_date({ date: iso });
-		if (days <= 0) return m.scanned_today();
-		if (days === 1) return m.scanned_yesterday();
-		if (days < 30) return m.scanned_days_ago({ count: days });
-		const months = Math.round(days / 30);
-		if (months < 12) return m.scanned_months_ago({ count: months });
-		const years = Math.round(days / 365);
-		return m.scanned_years_ago({ count: years });
+		const rtf = new Intl.RelativeTimeFormat(getLocale(), { numeric: 'auto' });
+		let relative: string;
+		if (days < 30) {
+			// A future/zero diff clamps to 0 ("today"); otherwise negative = in the past.
+			relative = rtf.format(days <= 0 ? 0 : -days, 'day');
+		} else {
+			const months = Math.round(days / 30);
+			relative =
+				months < 12 ? rtf.format(-months, 'month') : rtf.format(-Math.round(days / 365), 'year');
+		}
+		return m.scanned({ relative });
 	}
 </script>
 
