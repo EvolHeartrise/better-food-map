@@ -14,6 +14,7 @@ import {
 } from '../../src/lib/server/db';
 import { freshDb } from '../test-d1';
 import { deleteLocationsBatch } from './delete-locations';
+import { ToolPartialFailure } from './partial-failure';
 
 function loc(over: Record<string, unknown> = {}) {
 	return {
@@ -53,6 +54,77 @@ test('a repeated id lands in exactly one bucket (deduped)', async () => {
 	expect(res.deleted).toBe(1);
 	expect(res.deleted_ids).toEqual([a]);
 	expect(res.not_found_ids).toEqual([]);
+});
+
+/**
+ * Wraps a D1Like so that any statement bound with `failId` throws — simulating a
+ * D1 error hitting one specific id's delete, mid-batch. Every other id passes
+ * through to the real db untouched.
+ */
+function failOnId(db: D1Like, failId: string): D1Like {
+	return {
+		prepare(query: string) {
+			const stmt = db.prepare(query);
+			return {
+				bind(...values: unknown[]) {
+					if (values.includes(failId)) throw new Error('injected D1 failure');
+					return stmt.bind(...values);
+				},
+				first: <T = unknown>() => stmt.first<T>(),
+				all: <T = unknown>() => stmt.all<T>(),
+				run: () => stmt.run()
+			};
+		},
+		batch: (statements) => db.batch(statements)
+	};
+}
+
+test('a mid-batch failure raises ToolPartialFailure carrying the committed split', async () => {
+	const db = freshDb();
+	const [a, b] = await insertLocations(db, [loc({ latitude: 49.1 }), loc({ latitude: 49.2 })]);
+
+	let caught: unknown;
+	try {
+		await deleteLocationsBatch(failOnId(db, b), [a, 'missing-id', b]);
+	} catch (err) {
+		caught = err;
+	}
+	expect(caught).toBeInstanceOf(ToolPartialFailure);
+	const pf = caught as ToolPartialFailure;
+	// The two ids processed before the failure are reported in their correct buckets.
+	expect(pf.partial.deleted).toBe(1);
+	expect(pf.partial.deleted_ids).toEqual([a]);
+	expect(pf.partial.not_found_ids).toEqual(['missing-id']);
+	expect(pf.partial.failed_id).toBe(b);
+	expect(pf.message).toContain('injected D1 failure');
+	expect(pf.message).toContain(b);
+
+	// The committed delete really happened; the failing id's row survives.
+	expect(await getLocationById(db, a)).toBeNull();
+	expect(await getLocationById(db, b)).not.toBeNull();
+
+	// Re-running with the remaining ids finishes the job.
+	const res = await deleteLocationsBatch(db, [b]);
+	expect(res.deleted_ids).toEqual([b]);
+	expect(await getLocationById(db, b)).toBeNull();
+});
+
+test('a failure on the very first id rethrows plainly (nothing committed)', async () => {
+	const db = freshDb();
+	const [a, b] = await insertLocations(db, [loc({ latitude: 49.1 }), loc({ latitude: 49.2 })]);
+
+	let caught: unknown;
+	try {
+		await deleteLocationsBatch(failOnId(db, a), [a, b]);
+	} catch (err) {
+		caught = err;
+	}
+	expect(caught).toBeInstanceOf(Error);
+	expect(caught).not.toBeInstanceOf(ToolPartialFailure);
+	expect((caught as Error).message).toBe('injected D1 failure');
+	// Neither row was touched: nothing ran before the failure, and the loop stopped.
+	expect(await getLocationById(db, a)).not.toBeNull();
+	expect(await getLocationById(db, b)).not.toBeNull();
 });
 
 /** Row count of `table` filtered by one column value. */
