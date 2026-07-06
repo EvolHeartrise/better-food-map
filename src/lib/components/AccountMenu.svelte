@@ -60,9 +60,14 @@
 	}
 
 	async function handleSignOut() {
-		await signOut();
-		// Re-run the load so locals.user (and every user-scoped query) resets cleanly.
-		location.reload();
+		// Reload even if signOut rejects: the page re-renders whatever the true session
+		// state is, so a failed sign-out visibly leaves the user signed in (the feedback).
+		try {
+			await signOut();
+		} finally {
+			// Re-run the load so locals.user (and every user-scoped query) resets cleanly.
+			location.reload();
+		}
 	}
 </script>
 
