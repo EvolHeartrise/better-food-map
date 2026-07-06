@@ -5,13 +5,8 @@
 // schema via the in-memory D1 adapter.
 
 import { test, expect } from 'bun:test';
-import {
-	getBrandById,
-	getBrands,
-	getMenuWithItems,
-	getMenus,
-	type MenuWithItems
-} from '../../src/lib/server/db';
+import { type MenuWithItems } from '../../src/lib/server/db';
+import { getBrandById, getBrands, getMenuWithItems, getMenus } from '../../src/lib/server/db-write';
 import { freshDb } from '../test-d1';
 import { createChainBundle } from './create-chain';
 

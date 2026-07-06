@@ -8,14 +8,14 @@
 // migration schema via the in-memory D1Like adapter.
 
 import { test, expect } from 'bun:test';
+import { getStats } from '../src/lib/server/db';
 import {
-	getStats,
 	insertLocations,
 	insertBrand,
 	insertMenu,
 	insertMenuItems,
 	type LocationInsert
-} from '../src/lib/server/db';
+} from '../src/lib/server/db-write';
 import { freshDb } from './test-d1';
 
 // A full LocationInsert with sensible defaults, so each test only states what matters

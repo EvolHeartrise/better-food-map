@@ -15,7 +15,7 @@ import {
 	insertLocations,
 	insertFoods,
 	getLocationById
-} from '../src/lib/server/db';
+} from '../src/lib/server/db-write';
 import { freshDb } from './test-d1';
 
 /** A minimal independent-venue insert; override fields as needed per test. */

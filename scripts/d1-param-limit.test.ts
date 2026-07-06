@@ -13,6 +13,7 @@
 // float-EXACT through the JSON round-trip (the coordinate-identical dedup invariant).
 
 import { test, expect } from 'bun:test';
+import { type D1Like, type D1PreparedLike } from '../src/lib/server/db';
 import {
 	insertLocations,
 	insertBrand,
@@ -25,10 +26,8 @@ import {
 	updateLocations,
 	updateItems,
 	getLocationById,
-	getItemById,
-	type D1Like,
-	type D1PreparedLike
-} from '../src/lib/server/db';
+	getItemById
+} from '../src/lib/server/db-write';
 import { freshDb } from './test-d1';
 
 // D1's documented per-query limit on bound parameters.

@@ -13,7 +13,7 @@ import {
 	updateLocations,
 	getLocationById,
 	getMenuById
-} from '../src/lib/server/db';
+} from '../src/lib/server/db-write';
 import { freshDb } from './test-d1';
 
 const ADDR = {

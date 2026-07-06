@@ -3,19 +3,21 @@
 // and it still blocks both re-creation and (via the unfiltered dedup read) re-listing.
 import { test, expect } from 'bun:test';
 import {
-	insertLocations,
-	setLocationClosed,
 	getLocationMapData,
 	getStats,
-	getLocationById,
 	locationExists,
+	setLocationLike,
+	getUserLikes
+} from '../src/lib/server/db';
+import {
+	insertLocations,
+	setLocationClosed,
+	getLocationById,
 	getLocationsWithTags,
 	existingLocationsAtCoords,
 	coordinateKey,
-	setLocationLike,
-	getUserLikes,
 	type LocationInsert
-} from '../src/lib/server/db';
+} from '../src/lib/server/db-write';
 import { freshDb, viewportMapData } from './test-d1';
 
 /** A complete-address venue with sensible defaults; override per test. */

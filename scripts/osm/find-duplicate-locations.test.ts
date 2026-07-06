@@ -1,13 +1,13 @@
 import { test, expect } from 'bun:test';
 import { findDuplicateLocations } from './find-duplicate-locations';
+import { type D1Like } from '../../src/lib/server/db';
 import {
 	insertLocations,
 	insertBrand,
 	markLocationsDistinct,
 	setLocationClosed,
-	unmarkLocationsDistinct,
-	type D1Like
-} from '../../src/lib/server/db';
+	unmarkLocationsDistinct
+} from '../../src/lib/server/db-write';
 import { freshDb } from '../test-d1';
 
 /** A minimal location insert; override per test. */
