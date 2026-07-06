@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { impliedDietTagIds, tagDisplayName } from '$lib/tags';
+	import { impliedDietTagIds, tagDisplayName, TAGS } from '$lib/tags';
 	import { dietIcon } from '$lib/dietary-icons';
 
 	// An item's DIETARY tags shown as small colored icons, sat to the right of the item
@@ -27,14 +27,21 @@
 	// and any tag an asserted stronger diet makes redundant (a vegan item's
 	// vegetarian / dairy-free marks — see DIET_TAG_IMPLIES; an optional "can be
 	// made vegan" suppresses nothing). Writes strip such tags too, so this is a
-	// guard for rows written before that rule. Order follows however the item
-	// lists its tags.
+	// guard for rows written before that rule. Marks are sorted into the TAGS
+	// catalog order — the same order the diet selector lists diets — rather than
+	// the item's tag order, which follows DB row order and puts halal after the
+	// *-free tags.
 	const marks = $derived.by(() => {
 		const implied = impliedDietTagIds(tags);
-		return tags.flatMap((tag) => {
-			const spec = dietIcon(tag.id);
-			return spec && !implied.has(tag.id) ? [{ tag, spec }] : [];
-		});
+		const rank = new Map(TAGS.map((tag, i) => [tag.id, i]));
+		return tags
+			.flatMap((tag) => {
+				const spec = dietIcon(tag.id);
+				return spec && !implied.has(tag.id) ? [{ tag, spec }] : [];
+			})
+			.toSorted(
+				(a, b) => (rank.get(a.tag.id) ?? TAGS.length) - (rank.get(b.tag.id) ?? TAGS.length)
+			);
 	});
 </script>
 
