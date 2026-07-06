@@ -2,7 +2,7 @@
 	import BrowseShell from '$lib/components/BrowseShell.svelte';
 	import BrowseLinkList from '$lib/components/BrowseLinkList.svelte';
 	import { countryLabel, regionLabel } from '$lib/address';
-	import { countryPath, cityPath, PLACES_PATH } from '$lib/browse';
+	import { countryPath, cityPath, PLACES_PATH, mergeCitiesBySlug } from '$lib/browse';
 	import { CANONICAL_ORIGIN } from '$lib/canonical';
 	import { resolve } from '$app/paths';
 
@@ -15,8 +15,11 @@
 		{ href: PLACES_PATH, label: 'Places' },
 		{ href: countryPath(data.country), label: country }
 	]);
+	// Merge spellings that slugify to one city page (e.g. "Grand Forks" / "GRAND
+	// FORKS") so each city is a single row — a duplicate href would crash the
+	// keyed {#each}. See mergeCitiesBySlug.
 	const items = $derived(
-		data.cities.map((c) => ({
+		mergeCitiesBySlug(data.cities).map((c) => ({
 			href: cityPath(data.country, data.region, c.value),
 			label: c.value,
 			count: c.count

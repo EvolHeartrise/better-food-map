@@ -40,6 +40,31 @@ export function citySlug(city: string): string {
 	return slugify(city);
 }
 
+/**
+ * Collapse city rows that slugify to the same URL slug into one row per slug.
+ * Distinct raw spellings of a city ("Grand Forks" vs "GRAND FORKS", "Fort St
+ * John" vs "Fort St. John") share a single city page — its load matches the slug
+ * against every spelling and lists their venues together (see the [city] route).
+ * So the region index must surface ONE link for them: two rows would emit two
+ * `<a>`s with the same `cityPath` href and, keyed by href, crash the browse
+ * list's `{#each}` with `each_key_duplicate`. Input is expected ordered by count
+ * desc (as {@link getBrowseCities} returns it), so the first spelling seen — the
+ * most-covered — names the merged row, mirroring the city page's own choice of
+ * display name; counts sum. Insertion order is preserved.
+ */
+export function mergeCitiesBySlug<T extends { value: string; count: number }>(
+	cities: readonly T[]
+): { value: string; count: number }[] {
+	const bySlug = new Map<string, { value: string; count: number }>();
+	for (const c of cities) {
+		const slug = citySlug(c.value);
+		const merged = bySlug.get(slug);
+		if (merged) merged.count += c.count;
+		else bySlug.set(slug, { value: c.value, count: c.count });
+	}
+	return [...bySlug.values()];
+}
+
 /** `/ca` — a country index. `country` is the stored ISO-2 code. */
 export function countryPath(country: string): string {
 	return `/${country.toLowerCase()}`;

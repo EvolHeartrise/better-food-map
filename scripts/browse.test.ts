@@ -12,6 +12,7 @@ import {
 	regionPath,
 	cityPath,
 	dietCityPath,
+	mergeCitiesBySlug,
 	DIETARY_TAGS
 } from '../src/lib/browse';
 import { regionLabel, countryLabel } from '../src/lib/address';
@@ -58,6 +59,37 @@ describe('browse path builders', () => {
 		expect(cityPath('CA', 'ON', 'North York')).toBe('/ca/on/north-york');
 		expect(citySlug('Saint-Jean-sur-Richelieu')).toBe('saint-jean-sur-richelieu');
 		expect(dietCityPath('CA', 'ON', 'Toronto', 'gluten_free')).toBe('/ca/on/toronto/gluten-free');
+	});
+});
+
+describe('mergeCitiesBySlug', () => {
+	test('collapses spellings that share a slug, summing counts, top spelling wins', () => {
+		// Ordered by count desc (as getBrowseCities returns): the most-covered
+		// spelling comes first and names the merged row.
+		const merged = mergeCitiesBySlug([
+			{ value: 'Grand Forks', count: 4 },
+			{ value: 'Fort St. John', count: 10 },
+			{ value: 'GRAND FORKS', count: 1 },
+			{ value: 'Fort St John', count: 1 },
+			{ value: 'Vancouver', count: 264 }
+		]);
+		expect(merged).toEqual([
+			{ value: 'Grand Forks', count: 5 },
+			{ value: 'Fort St. John', count: 11 },
+			{ value: 'Vancouver', count: 264 }
+		]);
+		// Every merged row now yields a unique city href — the invariant the keyed
+		// {#each} on the region page needs.
+		const hrefs = merged.map((c) => cityPath('CA', 'BC', c.value));
+		expect(new Set(hrefs).size).toBe(hrefs.length);
+	});
+
+	test('leaves already-distinct cities untouched, order preserved', () => {
+		const cities = [
+			{ value: 'Toronto', count: 2 },
+			{ value: 'Ottawa', count: 1 }
+		];
+		expect(mergeCitiesBySlug(cities)).toEqual(cities);
 	});
 });
 
