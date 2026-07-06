@@ -150,7 +150,12 @@
 		✕
 	</button>
 	<header class="placecard__head">
-		<h2 class="placecard__name">{loc.name}</h2>
+		<!-- The venue name is the page's <h1>: when a venue is open the landing
+		     overlay (which owns the site-level <h1>) is hidden, so a /locations/<id>
+		     page would otherwise ship with no <h1>. The two are mutually exclusive
+		     (landing renders only when nothing is selected), so exactly one <h1> is
+		     ever on the page. -->
+		<h1 class="placecard__name">{loc.name}</h1>
 		{#if label}
 			<span class="badge">{label}</span>
 		{/if}
@@ -211,7 +216,7 @@
 		     to head. -->
 		{#if loc.menu.length > 0 || loc.sources.length > 0}
 			<div class="placecard__menu-head">
-				<h3 class="placecard__menu-title">Menu</h3>
+				<h2 class="placecard__menu-title">Menu</h2>
 				{#if loc.menu.length > 0}
 					{@const itemsLabel = `${loc.menu.length} ${loc.menu.length === 1 ? 'item' : 'items'}`}
 					<span
