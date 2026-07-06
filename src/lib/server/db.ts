@@ -1587,7 +1587,38 @@ export async function updateLocations(
 	return { updatedIds, notFoundIds };
 }
 
+/**
+ * Hard-deletes a location. If the venue serves its OWN private menu (brand_id
+ * NULL) that no other location references, the menu is deleted with it —
+ * cascading away its items, item tags/sources and menu sources — instead of
+ * surviving as permanently unreachable rows (menus have no FK back to
+ * locations; `locations.menu_id → menus` is ON DELETE SET NULL). A shared
+ * brand menu, or a private menu another location still points at, is left
+ * untouched. Returns `true` if a location row was removed.
+ */
 export async function deleteLocation(db: D1Like, id: string): Promise<boolean> {
+	// Resolve up front whether this venue's menu would be orphaned by the delete:
+	// a private menu (no owning brand) referenced by no OTHER location.
+	const orphan = await db
+		.prepare(
+			`SELECT m.id AS menu_id
+			 FROM locations l
+			 JOIN menus m ON m.id = l.menu_id
+			 WHERE l.id = ?
+			   AND m.brand_id IS NULL
+			   AND NOT EXISTS (SELECT 1 FROM locations o WHERE o.menu_id = m.id AND o.id <> l.id)`
+		)
+		.bind(id)
+		.first<{ menu_id: string }>();
+	if (orphan) {
+		// One atomic batch: the location row plus its now-unreferenced private menu
+		// (items/item_tags/item_sources/menu_sources cascade from the menu row).
+		await db.batch([
+			db.prepare(`DELETE FROM locations WHERE id = ?`).bind(id),
+			db.prepare(`DELETE FROM menus WHERE id = ?`).bind(orphan.menu_id)
+		]);
+		return true; // The join above proved the location row existed.
+	}
 	const res = await db.prepare(`DELETE FROM locations WHERE id = ?`).bind(id).run();
 	return res.meta.changes > 0;
 }

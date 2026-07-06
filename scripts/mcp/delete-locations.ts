@@ -4,9 +4,10 @@
 // opens a stdio transport on import).
 //
 // A hard delete cascades a venue's
-// sources/overrides/likes and orphans its private menu — PREFER close_location for
-// a real venue that has permanently closed (it preserves likes). Reserve this for
-// mistaken/duplicate rows.
+// sources/overrides/likes, and removes its private menu (with its items and
+// sources) when no other location references it — shared brand menus are left
+// untouched. PREFER close_location for a real venue that has permanently closed
+// (it preserves likes). Reserve this for mistaken/duplicate rows.
 // ---------------------------------------------------------------------------
 
 import { deleteLocation, type D1Like } from '../../src/lib/server/db';
