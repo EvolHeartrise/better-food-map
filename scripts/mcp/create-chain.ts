@@ -4,8 +4,8 @@
 // menu_items). Cuts the create_brand → create_menu → create_items round-trips of
 // the documented chain-bootstrap flow down to a single tool call.
 //
-// Kept in its own module so it is unit-testable without importing
-// db-mcp-server.ts (which opens a stdio transport on import).
+// Split out of the large db-mcp-server.ts into a focused, directly
+// unit-testable module.
 //
 // Semantics preserved from the individual tools:
 //   • id-idempotency — an explicit brand/menu id that ALREADY exists is a no-op,
