@@ -53,18 +53,28 @@ export function splitCellSlices(data: MapCellsData): Map<string, CellSlice> {
 }
 
 /**
- * Merges cell slices into the {@link MapData} the page renders. Locations
- * simply concatenate — within one level the lattice partitions venues, so no
- * venue appears in two slices — and a shared menu carried by several slices
- * collapses back to one entry under its menu_id.
+ * Merges cell slices into the {@link MapData} the page renders. A shared menu
+ * carried by several slices collapses back to one entry under its menu_id,
+ * and locations are de-duplicated by id: within ONE data snapshot the lattice
+ * partitions venues across cells, but the merge inputs can mix slices banked
+ * at different times — the client CellStore holds entries fetched across a
+ * TTL window, and the server cell-cache merges cached blocks with fresh D1
+ * reads in one response — so a venue whose cell assignment changed (e.g. a
+ * coordinate fix moved it across a cell boundary) can appear in two slices.
+ * A duplicate row would corrupt the page's keyed `{#each … (loc.id)}`.
+ * Slice order encodes CELL order, not freshness (cached and fresh slices
+ * interleave in both merge paths), so no occurrence is knowably newer; we
+ * keep the last one — either copy is at most one cache TTL stale.
  */
 export function mergeCellSlices(slices: Iterable<CellSlice>): MapData {
 	const merged: MapData = { locations: [], menus: {}, menuMeta: {} };
+	const locById = new Map<MapLocation['id'], MapLocation>();
 	for (const slice of slices) {
-		merged.locations.push(...slice.locations);
+		for (const loc of slice.locations) locById.set(loc.id, loc);
 		Object.assign(merged.menus, slice.menus);
 		Object.assign(merged.menuMeta, slice.menuMeta);
 	}
+	merged.locations = [...locById.values()];
 	return merged;
 }
 
