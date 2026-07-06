@@ -38,4 +38,13 @@ describe('sanitizeDiet', () => {
 		expect(sanitizeDiet('dessert')).toBeNull();
 		expect(sanitizeDiet('')).toBeNull();
 	});
+
+	test('collapses forged filter values to null (getMapCells cache-key guard)', () => {
+		// getMapCells' schema only length-caps `diet`; the handler relies on
+		// sanitizeDiet to keep forged values out of the shared colo block-cache
+		// key and out of the SQL filter (the cache assumes 6-value cardinality).
+		expect(sanitizeDiet('x'.repeat(64))).toBeNull();
+		expect(sanitizeDiet('VEGAN')).toBeNull(); // ids are exact, lowercase tokens
+		expect(sanitizeDiet("vegan' OR 1=1")).toBeNull();
+	});
 });
