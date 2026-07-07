@@ -1,9 +1,17 @@
 <script lang="ts">
 	import { fade } from 'svelte/transition';
 	import { Spring, prefersReducedMotion } from 'svelte/motion';
-	import { SvelteSet } from 'svelte/reactivity';
+	import type { Map as MapLibreMap } from 'maplibre-gl';
 	import MapPin from '@lucide/svelte/icons/map-pin';
 	import { PLACES_PATH } from '$lib/browse';
+	import {
+		getCameraAxis,
+		getGlobeScreen,
+		projectSpaceVector,
+		cross,
+		normalize,
+		type Vec3
+	} from '$lib/globe-space';
 	import { m } from '$lib/paraglide/messages';
 	import { getLocale } from '$lib/paraglide/runtime';
 
@@ -18,10 +26,14 @@
 
 	let {
 		stats,
+		map,
 		onstart
 	}: {
 		// Null until the counts resolve; the figures hold at "—" until then.
 		stats: Stats | null;
+		// The live MapLibre instance (null until it loads), used to project the coverage
+		// figures into the 3D space around the globe. Null → the figures stay hidden.
+		map: MapLibreMap | null;
 		// "Start using": fly the map to the visitor's location. The parent owns the fly.
 		onstart: () => void;
 	} = $props();
@@ -56,128 +68,175 @@
 		{ key: 'cities', value: counts.current.cities, label: m.stat_cities() }
 	]);
 
-	// --- Ambient stat drift ---------------------------------------------------
-	// The coverage figures aren't a fixed panel: each one drifts through the empty
-	// space around the globe, fading in at a random edge slot, holding, fading out,
-	// then reappearing elsewhere — so the numbers feel like they're floating in the
-	// starfield. Slots hug the viewport corners/edges (never the centre, where the
-	// globe and the intro/CTA sit), so a figure lands on dark space, not on the globe.
-	const SLOTS: Array<Record<string, string>> = [
-		{ top: '11%', left: '6%' },
-		{ top: '11%', right: '6%' },
-		{ top: '30%', left: '4%' },
-		{ top: '30%', right: '4%' },
-		{ bottom: '32%', left: '6%' },
-		{ bottom: '32%', right: '6%' },
-		{ bottom: '15%', left: '11%' },
-		{ bottom: '15%', right: '11%' }
+	// --- Coverage figures floating in the 3D space around the globe -----------
+	// Each figure hangs at a point out in the void around the globe: a geographic
+	// direction (frozen once, on the first frame, from a nicely-spread screen bearing)
+	// pushed out to `radius` > 1 so it sits off the globe's disc, in space. Every frame
+	// it is projected through the map's own globe camera (see $lib/globe-space) for real
+	// perspective and parallax — and, because the anchor is geographic (pinned to the
+	// globe, not the screen), for genuine depth: drag/rotate the globe and a figure that
+	// swings round to the far side ducks BEHIND it (fading out via the projector's
+	// occlusion test). A slow bob gives them a little life at rest. Positions are written
+	// straight to the DOM (like the map's venue pills), so per-frame updates never wake
+	// Svelte reactivity.
+	//
+	// SEATS place the three out in the void as (off-axis angle from the disc centre,
+	// screen bearing, radius). ~58° off axis sits them near the limb so `radius` lifts
+	// them clear into the void; bearings are spread and avoid straight up / straight down
+	// (where the title and CTA sit). The bearings resolve to frozen geographic anchors
+	// once the camera is known, so the figures stay pinned to the globe thereafter.
+	type Seat = { angle: number; bearing: number; radius: number };
+	const SEATS: Seat[] = [
+		{ angle: 1.02, bearing: 2.5, radius: 1.5 }, // venues — upper-left
+		{ angle: 1.05, bearing: 0.0, radius: 1.6 }, // items — right
+		{ angle: 1.0, bearing: -2.5, radius: 1.52 } // cities — lower-left
 	];
-	const FADE_MS = 1100;
-	// Fixed figure count — used instead of reading `figures` (which is spring-derived
-	// and changes every frame during the count-up) so the drift timers below aren't
-	// torn down and restarted on every animation frame.
-	const STAT_COUNT = 3;
+	const DEG = 180 / Math.PI;
+	// Frozen geographic anchor (lng/lat, degrees) per figure — null until the first frame.
+	let anchors: { lng: number; lat: number }[] | null = null;
 
-	function slotStyle(slot: number): string {
-		return Object.entries(SLOTS[slot] ?? SLOTS[0])
-			.map(([k, v]) => `${k}:${v}`)
-			.join(';');
+	// The figure elements, bound per row; positioned imperatively in the frame loop, plus
+	// the intro/actions blocks whose boxes the figures must stay clear of.
+	const statEls: (HTMLElement | null)[] = [null, null, null];
+	let introEl = $state<HTMLElement | null>(null);
+	let actionsEl = $state<HTMLElement | null>(null);
+
+	// A soft 0→1 gate: 0 when (x,y) is inside `box` grown by the figure's half-size, ramping
+	// to 1 over `margin` px outside it. Keeps a figure from colliding with the intro/CTA.
+	function boxClearance(
+		box: DOMRect | null,
+		x: number,
+		y: number,
+		hw: number,
+		hh: number,
+		margin: number
+	): number {
+		if (!box) return 1;
+		const dx = Math.max(box.left - hw - x, x - (box.right + hw), 0);
+		const dy = Math.max(box.top - hh - y, y - (box.bottom + hh), 0);
+		return clamp01(Math.hypot(dx, dy) / margin);
 	}
 
-	// One entry per figure: whether it's currently shown and which slot it occupies.
-	let floats = $state(Array.from({ length: STAT_COUNT }, () => ({ visible: false, slot: 0 })));
-
-	// Drive the drift with self-rescheduling timers (one chain per figure), keeping a
-	// shared `occupied` set so two figures never land on the same slot. Reduced-motion
-	// users get the numbers pinned to distinct slots, always visible, with no fading.
-	$effect(() => {
-		if (prefersReducedMotion.current) {
-			const picks = pickDistinct(STAT_COUNT);
-			floats = Array.from({ length: STAT_COUNT }, (_, i) => ({ visible: true, slot: picks[i] }));
+	function placeFigures(currentMap: MapLibreMap, elapsedSeconds: number, animate: boolean) {
+		const axis = getCameraAxis(currentMap);
+		const globe = getGlobeScreen(currentMap);
+		if (!axis || !globe) {
+			for (const el of statEls) if (el) el.style.opacity = '0';
 			return;
 		}
+		// Screen-plane basis perpendicular to the camera axis. `worldUp` degenerates only
+		// at the poles (camera looking straight down an axis); fall back to X there.
+		const worldUp: Vec3 = Math.abs(axis[1]) > 0.99 ? [1, 0, 0] : [0, 1, 0];
+		const right = normalize(cross(worldUp, axis));
+		const up = normalize(cross(axis, right));
 
-		let alive = true;
-		const timers: ReturnType<typeof setTimeout>[] = [];
-		const occupied = new SvelteSet<number>();
-		const wait = (ms: number, fn: () => void) => timers.push(setTimeout(fn, ms));
-
-		function appear(i: number) {
-			if (!alive) return;
-			const slot = pickFreeSlot(occupied);
-			occupied.add(slot);
-			floats[i] = { visible: true, slot };
-			// Hold on screen for a random spell, then fade out.
-			wait(2600 + Math.random() * 2800, () => {
-				if (!alive) return;
-				floats[i] = { ...floats[i], visible: false };
-				// Free the slot only once the fade-out has finished, then, after a
-				// random gap, reappear somewhere else.
-				wait(FADE_MS, () => {
-					occupied.delete(slot);
-					wait(500 + Math.random() * 1900, () => appear(i));
-				});
+		// Freeze each figure's geographic anchor once, from its screen bearing in the
+		// current view — after this the anchors are pinned to the globe (so it can turn
+		// under them and carry them behind), independent of the camera.
+		if (!anchors) {
+			anchors = SEATS.map((s) => {
+				const sa = Math.sin(s.angle);
+				const dir = normalize([
+					axis[0] * Math.cos(s.angle) +
+						sa * (Math.cos(s.bearing) * right[0] + Math.sin(s.bearing) * up[0]),
+					axis[1] * Math.cos(s.angle) +
+						sa * (Math.cos(s.bearing) * right[1] + Math.sin(s.bearing) * up[1]),
+					axis[2] * Math.cos(s.angle) +
+						sa * (Math.cos(s.bearing) * right[2] + Math.sin(s.bearing) * up[2])
+				]);
+				return { lat: Math.asin(dir[1]) * DEG, lng: Math.atan2(dir[0], dir[2]) * DEG };
 			});
 		}
 
-		// Stagger the initial reveals so they don't all pop in together.
-		for (let i = 0; i < STAT_COUNT; i++) {
-			wait(300 + Math.random() * 2000, () => appear(i));
-		}
+		const introBox = introEl?.getBoundingClientRect() ?? null;
+		const actionsBox = actionsEl?.getBoundingClientRect() ?? null;
 
-		return () => {
-			alive = false;
-			for (const t of timers) clearTimeout(t);
+		for (let i = 0; i < SEATS.length; i++) {
+			const el = statEls[i];
+			if (!el) continue;
+			const seat = SEATS[i];
+			const anchor = anchors[i];
+			// A slow, per-figure bob around the anchor so they drift gently at rest.
+			const t = animate ? elapsedSeconds : 0;
+			const lngR = (anchor.lng + 2.5 * Math.sin(0.25 * t + i * 2.1)) / DEG;
+			const latR = (anchor.lat + 1.8 * Math.sin(0.19 * t + i * 1.3)) / DEG;
+			const radius = seat.radius + 0.05 * Math.sin(0.22 * t + i);
+			const cosLat = Math.cos(latR);
+			const dir: Vec3 = [Math.sin(lngR) * cosLat, Math.sin(latR), Math.cos(lngR) * cosLat];
+			const p = projectSpaceVector(currentMap, dir, radius);
+			if (!p) {
+				el.style.opacity = '0';
+				continue;
+			}
+			// Safety gates: fade out over the globe's disc (so a figure never reads as a
+			// map label) and away from the intro/CTA (so it never collides) — the seats
+			// already avoid both, so these only bite if the user turns the globe hard.
+			const hw = el.offsetWidth / 2;
+			const hh = el.offsetHeight / 2;
+			const overGlobe = clamp01((Math.hypot(p.x - globe.cx, p.y - globe.cy) - globe.radius) / 34);
+			const clear =
+				overGlobe *
+				boxClearance(introBox, p.x, p.y, hw, hh, 40) *
+				boxClearance(actionsBox, p.x, p.y, hw, hh, 40);
+			const opacity = p.visibility * clear;
+			el.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -50%) scale(${p.scale})`;
+			el.style.opacity = String(opacity);
+			el.style.zIndex = String(Math.round(opacity * 10));
+		}
+	}
+
+	function clamp01(v: number): number {
+		return v < 0 ? 0 : v > 1 ? 1 : v;
+	}
+
+	// Run a frame loop while the map is available: it advances the orbits (unless the
+	// user prefers reduced motion, where the figures sit still but still track the globe
+	// as it's dragged) and re-projects every figure so they stay glued to the 3D scene
+	// through pans, zooms and rotations. Torn down when the overlay unmounts (landing
+	// dismissed) or the map goes away.
+	$effect(() => {
+		const currentMap = map;
+		if (!currentMap) return;
+		const animate = !prefersReducedMotion.current;
+
+		let raf = 0;
+		let startedAt: number | null = null;
+		const frame = (now: number) => {
+			if (startedAt === null) startedAt = now;
+			placeFigures(currentMap, (now - startedAt) / 1000, animate);
+			raf = requestAnimationFrame(frame);
 		};
+		raf = requestAnimationFrame(frame);
+		return () => cancelAnimationFrame(raf);
 	});
-
-	// A random slot index not currently taken by a visible figure.
-	function pickFreeSlot(occupied: Set<number>): number {
-		const free = SLOTS.map((_, i) => i).filter((i) => !occupied.has(i));
-		const pool = free.length > 0 ? free : SLOTS.map((_, i) => i);
-		return pool[Math.floor(Math.random() * pool.length)];
-	}
-
-	// `n` distinct slot indices (for the static reduced-motion layout).
-	function pickDistinct(n: number): number[] {
-		const idx = SLOTS.map((_, i) => i);
-		for (let i = idx.length - 1; i > 0; i--) {
-			const j = Math.floor(Math.random() * (i + 1));
-			[idx[i], idx[j]] = [idx[j], idx[i]];
-		}
-		return idx.slice(0, n);
-	}
 </script>
 
 <!-- Three floating pieces over the zoomed-out globe: an intro pinned to the top, an
-     actions block pinned to the bottom, and the coverage figures drifting through the
-     space around the globe in between. No card chrome — just text and controls floating
-     on the map. The backdrop and the non-interactive text pass pointers through (so a
-     drag on the globe still pans, and zooming in dismisses the landing); only the button
-     takes clicks. -->
+     actions block pinned to the bottom, and the coverage figures orbiting through the
+     3D space around the globe in between. No card chrome — just text and controls
+     floating on the map. The backdrop and the non-interactive text pass pointers through
+     (so a drag on the globe still pans, and zooming in dismisses the landing); only the
+     button takes clicks. -->
 <div class="overlay" transition:fade={{ duration: 200 }}>
-	<section class="intro" aria-label={m.landing_intro_aria()}>
+	<section class="intro" aria-label={m.landing_intro_aria()} bind:this={introEl}>
 		<p class="intro__brand">🍴 BetterFoodMaps</p>
 		<h1 class="intro__title">{m.landing_title()}</h1>
 	</section>
 
-	<!-- The coverage figures, drifting in the space around the globe (see the ambient
-	     drift logic). They're real content (kept in the DOM for crawlers and assistive
-	     tech), presented as an ambient starfield; only their opacity/position animate. -->
+	<!-- The coverage figures, orbiting in the 3D space around the globe (positioned every
+	     frame by the projection loop above). They're real content — kept in the DOM for
+	     crawlers and assistive tech — presented as bodies drifting through space; only
+	     their transform/opacity animate. -->
 	<ul class="stats" aria-label={m.landing_actions_aria()}>
 		{#each figures as figure, i (figure.key)}
-			<li
-				class="stat"
-				class:stat--visible={floats[i]?.visible}
-				style={slotStyle(floats[i]?.slot ?? 0)}
-			>
+			<li class="stat" bind:this={statEls[i]}>
 				<span class="stat__value">{stats ? fmt(figure.value) : '—'}</span>
 				<span class="stat__label">{figure.label}</span>
 			</li>
 		{/each}
 	</ul>
 
-	<section class="actions" aria-label={m.landing_actions_aria()}>
+	<section class="actions" aria-label={m.landing_actions_aria()} bind:this={actionsEl}>
 		<button type="button" class="cta" onclick={onstart}>
 			<MapPin size={18} aria-hidden="true" />
 			{m.landing_cta()}
@@ -250,9 +309,10 @@
 		color: #f3f6fc;
 	}
 
-	/* The coverage figures drift through the dark space around the globe: each is
-	   absolutely placed at its current edge slot (set inline) and fades its opacity in
-	   and out. The <ul> itself is just a non-interactive positioning context. */
+	/* The coverage figures orbit through the dark space around the globe: each is
+	   absolutely positioned and its transform/opacity are written every frame by the
+	   projection loop. The <ul> is just a non-interactive positioning context. The
+	   figures anchor at their own centre (the loop applies translate(-50%,-50%)). */
 	.stats {
 		list-style: none;
 		margin: 0;
@@ -262,22 +322,22 @@
 
 	.stat {
 		position: absolute;
+		top: 0;
+		left: 0;
 		display: flex;
 		flex-direction: column;
 		align-items: center;
 		gap: 0.1rem;
+		white-space: nowrap;
 		/* Light text tuned for the deep-space backdrop, with a cool glow plus a dark
-		   drop so it also holds up if a slot grazes the lit globe edge. */
+		   drop so it also holds up if it drifts across the lit globe edge. */
 		color: #eef2ff;
 		text-shadow:
 			0 0 14px rgba(120, 150, 255, 0.55),
 			0 1px 3px rgba(0, 0, 0, 0.65);
+		/* Start hidden to avoid a flash at (0,0) before the first frame projects it. */
 		opacity: 0;
-		transition: opacity 1100ms ease;
-	}
-
-	.stat--visible {
-		opacity: 1;
+		will-change: transform, opacity;
 	}
 
 	.stat__value {
@@ -293,14 +353,6 @@
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
 		color: rgba(205, 214, 245, 0.8);
-	}
-
-	/* Reduced-motion users get the figures pinned and steady (JS keeps them visible);
-	   kill the opacity transition so there's no fade at all. */
-	@media (prefers-reduced-motion: reduce) {
-		.stat {
-			transition: none;
-		}
 	}
 
 	/* The primary action — accent-filled so "Start using the map" is unmistakable.

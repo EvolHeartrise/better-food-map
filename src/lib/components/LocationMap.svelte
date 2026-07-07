@@ -77,7 +77,13 @@
 		// a pan/zoom/flight is in progress, debounced once it settles — plus once on
 		// load. The parent fetches location data for this box, so only what's on
 		// (or about to be on) screen is ever loaded.
-		onviewchange
+		onviewchange,
+		// Called with the live MapLibre instance once it has loaded (and with null on
+		// teardown). Lets an overlay project its own points through the map's camera —
+		// the landing uses it to place the coverage figures in the 3D space around the
+		// globe (see $lib/globe-space). Purely presentational: nothing about the map's
+		// own behaviour depends on it.
+		onmap
 	}: {
 		locations: Location[];
 		selected?: Location | null;
@@ -89,6 +95,7 @@
 		onzoom?: (zoom: number) => void;
 		focus?: { latitude: number; longitude: number; key: string } | null;
 		onviewchange?: (bounds: Bounds) => void;
+		onmap?: (map: MapLibreMap | null) => void;
 	} = $props();
 
 	// Fallback map center, used when no `initialCenter` is supplied (e.g. IP
@@ -654,11 +661,17 @@
 				// Kick off the first load immediately (no debounce) for the opening view.
 				reportView();
 				onzoom?.(map.getZoom());
+				// Hand the live map to the parent so an overlay can project through its
+				// camera (the landing's 3D space figures).
+				onmap?.(map);
 				// Dev-only: lazily mount the grid-cell debug overlay now the style is loaded
 				// (its layers need a parsed style). Gated on the compile-time `DEV`, so a
 				// production build drops this branch and never emits the GridDebug chunk —
 				// the whole debug feature tree-shakes away.
 				if (DEV) {
+					// Expose the live map for headless/console debugging (e.g. verifying the
+					// $lib/globe-space projection). DEV-gated, so it never ships to prod.
+					(globalThis as unknown as { __map?: MapLibreMap }).__map = map;
 					const debugMap = map;
 					void import('$lib/dev/GridDebug.svelte')
 						.then((mod) => {
@@ -677,6 +690,7 @@
 			if (viewTimer) clearTimeout(viewTimer);
 			clearInterval(rotateTimer);
 			engine.clear();
+			onmap?.(null);
 			if (map) {
 				map.remove();
 				map = null;

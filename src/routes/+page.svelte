@@ -24,6 +24,7 @@
 	import { resolveLocation, type ResolvedLocation } from '$lib/resolve-location';
 	import { m } from '$lib/paraglide/messages';
 	import type { Item, Bounds } from '$lib/server/db';
+	import type { Map as MapLibreMap } from 'maplibre-gl';
 
 	// The visible map area, reported by <LocationMap> (debounced) as the user pans
 	// and zooms, plus once on load. Together with the applied search filter this
@@ -187,6 +188,13 @@
 	// The live map zoom, reported by <LocationMap>. Null until the map first reports it;
 	// treated as zoomed-out until then (the map opens at WORLD_ZOOM).
 	let zoomLevel = $state<number | null>(null);
+
+	// The live MapLibre instance, handed up by <LocationMap> once loaded (null before
+	// then / after teardown). Passed to the landing overlay so it can position the
+	// coverage figures in the 3D space around the globe (projected through the map's
+	// own camera — see $lib/globe-space). The `maplibre-gl` import is type-only (erased
+	// at build), so it pulls no map code into this page's bundle.
+	let mapInstance = $state<MapLibreMap | null>(null);
 
 	// Coverage totals for the overlay, read non-suspending (`.current`) so the map
 	// paints immediately and the figures fill in when the count query resolves.
@@ -718,6 +726,7 @@
 			onzoom={(z) => (zoomLevel = z)}
 			focus={focusTarget}
 			onviewchange={(bounds) => (viewport = bounds)}
+			onmap={(m) => (mapInstance = m)}
 		/>
 	</div>
 
@@ -746,7 +755,7 @@
 	     globe. It's zoom-driven (see `landing`): it appears whenever the map is zoomed
 	     out and returns if the visitor zooms back out. -->
 	{#if landing}
-		<MapStatsOverlay {stats} onstart={startUsing} />
+		<MapStatsOverlay {stats} map={mapInstance} onstart={startUsing} />
 	{/if}
 
 	<!-- The search controls don't live in a panel: each is its own pill floating
