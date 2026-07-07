@@ -1098,14 +1098,35 @@ export interface MapStats {
 	/** Distinct cities covered, keyed by city + region + country so same-named
 	 *  cities in different provinces/countries aren't merged. */
 	cities: number;
+	/** Per-dietary-tag dish counts, keyed by dietary tag id (`vegan`, `halal`, …).
+	 *  Each is the number of distinct items the map's diet selector would surface
+	 *  for that diet — counted through the SAME implication closure the filter uses
+	 *  ({@link dietFilterTagIds}), so e.g. `vegetarian` includes vegan dishes. */
+	diets: Record<string, number>;
 }
 
 /**
  * Coverage totals shown on the zoomed-out landing overlay: how much data we've
- * collected. One round-trip via correlated scalar subqueries. Safe to expose
- * without auth — it returns only counts, never any row data.
+ * collected. One round-trip via correlated scalar subqueries — the location/city
+ * counts plus one distinct-item count per dietary tag. Safe to expose without
+ * auth: it returns only counts, never any row data.
  */
 export async function getStats(db: D1Like): Promise<MapStats> {
+	// One column per dietary tag, each counting the items the diet selector would
+	// surface for it: distinct items carrying ANY tag in that diet's implication
+	// closure (dietFilterTagIds), so the headline matches the filter (a vegan dish
+	// counts under Vegetarian and Dairy-free too). Tag ids are the fixed app
+	// vocabulary (not user input), but bound as params rather than interpolated.
+	// The idx_item_tags_tag_id index keeps each subquery an index range scan.
+	const dietTagIds = TAGS.filter((t) => t.tag_type === 'dietary').map((t) => t.id);
+	const dietBinds: string[] = [];
+	const dietCols = dietTagIds.map((id) => {
+		const closure = dietFilterTagIds(id);
+		dietBinds.push(...closure);
+		const placeholders = closure.map(() => '?').join(', ');
+		return `(SELECT COUNT(DISTINCT item_id) FROM item_tags WHERE tag_id IN (${placeholders})) AS "${id}"`;
+	});
+
 	const row = await db
 		.prepare(
 			// Closed (soft-deleted) venues are excluded so coverage totals reflect the live map
@@ -1113,10 +1134,20 @@ export async function getStats(db: D1Like): Promise<MapStats> {
 			`SELECT
 				(SELECT COUNT(*) FROM locations WHERE closed_at IS NULL) AS locations,
 				(SELECT COUNT(*) FROM items) AS items,
-				(SELECT COUNT(DISTINCT city || '|' || region || '|' || country) FROM locations WHERE closed_at IS NULL) AS cities`
+				(SELECT COUNT(DISTINCT city || '|' || region || '|' || country) FROM locations WHERE closed_at IS NULL) AS cities,
+				${dietCols.join(',\n\t\t\t\t')}`
 		)
-		.first<MapStats>();
-	return row ?? { locations: 0, items: 0, cities: 0 };
+		.bind(...dietBinds)
+		.first<Record<string, number>>();
+
+	const diets: Record<string, number> = {};
+	for (const id of dietTagIds) diets[id] = row?.[id] ?? 0;
+	return {
+		locations: row?.locations ?? 0,
+		items: row?.items ?? 0,
+		cities: row?.cities ?? 0,
+		diets
+	};
 }
 
 // ---------------------------------------------------------------------------

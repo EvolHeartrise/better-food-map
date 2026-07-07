@@ -92,6 +92,12 @@
 	"stat_venues": "venues",
 	"stat_menu_items": "menu items",
 	"stat_cities": "cities",
+	"stat_vegan": "vegan dishes",
+	"stat_vegetarian": "vegetarian dishes",
+	"stat_halal": "halal dishes",
+	"stat_gluten_free": "gluten-free dishes",
+	"stat_dairy_free": "dairy-free dishes",
+	"stat_nut_free": "nut-free dishes",
 	"landing_cta": "Start using the map",
 	"landing_browse_link": "Or browse food by city →",
 

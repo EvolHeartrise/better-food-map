@@ -22,6 +22,8 @@
 		locations: number;
 		items: number;
 		cities: number;
+		// Per-dietary-tag dish counts (see getStats), keyed by dietary tag id.
+		diets: Record<string, number>;
 	};
 
 	let {
@@ -45,28 +47,41 @@
 		return numberFormat.format(Math.round(value));
 	}
 
+	// Every coverage figure that can orbit, in the order they're assigned to SEATS
+	// below: its stable {#each} identity (`key`, locale-independent), how to pull its
+	// count out of the stats payload (`value`), and its localized label (a message
+	// getter, called per render so a locale change re-resolves it). The three coverage
+	// totals lead; the six dietary dish counts follow (each the count the diet selector
+	// would surface — see getStats). SEATS must stay the same length as this list.
+	const STAT_DEFS: { key: string; value: (s: Stats) => number; label: () => string }[] = [
+		{ key: 'venues', value: (s) => s.locations, label: m.stat_venues },
+		{ key: 'items', value: (s) => s.items, label: m.stat_menu_items },
+		{ key: 'cities', value: (s) => s.cities, label: m.stat_cities },
+		{ key: 'vegetarian', value: (s) => s.diets.vegetarian ?? 0, label: m.stat_vegetarian },
+		{ key: 'vegan', value: (s) => s.diets.vegan ?? 0, label: m.stat_vegan },
+		{ key: 'halal', value: (s) => s.diets.halal ?? 0, label: m.stat_halal },
+		{ key: 'gluten_free', value: (s) => s.diets.gluten_free ?? 0, label: m.stat_gluten_free },
+		{ key: 'dairy_free', value: (s) => s.diets.dairy_free ?? 0, label: m.stat_dairy_free },
+		{ key: 'nut_free', value: (s) => s.diets.nut_free ?? 0, label: m.stat_nut_free }
+	];
+
 	// Count the figures up from zero. The overlay is mounted afresh whenever the landing
 	// appears (the parent's `{#if landing}`), so the spring starts at 0 every time and
 	// springs up to the totals — re-running the count-up on each appearance. `damping: 1`
 	// keeps it from overshooting (a count that flies past then settles reads as a glitch);
-	// reduced-motion users get the final numbers instantly.
-	const counts = new Spring({ locations: 0, items: 0, cities: 0 }, { stiffness: 0.08, damping: 1 });
+	// reduced-motion users get the final numbers instantly. Keyed by STAT_DEFS `key`.
+	const zeros = (): Record<string, number> => Object.fromEntries(STAT_DEFS.map((d) => [d.key, 0]));
+	const counts = new Spring(zeros(), { stiffness: 0.08, damping: 1 });
 	$effect(() => {
 		if (!stats) return;
-		counts.set(
-			{ locations: stats.locations, items: stats.items, cities: stats.cities },
-			{ instant: prefersReducedMotion.current }
-		);
+		const target = Object.fromEntries(STAT_DEFS.map((d) => [d.key, d.value(stats)]));
+		counts.set(target, { instant: prefersReducedMotion.current });
 	});
 
 	// The figures, in display order, reading the live (animating) spring values.
-	// `key` is the stable {#each} identity (locale-independent); `label` is the
-	// localized text shown under the count.
-	const figures = $derived([
-		{ key: 'venues', value: counts.current.locations, label: m.stat_venues() },
-		{ key: 'items', value: counts.current.items, label: m.stat_menu_items() },
-		{ key: 'cities', value: counts.current.cities, label: m.stat_cities() }
-	]);
+	const figures = $derived(
+		STAT_DEFS.map((d) => ({ key: d.key, value: counts.current[d.key] ?? 0, label: d.label() }))
+	);
 
 	// --- Coverage figures floating in the 3D space around the globe -----------
 	// Each figure hangs at a point out in the void around the globe: a geographic
@@ -80,16 +95,30 @@
 	// straight to the DOM (like the map's venue pills), so per-frame updates never wake
 	// Svelte reactivity.
 	//
-	// SEATS place the three out in the void as (off-axis angle from the disc centre,
-	// screen bearing, radius). ~58° off axis sits them near the limb so `radius` lifts
-	// them clear into the void; bearings are spread and avoid straight up / straight down
-	// (where the title and CTA sit). The bearings resolve to frozen geographic anchors
-	// once the camera is known, so the figures stay pinned to the globe thereafter.
+	// SEATS place each figure out in the void as (off-axis angle from the disc centre,
+	// screen bearing, radius). ~55–63° off axis sits them near the limb so `radius`
+	// lifts them clear into the void; the radii are staggered so the figures sit at
+	// slightly different depths (a cloud in space, not one flat ring). The two floating
+	// text blocks — the title (top-centre) and the CTA (bottom-centre) — own wide boxes
+	// the figures must not collide with, so the bearings fan the globe's LEFT and RIGHT
+	// flanks (bearing near 0 and near ±π) across the clear mid-vertical band, staying
+	// away from straight up / straight down (±π/2). Four fan down the right side,
+	// five down the left. Each bearing resolves to a frozen geographic anchor once the
+	// camera is known, so the figures stay pinned to the globe thereafter. Must stay
+	// the same length as STAT_DEFS.
 	type Seat = { angle: number; bearing: number; radius: number };
 	const SEATS: Seat[] = [
-		{ angle: 1.02, bearing: 2.5, radius: 1.5 }, // venues — upper-left
-		{ angle: 1.05, bearing: 0.0, radius: 1.6 }, // items — right
-		{ angle: 1.0, bearing: -2.5, radius: 1.52 } // cities — lower-left
+		// Right flank, upper → lower
+		{ angle: 1.02, bearing: 0.5, radius: 1.6 },
+		{ angle: 1.06, bearing: 0.12, radius: 1.5 },
+		{ angle: 1.0, bearing: -0.22, radius: 1.5 },
+		{ angle: 1.05, bearing: -0.58, radius: 1.6 },
+		// Left flank, upper → lower (sweeping through ±π)
+		{ angle: 1.03, bearing: 2.62, radius: 1.58 },
+		{ angle: 1.07, bearing: 2.92, radius: 1.48 },
+		{ angle: 1.0, bearing: 3.14, radius: 1.46 },
+		{ angle: 1.06, bearing: -2.96, radius: 1.5 },
+		{ angle: 1.02, bearing: -2.66, radius: 1.6 }
 	];
 	const DEG = 180 / Math.PI;
 	// Frozen geographic anchor (lng/lat, degrees) per figure — null until the first frame.
@@ -97,7 +126,7 @@
 
 	// The figure elements, bound per row; positioned imperatively in the frame loop, plus
 	// the intro/actions blocks whose boxes the figures must stay clear of.
-	const statEls: (HTMLElement | null)[] = [null, null, null];
+	const statEls: (HTMLElement | null)[] = SEATS.map(() => null);
 	let introEl = $state<HTMLElement | null>(null);
 	let actionsEl = $state<HTMLElement | null>(null);
 
