@@ -1,3 +1,4 @@
+import { paraglideVitePlugin } from '@inlang/paraglide-js';
 import adapter from '@sveltejs/adapter-cloudflare';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
@@ -26,6 +27,23 @@ export default defineConfig({
 					async: true
 				}
 			}
+		}),
+		// Paraglide (inlang) i18n. Compiles project.inlang + messages/*.json into
+		// tree-shakable message functions under `outdir` on dev/build. Placed AFTER
+		// sveltekit() to match the current official inlang SvelteKit example.
+		//
+		// `strategy` is the ordered locale-resolution chain the generated runtime
+		// uses. We do NOT list any built-in that could WRITE a cookie or trigger a
+		// URL redirect (no `url`, no bare `cookie` write path): locale is resolved
+		// read-only. `custom-appLocale` is registered on the server in
+		// src/hooks.server.ts (cookie stub -> saved-user stub -> Accept-Language,
+		// q-weighted) and on the client in src/hooks.client.ts (reads the server-
+		// rendered <html lang>, so client and server always agree — no cookie, no
+		// hydration flicker). `baseLocale` ('en') is the final fallback.
+		paraglideVitePlugin({
+			project: './project.inlang',
+			outdir: './src/lib/paraglide',
+			strategy: ['custom-appLocale', 'baseLocale']
 		})
 	],
 	server: {

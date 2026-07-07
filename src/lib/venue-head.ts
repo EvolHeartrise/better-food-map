@@ -1,8 +1,12 @@
 /**
  * Head metadata (SEO title, meta description, canonical URL) for an open venue.
  *
- * Pure and client-safe (no server/runtime deps) so scripts/venue-head.test.ts
- * can pin the SEO copy without mounting the page. Consumed by the `headMeta`
+ * Client-safe: its only dependency beyond sibling pure modules is Paraglide's
+ * message runtime, which resolves the caller's locale per request server-side
+ * and falls back to the base locale ('en') OUTSIDE a request — so the sitemap /
+ * prerender path and scripts/venue-head.test.ts both see the English SEO copy
+ * (the English message values are kept byte-identical to the old literals, so
+ * the pinned test output is unchanged). Consumed by the `headMeta`
  * derived in src/routes/+page.svelte, which server-renders it into the document
  * head on a hard `/locations/<id>` load — the only markup crawlers and link
  * unfurlers see for a venue.
@@ -16,9 +20,10 @@
  */
 
 import { categoryLabel, type Category } from './category';
-import { TAGS } from './tags';
+import { TAGS, tagDisplayName } from './tags';
 import { locationPath } from './location-path';
 import { CANONICAL_ORIGIN } from './canonical';
+import { m } from '$lib/paraglide/messages';
 
 // Re-exported for backward compatibility: the shared origin now lives in
 // ./canonical (one definition for the head, the sitemap and the browse pages).
@@ -70,7 +75,9 @@ function joinList(parts: string[]): string {
  */
 export function dietaryCoverageClause(menu: HeadVenue['menu'], limit = 3): string | null {
 	const covered = DIETARY_TAGS.map((tag, order) => ({
-		label: tag.name.toLowerCase(),
+		// The diet word localizes through the shared tag-label helper (English
+		// values match the old `tag.name`, lower-cased for mid-sentence flow).
+		label: tagDisplayName(tag.id).toLowerCase(),
 		count: menu.reduce((n, item) => n + (item.tags.some((t) => t.id === tag.id) ? 1 : 0), 0),
 		order
 	}))
@@ -81,7 +88,7 @@ export function dietaryCoverageClause(menu: HeadVenue['menu'], limit = 3): strin
 	// The shared "menu item(s)" head noun reads singular only when the whole
 	// clause is a lone count of one ("1 vegan menu item").
 	const singular = covered.length === 1 && covered[0].count === 1;
-	return `${joinList(covered.map((diet) => `${diet.count} ${diet.label}`))} menu item${singular ? '' : 's'}`;
+	return `${joinList(covered.map((diet) => `${diet.count} ${diet.label}`))} ${m.head_menu_item_noun({ count: singular ? 1 : 2 })}`;
 }
 
 /**
@@ -104,10 +111,10 @@ export function venueHeadMeta(venue: HeadVenue): HeadMeta {
 	const coverage = dietaryCoverageClause(venue.menu);
 	const count = venue.menu.length;
 	const tail = coverage
-		? `${coverage} on BetterFoodMaps.`
+		? m.head_desc_on_brand({ content: coverage })
 		: count > 0
-			? `${count} menu item${count === 1 ? '' : 's'} on BetterFoodMaps.`
-			: 'See the menu on BetterFoodMaps.';
+			? m.head_desc_on_brand({ content: `${count} ${m.head_menu_item_noun({ count })}` })
+			: m.head_desc_no_menu();
 
 	return {
 		title,

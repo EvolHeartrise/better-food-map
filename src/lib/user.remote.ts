@@ -1,6 +1,7 @@
 import * as v from 'valibot';
 import { error } from '@sveltejs/kit';
 import { query, command, getRequestEvent } from '$app/server';
+import { m } from '$lib/paraglide/messages';
 import { requireDb, currentUser, requireUser } from '$lib/server/context';
 import {
 	getUserLikes,
@@ -55,7 +56,7 @@ async function badRequestOnFkViolation(write: Promise<void>): Promise<void> {
 		await write;
 	} catch (e) {
 		if (e instanceof Error && e.message.toUpperCase().includes('FOREIGN KEY')) {
-			error(400, 'No such location or item.');
+			error(400, m.server_error_no_location_or_item());
 		}
 		throw e;
 	}

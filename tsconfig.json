@@ -11,7 +11,26 @@
 		"sourceMap": true,
 		"strict": true,
 		"moduleResolution": "bundler"
-	}
+	},
+	// `exclude` here REPLACES the generated base config's exclude, so the base
+	// entries (node_modules + service-worker) are replicated below. The added
+	// entry drops Paraglide's generated output (src/lib/paraglide) from
+	// type-checking: it is auto-generated, gitignored code, and its server.js
+	// `new Request(...)` clones clash with the globally-referenced
+	// @cloudflare/workers-types `Request` under `checkJs` (the same ambient
+	// DOM-vs-workers-types collision documented in $lib/server/cell-cache.ts).
+	// We import only from the runtime module, so nothing we author goes
+	// unchecked. Keep the base entries in sync if SvelteKit changes them.
+	"exclude": [
+		"node_modules/**",
+		"src/service-worker.js",
+		"src/service-worker/**/*.js",
+		"src/service-worker.ts",
+		"src/service-worker/**/*.ts",
+		"src/service-worker.d.ts",
+		"src/service-worker/**/*.d.ts",
+		"src/lib/paraglide/**"
+	]
 	// Path aliases are handled by https://svelte.dev/docs/kit/configuration#alias
 	// except $lib which is handled by https://svelte.dev/docs/kit/configuration#files
 	//

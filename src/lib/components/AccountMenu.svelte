@@ -1,17 +1,25 @@
 <script lang="ts">
 	import LogIn from '@lucide/svelte/icons/log-in';
 	import LogOut from '@lucide/svelte/icons/log-out';
+	import Languages from '@lucide/svelte/icons/languages';
+	import Check from '@lucide/svelte/icons/check';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { signOut } from '$lib/user.remote';
+	import { setLocale } from '$lib/locale.remote';
 	import { safeInternalPath } from '$lib/redirect';
+	import { m } from '$lib/paraglide/messages';
+	import { getLocale, locales, type Locale } from '$lib/paraglide/runtime';
 	import type { User } from '$lib/server/db';
 
-	// The account control: a "Sign in" pill when signed out, or an avatar that opens
-	// a popover (name, sign out) when signed in. It owns its open/closed state and
-	// the sign-out call; the parent supplies the user. `open` is bindable so the
-	// page can layer its own window-level Escape handling under the popover's
-	// (Escape closes only the topmost layer) without probing this component's DOM.
+	// The account control: a popover that holds the per-user preferences (there is no
+	// settings page). Signed in, the trigger is the avatar and the popover carries the
+	// name, the LANGUAGE PICKER and sign-out; signed out, the trigger shows the current
+	// language and the popover carries the picker plus a sign-in link — so an anonymous
+	// visitor can still pick a language. It owns its open/closed state and the mutations;
+	// the parent supplies the user. `open` is bindable so the page can layer its own
+	// window-level Escape handling under the popover's (Escape closes only the topmost
+	// layer) without probing this component's DOM.
 	let {
 		user,
 		open = $bindable(false)
@@ -21,14 +29,25 @@
 	} = $props();
 
 	let rootEl: HTMLDivElement;
-	// The trigger only renders when signed in, so the ref can be unset (unlike
-	// DietSelector's always-rendered trigger).
+	// One ref for whichever trigger is rendered (avatar when signed in, language pill
+	// when signed out); only one exists at a time, so a single binding serves both.
 	let triggerEl: HTMLButtonElement | undefined = $state();
 
-	const displayName = $derived(user?.name ?? user?.email ?? 'Account');
+	const displayName = $derived(user?.name ?? user?.email ?? m.account_default_name());
 	const initial = $derived(
 		(user?.name ?? user?.email ?? '?').trim().charAt(0).toUpperCase() || '?'
 	);
+
+	// The locale this render was produced in. The server resolves it (cookie → saved →
+	// Accept-Language → 'en') and stamps <html lang>, which Paraglide's client getLocale()
+	// reads back — so this agrees with the SSR'd copy with no extra client state. It marks
+	// the checked option; picking another reloads the page, which re-resolves it.
+	const currentLocale = getLocale();
+
+	// Each language labelled in its OWN language (an endonym): a proper noun that reads
+	// the same whatever the UI locale, so it is not a translated message. Adding a locale
+	// to Paraglide's `locales` means adding its endonym here.
+	const localeLabels: Record<Locale, string> = { en: 'English', fr: 'Français' };
 
 	// The signed-out fallback (the app is normally reached only when signed in, but a
 	// session can expire while the map is open) sends the user through Google sign-in
@@ -40,12 +59,35 @@
 		)}`
 	);
 
-	// Escape closes the popover from anywhere (the trigger or the sign-out button may
-	// hold focus); a pointerdown outside the control closes it too. Both are handled on
-	// the window — mirroring DietSelector — and `closest('.account')` keeps clicks on
-	// the trigger/popover from closing it. When focus is inside the control it returns
-	// to the trigger, so closing the popover can't drop it to <body>; an outside click
-	// keeps focus where the user put it.
+	// Guards against a double-pick while the reload is in flight.
+	let switching = $state(false);
+
+	async function chooseLanguage(locale: Locale): Promise<void> {
+		if (switching || locale === currentLocale) {
+			open = false;
+			return;
+		}
+		switching = true;
+		try {
+			// Sets the consent-exempt preference cookie and, if signed in, saves to D1.
+			await setLocale(locale);
+			// Full reload ONLY on success, so the SSR-rendered strings AND <html lang>
+			// re-render together in the new locale — a client-only swap would desync them.
+			location.reload();
+		} catch {
+			// Persist failed (offline / server error): nothing changed, so don't reload
+			// (that would throw away the map viewport for no result). Re-enable the
+			// buttons and leave the popover open so the user can retry.
+			switching = false;
+		}
+	}
+
+	// Escape closes the popover from anywhere (the trigger or a control inside may hold
+	// focus); a pointerdown outside the control closes it too. Both are handled on the
+	// window — mirroring DietSelector — and `closest('.account')` keeps clicks on the
+	// trigger/popover from closing it. When focus is inside the control it returns to the
+	// trigger, so closing the popover can't drop it to <body>; an outside click keeps
+	// focus where the user put it.
 	function handleWindowKeydown(event: KeyboardEvent) {
 		if (event.key === 'Escape' && open) {
 			event.preventDefault();
@@ -73,6 +115,33 @@
 
 <svelte:window onkeydown={handleWindowKeydown} onpointerdown={handleWindowPointerDown} />
 
+<!-- The language picker, shared by the signed-in and signed-out popovers: a labelled
+     group of toggle buttons, the active locale pressed (and check-marked). -->
+{#snippet languagePicker()}
+	<div class="account__section">
+		<span class="account__section-title" id="account-language-label">{m.language_label()}</span>
+		<div class="account__langs" role="group" aria-labelledby="account-language-label">
+			{#each locales as locale (locale)}
+				<button
+					type="button"
+					class="account__lang"
+					class:account__lang--selected={locale === currentLocale}
+					aria-pressed={locale === currentLocale}
+					disabled={switching}
+					onclick={() => chooseLanguage(locale)}
+				>
+					<span class="account__lang-check" aria-hidden="true">
+						{#if locale === currentLocale}
+							<Check size={14} />
+						{/if}
+					</span>
+					{localeLabels[locale]}
+				</button>
+			{/each}
+		</div>
+	</div>
+{/snippet}
+
 <div class="account" bind:this={rootEl}>
 	{#if user}
 		<button
@@ -91,29 +160,49 @@
 		</button>
 
 		{#if open}
-			<!-- A plain disclosure popover (name + sign-out), not a menu: the trigger's
-			     aria-expanded already conveys the open state, and role="menu" would
+			<!-- A plain disclosure popover (name + language + sign-out), not a menu: the
+			     trigger's aria-expanded already conveys the open state, and role="menu" would
 			     require menuitem children these aren't. -->
 			<div class="account__popover">
 				<div class="account__header">
-					<span class="account__header-name">{user.name ?? 'Signed in'}</span>
+					<span class="account__header-name">{user.name ?? m.account_signed_in()}</span>
 					{#if user.email}
 						<span class="account__header-email">{user.email}</span>
 					{/if}
 				</div>
 
+				{@render languagePicker()}
+
 				<button type="button" class="account__signout" onclick={handleSignOut}>
 					<LogOut size={15} aria-hidden="true" />
-					Sign out
+					{m.account_sign_out()}
 				</button>
 			</div>
 		{/if}
 	{:else}
-		<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- resolved login path with the redirectTo query the login route reads -->
-		<a class="account__signin" href={loginHref}>
-			<LogIn size={16} aria-hidden="true" />
-			Sign in
-		</a>
+		<button
+			type="button"
+			class="account__trigger"
+			aria-label={`${m.language_label()}: ${localeLabels[currentLocale]}`}
+			aria-expanded={open}
+			bind:this={triggerEl}
+			onclick={() => (open = !open)}
+		>
+			<Languages size={16} aria-hidden="true" />
+			<span class="account__name">{localeLabels[currentLocale]}</span>
+		</button>
+
+		{#if open}
+			<div class="account__popover">
+				{@render languagePicker()}
+
+				<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- resolved login path with the redirectTo query the login route reads -->
+				<a class="account__signin" href={loginHref}>
+					<LogIn size={16} aria-hidden="true" />
+					{m.account_sign_in()}
+				</a>
+			</div>
+		{/if}
 	{/if}
 </div>
 
@@ -124,8 +213,7 @@
 
 	/* Shared glass pill, matching the search controls' look. The fixed height (shared
 	   via --control-height) keeps it level with the search and diet bubbles. */
-	.account__trigger,
-	.account__signin {
+	.account__trigger {
 		display: inline-flex;
 		align-items: center;
 		gap: 0.45rem;
@@ -206,7 +294,72 @@
 		white-space: nowrap;
 	}
 
-	.account__signout {
+	/* The language section: a small labelled group of locale toggles. A divider on top
+	   separates it from whatever sits above (the header, or nothing when signed out). */
+	.account__section {
+		display: flex;
+		flex-direction: column;
+		gap: 0.3rem;
+		padding: 0.5rem 0.5rem 0.4rem;
+		margin-top: 0.25rem;
+		border-top: 1px solid rgba(0, 0, 0, 0.08);
+	}
+
+	.account__section-title {
+		font-size: 0.72rem;
+		font-weight: 600;
+		letter-spacing: 0.02em;
+		text-transform: uppercase;
+		color: rgba(0, 0, 0, 0.5);
+	}
+
+	.account__langs {
+		display: flex;
+		flex-direction: column;
+		gap: 0.1rem;
+	}
+
+	.account__lang {
+		display: flex;
+		align-items: center;
+		gap: 0.45rem;
+		padding: 0.4rem 0.5rem;
+		border: none;
+		background: transparent;
+		color: inherit;
+		font: inherit;
+		font-size: 0.85rem;
+		text-align: left;
+		border-radius: 0.5rem;
+		cursor: pointer;
+	}
+
+	.account__lang:hover,
+	.account__lang:focus-visible {
+		outline: none;
+		background: rgba(0, 0, 0, 0.06);
+	}
+
+	.account__lang:disabled {
+		cursor: default;
+	}
+
+	.account__lang--selected {
+		font-weight: 600;
+	}
+
+	/* Fixed-width gutter so the labels line up whether or not an option is check-marked. */
+	.account__lang-check {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 0.95rem;
+		flex-shrink: 0;
+		color: var(--color-accent);
+	}
+
+	.account__signout,
+	.account__signin {
 		display: flex;
 		align-items: center;
 		gap: 0.45rem;
@@ -217,14 +370,17 @@
 		font: inherit;
 		font-size: 0.85rem;
 		text-align: left;
+		text-decoration: none;
 		cursor: pointer;
-		/* Sits directly under the header, so it carries the divider that separates it. */
+		/* Sits directly under the section above, so it carries the divider that
+		   separates it. */
 		margin-top: 0.25rem;
 		border-top: 1px solid rgba(0, 0, 0, 0.08);
 		border-radius: 0 0 0.5rem 0.5rem;
 	}
 
-	.account__signout:hover {
+	.account__signout:hover,
+	.account__signin:hover {
 		background: rgba(0, 0, 0, 0.06);
 	}
 </style>

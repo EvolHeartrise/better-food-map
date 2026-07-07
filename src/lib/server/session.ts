@@ -58,6 +58,12 @@ export async function createUserSession(
 export interface SessionValidation {
 	session: Session;
 	user: User;
+	/**
+	 * The user's saved UI locale (migration 0024), or null when unsaved. Folded in
+	 * by getSessionWithUser so the request-path locale resolution reads it here.
+	 * Raw as stored (typed `string | null`); the caller validates it with isLocale.
+	 */
+	locale: string | null;
 	/** True if the expiry was just slid forward, so the caller should re-set the cookie. */
 	refreshed: boolean;
 }
@@ -89,7 +95,7 @@ export async function validateSessionToken(
 		refreshed = true;
 	}
 
-	return { session: found.session, user: found.user, refreshed };
+	return { session: found.session, user: found.user, locale: found.locale, refreshed };
 }
 
 /** Invalidates the session behind a cookie token (sign-out). */
@@ -101,6 +107,12 @@ export async function invalidateSessionToken(db: D1Like, token: string): Promise
 export interface ResolvedSession {
 	session: Session;
 	user: User;
+	/**
+	 * The user's saved UI locale (migration 0024), or null when unsaved — folded
+	 * into the session lookup so resolveLocale (hooks.server.ts) can read it from
+	 * this one memoized read. Raw as stored; validate with isLocale before use.
+	 */
+	locale: string | null;
 }
 
 /**
@@ -120,9 +132,13 @@ export interface SessionCookieSink {
  * expiry-slide UPDATE and the cookie refresh/clear that hang off its result —
  * runs only when some consumer first asks who is signed in, and exactly once
  * per request thereafter (concurrent callers share the same in-flight promise).
- * Public paths (map cells, stats, sitemaps) never call it, so a signed-in
- * user's cell fetches no longer pay a serial D1 round trip (or a Workers
- * subrequest) for auth they don't use.
+ * Public DATA paths — the map-cell/stats remote functions and the cached
+ * browse/sitemap routes — never call it, so a signed-in user's cell fetches
+ * still don't pay a serial D1 round trip (or a Workers subrequest) for auth
+ * they don't use. (The locale hook resolves it once on a top-level document
+ * navigation for a signed-in user, to read their saved locale — but skips
+ * remote/data requests and pins the cached crawl routes to English; see
+ * resolveLocale in hooks.server.ts.)
  *
  * The memo lives in this closure — created per request by the hook — never in
  * module scope: a module-level memo would leak one request's D1 promise into
@@ -145,7 +161,7 @@ export function createLazySessionResolver(
 		}
 		// A sliding refresh moved the row's expiry; keep the cookie's in step.
 		if (result.refreshed) cookies.setCookie(token, result.session.expires_at);
-		return { session: result.session, user: result.user };
+		return { session: result.session, user: result.user, locale: result.locale };
 	}
 
 	return () => (memo ??= resolve());
