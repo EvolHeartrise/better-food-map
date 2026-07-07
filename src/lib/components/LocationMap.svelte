@@ -331,10 +331,13 @@
 
 	// The map style: OpenStreetMap raster tiles on a 3D globe projection. MapLibre
 	// renders this flat (Web Mercator) when zoomed in and smoothly curves it into a
-	// globe as the user zooms out, with no work on our part. No `sky`: the globe
-	// renders with no atmospheric halo/haze around its rim. No `glyphs`: the name
-	// labels are HTML pills drawn in the overlay below, not GL text, so the raster
-	// style needs no fonts.
+	// globe as the user zooms out, with no work on our part. There is no `sky`, so the
+	// globe has no atmospheric halo and the canvas is transparent in the gap around it
+	// when zoomed out — the deep-space colour behind the globe is the `.map-wrap` CSS
+	// background showing through (a GL `background` layer does NOT fill that gap in
+	// globe projection). Zoomed in, the tiles fill the viewport and hide it. No
+	// `glyphs`: the name labels are HTML pills drawn in the overlay below, not GL text,
+	// so the raster style needs no fonts.
 	function mapStyle(): StyleSpecification {
 		return {
 			version: 8,
@@ -789,6 +792,10 @@
 		position: relative;
 		height: 100%;
 		width: 100%;
+		/* Deep space behind the globe. The MapLibre canvas is transparent in the gap
+		   around the zoomed-out globe (globe projection paints no backdrop there), so
+		   this shows through as the space colour; zoomed in, the opaque tiles cover it. */
+		background: #070a14;
 	}
 
 	.map {
