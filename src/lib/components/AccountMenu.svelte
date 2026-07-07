@@ -71,10 +71,14 @@
 		try {
 			// Sets the consent-exempt preference cookie and, if signed in, saves to D1.
 			await setLocale(locale);
-		} finally {
-			// Full reload so the SSR-rendered strings AND <html lang> re-render together
-			// in the new locale — a client-only swap would desync them. Mirrors sign-out.
+			// Full reload ONLY on success, so the SSR-rendered strings AND <html lang>
+			// re-render together in the new locale — a client-only swap would desync them.
 			location.reload();
+		} catch {
+			// Persist failed (offline / server error): nothing changed, so don't reload
+			// (that would throw away the map viewport for no result). Re-enable the
+			// buttons and leave the popover open so the user can retry.
+			switching = false;
 		}
 	}
 
@@ -179,7 +183,7 @@
 		<button
 			type="button"
 			class="account__trigger"
-			aria-label={m.language_label()}
+			aria-label={`${m.language_label()}: ${localeLabels[currentLocale]}`}
 			aria-expanded={open}
 			bind:this={triggerEl}
 			onclick={() => (open = !open)}

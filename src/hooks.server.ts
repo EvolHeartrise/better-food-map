@@ -150,15 +150,32 @@ async function resolveLocale(event: Parameters<Handle>[0]['event']): Promise<Loc
 
 	// 2. Signed-in user's saved locale, read from the SAME memoized session lookup
 	//    the auth hook uses — getSessionWithUser LEFT JOINs user_locale, so this
-	//    adds no extra D1 round trip. Gate on a session cookie being present: a
-	//    signed-OUT request must stay D1-free (the lazy resolver would return null
-	//    for it anyway; we don't even ask). A signed-in user pays the one session
-	//    read here — but only when they have NOT made an explicit pick on this
-	//    device (step 1's cookie would have returned above), i.e. the cross-device
-	//    case that actually needs the saved value.
-	if (event.cookies.get(SESSION_COOKIE) ?? event.cookies.get(LEGACY_SESSION_COOKIE)) {
-		const resolved = await event.locals.getSession();
-		if (resolved && isLocale(resolved.locale)) return resolved.locale;
+	//    adds no extra D1 round trip. Three guards:
+	//    • DOCUMENT requests only. A top-level navigation is where `<html lang>`
+	//      and the rendered chrome are decided. Remote-function calls (getMapCells,
+	//      …), client-nav data requests and SSR sub-requests are data, not chrome —
+	//      their only locale-sensitive output is error strings. Resolving the
+	//      session on every one of them would put a serial D1 read ahead of
+	//      responses that are otherwise pure colo-cache hits (regressing the
+	//      lazy-session property) and could attach a session Set-Cookie to a
+	//      cacheable response. So we skip them; a user who wants remote responses
+	//      localized has an explicit cookie (step 1), which needs no session read.
+	//    • Session cookie present, so a signed-OUT request stays D1-free.
+	//    • Wrapped so a saved-locale read can NEVER 500 a page. In the window after
+	//      this code deploys but before migration 0024 (user_locale) is applied, the
+	//      LEFT JOIN throws `no such table`; we swallow it and fall through to
+	//      Accept-Language rather than letting a locale nicety take the site down.
+	const isDocumentRequest = !event.isDataRequest && !event.isSubRequest && !event.isRemoteRequest;
+	if (
+		isDocumentRequest &&
+		(event.cookies.get(SESSION_COOKIE) ?? event.cookies.get(LEGACY_SESSION_COOKIE))
+	) {
+		try {
+			const resolved = await event.locals.getSession();
+			if (resolved && isLocale(resolved.locale)) return resolved.locale;
+		} catch {
+			// Saved-locale read failed (e.g. pre-migration) — fall through.
+		}
 	}
 
 	// 3. Accept-Language, q-weighted. Returns undefined when no tag maps to a
@@ -170,13 +187,33 @@ async function resolveLocale(event: Parameters<Handle>[0]['event']): Promise<Loc
 	return baseLocale;
 }
 
+// Route ids whose responses are PUBLIC, edge-cacheable, English-by-design crawl
+// surfaces: the geographic browse tree and the sitemaps all send
+// `Cache-Control: public, max-age=…`. A cached response must not vary by request,
+// so these routes render a single request-independent locale — otherwise the first
+// `fr` visitor's page (with `<html lang="fr">` and French digit grouping over
+// English content) is edge-cached and served to everyone, crawlers included,
+// corrupting language classification on the very pages that exist for SEO. Pin them
+// to `baseLocale`: no cookie / Accept-Language / session resolution at all (which
+// also keeps a session Set-Cookie off these cacheable responses). These pages are
+// deliberately an English crawl surface — see the localization notes in CLAUDE.md.
+function isPublicEnglishSurface(routeId: string | null): boolean {
+	if (!routeId) return false;
+	return (
+		routeId === '/places' ||
+		routeId === '/sitemap.xml' ||
+		routeId.startsWith('/sitemaps/') ||
+		routeId.startsWith('/[country=geo]')
+	);
+}
+
 // Runs after `authenticate` (so `event.locals.getSession` exists for step 2 of
 // resolveLocale) and wraps the app resolve, so `getLocale()` is live for the whole
 // render. Fills `<html lang="%lang%">` via transformPageChunk. `sequence` merges
 // this transformPageChunk with any others. No cookie is written here — the locale
 // cookie is written only by the setLocale command on an active pick.
 const localize: Handle = async ({ event, resolve }) => {
-	const locale = await resolveLocale(event);
+	const locale = isPublicEnglishSurface(event.route.id) ? baseLocale : await resolveLocale(event);
 	event.locals.locale = locale;
 	return localeStorage.run(locale, () =>
 		resolve(event, {

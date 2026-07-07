@@ -12,7 +12,8 @@
 			"selectors": ["countPlural"],
 			"match": {
 				"countPlural=one": "{count} lieu trouvé",
-				"countPlural=other": "{count} lieux trouvés"
+				"countPlural=other": "{count} lieux trouvés",
+				"countPlural=many": "{count} lieux trouvés"
 			}
 		}
 	],
@@ -34,7 +35,8 @@
 			"selectors": ["countPlural"],
 			"match": {
 				"countPlural=one": "{count} article",
-				"countPlural=other": "{count} articles"
+				"countPlural=other": "{count} articles",
+				"countPlural=many": "{count} articles"
 			}
 		}
 	],
@@ -45,7 +47,8 @@
 			"selectors": ["countPlural"],
 			"match": {
 				"countPlural=one": "{count} source",
-				"countPlural=other": "{count} sources"
+				"countPlural=other": "{count} sources",
+				"countPlural=many": "{count} sources"
 			}
 		}
 	],
@@ -117,7 +120,8 @@
 			"selectors": ["countPlural"],
 			"match": {
 				"countPlural=one": "article",
-				"countPlural=other": "articles"
+				"countPlural=other": "articles",
+				"countPlural=many": "articles"
 			}
 		}
 	]

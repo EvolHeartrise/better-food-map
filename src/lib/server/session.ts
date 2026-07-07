@@ -132,9 +132,13 @@ export interface SessionCookieSink {
  * expiry-slide UPDATE and the cookie refresh/clear that hang off its result —
  * runs only when some consumer first asks who is signed in, and exactly once
  * per request thereafter (concurrent callers share the same in-flight promise).
- * Public paths (map cells, stats, sitemaps) never call it, so a signed-in
- * user's cell fetches no longer pay a serial D1 round trip (or a Workers
- * subrequest) for auth they don't use.
+ * Public DATA paths — the map-cell/stats remote functions and the cached
+ * browse/sitemap routes — never call it, so a signed-in user's cell fetches
+ * still don't pay a serial D1 round trip (or a Workers subrequest) for auth
+ * they don't use. (The locale hook resolves it once on a top-level document
+ * navigation for a signed-in user, to read their saved locale — but skips
+ * remote/data requests and pins the cached crawl routes to English; see
+ * resolveLocale in hooks.server.ts.)
  *
  * The memo lives in this closure — created per request by the hook — never in
  * module scope: a module-level memo would leak one request's D1 promise into
