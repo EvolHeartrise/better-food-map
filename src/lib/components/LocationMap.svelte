@@ -331,11 +331,10 @@
 
 	// The map style: OpenStreetMap raster tiles on a 3D globe projection. MapLibre
 	// renders this flat (Web Mercator) when zoomed in and smoothly curves it into a
-	// globe as the user zooms out, with no work on our part. The `sky` atmosphere
-	// gives the zoomed-out globe its halo and fades out by the time the map has
-	// flattened (≈ zoom 7), so it never intrudes on the street-level view. No
-	// `glyphs`: the name labels are HTML pills drawn in the overlay below, not GL
-	// text, so the raster style needs no fonts.
+	// globe as the user zooms out, with no work on our part. No `sky`: the globe
+	// renders with no atmospheric halo/haze around its rim. No `glyphs`: the name
+	// labels are HTML pills drawn in the overlay below, not GL text, so the raster
+	// style needs no fonts.
 	function mapStyle(): StyleSpecification {
 		return {
 			version: 8,
@@ -357,10 +356,7 @@
 						'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
 				}
 			},
-			layers: [{ id: 'osm', type: 'raster', source: 'osm' }],
-			sky: {
-				'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 0, 1, 5, 1, 7, 0]
-			}
+			layers: [{ id: 'osm', type: 'raster', source: 'osm' }]
 		};
 	}
 
