@@ -95,6 +95,12 @@
 	"stat_venues": "lieux",
 	"stat_menu_items": "articles au menu",
 	"stat_cities": "villes",
+	"stat_vegan": "plats végétaliens",
+	"stat_vegetarian": "plats végétariens",
+	"stat_halal": "plats halal",
+	"stat_gluten_free": "plats sans gluten",
+	"stat_dairy_free": "plats sans produits laitiers",
+	"stat_nut_free": "plats sans noix",
 	"landing_cta": "Commencer à utiliser la carte",
 	"landing_browse_link": "Ou parcourez les plats par ville →",
 
