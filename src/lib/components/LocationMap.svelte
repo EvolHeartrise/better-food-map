@@ -52,10 +52,10 @@
 		// decides whether anything is open to close.
 		ondeselect,
 		// The screen space the parent's detail panel covers while a location is open,
-		// as pixel insets from the right/bottom edges. Applied as camera padding: the
-		// fly on selection centres the venue in the REMAINING (visible) map area, and
-		// clearing the selection eases the padding back out so the venue re-centres in
-		// the full viewport as the panel leaves. Null when nothing is open.
+		// as pixel insets from the right/bottom edges. Turned into the selection fly's
+		// destination offset (see selectionOffset): the fly centres the venue in the
+		// REMAINING (visible) map area, and clearing the selection glides it back to the
+		// full-viewport centre as the panel leaves. Null when nothing is open.
 		detailInset = null,
 		// Where the map opens, as `[lat, lng]`. Falls back to DEFAULT_CENTER when absent.
 		// The camera otherwise only moves when the user pans/zooms or selects a place —
@@ -264,6 +264,12 @@
 	// The last selected id we flew to, so re-renders (e.g. a viewport refetch) don't
 	// re-fly to an already-open location — only a genuine change of selection does.
 	let lastSelectedId: string | null = null;
+	// The screen offset (px) by which the last selection fly pushed the venue off the
+	// container centre to clear the detail panel. Kept so deselecting can glide the
+	// venue back to the true centre even though `detailInset` is already null by then
+	// (see the selection $effect). A pixel offset is zoom/pan-independent, so this
+	// stays correct even if the user panned while the panel was open.
+	let lastSelectionOffset: [number, number] = [0, 0];
 	// The last focus key we flew to, so the focus effect fires once per new target
 	// (a data re-sync or the parent re-passing the same focus won't re-fly).
 	let lastFocusKey: string | null = null;
@@ -502,29 +508,33 @@
 		}
 	}
 
-	// The camera padding for the current detail inset. MapLibre treats padding as part
-	// of the camera state (it persists until changed), so the padded centre — where a
-	// selected venue is placed — is the middle of the map area the panel leaves
-	// visible. Clamped so a panel covering most of a small screen can't squeeze the
-	// usable viewport away entirely.
-	function cameraPadding(): { top: number; bottom: number; left: number; right: number } {
-		return {
-			top: 0,
-			left: 0,
-			right: Math.min(detailInset?.right ?? 0, overlayWidth * 0.7),
-			bottom: Math.min(detailInset?.bottom ?? 0, overlayHeight * 0.7)
-		};
+	// The screen offset (px) that pushes a selected venue off the container centre so
+	// it sits in the middle of the map area the detail panel leaves visible: half the
+	// right inset to the left, half the bottom inset up. Clamped so a panel covering
+	// most of a small screen can't push the venue off the usable viewport entirely.
+	// Used as the fly's destination `offset` (see flyToSelected).
+	function selectionOffset(): [number, number] {
+		const right = Math.min(detailInset?.right ?? 0, overlayWidth * 0.7);
+		const bottom = Math.min(detailInset?.bottom ?? 0, overlayHeight * 0.7);
+		return [-right / 2, -bottom / 2];
 	}
 
 	// Smoothly zoom in on the selected location, centred within the map area the
-	// detail panel leaves visible (see cameraPadding). Its pill is force-kept visible
-	// (Infinity priority) and highlighted via the render flag.
+	// detail panel leaves visible. The offset is baked into the flight's destination
+	// up front, so the camera flies straight to the final framing. (We deliberately do
+	// NOT pass `padding` here: MapLibre interpolates padding across a flight, so a
+	// padding that grows from 0 to the panel inset slides the optical centre sideways
+	// as the camera arrives — the venue appears to fly to one point and then drift to
+	// another. A destination `offset` lands cleanly in one motion instead.) The pill is
+	// force-kept visible (Infinity priority) and highlighted via the render flag.
 	function flyToSelected() {
 		if (!map || !selected) return;
+		const offset = selectionOffset();
+		lastSelectionOffset = offset;
 		map.flyTo({
 			center: [selected.longitude, selected.latitude],
 			zoom: SELECTED_ZOOM,
-			padding: cameraPadding(),
+			offset,
 			duration: FLY_DURATION_MS
 		});
 	}
@@ -694,20 +704,24 @@
 	// Centre on a newly-selected location. Guarded by `lastSelectedId` so a data
 	// re-sync (e.g. data refetched after the fly's own move) doesn't re-trigger it —
 	// only an actual change of selection flies the camera. Clearing the selection
-	// eases the camera padding back out: the geographic centre is kept, so the venue
-	// glides from the panel-inset centre to the middle of the full viewport as the
-	// panel leaves. Wakes the loop so the new pill's highlight repaints even if the
-	// camera doesn't move.
+	// glides the venue back from the panel-inset centre to the middle of the full
+	// viewport as the panel leaves: it pans by the same screen offset the selection
+	// fly applied (in reverse), computed against the CURRENT view so it stays right
+	// even if the user panned while the panel was open. Wakes the loop so the new
+	// pill's highlight repaints even if the camera doesn't move.
 	$effect(() => {
 		if (!ready) return;
 		const id = selected?.id ?? null;
 		if (id && id !== lastSelectedId) {
 			flyToSelected();
 		} else if (!id && lastSelectedId) {
-			map?.easeTo({
-				padding: { top: 0, bottom: 0, left: 0, right: 0 },
-				duration: FLY_DURATION_MS
-			});
+			const [dx, dy] = lastSelectionOffset;
+			if (map && (dx || dy)) {
+				const c = map.project(map.getCenter());
+				const center = map.unproject([c.x + dx, c.y + dy]);
+				map.easeTo({ center, duration: FLY_DURATION_MS });
+			}
+			lastSelectionOffset = [0, 0];
 		}
 		lastSelectedId = id;
 		wake();
