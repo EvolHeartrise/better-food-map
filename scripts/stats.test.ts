@@ -1,11 +1,14 @@
 /// <reference types="bun-types" />
 // Exercises getStats — the aggregate coverage totals behind the PUBLIC landing
-// overlay (locations, menu items, cities). Two things the counts must get right:
-// cities are distinct by the (city, region, country) triple (so same-named cities in
-// different provinces/countries stay separate, and extra branches in an already-counted
-// city don't inflate it), and chain menu items are counted ONCE — they live in the
-// `items` table regardless of how many branches serve that menu. Runs against the real
-// migration schema via the in-memory D1Like adapter.
+// overlay (locations, menu items, cities, and per-diet dish counts). Things the counts
+// must get right: cities are distinct by the (city, region, country) triple (so
+// same-named cities in different provinces/countries stay separate, and extra branches
+// in an already-counted city don't inflate it); chain menu items are counted ONCE —
+// they live in the `items` table regardless of how many branches serve that menu; and
+// each dietary count is the number of DISTINCT items the map's diet selector would
+// surface, resolved through the SAME implication closure the filter uses (so a vegan
+// dish counts under Vegetarian and Dairy-free too). Runs against the real migration
+// schema via the in-memory D1Like adapter.
 
 import { test, expect } from 'bun:test';
 import { getStats } from '../src/lib/server/db';
@@ -17,6 +20,16 @@ import {
 	type LocationInsert
 } from '../src/lib/server/db-write';
 import { freshDb } from './test-d1';
+
+// No dietary-tagged items — the zero for every diet key getStats reports.
+const NO_DIETS = {
+	vegan: 0,
+	vegetarian: 0,
+	halal: 0,
+	gluten_free: 0,
+	dairy_free: 0,
+	nut_free: 0
+};
 
 // A full LocationInsert with sensible defaults, so each test only states what matters
 // (name, place, and any inline items).
@@ -100,13 +113,46 @@ test('getStats counts locations, items and cities (chain items once)', async () 
 	expect(stats).toEqual({
 		locations: 5, // 3 independent + 2 chain branches
 		items: 6, // 2 + 1 + 1 independent, plus the 2 shared chain items counted once
-		cities: 3 // Vancouver/BC/CA, Toronto/ON/CA, Seattle/WA/US
+		cities: 3, // Vancouver/BC/CA, Toronto/ON/CA, Seattle/WA/US
+		diets: NO_DIETS // none of these items carry a dietary tag
 	});
 });
 
 test('getStats returns zeros for an empty database', async () => {
 	const db = freshDb();
-	expect(await getStats(db)).toEqual({ locations: 0, items: 0, cities: 0 });
+	expect(await getStats(db)).toEqual({ locations: 0, items: 0, cities: 0, diets: NO_DIETS });
+});
+
+test('getStats counts dietary dishes through the diet-filter implication closure', async () => {
+	const db = freshDb();
+
+	// One venue whose menu exercises the closure: a vegan dish (which the write path
+	// stores as ONLY `vegan`, stripping the entailed vegetarian/dairy_free), a plainly
+	// vegetarian dish, a gluten-free dish, and an untagged one.
+	await insertLocations(db, [
+		venue({
+			name: 'Green Bowl',
+			city: 'Vancouver',
+			region: 'BC',
+			country: 'CA',
+			items: [
+				{ item_name: 'Tofu Bowl', price: 12, tags: ['vegan'] },
+				{ item_name: 'Cheese Pizza', price: 10, tags: ['vegetarian'] },
+				{ item_name: 'Rice Plate', price: 9, tags: ['gluten_free'] },
+				{ item_name: 'Steak', price: 20 }
+			]
+		})
+	]);
+
+	const stats = await getStats(db);
+	expect(stats.diets).toEqual({
+		vegan: 1, // the tofu bowl
+		vegetarian: 2, // the vegetarian pizza + the vegan tofu bowl (vegan ⊃ vegetarian)
+		dairy_free: 1, // the vegan tofu bowl (vegan ⊃ dairy_free); the pizza has cheese
+		gluten_free: 1, // the rice plate
+		halal: 0,
+		nut_free: 0
+	});
 });
 
 test('getStats keeps same-named cities in different regions distinct', async () => {
