@@ -4,6 +4,8 @@
 // the browser bundle — mirrors `$lib/category.ts`. `$lib/server/db` re-exports
 // everything below as part of its stable contract.
 
+import { m } from '$lib/paraglide/messages';
+
 // Canonical, app-defined tag identifiers (dietary + course). These are part of
 // the app contract and fixed — they are NOT user-authored, so this union is the
 // single source of truth.
@@ -108,13 +110,31 @@ export function impliedDietTagIds(
 	return implied;
 }
 
+// Localized UI label for each tag, keyed by its STABLE (English) id. The id
+// stays English everywhere in the data/API and cache keys (`vegan`, `dessert`,
+// …); only the shown label localizes, resolved through Paraglide's per-request
+// locale. Course ids (food/dessert/drink) resolve here too, so the menu course
+// filter and any dietary-mark share ONE source of truth for a tag's wording.
+const TAG_LABELS: Record<TagId, () => string> = {
+	vegan: m.tag_vegan,
+	vegetarian: m.tag_vegetarian,
+	halal: m.tag_halal,
+	gluten_free: m.tag_gluten_free,
+	dairy_free: m.tag_dairy_free,
+	nut_free: m.tag_nut_free,
+	food: m.tag_food,
+	dessert: m.tag_dessert,
+	drink: m.tag_drink
+};
+
 /**
- * How a tag's name should read in the UI. Curated dietary/course tags are stored
- * already capitalised ("Vegan", "Dessert"); title-casing the first letter is a
- * harmless no-op for them and keeps the helper robust if a lower-cased name ever
- * reaches it. Applied in one place — {@link DietaryIcons} — so a tag reads the
- * same wherever it appears.
+ * How a tag reads in the UI, keyed by its (English, unchanged) id — the ONE
+ * place a tag's display wording is resolved (dietary marks in {@link DietaryIcons},
+ * the diet selector, the menu course filter all route through it), so the label
+ * localizes consistently wherever it appears. An unrecognised id (never expected —
+ * the vocabulary is closed) falls back to itself.
  */
-export function tagDisplayName(name: string): string {
-	return name.charAt(0).toUpperCase() + name.slice(1);
+export function tagDisplayName(id: string): string {
+	const label = TAG_LABELS[id as TagId];
+	return label ? label() : id;
 }

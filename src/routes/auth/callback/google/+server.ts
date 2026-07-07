@@ -15,11 +15,12 @@ import {
 import { upsertOAuthUser } from '$lib/server/db';
 import { createUserSession, setSessionCookie } from '$lib/server/auth';
 import { safeInternalPath } from '$lib/redirect';
+import { m } from '$lib/paraglide/messages';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async (event) => {
 	const db = event.platform?.env?.DB;
-	if (!db) error(500, 'Database unavailable.');
+	if (!db) error(500, m.server_error_database_unavailable());
 
 	const code = event.url.searchParams.get('code');
 	const state = event.url.searchParams.get('state');
@@ -41,18 +42,18 @@ export const GET: RequestHandler = async (event) => {
 	if (oauthError) redirect(302, '/');
 
 	if (!code || !state || !storedState || !codeVerifier || state !== storedState) {
-		error(400, 'Invalid OAuth callback.');
+		error(400, m.server_error_oauth_invalid_callback());
 	}
 
 	let tokens: OAuth2Tokens;
 	try {
 		tokens = await createGoogleClient(event).validateAuthorizationCode(code, codeVerifier);
 	} catch {
-		error(400, 'Failed to validate the authorization code.');
+		error(400, m.server_error_oauth_code_validation());
 	}
 
 	const claims = decodeIdToken(tokens.idToken()) as GoogleIdTokenClaims;
-	if (!claims.sub) error(400, 'Google response was missing the subject claim.');
+	if (!claims.sub) error(400, m.server_error_oauth_missing_subject());
 
 	const user = await upsertOAuthUser(
 		db,

@@ -26,6 +26,7 @@
 import { error, redirect } from '@sveltejs/kit';
 import { idFromPath, locationPath } from '$lib/location-path';
 import { getLocationSlugFields } from '$lib/server/db';
+import { m } from '$lib/paraglide/messages';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ url, platform }) => {
@@ -41,7 +42,7 @@ export const load: PageServerLoad = async ({ url, platform }) => {
 		// ("Malformed URI") before routing, so this catch is belt-and-braces: if
 		// an encoding quirk ever does reach us, answer 404 rather than letting
 		// decodeURIComponent's URIError escalate to a 500.
-		error(404, 'Location not found');
+		error(404, m.server_error_location_not_found());
 	}
 	if (id === null) return {};
 
@@ -56,7 +57,7 @@ export const load: PageServerLoad = async ({ url, platform }) => {
 	// absent on purpose: they're hidden from the map (migration 0015), so a 404 is
 	// the honest crawler signal for their pages.
 	const venue = await getLocationSlugFields(db, id);
-	if (!venue) error(404, 'Location not found');
+	if (!venue) error(404, m.server_error_location_not_found());
 
 	// Fold every non-canonical spelling of this venue's URL onto the one canonical
 	// slug. `locationPath` is deterministic and yields only URL-safe characters,

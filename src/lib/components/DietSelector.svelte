@@ -3,6 +3,8 @@
 	import Utensils from '@lucide/svelte/icons/utensils';
 	import { DIET_OPTIONS } from '$lib/diet-profile';
 	import { dietIcon } from '$lib/dietary-icons';
+	import { tagDisplayName } from '$lib/tags';
+	import { m } from '$lib/paraglide/messages';
 
 	// The dietary selector: a single floating pill that filters the map to items a
 	// source has marked with ONE chosen diet (vegan, gluten-free, halal, …), or to
@@ -21,7 +23,14 @@
 	let triggerEl: HTMLButtonElement;
 	let menuEl = $state<HTMLUListElement>();
 
-	const selectedLabel = $derived(DIET_OPTIONS.find((option) => option.id === value)?.label ?? null);
+	// The chosen diet's localized display name, or null when nothing (or an
+	// unknown id) is selected — the label is resolved through the shared tag
+	// display helper ($lib/tags) so it reads identically to the dietary marks.
+	const selectedLabel = $derived(
+		value !== null && DIET_OPTIONS.some((option) => option.id === value)
+			? tagDisplayName(value)
+			: null
+	);
 
 	// The tone color for a diet: green for vegan/vegetarian/halal, orange for the
 	// "-free" tags, or undefined ("inherit the default") for "Any diet". Returned as a
@@ -144,7 +153,7 @@
 		onkeydown={onTriggerKeydown}
 	>
 		{@render dietGlyph(value, 16)}
-		<span class="diet__label">{selectedLabel ?? 'Any diet'}</span>
+		<span class="diet__label">{selectedLabel ?? m.diet_any()}</span>
 		<span class="diet__chevron" aria-hidden="true">{open ? '▴' : '▾'}</span>
 	</button>
 
@@ -155,7 +164,7 @@
 		<ul
 			class="menu"
 			role="menu"
-			aria-label="Dietary filter"
+			aria-label={m.diet_filter_aria()}
 			bind:this={menuEl}
 			onkeydown={onMenuKeydown}
 		>
@@ -170,7 +179,7 @@
 					onclick={() => choose(null)}
 				>
 					{@render dietGlyph(null, 16)}
-					Any diet
+					{m.diet_any()}
 				</button>
 			</li>
 			{#each DIET_OPTIONS as option (option.id)}
@@ -186,7 +195,7 @@
 						onclick={() => choose(option.id)}
 					>
 						{@render dietGlyph(option.id, 16)}
-						{option.label}
+						{tagDisplayName(option.id)}
 					</button>
 				</li>
 			{/each}

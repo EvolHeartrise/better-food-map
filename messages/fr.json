@@ -1,0 +1,128 @@
+{
+	"$schema": "https://inlang.com/schema/inlang-message-format",
+
+	"search_bar_aria": "Recherche et filtres",
+	"search_placeholder": "Rechercher un lieu ou un plat…",
+	"search_input_aria": "Rechercher par nom de lieu ou de plat",
+	"results_nav_aria": "Lieux correspondants",
+	"results_cap": "Affichage des {max} premiers lieux sur {total}. Précisez la recherche pour affiner la liste.",
+	"places_found": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} lieu trouvé",
+				"countPlural=other": "{count} lieux trouvés",
+				"countPlural=many": "{count} lieux trouvés"
+			}
+		}
+	],
+	"search_failed": "Échec de la recherche — affichage des résultats précédents.",
+	"browse_failed": "Impossible de charger les lieux de cette zone — affichage des résultats précédents.",
+
+	"venue_details_aria": "Détails du lieu",
+	"venue_close_aria": "Fermer les détails du lieu",
+	"venue_like": "Aimer ce lieu",
+	"venue_unlike": "Ne plus aimer ce lieu",
+	"venue_address_label": "Adresse",
+	"venue_phone_label": "Téléphone",
+	"venue_website_label": "Site web",
+	"venue_menu_label": "Menu",
+	"venue_no_menu": "Aucun menu disponible pour l’instant.",
+	"menu_items_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} article",
+				"countPlural=other": "{count} articles",
+				"countPlural=many": "{count} articles"
+			}
+		}
+	],
+	"menu_last_scanned": "Menu vérifié pour la dernière fois le {date}",
+	"sources_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} source",
+				"countPlural=other": "{count} sources",
+				"countPlural=many": "{count} sources"
+			}
+		}
+	],
+	"course_filter_aria": "Filtrer le menu par catégorie",
+	"course_all": "Tout",
+	"item_like": "Aimer cet article",
+	"item_unlike": "Ne plus aimer cet article",
+
+	"scanned_date": "Vérifié le {date}",
+	"scanned": "Vérifié {relative}",
+
+	"tag_vegan": "Végétalien",
+	"tag_vegetarian": "Végétarien",
+	"tag_halal": "Halal",
+	"tag_gluten_free": "Sans gluten",
+	"tag_dairy_free": "Sans produits laitiers",
+	"tag_nut_free": "Sans noix",
+	"tag_food": "Plats",
+	"tag_dessert": "Dessert",
+	"tag_drink": "Boissons",
+
+	"category_cafe": "Café",
+	"category_fast_food": "Restauration rapide",
+	"category_restaurant": "Restaurant",
+	"category_bakery": "Boulangerie",
+
+	"diet_any": "Tous les régimes",
+	"diet_filter_aria": "Filtre par régime alimentaire",
+	"diet_can_be_made": "Peut être préparé {diet}",
+
+	"account_default_name": "Compte",
+	"account_signed_in": "Connecté",
+	"account_sign_out": "Se déconnecter",
+	"account_sign_in": "Se connecter",
+	"language_label": "Langue",
+
+	"sources_dialog_aria": "Sources de données",
+	"sources_title": "Sources",
+	"sources_close_aria": "Fermer les sources",
+
+	"landing_intro_aria": "À propos de BetterFoodMaps",
+	"landing_title": "Trouvez des plats adaptés à votre régime, partout sur la carte.",
+	"landing_actions_aria": "Couverture et prise en main",
+	"stat_venues": "lieux",
+	"stat_menu_items": "articles au menu",
+	"stat_cities": "villes",
+	"landing_cta": "Commencer à utiliser la carte",
+	"landing_browse_link": "Ou parcourez les plats par ville →",
+
+	"error_not_found": "Cette page n’existe pas",
+	"error_generic": "Une erreur s’est produite",
+	"error_back": "Retour à la carte",
+	"error_page_title": "{status} · BetterFoodMaps",
+
+	"server_error_no_location_or_item": "Aucun lieu ou article correspondant.",
+	"server_error_sign_in_required": "Vous devez être connecté pour effectuer cette action.",
+	"server_error_location_not_found": "Lieu introuvable",
+	"server_error_database_unavailable": "Base de données indisponible.",
+	"server_error_oauth_invalid_callback": "Réponse OAuth invalide.",
+	"server_error_oauth_code_validation": "Échec de la validation du code d’autorisation.",
+	"server_error_oauth_missing_subject": "La réponse de Google ne contenait pas l’identifiant (subject).",
+
+	"head_site_description": "Explorez cafés, restauration rapide et restaurants du monde entier sur une carte interactive.",
+	"head_desc_no_menu": "Consultez le menu sur BetterFoodMaps.",
+	"head_desc_on_brand": "{content} sur BetterFoodMaps.",
+	"head_menu_item_noun": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "article",
+				"countPlural=other": "articles",
+				"countPlural=many": "articles"
+			}
+		}
+	]
+}

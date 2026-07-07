@@ -1,19 +1,18 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
+	import { m } from '$lib/paraglide/messages';
 
 	// A friendly one-liner for the common cases; anything else shows the error
 	// message SvelteKit provides (expected errors carry their own, unexpected
 	// ones are redacted to "Internal Error").
 	const message = $derived(
-		page.status === 404
-			? "This page doesn't exist"
-			: (page.error?.message ?? 'Something went wrong')
+		page.status === 404 ? m.error_not_found() : (page.error?.message ?? m.error_generic())
 	);
 </script>
 
 <svelte:head>
-	<title>{page.status} · BetterFoodMaps</title>
+	<title>{m.error_page_title({ status: page.status })}</title>
 </svelte:head>
 
 <div class="error">
@@ -21,7 +20,7 @@
 		<p class="error__brand">BetterFoodMaps</p>
 		<p class="error__status">{page.status}</p>
 		<h1 class="error__message">{message}</h1>
-		<a class="error__link" href={resolve('/')}>Back to the map</a>
+		<a class="error__link" href={resolve('/')}>{m.error_back()}</a>
 	</div>
 </div>
 

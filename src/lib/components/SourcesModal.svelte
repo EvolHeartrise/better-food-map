@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { safeHttpUrl } from '$lib/safe-url';
+	import { m } from '$lib/paraglide/messages';
 	import type { Source } from '$lib/server/db';
 
 	// A modal listing a venue's data sources, opened from the "N Sources" button
@@ -56,17 +57,17 @@
 <dialog
 	bind:this={dialog}
 	class="sources-modal"
-	aria-label="Data sources"
+	aria-label={m.sources_dialog_aria()}
 	onclose={() => (open = false)}
 	onclick={onDialogClick}
 >
 	<div class="sources-modal__panel">
 		<header class="sources-modal__head">
-			<h2 class="sources-modal__title">Sources</h2>
+			<h2 class="sources-modal__title">{m.sources_title()}</h2>
 			<button
 				type="button"
 				class="sources-modal__close"
-				aria-label="Close sources"
+				aria-label={m.sources_close_aria()}
 				onclick={() => (open = false)}
 			>
 				✕

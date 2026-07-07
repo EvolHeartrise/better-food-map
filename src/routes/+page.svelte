@@ -22,6 +22,7 @@
 	import { DEFAULT_MAP_CENTER } from '$lib/map-defaults';
 	import { foldAsciiCase, searchableQuery } from '$lib/search';
 	import { resolveLocation, type ResolvedLocation } from '$lib/resolve-location';
+	import { m } from '$lib/paraglide/messages';
 	import type { Item, Bounds } from '$lib/server/db';
 
 	// The visible map area, reported by <LocationMap> (debounced) as the user pans
@@ -113,9 +114,9 @@
 	const viewportStore = new ViewportData(getMapCells);
 	const fetchStatus = $derived(
 		viewportStore.fetchFailed === 'search'
-			? 'Search failed - showing previous results.'
+			? m.search_failed()
 			: viewportStore.fetchFailed === 'browse'
-				? 'Couldn’t load places for this area - showing previous results.'
+				? m.browse_failed()
 				: ''
 	);
 
@@ -270,7 +271,7 @@
 			viewportStore.appliedFilter.diet === diet
 	);
 	const resultsAnnouncement = $derived(
-		searchSettled ? `${results.length} ${results.length === 1 ? 'place' : 'places'} found` : ''
+		searchSettled ? m.places_found({ count: results.length }) : ''
 	);
 
 	// Bound to the open detail panel; the focus $effect below moves keyboard
@@ -697,10 +698,7 @@
 		{/if}
 	{:else}
 		<title>BetterFoodMaps</title>
-		<meta
-			name="description"
-			content="Explore cafes, fast food and restaurants around the world on an interactive map."
-		/>
+		<meta name="description" content={m.head_site_description()} />
 		<!-- The map root canonicalizes to the bare origin, so query-string variants
 		     (shared links, campaign params) don't fragment its indexing. -->
 		<link rel="canonical" href="{CANONICAL_ORIGIN}/" />
@@ -755,7 +753,7 @@
 	     free over the map, laid out as a horizontal row anchored top-left. On narrow
 	     screens the row floats centered at the bottom of the screen (all items always
 	     visible), while the account control stays pinned to the top-left corner. -->
-	<div class="searchbar" role="search" aria-label="Search and filters">
+	<div class="searchbar" role="search" aria-label={m.search_bar_aria()}>
 		<AccountMenu {user} bind:open={accountMenuOpen} />
 
 		<!-- Search and filter controls are hidden while the landing overlay is up (the
@@ -771,8 +769,8 @@
 					<input
 						class="searchpill__input"
 						type="search"
-						placeholder="Search places & dishes…"
-						aria-label="Search by place or dish name"
+						placeholder={m.search_placeholder()}
+						aria-label={m.search_input_aria()}
 						bind:value={query}
 						onkeydown={(event) => {
 							// Enter is a deliberate "search now": fire any pending debounce
@@ -804,7 +802,7 @@
 			     as real buttons. Visually hidden until focus enters it, then a compact
 			     panel below the search row (see .results). Capped — see listedResults. -->
 			{#if listedResults.length > 0}
-				<nav class="results" aria-label="Matching places">
+				<nav class="results" aria-label={m.results_nav_aria()}>
 					<ul class="results__list">
 						{#each listedResults as result (result.loc.id)}
 							<li>
@@ -823,8 +821,7 @@
 					</ul>
 					{#if results.length > listedResults.length}
 						<p class="results__cap">
-							Showing the first {RESULTS_LIST_MAX} of {results.length} places. Refine the search to narrow
-							the list.
+							{m.results_cap({ max: RESULTS_LIST_MAX, total: results.length })}
 						</p>
 					{/if}
 				</nav>

@@ -8,8 +8,9 @@
 		"build": "bunx --bun vite build",
 		"preview": "bunx --bun vite preview",
 		"prepare": "svelte-kit sync || echo '' && husky",
-		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+		"paraglide:compile": "paraglide-js compile --project ./project.inlang --outdir ./src/lib/paraglide",
+		"check": "bun run paraglide:compile && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+		"check:watch": "bun run paraglide:compile && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"lint": "oxlint --type-aware && eslint \"**/*.svelte\"",
 		"lint:fix": "oxlint --fix && eslint --fix \"**/*.svelte\"",
 		"format": "oxfmt",
@@ -19,7 +20,7 @@
 		"db:pull": "bun run scripts/db-pull.ts",
 		"osm:extract": "bun run scripts/osm-extract.ts",
 		"overture:enrich": "bun run scripts/overture-enrich.ts",
-		"test": "bun test scripts",
+		"test": "bun run paraglide:compile && bun test scripts",
 		"d1:migrate": "wrangler d1 migrations apply better-food-map --remote",
 		"d1:migrate:local": "wrangler d1 migrations apply better-food-map --local"
 	},
@@ -34,6 +35,7 @@
 	"devDependencies": {
 		"@cloudflare/workers-types": "^4.20250620.0",
 		"@eslint/js": "^10.0.1",
+		"@inlang/paraglide-js": "^2.20.2",
 		"@sveltejs/adapter-cloudflare": "^7.2.5",
 		"@sveltejs/kit": "^2.63.0",
 		"@sveltejs/vite-plugin-svelte": "^7.1.2",

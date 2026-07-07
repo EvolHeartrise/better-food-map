@@ -1,6 +1,14 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { dev } from '$app/environment';
 import type { Handle } from '@sveltejs/kit';
 import { sequence } from '@sveltejs/kit/hooks';
+import {
+	baseLocale,
+	extractLocaleFromHeader,
+	isLocale,
+	overwriteGetLocale,
+	type Locale
+} from '$lib/paraglide/runtime';
 import {
 	LEGACY_SESSION_COOKIE,
 	SESSION_COOKIE,
@@ -8,6 +16,7 @@ import {
 	createLazySessionResolver,
 	setSessionCookie
 } from '$lib/server/auth';
+import { LOCALE_COOKIE } from '$lib/server/locale-cookie';
 import { deleteExpiredSessions } from '$lib/server/db';
 
 // betterfoodmaps.com is the canonical domain. The canonical www host, the
@@ -102,6 +111,117 @@ const authenticate: Handle = async ({ event, resolve }) => {
 	return resolve(event);
 };
 
+// --- i18n locale resolution -------------------------------------------------
+//
+// Phase 1 of the localization effort: resolve a request locale and expose it to
+// (a) `event.locals.locale`, (b) Paraglide's server-side message runtime, and
+// (c) the `<html lang>` attribute — WITHOUT any visible UI change and WITHOUT
+// ever writing a cookie. Accept-Language auto-detection is the default and needs
+// no storage (so there are no consent-banner implications).
+//
+// Paraglide's server `getLocale()` is a per-request value. We hold it in an
+// AsyncLocalStorage store (Cloudflare Workers support it via `nodejs_compat`)
+// and point `getLocale()` at that store with `overwriteGetLocale`. Every request
+// — page SSR *and* each remote-function (`*.remote.ts`) invocation, which is its
+// own HTTP request through this same `handle` — runs its downstream inside
+// `localeStorage.run(locale, …)`, so message functions resolve the caller's
+// locale with no cross-request leakage. Outside a request (e.g. prerender) the
+// store is empty and `getLocale()` falls back to `baseLocale`.
+const localeStorage = new AsyncLocalStorage<Locale>();
+overwriteGetLocale(() => localeStorage.getStore() ?? baseLocale);
+
+// Resolves the request locale with a fixed precedence:
+//   1. explicit preference cookie, if present   (LOCALE_COOKIE, written by the
+//      setLocale command on an active pick — see $lib/server/locale-cookie)
+//   2. signed-in user's saved locale            (folded into getSessionWithUser)
+//   3. Accept-Language header, q-value weighted  (Paraglide's own negotiator,
+//      which matches full tags then base tags against the supported locales)
+//   4. baseLocale ('en')
+//
+// Async because step 2 awaits the session lookup. `authenticate` runs before
+// `localize` in the sequence (below), so `event.locals.getSession` is installed
+// by the time we get here — but we still gate the call on a session cookie being
+// present so a signed-out request never pays a D1 read just to resolve its locale.
+async function resolveLocale(event: Parameters<Handle>[0]['event']): Promise<Locale> {
+	// 1. Explicit preference cookie: this browser's active pick wins over
+	//    everything, even a later sign-in's saved locale on THIS device.
+	const cookieLocale = event.cookies.get(LOCALE_COOKIE);
+	if (cookieLocale && isLocale(cookieLocale)) return cookieLocale;
+
+	// 2. Signed-in user's saved locale, read from the SAME memoized session lookup
+	//    the auth hook uses — getSessionWithUser LEFT JOINs user_locale, so this
+	//    adds no extra D1 round trip. Three guards:
+	//    • DOCUMENT requests only. A top-level navigation is where `<html lang>`
+	//      and the rendered chrome are decided. Remote-function calls (getMapCells,
+	//      …), client-nav data requests and SSR sub-requests are data, not chrome —
+	//      their only locale-sensitive output is error strings. Resolving the
+	//      session on every one of them would put a serial D1 read ahead of
+	//      responses that are otherwise pure colo-cache hits (regressing the
+	//      lazy-session property) and could attach a session Set-Cookie to a
+	//      cacheable response. So we skip them; a user who wants remote responses
+	//      localized has an explicit cookie (step 1), which needs no session read.
+	//    • Session cookie present, so a signed-OUT request stays D1-free.
+	//    • Wrapped so a saved-locale read can NEVER 500 a page. In the window after
+	//      this code deploys but before migration 0024 (user_locale) is applied, the
+	//      LEFT JOIN throws `no such table`; we swallow it and fall through to
+	//      Accept-Language rather than letting a locale nicety take the site down.
+	const isDocumentRequest = !event.isDataRequest && !event.isSubRequest && !event.isRemoteRequest;
+	if (
+		isDocumentRequest &&
+		(event.cookies.get(SESSION_COOKIE) ?? event.cookies.get(LEGACY_SESSION_COOKIE))
+	) {
+		try {
+			const resolved = await event.locals.getSession();
+			if (resolved && isLocale(resolved.locale)) return resolved.locale;
+		} catch {
+			// Saved-locale read failed (e.g. pre-migration) — fall through.
+		}
+	}
+
+	// 3. Accept-Language, q-weighted. Returns undefined when no tag maps to a
+	//    supported locale (e.g. `de,es;q=0.8`), so it falls through to step 4.
+	const headerLocale = extractLocaleFromHeader(event.request);
+	if (headerLocale) return headerLocale;
+
+	// 4. Fallback.
+	return baseLocale;
+}
+
+// Route ids whose responses are PUBLIC, edge-cacheable, English-by-design crawl
+// surfaces: the geographic browse tree and the sitemaps all send
+// `Cache-Control: public, max-age=…`. A cached response must not vary by request,
+// so these routes render a single request-independent locale — otherwise the first
+// `fr` visitor's page (with `<html lang="fr">` and French digit grouping over
+// English content) is edge-cached and served to everyone, crawlers included,
+// corrupting language classification on the very pages that exist for SEO. Pin them
+// to `baseLocale`: no cookie / Accept-Language / session resolution at all (which
+// also keeps a session Set-Cookie off these cacheable responses). These pages are
+// deliberately an English crawl surface — see the localization notes in CLAUDE.md.
+function isPublicEnglishSurface(routeId: string | null): boolean {
+	if (!routeId) return false;
+	return (
+		routeId === '/places' ||
+		routeId === '/sitemap.xml' ||
+		routeId.startsWith('/sitemaps/') ||
+		routeId.startsWith('/[country=geo]')
+	);
+}
+
+// Runs after `authenticate` (so `event.locals.getSession` exists for step 2 of
+// resolveLocale) and wraps the app resolve, so `getLocale()` is live for the whole
+// render. Fills `<html lang="%lang%">` via transformPageChunk. `sequence` merges
+// this transformPageChunk with any others. No cookie is written here — the locale
+// cookie is written only by the setLocale command on an active pick.
+const localize: Handle = async ({ event, resolve }) => {
+	const locale = isPublicEnglishSurface(event.route.id) ? baseLocale : await resolveLocale(event);
+	event.locals.locale = locale;
+	return localeStorage.run(locale, () =>
+		resolve(event, {
+			transformPageChunk: ({ html }) => html.replace('%lang%', locale)
+		})
+	);
+};
+
 // Content-Security-Policy, sent in production only: under `vite dev` the HMR
 // websocket and Vite's injected style/script tags would violate the policy and
 // break live reload, so the dev server runs without it. Each directive mirrors
@@ -164,4 +284,11 @@ const securityHeaders: Handle = async ({ event, resolve }) => {
 // the lazy resolver; the optional signed-in user (account menu, likes, saved
 // diet) is resolved on demand, and the user-scoped remote functions guard
 // themselves with `requireUser()`.
-export const handle = sequence(securityHeaders, canonicalHost, authenticate);
+//
+// `authenticate` runs before `localize` so the lazy `getSession` resolver is
+// installed by the time resolveLocale's step 2 reads the signed-in user's saved
+// locale from it (a signed-out request skips that read — the step is gated on a
+// session cookie). `localize` then establishes the per-request Paraglide locale
+// context around the app resolve. Both sit after `canonicalHost`, so a 301'd host
+// skips the auth + locale work entirely.
+export const handle = sequence(securityHeaders, canonicalHost, authenticate, localize);

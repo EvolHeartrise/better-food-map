@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { getLocale } from '$lib/paraglide/runtime';
+
 	// The list body of a browse page: a column of crawlable links. Used for every
 	// level — country/region/city index rows (label + count) and a city's venue
 	// rows (name + address). All hrefs are pre-built (from $lib/browse or
@@ -12,7 +14,9 @@
 		label: string;
 	} = $props();
 
-	const numberFormat = new Intl.NumberFormat('en-CA');
+	// Built from the active per-page locale (fixed per page load) so row counts
+	// group digits the reader's way (en `1,234` vs fr `1 234`).
+	const numberFormat = new Intl.NumberFormat(getLocale());
 </script>
 
 <ul class="list" aria-label={label}>

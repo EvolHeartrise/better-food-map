@@ -2,6 +2,7 @@
 	import { impliedDietTagIds, tagDisplayName, TAGS } from '$lib/tags';
 	import { dietIcon } from '$lib/dietary-icons';
 	import { tooltip } from '$lib/tooltip';
+	import { m } from '$lib/paraglide/messages';
 
 	// An item's DIETARY tags shown as small colored icons, sat to the right of the item
 	// name in the venue panel. Positive-diet tags (vegan / vegetarian / halal) read
@@ -51,8 +52,8 @@
 		{#each marks as { tag, spec } (tag.id)}
 			{@const Icon = spec.icon}
 			{@const label = tag.optional
-				? `Can be made ${tagDisplayName(tag.name).toLowerCase()}`
-				: tagDisplayName(tag.name)}
+				? m.diet_can_be_made({ diet: tagDisplayName(tag.id).toLowerCase() })
+				: tagDisplayName(tag.id)}
 			<li class="diet-icons__item">
 				<span
 					class="diet-icons__mark diet-icons__mark--{spec.tone}"

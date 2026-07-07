@@ -4,8 +4,11 @@
 	import SourcesModal from '$lib/components/SourcesModal.svelte';
 	import LikeButton from '$lib/components/LikeButton.svelte';
 	import { categoryLabel } from '$lib/category';
+	import { tagDisplayName } from '$lib/tags';
 	import { safeHttpUrl } from '$lib/safe-url';
 	import { tooltip } from '$lib/tooltip';
+	import { m } from '$lib/paraglide/messages';
+	import { getLocale } from '$lib/paraglide/runtime';
 	import type { ResolvedLocation } from '$lib/resolve-location';
 	import type { Item, User } from '$lib/server/db';
 
@@ -45,13 +48,17 @@
 	const loc = $derived(location);
 	const label = $derived(categoryLabel(loc.category));
 
-	// Price formatters, one per ISO-4217 currency code (each item carries its menu's
-	// currency), built lazily and cached so a mixed-currency result set still formats
-	// every price in its own currency rather than a single hard-coded one. A plain
-	// record, not a Map — it's a non-reactive memo cache, never component state.
+	// Price formatters, one per (locale, ISO-4217 currency code): each item carries
+	// its menu's currency, and the number itself is grouped/positioned per the active
+	// locale (fixed per page load), so a mixed-currency result set still formats every
+	// price in its own currency AND the reader's number format. Built lazily and cached
+	// keyed on `locale:code` — keying on locale too keeps different-locale renders from
+	// colliding on a shared entry. A plain record, not a Map — a non-reactive memo
+	// cache, never component state.
 	const moneyFormatters: Record<string, Intl.NumberFormat> = {};
 	function moneyFormatter(code: string): Intl.NumberFormat {
-		return (moneyFormatters[code] ??= new Intl.NumberFormat('en-CA', {
+		const locale = getLocale();
+		return (moneyFormatters[`${locale}:${code}`] ??= new Intl.NumberFormat(locale, {
 			style: 'currency',
 			currency: code
 		}));
@@ -68,12 +75,9 @@
 	// tag at all) still land somewhere sensible while the backlog drains. An item
 	// tagged both dessert and drink (a milkshake) appears under both. An OPTIONAL
 	// course tag never buckets (writes reject those now; pre-mandate data has none).
+	// Each course pill's label comes from the shared tagDisplayName ($lib/tags),
+	// keyed by the course id — one source of truth for course display names.
 	type CourseFilter = 'all' | 'food' | 'dessert' | 'drink';
-	const COURSE_LABELS: Record<Exclude<CourseFilter, 'all'>, string> = {
-		food: 'Food',
-		dessert: 'Dessert',
-		drink: 'Drinks'
-	};
 
 	function hasCourse(item: Item, id: 'dessert' | 'drink'): boolean {
 		return item.tags.some((tag) => tag.id === id && !tag.optional);
@@ -126,27 +130,42 @@
 		const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 		return Math.round((today.getTime() - then.getTime()) / 86_400_000);
 	}
+	// The relative phrase ("today" / "yesterday" / "3 days ago" / "last month" /
+	// "last year") is produced by Intl.RelativeTimeFormat in the active locale, so
+	// the plural/word forms are localized for free; we keep only the day-bucketing
+	// (which coarse unit to phrase in) and wrap the result in the localized "Scanned
+	// {relative}" so the surrounding verb still translates. `numeric: 'auto'` is what
+	// yields the natural "today"/"yesterday"/"last month" rather than "0 days ago".
 	function formatScanned(iso: string): string {
 		const days = verifiedDaysAgo(iso);
-		if (days === null) return `Scanned ${iso}`;
-		if (days <= 0) return 'Scanned today';
-		if (days === 1) return 'Scanned yesterday';
-		if (days < 30) return `Scanned ${days} days ago`;
-		const months = Math.round(days / 30);
-		if (months < 12) return `Scanned ${months} month${months === 1 ? '' : 's'} ago`;
-		const years = Math.round(days / 365);
-		return `Scanned ${years} year${years === 1 ? '' : 's'} ago`;
+		if (days === null) return m.scanned_date({ date: iso });
+		const rtf = new Intl.RelativeTimeFormat(getLocale(), { numeric: 'auto' });
+		let relative: string;
+		if (days < 30) {
+			// A future/zero diff clamps to 0 ("today"); otherwise negative = in the past.
+			relative = rtf.format(days <= 0 ? 0 : -days, 'day');
+		} else {
+			const months = Math.round(days / 30);
+			relative =
+				months < 12 ? rtf.format(-months, 'month') : rtf.format(-Math.round(days / 365), 'year');
+		}
+		return m.scanned({ relative });
 	}
 </script>
 
 <aside
 	class="placecard"
-	aria-label="Location details"
+	aria-label={m.venue_details_aria()}
 	tabindex="-1"
 	bind:this={el}
 	transition:fly={flyParams}
 >
-	<button type="button" class="placecard__close" aria-label="Close place details" onclick={onClose}>
+	<button
+		type="button"
+		class="placecard__close"
+		aria-label={m.venue_close_aria()}
+		onclick={onClose}
+	>
 		✕
 	</button>
 	<header class="placecard__head">
@@ -164,7 +183,7 @@
 				<LikeButton
 					liked={likedLocationIds.has(loc.id)}
 					onToggle={() => onToggleLocationLike(loc.id)}
-					label={likedLocationIds.has(loc.id) ? 'Unlike this place' : 'Like this place'}
+					label={likedLocationIds.has(loc.id) ? m.venue_unlike() : m.venue_like()}
 					size={18}
 				/>
 			</span>
@@ -179,13 +198,13 @@
 			<dl class="info">
 				{#if loc.address}
 					<div class="info__row">
-						<dt>Address</dt>
+						<dt>{m.venue_address_label()}</dt>
 						<dd>{loc.address}</dd>
 					</div>
 				{/if}
 				{#if loc.phone}
 					<div class="info__row">
-						<dt>Phone</dt>
+						<dt>{m.venue_phone_label()}</dt>
 						<dd><a href="tel:{loc.phone}">{loc.phone}</a></dd>
 					</div>
 				{/if}
@@ -195,7 +214,7 @@
 					     http(s)-scheme URL; anything else shows as plain text. -->
 					{@const websiteHref = safeHttpUrl(loc.website)}
 					<div class="info__row">
-						<dt>Website</dt>
+						<dt>{m.venue_website_label()}</dt>
 						<dd>
 							{#if websiteHref}
 								<a href={websiteHref} target="_blank" rel="external noopener noreferrer">
@@ -216,20 +235,21 @@
 		     to head. -->
 		{#if loc.menu.length > 0 || loc.sources.length > 0}
 			<div class="placecard__menu-head">
-				<h2 class="placecard__menu-title">Menu</h2>
+				<h2 class="placecard__menu-title">{m.venue_menu_label()}</h2>
 				{#if loc.menu.length > 0}
-					{@const itemsLabel = `${loc.menu.length} ${loc.menu.length === 1 ? 'item' : 'items'}`}
+					{@const itemsLabel = m.menu_items_count({ count: loc.menu.length })}
 					<span
 						class="placecard__menu-meta"
-						use:tooltip={loc.lastVerified ? `Menu last scanned on ${loc.lastVerified}` : undefined}
+						use:tooltip={loc.lastVerified
+							? m.menu_last_scanned({ date: loc.lastVerified })
+							: undefined}
 					>
 						{loc.lastVerified ? `${itemsLabel} · ${formatScanned(loc.lastVerified)}` : itemsLabel}
 					</span>
 				{/if}
 				{#if loc.sources.length > 0}
 					<button type="button" class="placecard__sources-btn" onclick={() => (sourcesOpen = true)}>
-						{loc.sources.length}
-						{loc.sources.length === 1 ? 'Source' : 'Sources'}
+						{m.sources_count({ count: loc.sources.length })}
 					</button>
 				{/if}
 			</div>
@@ -240,14 +260,14 @@
 		     old per-item Dessert/Drink pills — the course now lives up here as a
 		     browsing category instead of a per-row label. -->
 		{#if courseOptions.length >= 2}
-			<div class="coursebar" role="group" aria-label="Filter menu by course">
+			<div class="coursebar" role="group" aria-label={m.course_filter_aria()}>
 				<button
 					type="button"
 					class="coursebar__btn"
 					aria-pressed={course === 'all'}
 					onclick={() => selectCourse('all')}
 				>
-					All
+					{m.course_all()}
 				</button>
 				{#each courseOptions as option (option)}
 					<button
@@ -256,7 +276,7 @@
 						aria-pressed={course === option}
 						onclick={() => selectCourse(option)}
 					>
-						{COURSE_LABELS[option]}
+						{tagDisplayName(option)}
 					</button>
 				{/each}
 			</div>
@@ -284,7 +304,7 @@
 									<LikeButton
 										liked={likedItemIds.has(menuItem.id)}
 										onToggle={() => onToggleItemLike(menuItem.id)}
-										label={likedItemIds.has(menuItem.id) ? 'Unlike this item' : 'Like this item'}
+										label={likedItemIds.has(menuItem.id) ? m.item_unlike() : m.item_like()}
 										size={14}
 									/>
 								</span>
@@ -301,7 +321,7 @@
 
 	{#if loc.menu.length === 0}
 		<footer class="placecard__foot">
-			<span class="placecard__hint">No menu on file yet.</span>
+			<span class="placecard__hint">{m.venue_no_menu()}</span>
 		</footer>
 	{/if}
 

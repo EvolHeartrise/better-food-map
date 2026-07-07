@@ -3,6 +3,8 @@
 	import { Spring, prefersReducedMotion } from 'svelte/motion';
 	import MapPin from '@lucide/svelte/icons/map-pin';
 	import { PLACES_PATH } from '$lib/browse';
+	import { m } from '$lib/paraglide/messages';
+	import { getLocale } from '$lib/paraglide/runtime';
 
 	// Coverage totals shown on the zoomed-out landing. Structural (not imported from
 	// the server db module) so the overlay carries no server-only import — mirroring
@@ -23,7 +25,9 @@
 		onstart: () => void;
 	} = $props();
 
-	const numberFormat = new Intl.NumberFormat('en-CA');
+	// Built from the active per-page locale (fixed per page load), so coverage
+	// counts group digits the reader's way (en `1,234` vs fr `1 234`).
+	const numberFormat = new Intl.NumberFormat(getLocale());
 	function fmt(value: number): string {
 		return numberFormat.format(Math.round(value));
 	}
@@ -43,10 +47,12 @@
 	});
 
 	// The figures, in display order, reading the live (animating) spring values.
+	// `key` is the stable {#each} identity (locale-independent); `label` is the
+	// localized text shown under the count.
 	const figures = $derived([
-		{ value: counts.current.locations, label: 'venues' },
-		{ value: counts.current.items, label: 'menu items' },
-		{ value: counts.current.cities, label: 'cities' }
+		{ key: 'venues', value: counts.current.locations, label: m.stat_venues() },
+		{ key: 'items', value: counts.current.items, label: m.stat_menu_items() },
+		{ key: 'cities', value: counts.current.cities, label: m.stat_cities() }
 	]);
 </script>
 
@@ -56,14 +62,14 @@
      non-interactive text pass pointers through (so a drag on the globe still pans, and
      zooming in dismisses the landing); only the button takes clicks. -->
 <div class="overlay" transition:fade={{ duration: 200 }}>
-	<section class="intro" aria-label="About BetterFoodMaps">
+	<section class="intro" aria-label={m.landing_intro_aria()}>
 		<p class="intro__brand">🍴 BetterFoodMaps</p>
-		<h1 class="intro__title">Find food that fits your diet, anywhere on the map.</h1>
+		<h1 class="intro__title">{m.landing_title()}</h1>
 	</section>
 
-	<section class="actions" aria-label="Coverage and getting started">
+	<section class="actions" aria-label={m.landing_actions_aria()}>
 		<ul class="stats">
-			{#each figures as figure (figure.label)}
+			{#each figures as figure (figure.key)}
 				<li class="stat">
 					<span class="stat__value">{stats ? fmt(figure.value) : '—'}</span>
 					<span class="stat__label">{figure.label}</span>
@@ -73,14 +79,14 @@
 
 		<button type="button" class="cta" onclick={onstart}>
 			<MapPin size={18} aria-hidden="true" />
-			Start using the map
+			{m.landing_cta()}
 		</button>
 
 		<!-- A crawlable entry into the geographic browse tree (#217), so the whole
 		     interlinked city/diet index is reachable from `/` — this <a> is in the
 		     SSR'd landing (the overlay renders at the opening zoom). -->
 		<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- static internal href ($lib/browse); no base path — see +page.svelte precedent -->
-		<a class="browse-link" href={PLACES_PATH}>Or browse food by city →</a>
+		<a class="browse-link" href={PLACES_PATH}>{m.landing_browse_link()}</a>
 	</section>
 </div>
 
