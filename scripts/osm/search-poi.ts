@@ -163,6 +163,13 @@ export interface ExistingLocation {
 	name: string;
 	latitude: number;
 	longitude: number;
+	/**
+	 * The chain this venue belongs to, or null when it is independent. Carried so
+	 * a caller deduping against the map can tell an already-linked branch of its
+	 * chain (silent skip) from an UNLINKED lookalike sitting at the same spot (a
+	 * venue that should be adopted onto the chain, e.g. issue #242's stray A&W).
+	 */
+	brand_id?: string | null;
 }
 
 /** Resolves the query area to a bounding box, plus an optional centre for radius refine. */
@@ -210,18 +217,31 @@ function namesConflict(a: string, b: string): boolean {
 	return a !== '' && b !== '' && !namesMatch(a, b);
 }
 
-/** True if `poi` is essentially the same venue as one already in `existing`. */
-export function isExistingDuplicate(poi: StoredPoi, existing: ExistingLocation[]): boolean {
+/**
+ * The existing venue `poi` is essentially the same as, or null when none —
+ * the match core behind {@link isExistingDuplicate}. Returns the matched row so
+ * a caller can inspect it (e.g. its `brand_id`, to tell an already-linked branch
+ * from an unlinked lookalike); the first match in `existing` order wins.
+ */
+export function findExistingDuplicate(
+	poi: StoredPoi,
+	existing: ExistingLocation[]
+): ExistingLocation | null {
 	const poiName = normalizeName(poi.name);
 	for (const loc of existing) {
 		const locName = normalizeName(loc.name);
 		const d = haversineMeters(poi.latitude, poi.longitude, loc.latitude, loc.longitude);
 		// Same spot: a duplicate unless the names clearly disagree (food-court neighbours).
-		if (d <= SAME_POINT_M && !namesConflict(poiName, locName)) return true;
+		if (d <= SAME_POINT_M && !namesConflict(poiName, locName)) return loc;
 		// Nearby with a matching name: the same venue, just slightly displaced.
-		if (d <= SAME_NAME_M && namesMatch(poiName, locName)) return true;
+		if (d <= SAME_NAME_M && namesMatch(poiName, locName)) return loc;
 	}
-	return false;
+	return null;
+}
+
+/** True if `poi` is essentially the same venue as one already in `existing`. */
+export function isExistingDuplicate(poi: StoredPoi, existing: ExistingLocation[]): boolean {
+	return findExistingDuplicate(poi, existing) !== null;
 }
 
 /**
@@ -249,7 +269,7 @@ export function padBboxForDedup(bbox: Bounds): Bounds {
 export async function existingInBbox(db: D1Like, bbox: Bounds): Promise<ExistingLocation[]> {
 	const { results } = await db
 		.prepare(
-			`SELECT id, name, latitude, longitude FROM locations
+			`SELECT id, name, latitude, longitude, brand_id FROM locations
 			 WHERE latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ?`
 		)
 		.bind(bbox.minLat, bbox.maxLat, bbox.minLng, bbox.maxLng)

@@ -9,6 +9,7 @@ interface ExistingLoc {
 	name: string;
 	latitude: number;
 	longitude: number;
+	brand_id?: string | null;
 }
 
 /** Minimal D1Like answering only the "existing locations in bbox" query. */
@@ -163,6 +164,73 @@ test('drops branches already on the map, counting them', async () => {
 	});
 	expect(selection.matched.map((p) => p.osm_id)).toEqual(['n2']);
 	expect(selection.excluded_existing).toBe(1);
+});
+
+test('surfaces an unlinked independent lookalike as unlinked_existing (issue #242)', async () => {
+	const store = storeWith([
+		row({ osm_id: 'n1', latitude: 49.1, longitude: -123.1, name: 'A&W' }),
+		row({ osm_id: 'n2', latitude: 49.5, longitude: -123.5, name: 'A&W' })
+	]);
+	// n1's spot already holds an INDEPENDENT venue (brand_id null) — the stray A&W
+	// on a stale private menu. With the chain's brandId given, it's excluded from
+	// the import (no duplicate pin) AND surfaced for adoption.
+	const db = fakeD1([
+		{ id: 'stray', name: 'A&W', latitude: 49.1, longitude: -123.1, brand_id: null }
+	]);
+	const selection = await selectChainCandidates(store, db, {
+		area: AREA,
+		nameMatch: ['A&W'],
+		brandId: 'brand-aw'
+	});
+	expect(selection.matched.map((p) => p.osm_id)).toEqual(['n2']);
+	expect(selection.excluded_existing).toBe(1);
+	expect(selection.unlinked_existing).toEqual([
+		{ id: 'stray', name: 'A&W', brand_id: null, osm_id: 'n1' }
+	]);
+});
+
+test('an already-linked branch of the same chain is NOT surfaced as unlinked', async () => {
+	const store = storeWith([row({ osm_id: 'n1', latitude: 49.1, longitude: -123.1, name: 'A&W' })]);
+	// The existing venue IS a branch of the chain being imported → an ordinary
+	// already-on-the-map exclusion, no adoption needed.
+	const db = fakeD1([
+		{ id: 'branch', name: 'A&W', latitude: 49.1, longitude: -123.1, brand_id: 'brand-aw' }
+	]);
+	const selection = await selectChainCandidates(store, db, {
+		area: AREA,
+		nameMatch: ['A&W'],
+		brandId: 'brand-aw'
+	});
+	expect(selection.excluded_existing).toBe(1);
+	expect(selection.unlinked_existing).toEqual([]);
+});
+
+test('without brandId, unlinked_existing stays empty (opt-in reporting)', async () => {
+	const store = storeWith([row({ osm_id: 'n1', latitude: 49.1, longitude: -123.1, name: 'A&W' })]);
+	const db = fakeD1([
+		{ id: 'stray', name: 'A&W', latitude: 49.1, longitude: -123.1, brand_id: null }
+	]);
+	const selection = await selectChainCandidates(store, db, { area: AREA, nameMatch: ['A&W'] });
+	expect(selection.excluded_existing).toBe(1);
+	expect(selection.unlinked_existing).toEqual([]);
+});
+
+test('one unlinked venue shadowing several POIs is reported once', async () => {
+	// Two staging nodes for the same venue (OSM double-mapping), both within
+	// SAME_NAME_M of the one independent row — the stray is listed a single time.
+	const store = storeWith([
+		row({ osm_id: 'n1', latitude: 49.1, longitude: -123.1, name: 'A&W' }),
+		row({ osm_id: 'n2', latitude: 49.10005, longitude: -123.1, name: 'A&W' })
+	]);
+	const db = fakeD1([
+		{ id: 'stray', name: 'A&W', latitude: 49.1, longitude: -123.1, brand_id: null }
+	]);
+	const selection = await selectChainCandidates(store, db, {
+		area: AREA,
+		nameMatch: ['A&W'],
+		brandId: 'brand-aw'
+	});
+	expect(selection.unlinked_existing.map((u) => u.id)).toEqual(['stray']);
 });
 
 test('centre queries refine to the circle and order nearest-first', async () => {

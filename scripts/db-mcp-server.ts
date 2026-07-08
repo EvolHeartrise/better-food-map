@@ -93,6 +93,7 @@ import { findDuplicateLocations } from './osm/find-duplicate-locations';
 import { findIncompleteMenus } from './osm/find-incomplete-menus';
 import { findHtmlEntities } from './osm/find-html-entities';
 import { findMissingCourseTags } from './osm/find-missing-course-tags';
+import { findUnlinkedChainBranches } from './osm/find-unlinked-chain-branches';
 import {
 	resolveListLimit,
 	resolveListOffset,
@@ -1166,7 +1167,8 @@ const auditLocationsArgs = v.object({
 			'duplicate_locations',
 			'empty_menu',
 			'html_entities',
-			'missing_course_tag'
+			'missing_course_tag',
+			'unlinked_chain_branch'
 		]),
 		v.description(
 			'Which audit to run:\n' +
@@ -1220,7 +1222,16 @@ const auditLocationsArgs = v.object({
 				"`hint` ('drink' | 'dessert' | null) is a CHEAP KEYWORD HEURISTIC suggesting the likely tag — " +
 				'verify against the source before applying it, never trust it blindly. Ordered hint-first (drink, ' +
 				'then dessert, then no hint), then by menu. Fix by re-tagging with update_items, passing the full ' +
-				'corrected `tags` set (course tag plus any dietary tags the source supports). Reads only the live D1.'
+				'corrected `tags` set (course tag plus any dietary tags the source supports). Reads only the live D1.\n' +
+				'• "unlinked_chain_branch" — INDEPENDENT venues (brand_id IS NULL) whose name matches an existing ' +
+				'chain: a branch that was never linked to its chain, so it serves a stale private menu instead of ' +
+				'the shared chain menu every real branch shows (issue #242). import_chain excludes a pre-existing ' +
+				"venue at a chain's spot as an already-on-the-map dedup but leaves it un-adopted, and " +
+				'duplicate_locations cannot catch it (no second row was created to pair against). Each `unlinked` ' +
+				'entry is { id, name, address, menu_id, item_count, brand: { id, name } }; the name match reuses ' +
+				"import_chain's own normalized matching. Verify against the chain's locator, then adopt with " +
+				'update_locations (set brand_id + the shared menu_id) and delete_menu its private menu, or ' +
+				'delete_locations a bad row. Only OPEN venues are flagged. Reads only the live D1.'
 		)
 	),
 	radius_m: v.optional(
@@ -2878,8 +2889,12 @@ const osmTools = [
 			'variants automatically, and `country` to keep border-town POIs of a neighbouring country out); ' +
 			're-runs are safe (already-imported branches are excluded). ALWAYS call with `dry_run: true` ' +
 			'first to vet the allowlist. Returns { imported, location_ids, excluded_existing, ' +
-			'excluded_foreign?, matched_by_brand?, skipped_duplicate_locations, skipped_invalid, warnings, ' +
-			'name_buckets, remaining_beyond_max, scan_truncated }. If a D1 failure interrupts the import ' +
+			'unlinked_existing?, excluded_foreign?, matched_by_brand?, skipped_duplicate_locations, ' +
+			'skipped_invalid, warnings, name_buckets, remaining_beyond_max, scan_truncated }. ' +
+			'`unlinked_existing` lists venues already on the map at a branch spot that are NOT linked to this ' +
+			'chain (an independent or other-brand lookalike import excluded but never adopted, e.g. a stray ' +
+			'A&W on a stale private menu) — verify, then adopt with update_locations onto the shared menu. ' +
+			'If a D1 failure interrupts the import ' +
 			'partway, the error reply still carries the committed partial state (`partial_failure: true` plus ' +
 			'imported/warnings/skipped so far) — read its `warnings` before re-running, since committed ' +
 			'branches count as excluded_existing on the re-run and those warnings never resurface.',
@@ -2904,7 +2919,8 @@ const osmTools = [
 				},
 				nameMatch: input.name_match,
 				brandWikidata: input.brand_wikidata,
-				country: input.country
+				country: input.country,
+				brandId: input.brand_id
 			});
 			// The cap applies to IMPORTABLE candidates only: slicing the raw matched
 			// list would let a long run of address-unresolvable POIs occupy the window
@@ -2921,6 +2937,9 @@ const osmTools = [
 					remaining_beyond_max: remaining,
 					skipped_unresolvable: unresolvable,
 					excluded_existing: selection.excluded_existing,
+					...(selection.unlinked_existing.length
+						? { unlinked_existing: selection.unlinked_existing }
+						: {}),
 					...(input.country ? { excluded_foreign: selection.excluded_foreign } : {}),
 					...(selection.excluded_foreign_sample.length
 						? { excluded_foreign_sample: selection.excluded_foreign_sample }
@@ -2995,6 +3014,9 @@ const osmTools = [
 				imported: created,
 				...(input.include_location_ids ? { location_ids: locationIds } : {}),
 				excluded_existing: selection.excluded_existing,
+				...(selection.unlinked_existing.length
+					? { unlinked_existing: selection.unlinked_existing }
+					: {}),
 				...(input.country ? { excluded_foreign: selection.excluded_foreign } : {}),
 				...(selection.excluded_foreign_sample.length
 					? { excluded_foreign_sample: selection.excluded_foreign_sample }
@@ -3032,7 +3054,10 @@ const osmTools = [
 			'or "missing_course_tag" (items with no required course tag — food/dessert/drink; per the course-' +
 			'tag mandate this means the item was never course-reviewed, NOT that it defaults to "food". PAGED ' +
 			'via `limit`/`offset`, since the pre-mandate backlog is large; each entry carries a heuristic ' +
-			'`hint` to verify, not to auto-apply; fix by re-tagging with update_items). ' +
+			'`hint` to verify, not to auto-apply; fix by re-tagging with update_items), ' +
+			'or "unlinked_chain_branch" (INDEPENDENT venues whose name matches an existing chain, a branch ' +
+			'never linked to its chain, so it serves a stale private menu instead of the shared chain menu; ' +
+			'adopt with update_locations onto the shared menu, or delete_locations a bad row). ' +
 			'The address/coordinate checks compare against the LOCAL OSM staging store; the other checks read ' +
 			'only the live D1. ' +
 			'Results are worst-first / actionable-first; `limit` caps how many are returned and `additional` ' +
@@ -3078,6 +3103,10 @@ const osmTools = [
 			if (input.check === 'missing_course_tag') {
 				// Reads only the live D1 — no staging store needed.
 				return findMissingCourseTags(getDb(), { limit: input.limit, offset: input.offset });
+			}
+			if (input.check === 'unlinked_chain_branch') {
+				// Reads only the live D1 — no staging store needed.
+				return findUnlinkedChainBranches(getDb(), { limit: input.limit });
 			}
 			return findMissingAddress(getOsmStore(), getDb(), {
 				limit: input.limit,
