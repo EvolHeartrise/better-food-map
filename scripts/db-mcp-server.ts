@@ -2341,24 +2341,30 @@ const tools = [
 			await assertLocationRefPatches(getDb(), items, getStored);
 			const patches = await Promise.all(
 				items.map(async ({ id, street, city, region, postcode, country, phone, ...patch }) => {
-					// A patch that touches region/postcode WITHOUT a country must validate
-					// against the row's STORED country (a region-only patch would otherwise
-					// resolve through the CA∪US fallback and could store a US state code on
-					// a CA row). A missing row skips the lookup — updateLocations reports it
-					// in not_found_ids and the patch is never applied.
+					// A patch that touches region/postcode/phone WITHOUT a country must
+					// resolve against the row's STORED country, not the CA∪US fallback: a
+					// region-only patch could otherwise store a US state code on a CA row,
+					// and a bare (no-`+`) phone could be falsely coerced to +1 on a
+					// non-NANP row. A missing row skips the lookup — updateLocations reports
+					// it in not_found_ids and the patch is never applied.
 					const needsStoredCountry =
 						country === undefined &&
-						(region !== undefined || (postcode !== undefined && postcode !== null));
+						(region !== undefined ||
+							(postcode !== undefined && postcode !== null) ||
+							(phone !== undefined && phone !== null));
 					const storedCountry = needsStoredCountry ? (await getStored(id))?.country : undefined;
 					return {
 						id,
 						...patch,
-						// `phone: null` clears it; a value is stored canonical (E.164). The
-						// patch's (normalized) country scopes NANP inference, else it defaults
-						// to NANP — a bare number with an unnormalized "Canada" must still infer +1.
+						// `phone: null` clears it; a value is stored canonical (E.164). NANP
+						// inference is scoped to the effective country (patch's, else the row's
+						// stored one), so a `+`-less number on a non-NANP venue stays as given.
 						...(phone !== undefined
 							? {
-									phone: phone === null ? null : normalizePhone(phone, normalizeCountry(country))
+									phone:
+										phone === null
+											? null
+											: normalizePhone(phone, normalizeCountry(country) ?? storedCountry)
 								}
 							: {}),
 						...normalizeAddressPatch({ street, city, region, postcode, country }, storedCountry)

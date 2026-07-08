@@ -209,7 +209,12 @@
 				{#if phone}
 					<div class="info__row">
 						<dt>{m.venue_phone_label()}</dt>
-						<dd><a href="tel:{phone.tel}">{phone.display}</a></dd>
+						<dd>
+							<a href="tel:{phone.tel}"
+								>{phone.display}{#if phone.extension}
+									{m.venue_phone_extension({ ext: phone.extension })}{/if}</a
+							>
+						</dd>
 					</div>
 				{/if}
 				{#if loc.website}
