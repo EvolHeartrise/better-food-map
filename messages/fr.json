@@ -26,6 +26,7 @@
 	"venue_unlike": "Ne plus aimer ce lieu",
 	"venue_address_label": "Adresse",
 	"venue_phone_label": "Téléphone",
+	"venue_phone_extension": "poste {ext}",
 	"venue_website_label": "Site web",
 	"venue_menu_label": "Menu",
 	"venue_no_menu": "Aucun menu disponible pour l’instant.",

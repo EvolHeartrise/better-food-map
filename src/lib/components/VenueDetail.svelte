@@ -6,6 +6,7 @@
 	import { categoryLabel } from '$lib/category';
 	import { tagDisplayName } from '$lib/tags';
 	import { safeHttpUrl } from '$lib/safe-url';
+	import { formatPhone } from '$lib/phone';
 	import { tooltip } from '$lib/tooltip';
 	import { m } from '$lib/paraglide/messages';
 	import { getLocale } from '$lib/paraglide/runtime';
@@ -47,6 +48,9 @@
 
 	const loc = $derived(location);
 	const label = $derived(categoryLabel(loc.category));
+	// Phone rendered on read: one consistent display + a fully-qualified tel: href,
+	// regardless of how the source spelled the stored number (issue #241).
+	const phone = $derived(formatPhone(loc.phone, loc.country));
 
 	// Price formatters, one per (locale, ISO-4217 currency code): each item carries
 	// its menu's currency, and the number itself is grouped/positioned per the active
@@ -194,7 +198,7 @@
 	     long menu (or a tall info block on the bottom sheet) never overflows the
 	     panel. -->
 	<div class="placecard__body">
-		{#if loc.address || loc.phone || loc.website}
+		{#if loc.address || phone || loc.website}
 			<dl class="info">
 				{#if loc.address}
 					<div class="info__row">
@@ -202,10 +206,15 @@
 						<dd>{loc.address}</dd>
 					</div>
 				{/if}
-				{#if loc.phone}
+				{#if phone}
 					<div class="info__row">
 						<dt>{m.venue_phone_label()}</dt>
-						<dd><a href="tel:{loc.phone}">{loc.phone}</a></dd>
+						<dd>
+							<a href="tel:{phone.tel}"
+								>{phone.display}{#if phone.extension}
+									{m.venue_phone_extension({ ext: phone.extension })}{/if}</a
+							>
+						</dd>
 					</div>
 				{/if}
 				{#if loc.website}
