@@ -36,7 +36,7 @@ import { haversineMeters } from './geo';
 import { effectivePoiAddressParts } from './map-feature';
 import {
 	existingInBbox,
-	isExistingDuplicate,
+	findExistingDuplicate,
 	normalizeName,
 	padBboxForDedup,
 	partitionByCountry,
@@ -72,6 +72,15 @@ export interface SelectChainCandidatesParams {
 	 */
 	country?: string;
 	/**
+	 * The chain being imported. When a matched POI is dropped because a venue is
+	 * already on the map at that spot, we compare that venue's brand to this: an
+	 * already-linked branch of THIS chain is a silent skip, but an independent (or
+	 * other-brand) lookalike is surfaced in `unlinked_existing` — the venue exists
+	 * but was never adopted onto the chain menu (issue #242's stray A&W). Omit and
+	 * every excluded venue is treated as an ordinary already-imported branch.
+	 */
+	brandId?: string;
+	/**
 	 * Rows scanned from the store per accepted name (default 20000) — far above
 	 * any real chain's footprint, present only to bound a pathological scan.
 	 */
@@ -101,6 +110,24 @@ export interface NameBucket {
 	brand_wikidata_count?: number;
 }
 
+/**
+ * A venue already on the map that a matched POI deduped against, but which is
+ * NOT a branch of the chain being imported — an independent (or other-brand)
+ * lookalike the import quietly skips. Surfacing it lets the operator adopt it
+ * onto the chain menu (repoint brand_id/menu_id) instead of leaving it frozen on
+ * a stale private menu, out of sync with every real branch (issue #242).
+ */
+export interface UnlinkedExisting {
+	/** The existing location's id — pass to update_locations to adopt it. */
+	id: string;
+	/** Its stored name (a normalized-name match for the chain). */
+	name: string;
+	/** Its current brand: null (independent) or a DIFFERENT chain's brand_id. */
+	brand_id: string | null;
+	/** The POI it deduped against, so the match is auditable. */
+	osm_id: string;
+}
+
 export interface ChainCandidateSelection {
 	/** The POIs to import, nearest-first for a centre query else store order. */
 	matched: StoredPoi[];
@@ -108,6 +135,13 @@ export interface ChainCandidateSelection {
 	name_buckets: NameBucket[];
 	/** Matched POIs dropped because the venue is already on the map. */
 	excluded_existing: number;
+	/**
+	 * Of those excluded venues, the ones NOT already linked to this chain (only
+	 * populated when `brandId` is given) — verify each against the chain's locator,
+	 * then adopt with update_locations (set brand_id + menu_id) and drop its
+	 * private menu, or delete_locations it if it is a bad row.
+	 */
+	unlinked_existing: UnlinkedExisting[];
 	/** POIs dropped because their address signals a different country (only with `country`). */
 	excluded_foreign: number;
 	/** Up to 10 of the foreign-dropped POIs, so the drop is auditable, never silent. */
@@ -256,9 +290,30 @@ export async function selectChainCandidates(
 	const existing = matchedRaw.length ? await existingInBbox(db, padBboxForDedup(bbox)) : [];
 	const matched: StoredPoi[] = [];
 	let excludedExisting = 0;
+	// One existing venue can shadow several POIs (a moved OSM node near it); dedup
+	// the unlinked report by existing id so each stray is listed once.
+	const unlinkedById = new Map<string, UnlinkedExisting>();
 	for (const poi of matchedRaw) {
-		if (isExistingDuplicate(poi, existing)) excludedExisting++;
-		else matched.push(poi);
+		const dup = findExistingDuplicate(poi, existing);
+		if (!dup) {
+			matched.push(poi);
+			continue;
+		}
+		excludedExisting++;
+		// A venue at this spot that ISN'T already a branch of the chain we're
+		// importing is an unlinked lookalike — worth adopting, not silently skipping.
+		if (
+			params.brandId !== undefined &&
+			(dup.brand_id ?? null) !== params.brandId &&
+			!unlinkedById.has(dup.id)
+		) {
+			unlinkedById.set(dup.id, {
+				id: dup.id,
+				name: dup.name,
+				brand_id: dup.brand_id ?? null,
+				osm_id: poi.osm_id
+			});
+		}
 	}
 
 	const annotated = [...buckets.values()].map((bucket) => {
@@ -272,6 +327,7 @@ export async function selectChainCandidates(
 		matched,
 		name_buckets: annotated.toSorted((a, b) => b.count - a.count),
 		excluded_existing: excludedExisting,
+		unlinked_existing: [...unlinkedById.values()],
 		excluded_foreign: excludedForeign,
 		excluded_foreign_sample: excludedForeignSample,
 		matched_by_brand: matchedByBrand,
