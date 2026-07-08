@@ -19,6 +19,7 @@ import type { Category } from './category';
 import { impliedDietTagIds, type TagId } from './tags';
 import { locationPath } from './location-path';
 import { CANONICAL_ORIGIN } from './canonical';
+import { formatPhone } from './phone';
 
 /** The item fields the menu graph reads — the full detail shape (#83), not the lean map item. */
 export interface JsonLdItem {
@@ -142,7 +143,10 @@ export function venueJsonLd(venue: JsonLdVenue): Record<string, unknown> {
 		address: postalAddress(venue),
 		geo: { '@type': 'GeoCoordinates', latitude: venue.latitude, longitude: venue.longitude }
 	};
-	if (venue.phone) node.telephone = venue.phone;
+	// schema.org `telephone` wants the international (E.164) number; fall back to the
+	// display form for a number whose calling code we cannot resolve (never our data).
+	const phone = formatPhone(venue.phone, venue.country);
+	if (phone) node.telephone = phone.e164 || phone.display;
 	if (venue.website) node.sameAs = venue.website;
 
 	const items = venue.menu.map(menuItemNode);

@@ -83,6 +83,7 @@ import { ToolPartialFailure, partialFailureBody } from './mcp/partial-failure';
 import { normalizeAddressPatch, normalizeAddressParts } from './mcp/address-patch';
 import { assertItemMenuMoves, assertLocationRefPatches } from './mcp/ref-validation';
 import { normalizeCountry } from '../src/lib/address';
+import { normalizePhone } from '../src/lib/phone';
 import { hasNonHttpScheme } from '../src/lib/safe-url';
 import { searchPoi, normalizeName, namesMatch } from './osm/search-poi';
 import { selectChainCandidates, partitionImportable } from './osm/import-chain';
@@ -377,6 +378,9 @@ const REGION_DESC =
 	'Province/state, e.g. "BC" or "British Columbia" (stored as the 2-letter code).';
 const POSTCODE_DESC = 'Postal/ZIP code (optional); omit when the source has none.';
 const COUNTRY_DESC = 'Country name or ISO-2 code (stored as ISO-2; defaults to CA).';
+const PHONE_DESC =
+	"The venue's phone (prefer its OSM contact:phone tag). Stored canonical (E.164, " +
+	'e.g. "+16045551234") regardless of the source spelling; the display form is derived on read.';
 const OSM_ID_DESC =
 	'PREFERRED way to add a venue: the `osm_id` of a search_poi candidate — the server then takes ' +
 	"this venue's coordinates VERBATIM from that OSM POI (never geocoded/copied) and fills its " +
@@ -577,7 +581,7 @@ const createLocationArgs = v.object({
 	),
 	postcode: v.optional(v.nullable(v.pipe(postcodeSchema, v.description(POSTCODE_DESC)))),
 	country: v.optional(v.nullable(v.pipe(countryPartSchema, v.description(COUNTRY_DESC)))),
-	phone: v.optional(v.nullable(v.string())),
+	phone: v.optional(v.nullable(v.pipe(v.string(), v.description(PHONE_DESC)))),
 	website: v.optional(v.nullable(websiteSchema)),
 	brand_id: v.optional(
 		v.nullable(
@@ -704,7 +708,9 @@ export const updateLocationItemArgs = v.pipe(
 		country: v.optional(
 			v.pipe(countryPartSchema, v.description(`Replace the country. ${COUNTRY_DESC}`))
 		),
-		phone: v.optional(v.nullable(v.string())),
+		phone: v.optional(
+			v.nullable(v.pipe(v.string(), v.description(`Replace the phone. ${PHONE_DESC}`)))
+		),
 		website: v.optional(v.nullable(websiteSchema)),
 		brand_id: v.optional(
 			v.nullable(
@@ -1927,7 +1933,10 @@ async function createLocationsBatch(
 			region: core.region,
 			postcode: core.postcode,
 			country: core.country,
-			phone: it.phone ?? null,
+			// Stored canonical (E.164): OSM/agent phones arrive in every shape; one
+			// stored form keeps display uniform and same-phone dedup coordinate-exact.
+			// `core.country` is the already-normalized ISO-2 (so bare NANP numbers infer +1).
+			phone: normalizePhone(it.phone, core.country),
 			website: it.website ?? null,
 			brand_id: it.brand_id ?? null,
 			menu_id: it.menu_id ?? null,
@@ -2331,19 +2340,33 @@ const tools = [
 			// or a lone cross-brand brand_id must not slip past assertBrandMenuRefs.
 			await assertLocationRefPatches(getDb(), items, getStored);
 			const patches = await Promise.all(
-				items.map(async ({ id, street, city, region, postcode, country, ...patch }) => {
-					// A patch that touches region/postcode WITHOUT a country must validate
-					// against the row's STORED country (a region-only patch would otherwise
-					// resolve through the CA∪US fallback and could store a US state code on
-					// a CA row). A missing row skips the lookup — updateLocations reports it
-					// in not_found_ids and the patch is never applied.
+				items.map(async ({ id, street, city, region, postcode, country, phone, ...patch }) => {
+					// A patch that touches region/postcode/phone WITHOUT a country must
+					// resolve against the row's STORED country, not the CA∪US fallback: a
+					// region-only patch could otherwise store a US state code on a CA row,
+					// and a bare (no-`+`) phone could be falsely coerced to +1 on a
+					// non-NANP row. A missing row skips the lookup — updateLocations reports
+					// it in not_found_ids and the patch is never applied.
 					const needsStoredCountry =
 						country === undefined &&
-						(region !== undefined || (postcode !== undefined && postcode !== null));
+						(region !== undefined ||
+							(postcode !== undefined && postcode !== null) ||
+							(phone !== undefined && phone !== null));
 					const storedCountry = needsStoredCountry ? (await getStored(id))?.country : undefined;
 					return {
 						id,
 						...patch,
+						// `phone: null` clears it; a value is stored canonical (E.164). NANP
+						// inference is scoped to the effective country (patch's, else the row's
+						// stored one), so a `+`-less number on a non-NANP venue stays as given.
+						...(phone !== undefined
+							? {
+									phone:
+										phone === null
+											? null
+											: normalizePhone(phone, normalizeCountry(country) ?? storedCountry)
+								}
+							: {}),
 						...normalizeAddressPatch({ street, city, region, postcode, country }, storedCountry)
 					};
 				})

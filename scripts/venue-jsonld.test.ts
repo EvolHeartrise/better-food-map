@@ -75,10 +75,10 @@ describe('venueJsonLd identity', () => {
 		);
 	});
 
-	test('the venue website rides sameAs; telephone carries the phone', () => {
+	test('the venue website rides sameAs; telephone carries the E.164 phone', () => {
 		const node = venueJsonLd(venue());
 		expect(node.sameAs).toBe('https://pradocafe.example');
-		expect(node.telephone).toBe('+1 604-555-0100');
+		expect(node.telephone).toBe('+16045550100');
 	});
 
 	test('omits sameAs and telephone when absent', () => {
