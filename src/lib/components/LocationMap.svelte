@@ -405,11 +405,26 @@
 			// Basemap labels (cities, streets, countries) follow the UI locale: the tiles
 			// carry multilingual name tags, and the flavor's label expressions prefer
 			// `name:<lang>`, coalescing through English and then the local name. A lang
-			// outside language_script_pairs (@protomaps/basemaps) would degrade to that
-			// same fallback chain rather than break; both current Paraglide locales
-			// ('en', 'fr') are supported directly. Read once per map build: switching
-			// locale reloads the page (see AccountMenu), which rebuilds the map.
-			layers: basemapLayers('protomaps', namedFlavor('light'), { lang: getLocale() }),
+			// outside language_script_pairs (@protomaps/basemaps) degrades to that same
+			// fallback chain rather than break — of the app's locales that's pa, fil and
+			// ta (no Gurmukhi/Tamil font support in the basemap, and no `tl` tag either).
+			// Chinese is supported only as script-tagged zh-Hans/zh-Hant, so the bare
+			// `zh` (Simplified) and `yue` (Cantonese, Traditional-script) UI locales map
+			// onto those; the regional English/French UI variants collapse to their base
+			// tag (tiles carry name:en / name:fr, no regional variants). Read once per
+			// map build: switching locale reloads the page (see AccountMenu), which
+			// rebuilds the map.
+			layers: basemapLayers('protomaps', namedFlavor('light'), {
+				lang:
+					{
+						zh: 'zh-Hans',
+						yue: 'zh-Hant',
+						'en-US': 'en',
+						'en-CA': 'en',
+						'en-GB': 'en',
+						'fr-FR': 'fr'
+					}[getLocale() as string] ?? getLocale()
+			}),
 			sky: {
 				'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 0, 1, 5, 1, 7, 0]
 			}

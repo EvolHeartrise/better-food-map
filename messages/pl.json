@@ -1,0 +1,157 @@
+{
+	"$schema": "https://inlang.com/schema/inlang-message-format",
+
+	"search_bar_aria": "Wyszukiwanie i filtry",
+	"search_placeholder": "Szukaj miejsc i dań…",
+	"search_input_aria": "Szukaj po nazwie miejsca lub dania",
+	"results_nav_aria": "Pasujące miejsca",
+	"results_cap": "Wyświetlamy pierwszych {max} z {total} miejsc. Doprecyzuj wyszukiwanie, aby zawęzić listę.",
+	"places_found": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "Znaleziono {count} miejsce",
+				"countPlural=few": "Znaleziono {count} miejsca",
+				"countPlural=many": "Znaleziono {count} miejsc",
+				"countPlural=other": "Znaleziono {count} miejsca"
+			}
+		}
+	],
+	"search_failed": "Wyszukiwanie nie powiodło się — pokazujemy poprzednie wyniki.",
+	"browse_failed": "Nie udało się wczytać miejsc z tego obszaru — pokazujemy poprzednie wyniki.",
+	"map_aria": "Mapa miejsc z jedzeniem",
+	"map_zoom_in_aria": "Przybliż",
+	"map_zoom_out_aria": "Oddal",
+
+	"venue_details_aria": "Szczegóły miejsca",
+	"venue_close_aria": "Zamknij szczegóły miejsca",
+	"sheet_resize_aria": "Zmień rozmiar panelu szczegółów — przeciągnij, stuknij lub użyj klawiszy strzałek",
+	"venue_like": "Polub to miejsce",
+	"venue_unlike": "Cofnij polubienie tego miejsca",
+	"venue_address_label": "Adres",
+	"venue_phone_label": "Telefon",
+	"venue_phone_extension": "wew. {ext}",
+	"venue_website_label": "Strona internetowa",
+	"venue_menu_label": "Menu",
+	"venue_no_menu": "Nie mamy jeszcze menu tego miejsca.",
+	"menu_items_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} pozycja",
+				"countPlural=few": "{count} pozycje",
+				"countPlural=many": "{count} pozycji",
+				"countPlural=other": "{count} pozycji"
+			}
+		}
+	],
+	"menu_last_scanned": "Ostatnie sprawdzenie menu: {date}",
+	"sources_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} źródło",
+				"countPlural=few": "{count} źródła",
+				"countPlural=many": "{count} źródeł",
+				"countPlural=other": "{count} źródła"
+			}
+		}
+	],
+	"course_filter_aria": "Filtruj menu według kategorii",
+	"course_all": "Wszystko",
+	"item_like": "Polub tę pozycję",
+	"item_unlike": "Cofnij polubienie tej pozycji",
+
+	"scanned_date": "Sprawdzono {date}",
+	"scanned": "Sprawdzono {relative}",
+
+	"tag_vegan": "Wegańskie",
+	"tag_vegetarian": "Wegetariańskie",
+	"tag_halal": "Halal",
+	"tag_gluten_free": "Bezglutenowe",
+	"tag_dairy_free": "Bez nabiału",
+	"tag_nut_free": "Bez orzechów",
+	"tag_food": "Dania",
+	"tag_dessert": "Desery",
+	"tag_drink": "Napoje",
+
+	"category_cafe": "Kawiarnia",
+	"category_fast_food": "Fast food",
+	"category_restaurant": "Restauracja",
+	"category_bakery": "Piekarnia",
+
+	"diet_any": "Dowolna dieta",
+	"diet_filter_aria": "Filtr diety",
+	"diet_can_be_made": "Na życzenie: {diet}",
+
+	"account_default_name": "Konto",
+	"account_signed_in": "Zalogowano",
+	"account_sign_out": "Wyloguj się",
+	"account_sign_in": "Zaloguj się",
+	"language_label": "Język",
+
+	"sources_dialog_aria": "Źródła danych",
+	"sources_title": "Źródła",
+	"sources_close_aria": "Zamknij źródła",
+
+	"directions_button_tooltip": "Otwórz w innej aplikacji z mapami",
+	"directions_button_aria": "Otwórz {address} w innej aplikacji z mapami",
+	"directions_dialog_aria": "Wybierz aplikację z mapami",
+	"directions_title": "Otwórz w innej aplikacji z mapami",
+	"directions_close_aria": "Zamknij wybór aplikacji",
+	"directions_apple_maps": "Apple Maps",
+	"directions_google_maps": "Google Maps",
+
+	"landing_intro_aria": "O BetterFoodMaps",
+	"landing_title": "Znajdź jedzenie dopasowane do Twojej diety — w dowolnym miejscu na mapie.",
+	"landing_stats_aria": "Zasięg mapy",
+	"landing_actions_aria": "Pierwsze kroki",
+	"stat_venues": "miejsc",
+	"stat_menu_items": "pozycji menu",
+	"stat_cities": "miast",
+	"stat_vegan": "dań wegańskich",
+	"stat_vegetarian": "dań wegetariańskich",
+	"stat_halal": "dań halal",
+	"stat_gluten_free": "dań bezglutenowych",
+	"stat_dairy_free": "dań bez nabiału",
+	"stat_nut_free": "dań bez orzechów",
+	"landing_cta": "Zacznij korzystać z mapy",
+	"landing_browse_link": "Możesz też przeglądać jedzenie według miast →",
+
+	"error_not_found": "Ta strona nie istnieje",
+	"error_generic": "Coś poszło nie tak",
+	"error_back": "Wróć do mapy",
+	"error_page_title": "{status} · BetterFoodMaps",
+
+	"server_error_no_location_or_item": "Nie ma takiego miejsca ani pozycji.",
+	"server_error_sign_in_required": "Aby to zrobić, musisz się zalogować.",
+	"server_error_location_not_found": "Nie znaleziono miejsca",
+	"server_error_location_gone": "To miejsce zostało zamknięte na stałe.",
+	"server_error_database_unavailable": "Baza danych jest niedostępna.",
+	"server_error_oauth_invalid_callback": "Nieprawidłowe wywołanie zwrotne OAuth.",
+	"server_error_oauth_code_validation": "Nie udało się zweryfikować kodu autoryzacji.",
+	"server_error_oauth_missing_subject": "W odpowiedzi Google zabrakło pola subject.",
+
+	"head_site_description": "Odkrywaj kawiarnie, fast foody i restauracje na całym świecie na interaktywnej mapie.",
+	"head_desc_no_menu": "Zobacz menu w BetterFoodMaps.",
+	"head_located_in": "w {where}",
+	"head_list_pair": "{first} i {last}",
+	"head_desc_on_brand": "{content} — sprawdź w BetterFoodMaps.",
+	"head_coverage_diet": "{diet} ({count})",
+	"head_coverage_clause": "W menu: {list}",
+	"head_menu_item_noun": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "pozycja menu",
+				"countPlural=few": "pozycje menu",
+				"countPlural=many": "pozycji menu",
+				"countPlural=other": "pozycji menu"
+			}
+		}
+	]
+}

@@ -1,0 +1,149 @@
+{
+	"$schema": "https://inlang.com/schema/inlang-message-format",
+
+	"search_bar_aria": "Paghahanap at mga filter",
+	"search_placeholder": "Maghanap ng mga lugar at pagkain…",
+	"search_input_aria": "Maghanap ayon sa pangalan ng lugar o pagkain",
+	"results_nav_aria": "Mga tumutugmang lugar",
+	"results_cap": "Ipinapakita ang unang {max} sa {total} lugar. Gawing mas tiyak ang paghahanap para paikliin ang listahan.",
+	"places_found": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} lugar ang nahanap",
+				"countPlural=other": "{count} na lugar ang nahanap"
+			}
+		}
+	],
+	"search_failed": "Nabigo ang paghahanap — ipinapakita ang mga naunang resulta.",
+	"browse_failed": "Hindi ma-load ang mga lugar sa area na ito — ipinapakita ang mga naunang resulta.",
+	"map_aria": "Mapa ng mga kainan",
+	"map_zoom_in_aria": "Mag-zoom in",
+	"map_zoom_out_aria": "Mag-zoom out",
+
+	"venue_details_aria": "Mga detalye ng lugar",
+	"venue_close_aria": "Isara ang mga detalye ng lugar",
+	"sheet_resize_aria": "Baguhin ang laki ng mga detalye — i-drag, i-tap, o gamitin ang mga arrow key",
+	"venue_like": "I-like ang lugar na ito",
+	"venue_unlike": "Alisin ang like sa lugar na ito",
+	"venue_address_label": "Address",
+	"venue_phone_label": "Telepono",
+	"venue_phone_extension": "ext. {ext}",
+	"venue_website_label": "Website",
+	"venue_menu_label": "Menu",
+	"venue_no_menu": "Wala pang naitalang menu.",
+	"menu_items_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} item",
+				"countPlural=other": "{count} na item"
+			}
+		}
+	],
+	"menu_last_scanned": "Huling na-scan ang menu noong {date}",
+	"sources_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} pinagmulan",
+				"countPlural=other": "{count} na pinagmulan"
+			}
+		}
+	],
+	"course_filter_aria": "I-filter ang menu ayon sa uri",
+	"course_all": "Lahat",
+	"item_like": "I-like ang item na ito",
+	"item_unlike": "Alisin ang like sa item na ito",
+
+	"scanned_date": "Na-scan noong {date}",
+	"scanned": "Na-scan {relative}",
+
+	"tag_vegan": "Vegan",
+	"tag_vegetarian": "Vegetarian",
+	"tag_halal": "Halal",
+	"tag_gluten_free": "Gluten-free",
+	"tag_dairy_free": "Dairy-free",
+	"tag_nut_free": "Nut-free",
+	"tag_food": "Pagkain",
+	"tag_dessert": "Dessert",
+	"tag_drink": "Inumin",
+
+	"category_cafe": "Cafe",
+	"category_fast_food": "Fast food",
+	"category_restaurant": "Restawran",
+	"category_bakery": "Panaderya",
+
+	"diet_any": "Anumang diyeta",
+	"diet_filter_aria": "Filter sa diyeta",
+	"diet_can_be_made": "Puwedeng gawing {diet}",
+
+	"account_default_name": "Account",
+	"account_signed_in": "Naka-sign in",
+	"account_sign_out": "Mag-sign out",
+	"account_sign_in": "Mag-sign in",
+	"language_label": "Wika",
+
+	"sources_dialog_aria": "Mga pinagmulan ng datos",
+	"sources_title": "Mga pinagmulan",
+	"sources_close_aria": "Isara ang mga pinagmulan",
+
+	"directions_button_tooltip": "Buksan sa ibang Maps app",
+	"directions_button_aria": "Buksan ang {address} sa ibang Maps app",
+	"directions_dialog_aria": "Pumili ng maps app",
+	"directions_title": "Buksan sa ibang Maps app",
+	"directions_close_aria": "Isara ang mga direksyon",
+	"directions_apple_maps": "Apple Maps",
+	"directions_google_maps": "Google Maps",
+
+	"landing_intro_aria": "Tungkol sa BetterFoodMaps",
+	"landing_title": "Hanapin ang pagkaing angkop sa diyeta mo, kahit saan sa mapa.",
+	"landing_stats_aria": "Saklaw ng mapa",
+	"landing_actions_aria": "Pagsisimula",
+	"stat_venues": "kainan",
+	"stat_menu_items": "menu item",
+	"stat_cities": "lungsod",
+	"stat_vegan": "vegan na pagkain",
+	"stat_vegetarian": "vegetarian na pagkain",
+	"stat_halal": "halal na pagkain",
+	"stat_gluten_free": "gluten-free na pagkain",
+	"stat_dairy_free": "dairy-free na pagkain",
+	"stat_nut_free": "nut-free na pagkain",
+	"landing_cta": "Gamitin na ang mapa",
+	"landing_browse_link": "O mag-browse ng pagkain ayon sa lungsod →",
+
+	"error_not_found": "Hindi mahanap ang pahinang ito",
+	"error_generic": "Nagkaproblema",
+	"error_back": "Bumalik sa mapa",
+	"error_page_title": "{status} · BetterFoodMaps",
+
+	"server_error_no_location_or_item": "Walang ganoong lugar o item.",
+	"server_error_sign_in_required": "Kailangan mong mag-sign in para magawa iyan.",
+	"server_error_location_not_found": "Hindi mahanap ang lugar",
+	"server_error_location_gone": "Permanente nang nagsara ang lugar na ito.",
+	"server_error_database_unavailable": "Hindi available ang database.",
+	"server_error_oauth_invalid_callback": "Invalid na OAuth callback.",
+	"server_error_oauth_code_validation": "Nabigong i-validate ang authorization code.",
+	"server_error_oauth_missing_subject": "Walang subject claim ang response ng Google.",
+
+	"head_site_description": "Tuklasin ang mga cafe, fast food at restawran sa buong mundo sa isang interactive na mapa.",
+	"head_desc_no_menu": "Tingnan ang menu sa BetterFoodMaps.",
+	"head_located_in": "sa {where}",
+	"head_list_pair": "{first} at {last}",
+	"head_desc_on_brand": "{content} sa BetterFoodMaps.",
+	"head_coverage_diet": "{count} {diet}",
+	"head_coverage_clause": "{list} na {noun}",
+	"head_menu_item_noun": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "menu item",
+				"countPlural=other": "menu item"
+			}
+		}
+	]
+}

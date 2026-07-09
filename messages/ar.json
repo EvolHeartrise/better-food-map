@@ -1,0 +1,165 @@
+{
+	"$schema": "https://inlang.com/schema/inlang-message-format",
+
+	"search_bar_aria": "البحث والفلاتر",
+	"search_placeholder": "ابحث عن الأماكن والأطباق…",
+	"search_input_aria": "ابحث باسم المكان أو الطبق",
+	"results_nav_aria": "الأماكن المطابقة",
+	"results_cap": "تُعرض أول {max} من أصل {total} من الأماكن. ضيِّق نطاق البحث لتقليص القائمة.",
+	"places_found": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=zero": "لم يُعثر على أي مكان",
+				"countPlural=one": "تم العثور على مكان واحد",
+				"countPlural=two": "تم العثور على مكانين",
+				"countPlural=few": "تم العثور على {count} أماكن",
+				"countPlural=many": "تم العثور على {count} مكانًا",
+				"countPlural=other": "تم العثور على {count} مكان"
+			}
+		}
+	],
+	"search_failed": "فشل البحث — تُعرض النتائج السابقة.",
+	"browse_failed": "تعذّر تحميل أماكن هذه المنطقة — تُعرض النتائج السابقة.",
+	"map_aria": "خريطة أماكن الطعام",
+	"map_zoom_in_aria": "تكبير",
+	"map_zoom_out_aria": "تصغير",
+
+	"venue_details_aria": "تفاصيل المكان",
+	"venue_close_aria": "إغلاق تفاصيل المكان",
+	"sheet_resize_aria": "تغيير حجم التفاصيل — اسحب أو انقر أو استخدم مفاتيح الأسهم",
+	"venue_like": "تسجيل الإعجاب بهذا المكان",
+	"venue_unlike": "إلغاء الإعجاب بهذا المكان",
+	"venue_address_label": "العنوان",
+	"venue_phone_label": "الهاتف",
+	"venue_phone_extension": "تحويلة {ext}",
+	"venue_website_label": "الموقع الإلكتروني",
+	"venue_menu_label": "قائمة الطعام",
+	"venue_no_menu": "لا تتوفر قائمة طعام بعد.",
+	"menu_items_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=zero": "لا توجد عناصر",
+				"countPlural=one": "عنصر واحد",
+				"countPlural=two": "عنصران",
+				"countPlural=few": "{count} عناصر",
+				"countPlural=many": "{count} عنصرًا",
+				"countPlural=other": "{count} عنصر"
+			}
+		}
+	],
+	"menu_last_scanned": "آخر فحص لقائمة الطعام في {date}",
+	"sources_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=zero": "لا توجد مصادر",
+				"countPlural=one": "مصدر واحد",
+				"countPlural=two": "مصدران",
+				"countPlural=few": "{count} مصادر",
+				"countPlural=many": "{count} مصدرًا",
+				"countPlural=other": "{count} مصدر"
+			}
+		}
+	],
+	"course_filter_aria": "تصفية القائمة حسب النوع",
+	"course_all": "الكل",
+	"item_like": "تسجيل الإعجاب بهذا العنصر",
+	"item_unlike": "إلغاء الإعجاب بهذا العنصر",
+
+	"scanned_date": "فُحص في {date}",
+	"scanned": "فُحص {relative}",
+
+	"tag_vegan": "نباتي صرف",
+	"tag_vegetarian": "نباتي",
+	"tag_halal": "حلال",
+	"tag_gluten_free": "خالٍ من الغلوتين",
+	"tag_dairy_free": "خالٍ من الألبان",
+	"tag_nut_free": "خالٍ من المكسرات",
+	"tag_food": "طعام",
+	"tag_dessert": "حلويات",
+	"tag_drink": "مشروبات",
+
+	"category_cafe": "مقهى",
+	"category_fast_food": "وجبات سريعة",
+	"category_restaurant": "مطعم",
+	"category_bakery": "مخبز",
+
+	"diet_any": "أي نظام غذائي",
+	"diet_filter_aria": "فلتر النظام الغذائي",
+	"diet_can_be_made": "يتوفر خيار {diet} عند الطلب",
+
+	"account_default_name": "الحساب",
+	"account_signed_in": "تم تسجيل الدخول",
+	"account_sign_out": "تسجيل الخروج",
+	"account_sign_in": "تسجيل الدخول",
+	"language_label": "اللغة",
+
+	"sources_dialog_aria": "مصادر البيانات",
+	"sources_title": "المصادر",
+	"sources_close_aria": "إغلاق المصادر",
+
+	"directions_button_tooltip": "فتح في تطبيق خرائط آخر",
+	"directions_button_aria": "فتح {address} في تطبيق خرائط آخر",
+	"directions_dialog_aria": "اختيار تطبيق خرائط",
+	"directions_title": "فتح في تطبيق خرائط آخر",
+	"directions_close_aria": "إغلاق الاتجاهات",
+	"directions_apple_maps": "Apple Maps",
+	"directions_google_maps": "Google Maps",
+
+	"landing_intro_aria": "نبذة عن BetterFoodMaps",
+	"landing_title": "اعثر على طعام يناسب نظامك الغذائي في أي مكان على الخريطة.",
+	"landing_stats_aria": "تغطية الخريطة",
+	"landing_actions_aria": "البدء",
+	"stat_venues": "أماكن",
+	"stat_menu_items": "عناصر القوائم",
+	"stat_cities": "مدن",
+	"stat_vegan": "أطباق نباتية صرفة",
+	"stat_vegetarian": "أطباق نباتية",
+	"stat_halal": "أطباق حلال",
+	"stat_gluten_free": "أطباق خالية من الغلوتين",
+	"stat_dairy_free": "أطباق خالية من الألبان",
+	"stat_nut_free": "أطباق خالية من المكسرات",
+	"landing_cta": "ابدأ باستخدام الخريطة",
+	"landing_browse_link": "أو تصفَّح الطعام حسب المدينة ←",
+
+	"error_not_found": "هذه الصفحة غير موجودة",
+	"error_generic": "حدث خطأ ما",
+	"error_back": "العودة إلى الخريطة",
+	"error_page_title": "{status} · BetterFoodMaps",
+
+	"server_error_no_location_or_item": "المكان أو العنصر غير موجود.",
+	"server_error_sign_in_required": "يجب تسجيل الدخول للقيام بذلك.",
+	"server_error_location_not_found": "لم يُعثر على المكان",
+	"server_error_location_gone": "أُغلق هذا المكان نهائيًا.",
+	"server_error_database_unavailable": "قاعدة البيانات غير متاحة.",
+	"server_error_oauth_invalid_callback": "استدعاء OAuth غير صالح.",
+	"server_error_oauth_code_validation": "فشل التحقق من رمز التفويض.",
+	"server_error_oauth_missing_subject": "لم يتضمّن رد Google حقل subject.",
+
+	"head_site_description": "استكشف المقاهي ومطاعم الوجبات السريعة والمطاعم حول العالم على خريطة تفاعلية.",
+	"head_desc_no_menu": "اطّلع على قائمة الطعام على BetterFoodMaps.",
+	"head_located_in": "في {where}",
+	"head_list_pair": "{first} و{last}",
+	"head_desc_on_brand": "{content} — على BetterFoodMaps.",
+	"head_coverage_diet": "{diet} ({count})",
+	"head_coverage_clause": "في قائمة الطعام: {list}",
+	"head_menu_item_noun": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=zero": "عناصر من القائمة",
+				"countPlural=one": "عنصر من القائمة",
+				"countPlural=two": "عنصران من القائمة",
+				"countPlural=few": "عناصر من القائمة",
+				"countPlural=many": "عنصرًا من القائمة",
+				"countPlural=other": "عنصر من القائمة"
+			}
+		}
+	]
+}
