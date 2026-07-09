@@ -644,5 +644,16 @@
 			border-radius: 0.9rem 0.9rem 0 0;
 			box-shadow: 0 -12px 34px rgba(0, 0, 0, 0.22);
 		}
+
+		/* On a phone at arm's length the panel's smallest load-bearing text — item
+		   descriptions, the item-count/freshness meta, the "no menu" hint — reads
+		   below comfortable minimums at its desktop 0.72–0.78rem, so nudge it up to
+		   the 0.85rem the item names/address already use (issue #259). Desktop keeps
+		   the tighter sizes, where the panel is read up close. */
+		.placecard__item-desc,
+		.placecard__menu-meta,
+		.placecard__hint {
+			font-size: 0.85rem;
+		}
 	}
 </style>

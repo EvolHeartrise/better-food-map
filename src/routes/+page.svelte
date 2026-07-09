@@ -1157,6 +1157,13 @@
 			font-size: 1rem;
 		}
 
+		/* The results-list address is load-bearing on a phone (it's how you tell two
+		   branches of a chain apart), but its desktop 0.72rem reads below comfortable
+		   minimums at arm's length, so match the venue name's 0.85rem here (issue #259). */
+		.results__address {
+			font-size: 0.85rem;
+		}
+
 		/* The sheet covers the map's bottom edge, so both bottom controls — zoom
 		   (left) and the OSM attribution (right, which must stay visible) — ride up
 		   above it; the right one no longer needs the wide-screen sideways shift. */
