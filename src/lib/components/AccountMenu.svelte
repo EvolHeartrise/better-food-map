@@ -48,7 +48,6 @@
 	// the same whatever the UI locale, so it is not a translated message. Adding a locale
 	// to Paraglide's `locales` means adding its endonym here.
 	const localeLabels: Record<Locale, string> = {
-		en: 'English',
 		'en-US': 'English (US)',
 		'en-CA': 'English (Canada)',
 		'en-GB': 'English (UK)',

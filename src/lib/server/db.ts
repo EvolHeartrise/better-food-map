@@ -1663,7 +1663,7 @@ export async function setUserDiet(
 // ---------------------------------------------------------------------------
 
 /**
- * A signed-in user's saved UI locale (e.g. 'en' or 'fr'), or `null` when none is
+ * A signed-in user's saved UI locale (e.g. 'en-US' or 'fr'), or `null` when none is
  * saved (no row). Validated on read via `isLocale`, so a stored value no longer in
  * the supported set reads as "no saved locale" and the caller falls back to
  * Accept-Language — mirroring how `getUserDiet`'s value is sanitized. Note the
