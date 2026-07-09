@@ -1,0 +1,9 @@
+# Long-cache the vendored basemap glyphs + sprites (static/basemaps-assets,
+# fetched by MapLibre per the style in src/lib/components/LocationMap.svelte).
+# They only change if the vendored protomaps/basemaps-assets copy is refreshed,
+# and a refresh must come with a path bump (sprites already carry /v4/; version
+# fonts the same way if they are ever updated) — hence immutable is safe.
+# adapter-cloudflare copies this file into the build and appends SvelteKit's
+# own immutable rules; it must live at the repo root, not under static/.
+/basemaps-assets/*
+  Cache-Control: public, max-age=31536000, immutable
