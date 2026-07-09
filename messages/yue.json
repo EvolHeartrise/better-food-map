@@ -133,6 +133,12 @@
 	"head_desc_on_brand": "{content}，盡在 BetterFoodMaps。",
 	"head_coverage_diet": "{diet}菜式 {count} 款",
 	"head_coverage_clause": "餐牌有{list}",
+	"head_lead": "{name}{categoryClause}{whereClause}。",
+	"head_lead_category": "，{category}",
+	"head_lead_where": "，{locatedIn}",
+	"head_list_sep": "、",
+	"head_plain_count": "{count} {noun}",
+	"head_desc": "{lead}{tail}",
 	"head_menu_item_noun": [
 		{
 			"declarations": ["input count", "local countPlural = count: plural"],
