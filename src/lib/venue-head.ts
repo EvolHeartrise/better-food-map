@@ -55,8 +55,10 @@ const DIETARY_TAGS = TAGS.filter((tag) => tag.tag_type === 'dietary');
 /** `"a"` | `"a and b"` | `"a, b and c"` — serial join, no Oxford comma. */
 function joinList(parts: string[]): string {
 	if (parts.length <= 1) return parts[0] ?? '';
-	if (parts.length === 2) return `${parts[0]} and ${parts[1]}`;
-	return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+	return m.head_list_pair({
+		first: parts.slice(0, -1).join(', '),
+		last: parts[parts.length - 1]
+	});
 }
 
 /**
@@ -88,7 +90,18 @@ export function dietaryCoverageClause(menu: HeadVenue['menu'], limit = 3): strin
 	// The shared "menu item(s)" head noun reads singular only when the whole
 	// clause is a lone count of one ("1 vegan menu item").
 	const singular = covered.length === 1 && covered[0].count === 1;
-	return `${joinList(covered.map((diet) => `${diet.count} ${diet.label}`))} ${m.head_menu_item_noun({ count: singular ? 1 : 2 })}`;
+	// The clause's shape is message-driven so a locale can reorder it instead of
+	// inflecting the diet labels: English keeps "12 vegan and 8 gluten-free menu
+	// items" (count-adjective-noun, pinned byte-for-byte by the head test), while
+	// French reads "Au menu : végétalien (12) et sans gluten (8)" — the per-diet
+	// part (head_coverage_diet) and the frame (head_coverage_clause) each localize;
+	// a locale that doesn't need {noun} simply leaves it out of its pattern.
+	return m.head_coverage_clause({
+		list: joinList(
+			covered.map((diet) => m.head_coverage_diet({ count: diet.count, diet: diet.label }))
+		),
+		noun: m.head_menu_item_noun({ count: singular ? 1 : 2 })
+	});
 }
 
 /**
@@ -106,7 +119,7 @@ export function venueHeadMeta(venue: HeadVenue): HeadMeta {
 	const title = `${venue.name}${where ? ` – ${where}` : ''} | BetterFoodMaps`;
 
 	const category = categoryLabel(venue.category);
-	const lead = `${venue.name}${category ? `, ${category.toLowerCase()}` : ''}${where ? ` in ${where}` : ''}.`;
+	const lead = `${venue.name}${category ? `, ${category.toLowerCase()}` : ''}${where ? ` ${m.head_located_in({ where })}` : ''}.`;
 
 	const coverage = dietaryCoverageClause(venue.menu);
 	const count = venue.menu.length;
