@@ -1034,31 +1034,40 @@ async function queryMapData(
 
 /** The identity fields the `/locations/<id>` gate needs to build the canonical
  *  descriptive URL: the id (echoed back), plus the name and city that fold into
- *  the slug prefix (see `locationSlug` in $lib/location-path). */
+ *  the slug prefix (see `locationSlug` in $lib/location-path), and whether the
+ *  venue is closed (soft-deleted) so the gate can tell a permanent closure apart
+ *  from an unknown id (410 vs 404). */
 export interface LocationSlugFields {
 	id: string;
 	name: string;
 	city: string;
+	/** True when the venue is soft-deleted (`closed_at` set — migration 0015). */
+	closed: boolean;
 }
 
 /**
- * The slug fields of an OPEN location, or null when none exists. Backs the map
- * page's `/locations/<…>` gate (src/routes/+page.server.ts), which runs on every
- * hard load of a venue URL: it reads only the three columns needed to (a) prove
- * the venue exists — null means 404 — and (b) recompute the canonical
- * `<name>-<city>-<uuid>` path so a bare or wrong-slug URL can 301 to it, rather
- * than paying {@link getLocationById}'s full row read. Closed (soft-deleted)
- * venues count as absent, matching every display read (migration 0015) — their
- * pages should 404, not render or redirect.
+ * The slug fields of a location that EXISTS (open or closed), or null when no
+ * row bears the id. Backs the map page's `/locations/<…>` gate
+ * (src/routes/+page.server.ts), which runs on every hard load of a venue URL: it
+ * reads only the columns needed to (a) prove the venue exists — null means a 404
+ * for an unknown id — (b) tell a verified closure apart from that unknown id so
+ * the gate can serve 410 Gone for a soft-deleted venue (dropping it from the
+ * index faster than a 404), and (c) recompute the canonical `<name>-<city>-<uuid>`
+ * path so a bare or wrong-slug URL for an OPEN venue can 301 to it, rather than
+ * paying {@link getLocationById}'s full row read. Unlike every DISPLAY read
+ * (which excludes closed venues — migration 0015), this returns the closed row
+ * too, distinguished by its `closed` flag, precisely so the gate can 410 it.
  */
 export async function getLocationSlugFields(
 	db: D1Like,
 	id: string
 ): Promise<LocationSlugFields | null> {
-	return db
-		.prepare(`SELECT id, name, city FROM locations WHERE id = ? AND closed_at IS NULL`)
+	const row = await db
+		.prepare(`SELECT id, name, city, closed_at FROM locations WHERE id = ?`)
 		.bind(id)
-		.first<LocationSlugFields>();
+		.first<{ id: string; name: string; city: string; closed_at: number | null }>();
+	if (!row) return null;
+	return { id: row.id, name: row.name, city: row.city, closed: row.closed_at !== null };
 }
 
 /**

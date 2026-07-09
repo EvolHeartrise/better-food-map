@@ -110,6 +110,7 @@
 	"server_error_no_location_or_item": "No such location or item.",
 	"server_error_sign_in_required": "You must be signed in to do that.",
 	"server_error_location_not_found": "Location not found",
+	"server_error_location_gone": "This venue has permanently closed.",
 	"server_error_database_unavailable": "Database unavailable.",
 	"server_error_oauth_invalid_callback": "Invalid OAuth callback.",
 	"server_error_oauth_code_validation": "Failed to validate the authorization code.",

@@ -1,6 +1,6 @@
-// Server gate for the synthetic `/locations/<…>` URLs: 404 unknown/closed
-// venues, and 301 non-canonical (bare-id or wrong-slug) URLs to the canonical
-// descriptive `/locations/<name>-<city>-<uuid>` form. A deliberate exception to
+// Server gate for the synthetic `/locations/<…>` URLs: 404 unknown ids, 410
+// verified-closed venues, and 301 non-canonical (bare-id or wrong-slug) URLs to
+// the canonical descriptive `/locations/<name>-<city>-<uuid>` form. A deliberate exception to
 // the remote-functions-over-`load` convention (CLAUDE.md), in the same class as
 // the sitemap routes (see src/routes/sitemap.xml/+server.ts): an HTTP status —
 // a 404 or a 301 redirect — can only be set server-side, before anything
@@ -10,8 +10,9 @@
 // with the generic map — the `reroute` hook (src/hooks.ts) serves this root page
 // for every `/locations/*` path, and the component just renders with no venue
 // found. That soft-404 hands crawlers an infinite indexable URL space and keeps
-// closed venues' pages in the index forever; a real 404 (rendering
-// +error.svelte) is the honest signal that drops them out. And a bare-id URL
+// closed venues' pages in the index forever; a real 404 for an unknown id (and a
+// 410 Gone for a verified closure), both rendering +error.svelte, are the honest
+// signals that drop them out. And a bare-id URL
 // (`/locations/<uuid>`) or a stale-slug one served 200 would split a venue's
 // link equity across many indexable addresses; the 301 folds them onto the one
 // canonical URL the sitemap and the head's <link rel="canonical"> advertise.
@@ -53,11 +54,15 @@ export const load: PageServerLoad = async ({ url, platform }) => {
 	const db = platform?.env?.DB;
 	if (!db) return {};
 
-	// One three-column read (see getLocationSlugFields). Closed venues count as
-	// absent on purpose: they're hidden from the map (migration 0015), so a 404 is
-	// the honest crawler signal for their pages.
+	// One small read (see getLocationSlugFields). An unknown id is a genuine 404;
+	// a venue we've VERIFIED closed (soft-deleted, migration 0015) is 410 Gone —
+	// both are hidden from the map, but 410 tells a crawler the page is
+	// permanently gone, dropping it from the index faster than a 404 does. A
+	// closed venue is 410'd before any canonical redirect: there's no live page to
+	// fold its URL onto.
 	const venue = await getLocationSlugFields(db, id);
 	if (!venue) error(404, m.server_error_location_not_found());
+	if (venue.closed) error(410, m.server_error_location_gone());
 
 	// Fold every non-canonical spelling of this venue's URL onto the one canonical
 	// slug. `locationPath` is deterministic and yields only URL-safe characters,
