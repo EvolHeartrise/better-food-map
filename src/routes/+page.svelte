@@ -528,17 +528,20 @@
 	// topmost layer.
 	let accountMenuOpen = $state(false);
 
-	// Whether the sources modal (opened from the "N Sources" button in the detail
-	// panel) is showing. Bound below so Escape can close it before the detail. Reset
-	// whenever the open venue changes (tracked via `sourcesModalVenue`) so it never
+	// Whether the detail panel's own modals — the sources list ("N Sources" button)
+	// and the directions/maps-app chooser (tapping the address) — are showing. Bound
+	// below so Escape can close whichever is up before the detail. Both reset
+	// whenever the open venue changes (tracked via `detailModalsVenue`) so neither
 	// lingers over a different place — covers every path that moves the selection,
 	// including browser back/forward.
 	let sourcesModalOpen = $state(false);
-	let sourcesModalVenue: string | null = null;
+	let directionsModalOpen = $state(false);
+	let detailModalsVenue: string | null = null;
 	$effect(() => {
-		if (selectedId !== sourcesModalVenue) {
-			sourcesModalVenue = selectedId;
+		if (selectedId !== detailModalsVenue) {
+			detailModalsVenue = selectedId;
 			sourcesModalOpen = false;
+			directionsModalOpen = false;
 		}
 	});
 
@@ -548,9 +551,10 @@
 	// window handler happened to run first.
 	function onWindowKeydown(event: KeyboardEvent): void {
 		if (event.key !== 'Escape' || !selectedId || event.defaultPrevented) return;
-		// Yield to any layer above the detail: the account popover and the sources
-		// modal each handle Escape themselves, so it closes only the topmost one.
-		if (accountMenuOpen || sourcesModalOpen) return;
+		// Yield to any layer above the detail: the account popover, the sources modal
+		// and the directions chooser each handle Escape themselves, so it closes only
+		// the topmost one.
+		if (accountMenuOpen || sourcesModalOpen || directionsModalOpen) return;
 		event.preventDefault();
 		closeDetail();
 	}
@@ -776,6 +780,7 @@
 			onClose={closeDetail}
 			flyParams={panelFly}
 			bind:sourcesOpen={sourcesModalOpen}
+			bind:directionsOpen={directionsModalOpen}
 			bind:el={placecardEl}
 		/>
 	{/if}
