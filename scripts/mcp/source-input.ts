@@ -11,6 +11,37 @@
 import * as v from 'valibot';
 
 import { safeHttpUrl } from '../../src/lib/safe-url';
+import type { Source } from '../../src/lib/server/db';
+
+/**
+ * The kinds of link a menu's sources should cite, woven into both the tool
+ * description strings and the {@link assertHasSource} error. Sources are
+ * menu-level provenance a human reads to trust the food data.
+ */
+export const SOURCE_KINDS_HINT =
+	'the menu / online-ordering link, an official nutrition page, an official dietary/allergen page';
+
+/** Normalizes optional source labels to null so they match the DB `Source` type. */
+export function normalizeSources(
+	sources: { url: string; label?: string | null }[] | undefined
+): Source[] | undefined {
+	return sources?.map((s) => ({ url: s.url, label: s.label ?? null }));
+}
+
+/**
+ * Enforces the menu-provenance rule: a menu must cite AT LEAST ONE source link
+ * (sources are menu-level, so this is where "the food data must be verifiable"
+ * is enforced). `label` names the record in the error. Throws when `sources` is
+ * missing or empty.
+ */
+export function assertHasSource(sources: { url: string }[] | undefined, label: string): void {
+	if (!sources || sources.length === 0) {
+		throw new Error(
+			`${label}: at least one source link is required — cite where this menu's food data came from ` +
+				`(${SOURCE_KINDS_HINT}). Sources are menu-level; every menu must be verifiable.`
+		);
+	}
+}
 
 // valibot's v.url() accepts anything `new URL()` parses — including
 // `javascript:alert(1)` — and source URLs are rendered as anchor hrefs in the
