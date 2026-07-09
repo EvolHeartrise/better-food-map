@@ -63,10 +63,16 @@ test('a born-closed location is hidden from reads but still blocks re-creation',
 	expect(await getLocationById(db, closedId)).toBeNull();
 	expect(await getLocationById(db, openId)).not.toBeNull();
 
-	// The `/locations/<…>` gate's slug-fields probe agrees with the display
-	// reads: open → the row's fields; closed or never-existed → null (both 404).
-	expect(await getLocationSlugFields(db, openId)).toMatchObject({ id: openId, name: 'Open Spot' });
-	expect(await getLocationSlugFields(db, closedId)).toBeNull();
+	// The `/locations/<…>` gate's slug-fields probe distinguishes the three cases
+	// the gate must answer differently: open → the row's fields (`closed: false`,
+	// serve/redirect); closed → the row with `closed: true` (gate 410s it); a
+	// never-existed id → null (gate 404s it).
+	expect(await getLocationSlugFields(db, openId)).toMatchObject({
+		id: openId,
+		name: 'Open Spot',
+		closed: false
+	});
+	expect(await getLocationSlugFields(db, closedId)).toMatchObject({ id: closedId, closed: true });
 	expect(await getLocationSlugFields(db, 'no-such-id')).toBeNull();
 	const listedIds = (await getLocationsWithTags(db, {})).map((l) => l.id);
 	expect(listedIds).toEqual([openId]);
@@ -102,9 +108,10 @@ test('soft-closing a live venue keeps its likes, then reopening restores it', as
 	);
 	expect(closed).toBe(true);
 
-	// Hidden from every display read (and the gate's probe tracks the close)...
+	// Hidden from every display read; the gate's probe still finds the row but
+	// flags it closed (so the gate 410s it rather than 404ing)...
 	expect(await getLocationById(db, id)).toBeNull();
-	expect(await getLocationSlugFields(db, id)).toBeNull();
+	expect(await getLocationSlugFields(db, id)).toMatchObject({ id, closed: true });
 	expect((await getLocationMapData(db, id)).locations).toHaveLength(0);
 	expect((await getStats(db)).locations).toBe(0);
 	// ...but the like row survived (the whole point vs a hard delete).
@@ -116,7 +123,7 @@ test('soft-closing a live venue keeps its likes, then reopening restores it', as
 	// Reopen: back on the map, likes intact.
 	expect(await setLocationClosed(db, id, null, null)).toBe(true);
 	expect(await getLocationById(db, id)).not.toBeNull();
-	expect(await getLocationSlugFields(db, id)).toMatchObject({ id });
+	expect(await getLocationSlugFields(db, id)).toMatchObject({ id, closed: false });
 	expect((await getStats(db)).locations).toBe(1);
 	expect((await getUserLikes(db, 'u1')).locationIds).toEqual([id]);
 });

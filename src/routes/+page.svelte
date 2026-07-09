@@ -411,6 +411,16 @@
 	// markup-free.
 	const headJsonLd = $derived(headVenue ? venueJsonLdScript(headVenue) : null);
 
+	// Open Graph place metadata for the venue (issue #224): a venue page is a
+	// physical place, so it declares the OG restaurant vertical (`restaurant.restaurant`,
+	// which inherits the `place:location:*` geo properties) instead of the generic
+	// `website` type, carrying the venue's exact OSM coordinates. Emitted verbatim,
+	// the same coordinates the JSON-LD `geo` node and the map marker use. Null (no
+	// open venue) leaves the head on its default `og:type website`.
+	const ogPlace = $derived(
+		headVenue ? { latitude: headVenue.latitude, longitude: headVenue.longitude } : null
+	);
+
 	// The selected venue, trimmed to what <LocationMap> needs and carrying its own
 	// rotating item line. Passed as `selected` so the map keeps its label (and rotation)
 	// even when the venue isn't among `mapLocations` — opened from a `/locations/<id>`
@@ -679,6 +689,15 @@
 <svelte:window onkeydown={onWindowKeydown} />
 
 <svelte:head>
+	<!-- Warm the OSM raster-tile connections early (issue #224): the map is this
+	     route's LCP element, so its tiles come from a/b/c.tile.openstreetmap.org
+	     (see LocationMap.svelte) — a `preconnect` shaves the TLS handshake off the
+	     first tile fetch. `crossorigin` matches MapLibre's anonymous CORS tile
+	     fetch, so the warmed connection is actually reused. Revisit when the
+	     Protomaps/R2 migration moves tiles to a single PMTiles origin. -->
+	<link rel="preconnect" href="https://a.tile.openstreetmap.org" crossorigin="anonymous" />
+	<link rel="preconnect" href="https://b.tile.openstreetmap.org" crossorigin="anonymous" />
+	<link rel="preconnect" href="https://c.tile.openstreetmap.org" crossorigin="anonymous" />
 	{#if headMeta}
 		<!-- Venue head for an open location. On a hard /locations/<id> load this is
 		     already in the server-rendered HTML (see the landing-venue fetch above),
@@ -694,8 +713,18 @@
 		<meta property="og:title" content={headMeta.title} />
 		<meta property="og:description" content={headMeta.description} />
 		<meta property="og:site_name" content="BetterFoodMaps" />
-		<meta property="og:type" content="website" />
 		<meta property="og:url" content={headMeta.url} />
+		<!-- A venue page is a physical place: the OG restaurant vertical (issue #224)
+		     carries the venue's exact OSM coordinates for geo-aware unfurlers, and
+		     inherits the `place:location:*` properties the generic `website` type
+		     lacks. -->
+		{#if ogPlace}
+			<meta property="og:type" content="restaurant.restaurant" />
+			<meta property="place:location:latitude" content={String(ogPlace.latitude)} />
+			<meta property="place:location:longitude" content={String(ogPlace.longitude)} />
+		{:else}
+			<meta property="og:type" content="website" />
+		{/if}
 		<!-- schema.org JSON-LD (issue #218): the machine-readable venue graph
 		     crawlers parse for rich results, built in $lib/venue-jsonld and injected
 		     raw — its content is escaped there so a menu name or description can't
