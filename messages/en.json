@@ -134,6 +134,8 @@
 	"head_located_in": "in {where}",
 	"head_list_pair": "{first} and {last}",
 	"head_desc_on_brand": "{content} on BetterFoodMaps.",
+	"head_coverage_diet": "{count} {diet}",
+	"head_coverage_clause": "{list} {noun}",
 	"head_menu_item_noun": [
 		{
 			"declarations": ["input count", "local countPlural = count: plural"],
