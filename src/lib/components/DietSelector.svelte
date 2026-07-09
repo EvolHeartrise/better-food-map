@@ -146,6 +146,7 @@
 		class="diet__trigger"
 		class:diet__trigger--active={value !== null}
 		style:color={toneColor(value)}
+		aria-label={`${m.diet_filter_aria()}: ${selectedLabel ?? m.diet_any()}`}
 		aria-haspopup="menu"
 		aria-expanded={open}
 		bind:this={triggerEl}
