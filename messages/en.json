@@ -89,10 +89,10 @@
 	"sources_title": "Sources",
 	"sources_close_aria": "Close sources",
 
-	"directions_button_tooltip": "Get directions",
-	"directions_button_aria": "Get directions to {address}",
+	"directions_button_tooltip": "Open in other Maps app",
+	"directions_button_aria": "Open {address} in another Maps app",
 	"directions_dialog_aria": "Choose a maps app",
-	"directions_title": "Get directions",
+	"directions_title": "Open in other Maps app",
 	"directions_close_aria": "Close directions",
 	"directions_apple_maps": "Apple Maps",
 	"directions_google_maps": "Google Maps",
