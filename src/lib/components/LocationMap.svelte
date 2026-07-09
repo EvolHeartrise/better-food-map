@@ -1,5 +1,6 @@
 <script lang="ts">
 	import 'maplibre-gl/dist/maplibre-gl.css';
+	import { layers as basemapLayers, namedFlavor } from '@protomaps/basemaps';
 	import { onMount, type Component } from 'svelte';
 	import { prefersReducedMotion } from 'svelte/motion';
 	import type { LngLat, Map as MapLibreMap, StyleSpecification } from 'maplibre-gl';
@@ -117,8 +118,10 @@
 	const FOCUS_MIN_ZOOM = 12;
 	// Fly animation duration when centering on a selected location, in milliseconds.
 	const FLY_DURATION_MS = 600;
-	// OpenStreetMap's raster tiles stop at z19; cap the camera there so the user
-	// can't zoom past real tile data into blurry overzoomed scaling.
+	// Camera zoom ceiling. Purely an interaction cap: the vector tile data stops at
+	// z15, but unlike raster it overzooms crisply (the geometry just re-renders at the
+	// larger scale), so past ~19 there's no further detail to reveal — the camera would
+	// only magnify empty streets.
 	const MAX_ZOOM = 19;
 	// Grow the reported box beyond the strictly-visible bounds by this fraction of
 	// each span, so labels just off screen are already loaded when the user nudges
@@ -344,37 +347,49 @@
 		return t?.isLocationOccluded?.(new lib.LngLat(lng, lat)) ?? false;
 	}
 
-	// The map style: OpenStreetMap raster tiles on a 3D globe projection. MapLibre
-	// renders this flat (Web Mercator) when zoomed in and smoothly curves it into a
-	// globe as the user zooms out, with no work on our part. There is no `sky`, so the
-	// globe has no atmospheric halo and the canvas is transparent in the gap around it
-	// when zoomed out — the deep-space colour behind the globe is the `.map-wrap` CSS
-	// background showing through (a GL `background` layer does NOT fill that gap in
-	// globe projection). Zoomed in, the tiles fill the viewport and hide it. No
-	// `glyphs`: the name labels are HTML pills drawn in the overlay below, not GL text,
-	// so the raster style needs no fonts.
+	// The map style: self-hosted Protomaps vector tiles (light flavor) on a 3D globe
+	// projection. MapLibre renders this flat (Web Mercator) when zoomed in and
+	// smoothly curves it into a globe as the user zooms out, with no work on our
+	// part. The basemap layers come from @protomaps/basemaps so they stay in step
+	// with the Protomaps tile schema; the flavor supplies its own background layer,
+	// and the style-level `sky` atmosphere composes with it — the halo fades out by
+	// the time the map has flattened (≈ zoom 7), so it never intrudes on the
+	// street-level view. Unlike the old raster style, `glyphs` and `sprite` are now
+	// REQUIRED: the basemap's own labels (streets, cities) are GL text drawn from
+	// these fonts, and road shields/POI icons come from the sprite sheet. Our venue
+	// labels are still HTML pills drawn in the overlay below, not GL text.
 	function mapStyle(): StyleSpecification {
+		// Fonts + sprites are vendored from protomaps/basemaps-assets under
+		// static/basemaps-assets (~11 MB), so the whole basemap — tiles, glyphs,
+		// sprites — serves from infrastructure we control, with no third-party CDN.
+		// Absolute URLs because an inline style object has no base URL for MapLibre
+		// to resolve relative ones against; this code only runs client-side (the map
+		// is built inside onMount), so `location` is always available.
+		const assets = `${location.origin}/basemaps-assets`;
 		return {
 			version: 8,
 			projection: { type: 'globe' },
+			glyphs: `${assets}/fonts/{fontstack}/{range}.pbf`,
+			sprite: `${assets}/sprites/v4/light`,
 			sources: {
-				osm: {
-					type: 'raster',
-					tiles: [
-						'https://a.tile.openstreetmap.org/{z}/{x}/{y}.png',
-						'https://b.tile.openstreetmap.org/{z}/{x}/{y}.png',
-						'https://c.tile.openstreetmap.org/{z}/{x}/{y}.png'
-					],
-					tileSize: 256,
-					minzoom: 0,
-					maxzoom: MAX_ZOOM,
-					// OSM's tile policy / ODbL require this attribution; MapLibre surfaces
-					// it in the attribution control automatically.
-					attribution:
-						'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+				protomaps: {
+					type: 'vector',
+					// TileJSON from our PMTiles worker (workers/tiles); it reports the
+					// tile URL template and the data zoom range (0–15) for the planet
+					// archive, and MapLibre overzooms beyond that on its own.
+					url: 'https://tiles.betterfoodmaps.com/planet.json',
+					// The tiles are an ODbL Produced Work over OpenStreetMap data, so this
+					// credit is a license requirement; MapLibre surfaces it in the
+					// attribution control automatically (this inline value takes precedence
+					// over the TileJSON's). A Protomaps credit is not required for
+					// self-hosted builds and is deliberately omitted.
+					attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
 				}
 			},
-			layers: [{ id: 'osm', type: 'raster', source: 'osm' }]
+			layers: basemapLayers('protomaps', namedFlavor('light'), { lang: 'en' }),
+			sky: {
+				'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 0, 1, 5, 1, 7, 0]
+			}
 		};
 	}
 

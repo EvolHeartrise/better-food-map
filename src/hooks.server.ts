@@ -231,10 +231,11 @@ const localize: Handle = async ({ event, resolve }) => {
 //   CSP would be a separate, riskier change.
 // • MapLibre GL spawns its worker from a blob: URL (worker-src blob:) and may
 //   materialize tile/sprite images as blob:/data: URLs (img-src blob: data:).
-// • Raster tiles are FETCHED by MapLibre (XHR/fetch, not <img>) from the
-//   openstreetmap.org tile hosts (see mapStyle in LocationMap.svelte), so those
-//   hosts live in connect-src; they're also in img-src as a safety net should
-//   MapLibre ever load one via an Image element instead.
+// • Vector tiles + TileJSON are FETCHED by MapLibre (XHR/fetch, not <img>) from
+//   our self-hosted PMTiles worker at tiles.betterfoodmaps.com (see mapStyle in
+//   LocationMap.svelte), so that origin lives in connect-src. Glyphs and sprites
+//   are same-origin under /basemaps-assets ('self'); MapLibre materializes tile
+//   and sprite images as blob:/data: URLs, already covered by img-src.
 // • Signed-in users' Google avatars (`user.picture`, AccountMenu.svelte) are
 //   served from *.googleusercontent.com.
 // • Cloudflare Web Analytics is enabled on the zone, which auto-injects its RUM
@@ -246,8 +247,8 @@ const CSP = [
 	"default-src 'self'",
 	"script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com",
 	"style-src 'self' 'unsafe-inline'",
-	"img-src 'self' blob: data: https://*.tile.openstreetmap.org https://*.googleusercontent.com",
-	"connect-src 'self' https://*.tile.openstreetmap.org https://cloudflareinsights.com",
+	"img-src 'self' blob: data: https://*.googleusercontent.com",
+	"connect-src 'self' https://tiles.betterfoodmaps.com https://cloudflareinsights.com",
 	"worker-src 'self' blob:",
 	"object-src 'none'",
 	"base-uri 'self'",
