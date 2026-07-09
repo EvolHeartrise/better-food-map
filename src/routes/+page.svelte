@@ -3,6 +3,8 @@
 	import { pushState, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import { SvelteSet, SvelteMap, MediaQuery } from 'svelte/reactivity';
+	import { innerHeight } from 'svelte/reactivity/window';
+	import { snapHeightPx, type SheetSnap } from '$lib/bottom-sheet';
 	import { getMapCells, getLocationData, getStats, getUserLocation } from '$lib/data.remote';
 	import { ViewportData } from '$lib/viewport-data.svelte';
 	import { getCurrentUser, getLikes, setLocationLiked, setItemLiked } from '$lib/user.remote';
@@ -446,15 +448,35 @@
 	// fixed-width column on the RIGHT on wide screens, a bottom sheet on narrow ones
 	// (the 48rem breakpoint the rest of the page uses). The same footprint is passed
 	// to <LocationMap> as a camera inset so the venue centres in the map area the
-	// panel leaves visible. These px values mirror the CSS (26rem / 320px); the map
-	// clamps them against its own size, so the CSS caps (100vw, 55dvh) need no echo.
+	// panel leaves visible. The width px mirrors the CSS (26rem); the map clamps it
+	// against its own size, so the CSS cap (100vw) needs no echo.
 	const PANEL_WIDTH_PX = 416;
-	const SHEET_HEIGHT_PX = 320;
 	const narrowScreen = new MediaQuery('(max-width: 48rem)');
+
+	// The narrow-screen bottom sheet is draggable/expandable (issue #249): the page
+	// OWNS the resting snap so it can mirror the height as both the map camera inset
+	// (below) and the `--sheet-height` custom property that lifts the map controls
+	// clear of the sheet (see the CSS). VenueDetail renders the grip and reports
+	// drag/tap/key changes via onSnapChange. `sheetSnap` DERIVES (rather than an
+	// effect resetting it) so a freshly selected venue reads 'peek' the same tick
+	// the selection changes — the map's selection fly then frames against the peek
+	// inset with no reset race. The `pickedForId` guard mirrors the course filter's
+	// per-venue memory inside VenueDetail.
+	let pickedSnap = $state<SheetSnap>('peek');
+	let pickedSnapForId = $state<string | null>(null);
+	const sheetSnap = $derived(pickedSnapForId === selectedId ? pickedSnap : 'peek');
+	function setSheetSnap(next: SheetSnap): void {
+		pickedSnapForId = selectedId;
+		pickedSnap = next;
+	}
+	// The resting height in px for the current snap and viewport. `?? 800` matches
+	// VenueDetail's fallback so the two agree before the first client measure.
+	const sheetHeightPx = $derived(snapHeightPx(sheetSnap, innerHeight.current ?? 800));
+
 	const detailInset = $derived(
 		selectedId
 			? narrowScreen.current
-				? { right: 0, bottom: SHEET_HEIGHT_PX }
+				? { right: 0, bottom: sheetHeightPx }
 				: { right: PANEL_WIDTH_PX, bottom: 0 }
 			: null
 	);
@@ -746,7 +768,7 @@
 	{/if}
 </svelte:head>
 
-<div class="app" class:app--detail={Boolean(selectedId)}>
+<div class="app" class:app--detail={Boolean(selectedId)} style:--sheet-height="{sheetHeightPx}px">
 	<div class="app__map">
 		<LocationMap
 			locations={mapLocations}
@@ -779,6 +801,9 @@
 			onToggleItemLike={toggleItemLike}
 			onClose={closeDetail}
 			flyParams={panelFly}
+			narrow={narrowScreen.current}
+			snap={sheetSnap}
+			onSnapChange={setSheetSnap}
 			bind:sourcesOpen={sourcesModalOpen}
 			bind:directionsOpen={directionsModalOpen}
 			bind:el={placecardEl}
@@ -1171,10 +1196,13 @@
 
 		/* The sheet covers the map's bottom edge, so both bottom controls — zoom
 		   (left) and the OSM attribution (right, which must stay visible) — ride up
-		   above it; the right one no longer needs the wide-screen sideways shift. */
+		   above it; the right one no longer needs the wide-screen sideways shift.
+		   `--sheet-height` is the live resting sheet height (set on .app), so the
+		   controls track the sheet as it snaps between peek/half/full (issue #249);
+		   the transition eases that move and the fallback matches the old fixed sheet. */
 		.app--detail .app__map :global(.maplibregl-ctrl-bottom-left),
 		.app--detail .app__map :global(.maplibregl-ctrl-bottom-right) {
-			margin-bottom: min(calc(320px + env(safe-area-inset-bottom)), 55dvh);
+			margin-bottom: var(--sheet-height, min(calc(320px + env(safe-area-inset-bottom)), 55dvh));
 			transition: margin 0.3s ease;
 		}
 
