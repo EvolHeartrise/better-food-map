@@ -715,15 +715,13 @@
 <svelte:window onkeydown={onWindowKeydown} />
 
 <svelte:head>
-	<!-- Warm the OSM raster-tile connections early (issue #224): the map is this
-	     route's LCP element, so its tiles come from a/b/c.tile.openstreetmap.org
-	     (see LocationMap.svelte) — a `preconnect` shaves the TLS handshake off the
-	     first tile fetch. `crossorigin` matches MapLibre's anonymous CORS tile
-	     fetch, so the warmed connection is actually reused. Revisit when the
-	     Protomaps/R2 migration moves tiles to a single PMTiles origin. -->
-	<link rel="preconnect" href="https://a.tile.openstreetmap.org" crossorigin="anonymous" />
-	<link rel="preconnect" href="https://b.tile.openstreetmap.org" crossorigin="anonymous" />
-	<link rel="preconnect" href="https://c.tile.openstreetmap.org" crossorigin="anonymous" />
+	<!-- Warm the tile connection early (issue #224): the map is this route's LCP
+	     element, and its vector tiles + TileJSON now come from our single self-hosted
+	     PMTiles origin, tiles.betterfoodmaps.com (see mapStyle in LocationMap.svelte)
+	     — a `preconnect` shaves the TLS handshake off the first tile fetch.
+	     `crossorigin` matches MapLibre's anonymous CORS tile fetch, so the warmed
+	     connection is actually reused. -->
+	<link rel="preconnect" href="https://tiles.betterfoodmaps.com" crossorigin="anonymous" />
 	{#if headMeta}
 		<!-- Venue head for an open location. On a hard /locations/<id> load this is
 		     already in the server-rendered HTML (see the landing-venue fetch above),
