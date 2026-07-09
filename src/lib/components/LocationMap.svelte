@@ -404,10 +404,11 @@
 			},
 			// Basemap labels (cities, streets, countries) follow the UI locale: the tiles
 			// carry multilingual name tags, and the flavor's label expressions prefer
-			// `name:<lang>` with a fallback to the local name. Every Paraglide locale must
-			// be a Protomaps-supported label language (see language_script_pairs in
-			// @protomaps/basemaps) — both 'en' and 'fr' are. Read once per map build:
-			// switching locale reloads the page (see AccountMenu), which rebuilds the map.
+			// `name:<lang>`, coalescing through English and then the local name. A lang
+			// outside language_script_pairs (@protomaps/basemaps) would degrade to that
+			// same fallback chain rather than break; both current Paraglide locales
+			// ('en', 'fr') are supported directly. Read once per map build: switching
+			// locale reloads the page (see AccountMenu), which rebuilds the map.
 			layers: basemapLayers('protomaps', namedFlavor('light'), { lang: getLocale() }),
 			sky: {
 				'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 0, 1, 5, 1, 7, 0]
