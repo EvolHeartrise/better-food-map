@@ -3,7 +3,7 @@
  *
  * Client-safe: its only dependency beyond sibling pure modules is Paraglide's
  * message runtime, which resolves the caller's locale per request server-side
- * and falls back to the base locale ('en') OUTSIDE a request — so the sitemap /
+ * and falls back to the base locale ('en-US') OUTSIDE a request — so the sitemap /
  * prerender path and scripts/venue-head.test.ts both see the English SEO copy
  * (the English message values are kept byte-identical to the old literals, so
  * the pinned test output is unchanged). Consumed by the `headMeta`

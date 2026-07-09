@@ -18,7 +18,7 @@ declare global {
 			getSession(): Promise<ResolvedSession | null>;
 			/**
 			 * The locale resolved for this request by the `localize` hook in
-			 * hooks.server.ts (cookie → saved-user → Accept-Language → 'en'). It is
+			 * hooks.server.ts (cookie → saved-user → Accept-Language → 'en-US'). It is
 			 * also what Paraglide's server `getLocale()` returns for the request and
 			 * what fills `<html lang>`. Present on every request.
 			 */

@@ -2,9 +2,14 @@
 <!-- The OG prefixes the venue head uses: og: for the base tags, plus the place:
      and restaurant: verticals for a venue's og:type restaurant.restaurant and its
      place:location:* coordinates (issue #224). -->
-<!-- %lang% and %textdir% are stamped by the localize hook (hooks.server.ts):
-     dir="rtl" for the right-to-left locales (ur, fa) so their text runs
-     correctly, ltr otherwise. -->
+<!-- The lang/dir placeholders below are stamped by the localize hook
+     (hooks.server.ts): dir becomes "rtl" for the right-to-left locales so their
+     text runs correctly, "ltr" otherwise. NEVER write the placeholder tokens
+     themselves in a comment: the hook replaces the first occurrence in the
+     chunk, so a token in a comment swallows the replacement and ships the
+     literal placeholder in the real attribute (the client locale strategy then
+     fails to read the document language and every message snaps back to the
+     base locale). scripts/app-html-placeholders.test.ts pins this. -->
 <html
 	lang="%lang%"
 	dir="%textdir%"
