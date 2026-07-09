@@ -1,6 +1,7 @@
 <script lang="ts">
 	import 'maplibre-gl/dist/maplibre-gl.css';
 	import { onMount, type Component } from 'svelte';
+	import { prefersReducedMotion } from 'svelte/motion';
 	import type { LngLat, Map as MapLibreMap, StyleSpecification } from 'maplibre-gl';
 	import {
 		LabelEngine,
@@ -594,9 +595,30 @@
 	onMount(() => {
 		let active = true;
 
+		// Whether a pointer is currently pressed on the map — a pan about to start, or a
+		// tap being aimed. Only consulted under reduced motion (see the rotate timer),
+		// where the rotating line holds still while the user is mid-interaction rather
+		// than churning text on top of it.
+		let pointerHeld = false;
+		const onPointerDown = () => (pointerHeld = true);
+		const onPointerUp = () => (pointerHeld = false);
+		mapEl.addEventListener('pointerdown', onPointerDown);
+		// Release is tracked on the window: MapLibre captures the pointer during a drag,
+		// so the pointerup/cancel can land outside the map element.
+		window.addEventListener('pointerup', onPointerUp);
+		window.addEventListener('pointercancel', onPointerUp);
+
 		// Advance every pill's rotating food-item line on one shared timer. This only
 		// rewrites text inside a fixed-size box, so it never wakes the layout loop.
-		const rotateTimer = setInterval(() => (rotateTick += 1), ROTATE_INTERVAL_MS);
+		// Under prefers-reduced-motion we additionally hold the line steady while the
+		// user is interacting — the camera is moving (pan/zoom/fly) or a pointer is
+		// pressed — so the auto-updating text only cycles once the map is settled and
+		// released (the swap's fade is dropped separately, in CSS). With reduced motion
+		// off the line advances unconditionally, exactly as before.
+		const rotateTimer = setInterval(() => {
+			if (prefersReducedMotion.current && (map?.isMoving() || pointerHeld)) return;
+			rotateTick += 1;
+		}, ROTATE_INTERVAL_MS);
 
 		(async () => {
 			lib = await import('maplibre-gl');
@@ -699,6 +721,9 @@
 			running = false;
 			if (rafId) cancelAnimationFrame(rafId);
 			if (viewTimer) clearTimeout(viewTimer);
+			mapEl.removeEventListener('pointerdown', onPointerDown);
+			window.removeEventListener('pointerup', onPointerUp);
+			window.removeEventListener('pointercancel', onPointerUp);
 			clearInterval(rotateTimer);
 			engine.clear();
 			onmap?.(null);
@@ -928,6 +953,15 @@
 		}
 		to {
 			opacity: 1;
+		}
+	}
+
+	/* Reduced motion: swap each item in instantly instead of fading. The rotation
+	   itself is also paused during map interaction for these users (see the rotate
+	   timer in the script). */
+	@media (prefers-reduced-motion: reduce) {
+		.pill__item {
+			animation: none;
 		}
 	}
 
