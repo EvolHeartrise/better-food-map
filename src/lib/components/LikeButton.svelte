@@ -42,7 +42,9 @@
 		border: none;
 		border-radius: 999px;
 		background: transparent;
-		color: rgba(0, 0, 0, 0.4);
+		/* Idle stroke: 40% black sits at ≈3:1 on the panel and dips below the WCAG 1.4.11
+		   floor where the glass surface darkens; 55% keeps the quiet look and clears the bar. */
+		color: rgba(0, 0, 0, 0.55);
 		cursor: pointer;
 		line-height: 0;
 		transition:
