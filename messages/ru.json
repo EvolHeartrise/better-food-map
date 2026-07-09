@@ -1,0 +1,157 @@
+{
+	"$schema": "https://inlang.com/schema/inlang-message-format",
+
+	"search_bar_aria": "Поиск и фильтры",
+	"search_placeholder": "Ищите заведения и блюда…",
+	"search_input_aria": "Поиск по названию заведения или блюда",
+	"results_nav_aria": "Подходящие заведения",
+	"results_cap": "Показаны первые {max} из {total} заведений. Уточните запрос, чтобы сузить список.",
+	"places_found": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "Найдено {count} заведение",
+				"countPlural=few": "Найдено {count} заведения",
+				"countPlural=many": "Найдено {count} заведений",
+				"countPlural=other": "Найдено {count} заведения"
+			}
+		}
+	],
+	"search_failed": "Поиск не удался — показаны предыдущие результаты.",
+	"browse_failed": "Не удалось загрузить заведения в этой области — показаны предыдущие результаты.",
+	"map_aria": "Карта заведений с едой",
+	"map_zoom_in_aria": "Приблизить",
+	"map_zoom_out_aria": "Отдалить",
+
+	"venue_details_aria": "Информация о заведении",
+	"venue_close_aria": "Закрыть информацию о заведении",
+	"sheet_resize_aria": "Изменить размер панели — перетащите, коснитесь или используйте клавиши со стрелками",
+	"venue_like": "Поставить лайк заведению",
+	"venue_unlike": "Убрать лайк с заведения",
+	"venue_address_label": "Адрес",
+	"venue_phone_label": "Телефон",
+	"venue_phone_extension": "доб. {ext}",
+	"venue_website_label": "Сайт",
+	"venue_menu_label": "Меню",
+	"venue_no_menu": "Меню пока нет.",
+	"menu_items_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} позиция",
+				"countPlural=few": "{count} позиции",
+				"countPlural=many": "{count} позиций",
+				"countPlural=other": "{count} позиции"
+			}
+		}
+	],
+	"menu_last_scanned": "Меню последний раз проверялось {date}",
+	"sources_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} источник",
+				"countPlural=few": "{count} источника",
+				"countPlural=many": "{count} источников",
+				"countPlural=other": "{count} источника"
+			}
+		}
+	],
+	"course_filter_aria": "Фильтровать меню по типу блюд",
+	"course_all": "Все",
+	"item_like": "Поставить лайк позиции",
+	"item_unlike": "Убрать лайк с позиции",
+
+	"scanned_date": "Проверено {date}",
+	"scanned": "Проверено {relative}",
+
+	"tag_vegan": "Веганское",
+	"tag_vegetarian": "Вегетарианское",
+	"tag_halal": "Халяль",
+	"tag_gluten_free": "Без глютена",
+	"tag_dairy_free": "Без молочных продуктов",
+	"tag_nut_free": "Без орехов",
+	"tag_food": "Еда",
+	"tag_dessert": "Десерты",
+	"tag_drink": "Напитки",
+
+	"category_cafe": "Кафе",
+	"category_fast_food": "Фастфуд",
+	"category_restaurant": "Ресторан",
+	"category_bakery": "Пекарня",
+
+	"diet_any": "Любая диета",
+	"diet_filter_aria": "Фильтр по диете",
+	"diet_can_be_made": "{diet} — по запросу",
+
+	"account_default_name": "Аккаунт",
+	"account_signed_in": "Вы вошли",
+	"account_sign_out": "Выйти",
+	"account_sign_in": "Войти",
+	"language_label": "Язык",
+
+	"sources_dialog_aria": "Источники данных",
+	"sources_title": "Источники",
+	"sources_close_aria": "Закрыть источники",
+
+	"directions_button_tooltip": "Открыть в другом приложении карт",
+	"directions_button_aria": "Открыть {address} в другом приложении карт",
+	"directions_dialog_aria": "Выбрать приложение карт",
+	"directions_title": "Открыть в другом приложении карт",
+	"directions_close_aria": "Закрыть маршруты",
+	"directions_apple_maps": "Apple Maps",
+	"directions_google_maps": "Google Maps",
+
+	"landing_intro_aria": "О BetterFoodMaps",
+	"landing_title": "Находите еду, подходящую вашей диете, в любой точке карты.",
+	"landing_stats_aria": "Покрытие карты",
+	"landing_actions_aria": "Начало работы",
+	"stat_venues": "заведений",
+	"stat_menu_items": "позиций меню",
+	"stat_cities": "городов",
+	"stat_vegan": "веганских блюд",
+	"stat_vegetarian": "вегетарианских блюд",
+	"stat_halal": "блюд халяль",
+	"stat_gluten_free": "блюд без глютена",
+	"stat_dairy_free": "блюд без молочных продуктов",
+	"stat_nut_free": "блюд без орехов",
+	"landing_cta": "Начать пользоваться картой",
+	"landing_browse_link": "Или смотрите еду по городам →",
+
+	"error_not_found": "Такой страницы нет",
+	"error_generic": "Что-то пошло не так",
+	"error_back": "Вернуться к карте",
+	"error_page_title": "{status} · BetterFoodMaps",
+
+	"server_error_no_location_or_item": "Такого заведения или позиции нет.",
+	"server_error_sign_in_required": "Для этого нужно войти.",
+	"server_error_location_not_found": "Заведение не найдено",
+	"server_error_location_gone": "Это заведение закрылось навсегда.",
+	"server_error_database_unavailable": "База данных недоступна.",
+	"server_error_oauth_invalid_callback": "Недопустимый обратный вызов OAuth.",
+	"server_error_oauth_code_validation": "Не удалось проверить код авторизации.",
+	"server_error_oauth_missing_subject": "В ответе Google отсутствует утверждение subject.",
+
+	"head_site_description": "Исследуйте кафе, фастфуд и рестораны по всему миру на интерактивной карте.",
+	"head_desc_no_menu": "Смотрите меню на BetterFoodMaps.",
+	"head_located_in": "в {where}",
+	"head_list_pair": "{first} и {last}",
+	"head_desc_on_brand": "{content} на BetterFoodMaps.",
+	"head_coverage_diet": "{diet} ({count})",
+	"head_coverage_clause": "В меню: {list}",
+	"head_menu_item_noun": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "позиция меню",
+				"countPlural=few": "позиции меню",
+				"countPlural=many": "позиций меню",
+				"countPlural=other": "позиции меню"
+			}
+		}
+	]
+}

@@ -1,0 +1,149 @@
+{
+	"$schema": "https://inlang.com/schema/inlang-message-format",
+
+	"search_bar_aria": "தேடலும் வடிப்பான்களும்",
+	"search_placeholder": "இடங்களையும் உணவுகளையும் தேடுங்கள்…",
+	"search_input_aria": "இடம் அல்லது உணவின் பெயரால் தேடுங்கள்",
+	"results_nav_aria": "பொருந்தும் இடங்கள்",
+	"results_cap": "{total} இடங்களில் முதல் {max} காட்டப்படுகின்றன. பட்டியலைச் சுருக்க தேடலை மேலும் துல்லியமாக்குங்கள்.",
+	"places_found": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} இடம் கிடைத்தது",
+				"countPlural=other": "{count} இடங்கள் கிடைத்தன"
+			}
+		}
+	],
+	"search_failed": "தேடல் தோல்வியடைந்தது — முந்தைய முடிவுகள் காட்டப்படுகின்றன.",
+	"browse_failed": "இந்தப் பகுதிக்கான இடங்களை ஏற்ற முடியவில்லை — முந்தைய முடிவுகள் காட்டப்படுகின்றன.",
+	"map_aria": "உணவு இடங்களின் வரைபடம்",
+	"map_zoom_in_aria": "பெரிதாக்கு",
+	"map_zoom_out_aria": "சிறிதாக்கு",
+
+	"venue_details_aria": "இட விவரங்கள்",
+	"venue_close_aria": "இட விவரங்களை மூடு",
+	"sheet_resize_aria": "விவரங்களின் அளவை மாற்று — இழுக்கவும், தட்டவும் அல்லது அம்புக்குறி விசைகளைப் பயன்படுத்தவும்",
+	"venue_like": "இந்த இடத்தை விரும்பு",
+	"venue_unlike": "இந்த இடத்தின் விருப்பத்தை நீக்கு",
+	"venue_address_label": "முகவரி",
+	"venue_phone_label": "தொலைபேசி",
+	"venue_phone_extension": "இணைப்பு {ext}",
+	"venue_website_label": "இணையதளம்",
+	"venue_menu_label": "மெனு",
+	"venue_no_menu": "இன்னும் மெனு பதிவு செய்யப்படவில்லை.",
+	"menu_items_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} உருப்படி",
+				"countPlural=other": "{count} உருப்படிகள்"
+			}
+		}
+	],
+	"menu_last_scanned": "மெனு கடைசியாக {date} அன்று சரிபார்க்கப்பட்டது",
+	"sources_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} ஆதாரம்",
+				"countPlural=other": "{count} ஆதாரங்கள்"
+			}
+		}
+	],
+	"course_filter_aria": "மெனுவை வகைப்படி வடிகட்டு",
+	"course_all": "அனைத்தும்",
+	"item_like": "இந்த உருப்படியை விரும்பு",
+	"item_unlike": "இந்த உருப்படியின் விருப்பத்தை நீக்கு",
+
+	"scanned_date": "{date} அன்று சரிபார்க்கப்பட்டது",
+	"scanned": "{relative} சரிபார்க்கப்பட்டது",
+
+	"tag_vegan": "வீகன்",
+	"tag_vegetarian": "சைவம்",
+	"tag_halal": "ஹலால்",
+	"tag_gluten_free": "குளூட்டன் இல்லாத",
+	"tag_dairy_free": "பால் பொருள்கள் இல்லாத",
+	"tag_nut_free": "கொட்டைகள் இல்லாத",
+	"tag_food": "உணவு",
+	"tag_dessert": "இனிப்பு",
+	"tag_drink": "பானங்கள்",
+
+	"category_cafe": "கஃபே",
+	"category_fast_food": "துரித உணவு",
+	"category_restaurant": "உணவகம்",
+	"category_bakery": "பேக்கரி",
+
+	"diet_any": "எந்த உணவுமுறையும்",
+	"diet_filter_aria": "உணவுமுறை வடிப்பான்",
+	"diet_can_be_made": "கோரிக்கையின் பேரில் {diet} ஆகக் கிடைக்கும்",
+
+	"account_default_name": "கணக்கு",
+	"account_signed_in": "உள்நுழைந்துள்ளீர்கள்",
+	"account_sign_out": "வெளியேறு",
+	"account_sign_in": "உள்நுழை",
+	"language_label": "மொழி",
+
+	"sources_dialog_aria": "தரவு ஆதாரங்கள்",
+	"sources_title": "ஆதாரங்கள்",
+	"sources_close_aria": "ஆதாரங்களை மூடு",
+
+	"directions_button_tooltip": "வேறு வரைபட ஆப்பில் திற",
+	"directions_button_aria": "{address} ஐ வேறு வரைபட ஆப்பில் திற",
+	"directions_dialog_aria": "வரைபட ஆப்பைத் தேர்ந்தெடு",
+	"directions_title": "வேறு வரைபட ஆப்பில் திற",
+	"directions_close_aria": "வழிகளை மூடு",
+	"directions_apple_maps": "Apple Maps",
+	"directions_google_maps": "Google Maps",
+
+	"landing_intro_aria": "BetterFoodMaps பற்றி",
+	"landing_title": "வரைபடத்தில் எங்கும் உங்கள் உணவுமுறைக்கு ஏற்ற உணவைக் கண்டறியுங்கள்.",
+	"landing_stats_aria": "வரைபட உள்ளடக்கம்",
+	"landing_actions_aria": "தொடங்குங்கள்",
+	"stat_venues": "இடங்கள்",
+	"stat_menu_items": "மெனு உருப்படிகள்",
+	"stat_cities": "நகரங்கள்",
+	"stat_vegan": "வீகன் உணவுகள்",
+	"stat_vegetarian": "சைவ உணவுகள்",
+	"stat_halal": "ஹலால் உணவுகள்",
+	"stat_gluten_free": "குளூட்டன் இல்லாத உணவுகள்",
+	"stat_dairy_free": "பால் பொருள்கள் இல்லாத உணவுகள்",
+	"stat_nut_free": "கொட்டைகள் இல்லாத உணவுகள்",
+	"landing_cta": "வரைபடத்தைப் பயன்படுத்தத் தொடங்கு",
+	"landing_browse_link": "அல்லது நகரம் வாரியாக உணவுகளைப் பாருங்கள் →",
+
+	"error_not_found": "இந்தப் பக்கம் இல்லை",
+	"error_generic": "ஏதோ தவறு நடந்துவிட்டது",
+	"error_back": "வரைபடத்திற்குத் திரும்பு",
+	"error_page_title": "{status} · BetterFoodMaps",
+
+	"server_error_no_location_or_item": "அப்படி ஒரு இடமோ உருப்படியோ இல்லை.",
+	"server_error_sign_in_required": "இதைச் செய்ய உள்நுழைந்திருக்க வேண்டும்.",
+	"server_error_location_not_found": "இடம் கிடைக்கவில்லை",
+	"server_error_location_gone": "இந்த இடம் நிரந்தரமாக மூடப்பட்டுவிட்டது.",
+	"server_error_database_unavailable": "தரவுத்தளம் கிடைக்கவில்லை.",
+	"server_error_oauth_invalid_callback": "தவறான OAuth கால்பேக்.",
+	"server_error_oauth_code_validation": "அங்கீகாரக் குறியீட்டைச் சரிபார்க்க முடியவில்லை.",
+	"server_error_oauth_missing_subject": "Google இன் பதிலில் subject உரிமைக்கோரல் இல்லை.",
+
+	"head_site_description": "உலகம் முழுவதும் உள்ள கஃபேகள், துரித உணவகங்கள், உணவகங்களை ஊடாடும் வரைபடத்தில் கண்டறியுங்கள்.",
+	"head_desc_no_menu": "BetterFoodMaps இல் மெனுவைப் பாருங்கள்.",
+	"head_located_in": "{where} இல்",
+	"head_list_pair": "{first} மற்றும் {last}",
+	"head_desc_on_brand": "{content} — BetterFoodMaps இல்.",
+	"head_coverage_diet": "{diet} ({count})",
+	"head_coverage_clause": "மெனுவில்: {list}",
+	"head_menu_item_noun": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "மெனு உருப்படி",
+				"countPlural=other": "மெனு உருப்படிகள்"
+			}
+		}
+	]
+}

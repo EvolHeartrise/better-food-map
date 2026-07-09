@@ -2,8 +2,12 @@
 <!-- The OG prefixes the venue head uses: og: for the base tags, plus the place:
      and restaurant: verticals for a venue's og:type restaurant.restaurant and its
      place:location:* coordinates (issue #224). -->
+<!-- %lang% and %textdir% are stamped by the localize hook (hooks.server.ts):
+     dir="rtl" for the right-to-left locales (ur, fa) so their text runs
+     correctly, ltr otherwise. -->
 <html
 	lang="%lang%"
+	dir="%textdir%"
 	prefix="og: https://ogp.me/ns# place: https://ogp.me/ns/place# restaurant: https://ogp.me/ns/restaurant#"
 >
 	<head>

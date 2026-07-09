@@ -207,17 +207,23 @@ function isPublicEnglishSurface(routeId: string | null): boolean {
 	);
 }
 
+// The right-to-left locales: their pages get `<html dir="rtl">` so text runs the
+// right way. Document-level only — the map UI is not RTL-audited; mirroring the
+// chrome is acceptable and MapLibre's canvas is direction-agnostic.
+const RTL_LOCALES: ReadonlySet<string> = new Set(['ur', 'fa', 'ar']);
+
 // Runs after `authenticate` (so `event.locals.getSession` exists for step 2 of
 // resolveLocale) and wraps the app resolve, so `getLocale()` is live for the whole
-// render. Fills `<html lang="%lang%">` via transformPageChunk. `sequence` merges
-// this transformPageChunk with any others. No cookie is written here — the locale
-// cookie is written only by the setLocale command on an active pick.
+// render. Fills `<html lang="%lang%" dir="%textdir%">` via transformPageChunk.
+// `sequence` merges this transformPageChunk with any others. No cookie is written
+// here — the locale cookie is written only by the setLocale command on an active pick.
 const localize: Handle = async ({ event, resolve }) => {
 	const locale = isPublicEnglishSurface(event.route.id) ? baseLocale : await resolveLocale(event);
 	event.locals.locale = locale;
 	return localeStorage.run(locale, () =>
 		resolve(event, {
-			transformPageChunk: ({ html }) => html.replace('%lang%', locale)
+			transformPageChunk: ({ html }) =>
+				html.replace('%lang%', locale).replace('%textdir%', RTL_LOCALES.has(locale) ? 'rtl' : 'ltr')
 		})
 	);
 };

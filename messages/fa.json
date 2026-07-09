@@ -1,0 +1,149 @@
+{
+	"$schema": "https://inlang.com/schema/inlang-message-format",
+
+	"search_bar_aria": "جستجو و فیلترها",
+	"search_placeholder": "جستجوی مکان‌ها و غذاها…",
+	"search_input_aria": "جستجو بر اساس نام مکان یا غذا",
+	"results_nav_aria": "مکان‌های منطبق",
+	"results_cap": "نمایش {max} مکان نخست از {total} مکان. برای کوتاه‌تر شدن فهرست، جستجو را دقیق‌تر کنید.",
+	"places_found": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} مکان پیدا شد",
+				"countPlural=other": "{count} مکان پیدا شد"
+			}
+		}
+	],
+	"search_failed": "جستجو ناموفق بود — نتایج قبلی نمایش داده می‌شود.",
+	"browse_failed": "بارگیری مکان‌های این ناحیه ممکن نشد — نتایج قبلی نمایش داده می‌شود.",
+	"map_aria": "نقشهٔ مکان‌های غذا",
+	"map_zoom_in_aria": "بزرگ‌نمایی",
+	"map_zoom_out_aria": "کوچک‌نمایی",
+
+	"venue_details_aria": "جزئیات مکان",
+	"venue_close_aria": "بستن جزئیات مکان",
+	"sheet_resize_aria": "تغییر اندازهٔ جزئیات — بکشید، ضربه بزنید یا از کلیدهای جهت‌دار استفاده کنید",
+	"venue_like": "پسندیدن این مکان",
+	"venue_unlike": "برداشتن پسند از این مکان",
+	"venue_address_label": "نشانی",
+	"venue_phone_label": "تلفن",
+	"venue_phone_extension": "داخلی {ext}",
+	"venue_website_label": "وب‌سایت",
+	"venue_menu_label": "منو",
+	"venue_no_menu": "هنوز منویی ثبت نشده است.",
+	"menu_items_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} مورد",
+				"countPlural=other": "{count} مورد"
+			}
+		}
+	],
+	"menu_last_scanned": "آخرین بررسی منو در {date}",
+	"sources_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} منبع",
+				"countPlural=other": "{count} منبع"
+			}
+		}
+	],
+	"course_filter_aria": "فیلتر منو بر اساس نوع",
+	"course_all": "همه",
+	"item_like": "پسندیدن این مورد",
+	"item_unlike": "برداشتن پسند از این مورد",
+
+	"scanned_date": "بررسی‌شده در {date}",
+	"scanned": "بررسی‌شده {relative}",
+
+	"tag_vegan": "وگان",
+	"tag_vegetarian": "گیاهی",
+	"tag_halal": "حلال",
+	"tag_gluten_free": "بدون گلوتن",
+	"tag_dairy_free": "بدون لبنیات",
+	"tag_nut_free": "بدون آجیل",
+	"tag_food": "غذا",
+	"tag_dessert": "دسر",
+	"tag_drink": "نوشیدنی",
+
+	"category_cafe": "کافه",
+	"category_fast_food": "فست‌فود",
+	"category_restaurant": "رستوران",
+	"category_bakery": "نانوایی",
+
+	"diet_any": "هر رژیمی",
+	"diet_filter_aria": "فیلتر رژیم غذایی",
+	"diet_can_be_made": "در صورت درخواست {diet} تهیه می‌شود",
+
+	"account_default_name": "حساب",
+	"account_signed_in": "وارد شده‌اید",
+	"account_sign_out": "خروج",
+	"account_sign_in": "ورود",
+	"language_label": "زبان",
+
+	"sources_dialog_aria": "منابع داده",
+	"sources_title": "منابع",
+	"sources_close_aria": "بستن منابع",
+
+	"directions_button_tooltip": "باز کردن در برنامهٔ نقشهٔ دیگر",
+	"directions_button_aria": "باز کردن {address} در برنامهٔ نقشهٔ دیگر",
+	"directions_dialog_aria": "انتخاب برنامهٔ نقشه",
+	"directions_title": "باز کردن در برنامهٔ نقشهٔ دیگر",
+	"directions_close_aria": "بستن مسیرها",
+	"directions_apple_maps": "Apple Maps",
+	"directions_google_maps": "Google Maps",
+
+	"landing_intro_aria": "دربارهٔ BetterFoodMaps",
+	"landing_title": "هر جای نقشه، غذایی مناسب رژیم خود پیدا کنید.",
+	"landing_stats_aria": "پوشش نقشه",
+	"landing_actions_aria": "شروع",
+	"stat_venues": "مکان",
+	"stat_menu_items": "مورد منو",
+	"stat_cities": "شهر",
+	"stat_vegan": "غذای وگان",
+	"stat_vegetarian": "غذای گیاهی",
+	"stat_halal": "غذای حلال",
+	"stat_gluten_free": "غذای بدون گلوتن",
+	"stat_dairy_free": "غذای بدون لبنیات",
+	"stat_nut_free": "غذای بدون آجیل",
+	"landing_cta": "شروع استفاده از نقشه",
+	"landing_browse_link": "یا غذاها را بر اساس شهر مرور کنید ←",
+
+	"error_not_found": "این صفحه وجود ندارد",
+	"error_generic": "مشکلی پیش آمد",
+	"error_back": "بازگشت به نقشه",
+	"error_page_title": "{status} · BetterFoodMaps",
+
+	"server_error_no_location_or_item": "چنین مکان یا موردی وجود ندارد.",
+	"server_error_sign_in_required": "برای این کار باید وارد شوید.",
+	"server_error_location_not_found": "مکان پیدا نشد",
+	"server_error_location_gone": "این مکان برای همیشه تعطیل شده است.",
+	"server_error_database_unavailable": "پایگاه داده در دسترس نیست.",
+	"server_error_oauth_invalid_callback": "فراخوان برگشتی OAuth نامعتبر است.",
+	"server_error_oauth_code_validation": "اعتبارسنجی کد مجوز ناموفق بود.",
+	"server_error_oauth_missing_subject": "پاسخ Google فاقد ادعای subject بود.",
+
+	"head_site_description": "کافه‌ها، فست‌فودها و رستوران‌های سراسر جهان را روی نقشه‌ای تعاملی کاوش کنید.",
+	"head_desc_no_menu": "منو را در BetterFoodMaps ببینید.",
+	"head_located_in": "در {where}",
+	"head_list_pair": "{first} و {last}",
+	"head_desc_on_brand": "{content} — در BetterFoodMaps.",
+	"head_coverage_diet": "{diet} ({count})",
+	"head_coverage_clause": "در منو: {list}",
+	"head_menu_item_noun": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "مورد منو",
+				"countPlural=other": "مورد منو"
+			}
+		}
+	]
+}

@@ -47,7 +47,31 @@
 	// Each language labelled in its OWN language (an endonym): a proper noun that reads
 	// the same whatever the UI locale, so it is not a translated message. Adding a locale
 	// to Paraglide's `locales` means adding its endonym here.
-	const localeLabels: Record<Locale, string> = { en: 'English', fr: 'Français' };
+	const localeLabels: Record<Locale, string> = {
+		en: 'English',
+		'en-US': 'English (US)',
+		'en-CA': 'English (Canada)',
+		'en-GB': 'English (UK)',
+		fr: 'Français (Canada)',
+		'fr-FR': 'Français (France)',
+		zh: '中文（简体）',
+		yue: '粵語',
+		pa: 'ਪੰਜਾਬੀ',
+		fil: 'Filipino',
+		hi: 'हिन्दी',
+		es: 'Español',
+		it: 'Italiano',
+		de: 'Deutsch',
+		ur: 'اردو',
+		pt: 'Português',
+		ru: 'Русский',
+		vi: 'Tiếng Việt',
+		fa: 'فارسی',
+		ta: 'தமிழ்',
+		ko: '한국어',
+		pl: 'Polski',
+		ar: 'العربية'
+	};
 
 	// The signed-out fallback (the app is normally reached only when signed in, but a
 	// session can expire while the map is open) sends the user through Google sign-in
@@ -315,10 +339,15 @@
 		color: var(--color-text-muted);
 	}
 
+	/* With 23 locales a single column would tower past the viewport, so the picker
+	   lays the endonyms out in two columns and scrolls once it outgrows the cap
+	   (short phones); the check gutter keeps the two-column labels aligned. */
 	.account__langs {
-		display: flex;
-		flex-direction: column;
+		display: grid;
+		grid-template-columns: 1fr 1fr;
 		gap: 0.1rem;
+		max-height: min(19rem, 50vh);
+		overflow-y: auto;
 	}
 
 	.account__lang {

@@ -1,0 +1,149 @@
+{
+	"$schema": "https://inlang.com/schema/inlang-message-format",
+
+	"search_bar_aria": "Suche und Filter",
+	"search_placeholder": "Orte und Gerichte suchen…",
+	"search_input_aria": "Nach Orts- oder Gerichtsname suchen",
+	"results_nav_aria": "Passende Orte",
+	"results_cap": "Es werden die ersten {max} von {total} Orten angezeigt. Verfeinere die Suche, um die Liste einzugrenzen.",
+	"places_found": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} Ort gefunden",
+				"countPlural=other": "{count} Orte gefunden"
+			}
+		}
+	],
+	"search_failed": "Suche fehlgeschlagen – vorherige Ergebnisse werden angezeigt.",
+	"browse_failed": "Orte für diesen Bereich konnten nicht geladen werden – vorherige Ergebnisse werden angezeigt.",
+	"map_aria": "Karte mit Essensorten",
+	"map_zoom_in_aria": "Hineinzoomen",
+	"map_zoom_out_aria": "Herauszoomen",
+
+	"venue_details_aria": "Details zum Ort",
+	"venue_close_aria": "Details zum Ort schließen",
+	"sheet_resize_aria": "Detailbereich anpassen – ziehen, tippen oder Pfeiltasten verwenden",
+	"venue_like": "Diesen Ort liken",
+	"venue_unlike": "Like für diesen Ort entfernen",
+	"venue_address_label": "Adresse",
+	"venue_phone_label": "Telefon",
+	"venue_phone_extension": "Durchwahl {ext}",
+	"venue_website_label": "Website",
+	"venue_menu_label": "Speisekarte",
+	"venue_no_menu": "Noch keine Speisekarte hinterlegt.",
+	"menu_items_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} Eintrag",
+				"countPlural=other": "{count} Einträge"
+			}
+		}
+	],
+	"menu_last_scanned": "Speisekarte zuletzt geprüft am {date}",
+	"sources_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} Quelle",
+				"countPlural=other": "{count} Quellen"
+			}
+		}
+	],
+	"course_filter_aria": "Speisekarte nach Gang filtern",
+	"course_all": "Alle",
+	"item_like": "Diesen Eintrag liken",
+	"item_unlike": "Like für diesen Eintrag entfernen",
+
+	"scanned_date": "Geprüft am {date}",
+	"scanned": "Geprüft {relative}",
+
+	"tag_vegan": "Vegan",
+	"tag_vegetarian": "Vegetarisch",
+	"tag_halal": "Halal",
+	"tag_gluten_free": "Glutenfrei",
+	"tag_dairy_free": "Milchfrei",
+	"tag_nut_free": "Nussfrei",
+	"tag_food": "Speisen",
+	"tag_dessert": "Desserts",
+	"tag_drink": "Getränke",
+
+	"category_cafe": "Café",
+	"category_fast_food": "Fast Food",
+	"category_restaurant": "Restaurant",
+	"category_bakery": "Bäckerei",
+
+	"diet_any": "Alle Ernährungsweisen",
+	"diet_filter_aria": "Ernährungsfilter",
+	"diet_can_be_made": "Auf Wunsch {diet} möglich",
+
+	"account_default_name": "Konto",
+	"account_signed_in": "Angemeldet",
+	"account_sign_out": "Abmelden",
+	"account_sign_in": "Anmelden",
+	"language_label": "Sprache",
+
+	"sources_dialog_aria": "Datenquellen",
+	"sources_title": "Quellen",
+	"sources_close_aria": "Quellen schließen",
+
+	"directions_button_tooltip": "In anderer Karten-App öffnen",
+	"directions_button_aria": "{address} in einer anderen Karten-App öffnen",
+	"directions_dialog_aria": "Karten-App auswählen",
+	"directions_title": "In anderer Karten-App öffnen",
+	"directions_close_aria": "Routenansicht schließen",
+	"directions_apple_maps": "Apple Maps",
+	"directions_google_maps": "Google Maps",
+
+	"landing_intro_aria": "Über BetterFoodMaps",
+	"landing_title": "Finde Essen, das zu deiner Ernährung passt – überall auf der Karte.",
+	"landing_stats_aria": "Kartenabdeckung",
+	"landing_actions_aria": "Erste Schritte",
+	"stat_venues": "Orte",
+	"stat_menu_items": "Speisekarteneinträge",
+	"stat_cities": "Städte",
+	"stat_vegan": "vegane Gerichte",
+	"stat_vegetarian": "vegetarische Gerichte",
+	"stat_halal": "Halal-Gerichte",
+	"stat_gluten_free": "glutenfreie Gerichte",
+	"stat_dairy_free": "milchfreie Gerichte",
+	"stat_nut_free": "nussfreie Gerichte",
+	"landing_cta": "Jetzt die Karte nutzen",
+	"landing_browse_link": "Oder Essen nach Stadt durchstöbern →",
+
+	"error_not_found": "Diese Seite existiert nicht",
+	"error_generic": "Etwas ist schiefgelaufen",
+	"error_back": "Zurück zur Karte",
+	"error_page_title": "{status} · BetterFoodMaps",
+
+	"server_error_no_location_or_item": "Kein passender Ort oder Eintrag.",
+	"server_error_sign_in_required": "Dafür musst du angemeldet sein.",
+	"server_error_location_not_found": "Ort nicht gefunden",
+	"server_error_location_gone": "Dieser Ort ist dauerhaft geschlossen.",
+	"server_error_database_unavailable": "Datenbank nicht verfügbar.",
+	"server_error_oauth_invalid_callback": "Ungültiger OAuth-Callback.",
+	"server_error_oauth_code_validation": "Der Autorisierungscode konnte nicht validiert werden.",
+	"server_error_oauth_missing_subject": "In der Google-Antwort fehlte der Subject-Claim.",
+
+	"head_site_description": "Entdecke Cafés, Fast Food und Restaurants weltweit auf einer interaktiven Karte.",
+	"head_desc_no_menu": "Sieh dir die Speisekarte auf BetterFoodMaps an.",
+	"head_located_in": "in {where}",
+	"head_list_pair": "{first} und {last}",
+	"head_desc_on_brand": "{content} – auf BetterFoodMaps.",
+	"head_coverage_diet": "{diet} ({count})",
+	"head_coverage_clause": "Auf der Speisekarte: {list}",
+	"head_menu_item_noun": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "Speisekarteneintrag",
+				"countPlural=other": "Speisekarteneinträge"
+			}
+		}
+	]
+}

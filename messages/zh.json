@@ -1,0 +1,145 @@
+{
+	"$schema": "https://inlang.com/schema/inlang-message-format",
+
+	"search_bar_aria": "搜索与筛选",
+	"search_placeholder": "搜索地点和菜品…",
+	"search_input_aria": "按地点或菜品名称搜索",
+	"results_nav_aria": "匹配的地点",
+	"results_cap": "仅显示 {total} 个地点中的前 {max} 个。请细化搜索以缩小范围。",
+	"places_found": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=other": "找到 {count} 个地点"
+			}
+		}
+	],
+	"search_failed": "搜索失败，显示之前的结果。",
+	"browse_failed": "无法加载该区域的地点，显示之前的结果。",
+	"map_aria": "餐饮地点地图",
+	"map_zoom_in_aria": "放大",
+	"map_zoom_out_aria": "缩小",
+
+	"venue_details_aria": "地点详情",
+	"venue_close_aria": "关闭地点详情",
+	"sheet_resize_aria": "调整详情面板大小：拖动、点按或使用方向键",
+	"venue_like": "喜欢这个地点",
+	"venue_unlike": "取消喜欢这个地点",
+	"venue_address_label": "地址",
+	"venue_phone_label": "电话",
+	"venue_phone_extension": "分机 {ext}",
+	"venue_website_label": "网站",
+	"venue_menu_label": "菜单",
+	"venue_no_menu": "暂无菜单。",
+	"menu_items_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=other": "{count} 个菜品"
+			}
+		}
+	],
+	"menu_last_scanned": "菜单最近核对于 {date}",
+	"sources_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=other": "{count} 个来源"
+			}
+		}
+	],
+	"course_filter_aria": "按类别筛选菜单",
+	"course_all": "全部",
+	"item_like": "喜欢这个菜品",
+	"item_unlike": "取消喜欢这个菜品",
+
+	"scanned_date": "核对于 {date}",
+	"scanned": "{relative}核对",
+
+	"tag_vegan": "纯素",
+	"tag_vegetarian": "素食",
+	"tag_halal": "清真",
+	"tag_gluten_free": "无麸质",
+	"tag_dairy_free": "无乳制品",
+	"tag_nut_free": "无坚果",
+	"tag_food": "菜品",
+	"tag_dessert": "甜品",
+	"tag_drink": "饮品",
+
+	"category_cafe": "咖啡馆",
+	"category_fast_food": "快餐",
+	"category_restaurant": "餐厅",
+	"category_bakery": "面包店",
+
+	"diet_any": "不限饮食",
+	"diet_filter_aria": "饮食筛选",
+	"diet_can_be_made": "可做成{diet}",
+
+	"account_default_name": "账户",
+	"account_signed_in": "已登录",
+	"account_sign_out": "退出登录",
+	"account_sign_in": "登录",
+	"language_label": "语言",
+
+	"sources_dialog_aria": "数据来源",
+	"sources_title": "来源",
+	"sources_close_aria": "关闭来源",
+
+	"directions_button_tooltip": "在其他地图应用中打开",
+	"directions_button_aria": "在其他地图应用中打开{address}",
+	"directions_dialog_aria": "选择地图应用",
+	"directions_title": "在其他地图应用中打开",
+	"directions_close_aria": "关闭路线",
+	"directions_apple_maps": "Apple Maps",
+	"directions_google_maps": "Google Maps",
+
+	"landing_intro_aria": "关于 BetterFoodMaps",
+	"landing_title": "在地图上随时随地找到适合您饮食的美食。",
+	"landing_stats_aria": "地图覆盖范围",
+	"landing_actions_aria": "开始使用",
+	"stat_venues": "地点",
+	"stat_menu_items": "菜品",
+	"stat_cities": "城市",
+	"stat_vegan": "纯素菜品",
+	"stat_vegetarian": "素食菜品",
+	"stat_halal": "清真菜品",
+	"stat_gluten_free": "无麸质菜品",
+	"stat_dairy_free": "无乳制品菜品",
+	"stat_nut_free": "无坚果菜品",
+	"landing_cta": "开始使用地图",
+	"landing_browse_link": "或按城市浏览美食 →",
+
+	"error_not_found": "页面不存在",
+	"error_generic": "出错了",
+	"error_back": "返回地图",
+	"error_page_title": "{status} · BetterFoodMaps",
+
+	"server_error_no_location_or_item": "没有找到相应的地点或菜品。",
+	"server_error_sign_in_required": "请先登录再执行此操作。",
+	"server_error_location_not_found": "找不到该地点",
+	"server_error_location_gone": "该地点已永久停业。",
+	"server_error_database_unavailable": "数据库不可用。",
+	"server_error_oauth_invalid_callback": "OAuth 回调无效。",
+	"server_error_oauth_code_validation": "授权码验证失败。",
+	"server_error_oauth_missing_subject": "Google 的响应缺少 subject 声明。",
+
+	"head_site_description": "在交互式地图上探索世界各地的咖啡馆、快餐店和餐厅。",
+	"head_desc_no_menu": "在 BetterFoodMaps 上查看菜单。",
+	"head_located_in": "位于{where}",
+	"head_list_pair": "{first}和{last}",
+	"head_desc_on_brand": "{content}，尽在 BetterFoodMaps。",
+	"head_coverage_diet": "{diet}（{count}）",
+	"head_coverage_clause": "菜单包含：{list}",
+	"head_menu_item_noun": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=other": "个菜单项"
+			}
+		}
+	]
+}

@@ -1,0 +1,145 @@
+{
+	"$schema": "https://inlang.com/schema/inlang-message-format",
+
+	"search_bar_aria": "Tìm kiếm và bộ lọc",
+	"search_placeholder": "Tìm địa điểm và món ăn…",
+	"search_input_aria": "Tìm theo tên địa điểm hoặc món ăn",
+	"results_nav_aria": "Các địa điểm phù hợp",
+	"results_cap": "Đang hiển thị {max} địa điểm đầu tiên trong số {total}. Hãy thu hẹp tìm kiếm để rút gọn danh sách.",
+	"places_found": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=other": "Tìm thấy {count} địa điểm"
+			}
+		}
+	],
+	"search_failed": "Tìm kiếm thất bại — đang hiển thị kết quả trước đó.",
+	"browse_failed": "Không tải được địa điểm cho khu vực này — đang hiển thị kết quả trước đó.",
+	"map_aria": "Bản đồ các địa điểm ăn uống",
+	"map_zoom_in_aria": "Phóng to",
+	"map_zoom_out_aria": "Thu nhỏ",
+
+	"venue_details_aria": "Chi tiết địa điểm",
+	"venue_close_aria": "Đóng chi tiết địa điểm",
+	"sheet_resize_aria": "Thay đổi kích thước phần chi tiết — kéo, chạm hoặc dùng phím mũi tên",
+	"venue_like": "Thích địa điểm này",
+	"venue_unlike": "Bỏ thích địa điểm này",
+	"venue_address_label": "Địa chỉ",
+	"venue_phone_label": "Điện thoại",
+	"venue_phone_extension": "số máy lẻ {ext}",
+	"venue_website_label": "Trang web",
+	"venue_menu_label": "Thực đơn",
+	"venue_no_menu": "Chưa có thực đơn.",
+	"menu_items_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=other": "{count} món"
+			}
+		}
+	],
+	"menu_last_scanned": "Thực đơn được kiểm tra lần cuối vào {date}",
+	"sources_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=other": "{count} nguồn"
+			}
+		}
+	],
+	"course_filter_aria": "Lọc thực đơn theo loại",
+	"course_all": "Tất cả",
+	"item_like": "Thích món này",
+	"item_unlike": "Bỏ thích món này",
+
+	"scanned_date": "Đã kiểm tra vào {date}",
+	"scanned": "Đã kiểm tra {relative}",
+
+	"tag_vegan": "Thuần chay",
+	"tag_vegetarian": "Chay",
+	"tag_halal": "Halal",
+	"tag_gluten_free": "Không gluten",
+	"tag_dairy_free": "Không sữa",
+	"tag_nut_free": "Không chứa hạt",
+	"tag_food": "Món ăn",
+	"tag_dessert": "Tráng miệng",
+	"tag_drink": "Đồ uống",
+
+	"category_cafe": "Quán cà phê",
+	"category_fast_food": "Đồ ăn nhanh",
+	"category_restaurant": "Nhà hàng",
+	"category_bakery": "Tiệm bánh",
+
+	"diet_any": "Mọi chế độ ăn",
+	"diet_filter_aria": "Bộ lọc chế độ ăn",
+	"diet_can_be_made": "Có thể làm {diet} theo yêu cầu",
+
+	"account_default_name": "Tài khoản",
+	"account_signed_in": "Đã đăng nhập",
+	"account_sign_out": "Đăng xuất",
+	"account_sign_in": "Đăng nhập",
+	"language_label": "Ngôn ngữ",
+
+	"sources_dialog_aria": "Nguồn dữ liệu",
+	"sources_title": "Nguồn",
+	"sources_close_aria": "Đóng nguồn",
+
+	"directions_button_tooltip": "Mở trong ứng dụng bản đồ khác",
+	"directions_button_aria": "Mở {address} trong ứng dụng bản đồ khác",
+	"directions_dialog_aria": "Chọn ứng dụng bản đồ",
+	"directions_title": "Mở trong ứng dụng bản đồ khác",
+	"directions_close_aria": "Đóng chỉ đường",
+	"directions_apple_maps": "Apple Maps",
+	"directions_google_maps": "Google Maps",
+
+	"landing_intro_aria": "Giới thiệu về BetterFoodMaps",
+	"landing_title": "Tìm món ăn hợp với chế độ ăn của bạn, ở bất cứ đâu trên bản đồ.",
+	"landing_stats_aria": "Phạm vi bản đồ",
+	"landing_actions_aria": "Bắt đầu",
+	"stat_venues": "địa điểm",
+	"stat_menu_items": "món trong thực đơn",
+	"stat_cities": "thành phố",
+	"stat_vegan": "món thuần chay",
+	"stat_vegetarian": "món chay",
+	"stat_halal": "món halal",
+	"stat_gluten_free": "món không gluten",
+	"stat_dairy_free": "món không sữa",
+	"stat_nut_free": "món không chứa hạt",
+	"landing_cta": "Bắt đầu dùng bản đồ",
+	"landing_browse_link": "Hoặc xem món ăn theo thành phố →",
+
+	"error_not_found": "Trang này không tồn tại",
+	"error_generic": "Đã có lỗi xảy ra",
+	"error_back": "Quay lại bản đồ",
+	"error_page_title": "{status} · BetterFoodMaps",
+
+	"server_error_no_location_or_item": "Không có địa điểm hoặc món này.",
+	"server_error_sign_in_required": "Bạn cần đăng nhập để làm việc này.",
+	"server_error_location_not_found": "Không tìm thấy địa điểm",
+	"server_error_location_gone": "Địa điểm này đã đóng cửa vĩnh viễn.",
+	"server_error_database_unavailable": "Cơ sở dữ liệu không khả dụng.",
+	"server_error_oauth_invalid_callback": "Callback OAuth không hợp lệ.",
+	"server_error_oauth_code_validation": "Không xác thực được mã ủy quyền.",
+	"server_error_oauth_missing_subject": "Phản hồi của Google thiếu thông tin subject.",
+
+	"head_site_description": "Khám phá quán cà phê, đồ ăn nhanh và nhà hàng khắp thế giới trên bản đồ tương tác.",
+	"head_desc_no_menu": "Xem thực đơn trên BetterFoodMaps.",
+	"head_located_in": "tại {where}",
+	"head_list_pair": "{first} và {last}",
+	"head_desc_on_brand": "{content} trên BetterFoodMaps.",
+	"head_coverage_diet": "{count} món {diet}",
+	"head_coverage_clause": "Thực đơn có {list}",
+	"head_menu_item_noun": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=other": "món trong thực đơn"
+			}
+		}
+	]
+}
