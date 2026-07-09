@@ -16,6 +16,8 @@ function poi(over: Partial<PoiRow> & Pick<PoiRow, 'osm_id' | 'latitude' | 'longi
 		website: null,
 		opening_hours: null,
 		diet_markers: [],
+		admin_city: null,
+		admin_region: null,
 		tags_json: '{}',
 		...over
 	};

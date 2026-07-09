@@ -15,10 +15,13 @@ import type { Category } from '../../src/lib/category';
 import {
 	composeAddressLine,
 	composeStreet,
+	normalizeCountry,
 	normalizePostcode,
-	normalizeRegion
+	normalizeRegion,
+	regionCountry
 } from '../../src/lib/address';
 import { blankToNull } from '../../src/lib/text';
+import { hasNonHttpScheme } from '../../src/lib/safe-url';
 
 /** A GeoJSON feature, as produced by osmium export (geometry may be any type). */
 export interface OsmFeature {
@@ -57,6 +60,14 @@ export interface PoiRow {
 	diet_markers: string[];
 	/** Full original OSM tag set, JSON-encoded, for reference/debugging. */
 	tags_json: string;
+	/**
+	 * Municipality from the extract-time OSM admin-boundary join (enrich-admin.ts);
+	 * null until enriched. The "OSM admin context" city fallback for POIs whose own
+	 * tags carry none.
+	 */
+	admin_city: string | null;
+	/** Province/state from the same join, as a 2-letter code when resolvable. */
+	admin_region: string | null;
 }
 
 /** `amenity` values we treat as food POIs. */
@@ -167,8 +178,8 @@ export interface OsmAddressParts {
  * Extracts structured address parts from OSM `addr:*` tags, as the raw source
  * values — `region`/`postcode`/`country` are NOT normalized here (the MCP server
  * canonicalizes them when they reach create_locations/update_locations). The
- * `street` part includes the unit (Canadian hyphen style), composed by the same
- * {@link composeStreet} the backfill uses, so staging and backfill agree.
+ * `street` part includes the unit (Canadian hyphen style), composed by the shared
+ * {@link composeStreet}, so every pipeline renders the street line identically.
  */
 export function osmAddressParts(props: Record<string, string>): OsmAddressParts {
 	return {
@@ -280,6 +291,70 @@ export function addressPartsFromLine(line: string | null | undefined): PoiAddres
 	}
 
 	return Object.keys(out).length ? out : undefined;
+}
+
+/**
+ * The best structured address parts a staged POI can offer, merged per part in
+ * provenance order: the POI's own `addr:*` tags, then parts recovered from its
+ * enriched single-line address (containing building / Overture), then the
+ * extract-time admin-boundary join for city/region (see osm/enrich-admin.ts).
+ * This is what create_locations/import_chain resolve an `osm_id` import against,
+ * and what search_poi advertises — so a candidate's `address_parts` always show
+ * exactly what an import would store. Undefined when no source has any part.
+ * Values are raw (as the source wrote them); the MCP server normalizes them.
+ */
+export function effectivePoiAddressParts(poi: {
+	tags_json: string;
+	address: string | null;
+	admin_city: string | null;
+	admin_region: string | null;
+}): PoiAddressParts | undefined {
+	const own = osmOwnAddressParts(poi.tags_json) ?? {};
+	const line = addressPartsFromLine(poi.address) ?? {};
+	const out: PoiAddressParts = {};
+	const street = own.street ?? line.street;
+	const city = own.city ?? line.city ?? poi.admin_city ?? undefined;
+	const region = own.region ?? line.region ?? poi.admin_region ?? undefined;
+	const postcode = own.postcode ?? line.postcode;
+	const country = own.country ?? line.country;
+	if (street) out.street = street;
+	if (city) out.city = city;
+	if (region) out.region = region;
+	if (postcode) out.postcode = postcode;
+	if (country) out.country = country;
+	return Object.keys(out).length ? out : undefined;
+}
+
+/**
+ * The ISO-2 country a staged POI's address signals, or null when nothing
+ * resolves. Precedence mirrors {@link effectivePoiAddressParts}: an explicit
+ * country part (own `addr:country` or the enriched line) wins; otherwise the
+ * region decides — CA province and US state codes are disjoint, so a border-area
+ * POI whose `addr:state` is "ME" resolves to US even inside a Canada-extract
+ * bbox. Null means "no signal", NOT "foreign" — country filters treat it as a
+ * keep (an unresolvable address can't prove the POI is out of scope).
+ */
+export function poiCountry(poi: {
+	tags_json: string;
+	address: string | null;
+	admin_city: string | null;
+	admin_region: string | null;
+}): string | null {
+	const parts = effectivePoiAddressParts(poi);
+	if (!parts) return null;
+	return normalizeCountry(parts.country) ?? regionCountry(parts.region);
+}
+
+/**
+ * An OSM `website`/`contact:website` tag, with values carrying a non-http(s)
+ * scheme dropped. The tag is world-editable and ends up rendered as an anchor
+ * href, so a `javascript:`/`data:` value must not enter the staging store;
+ * scheme-less values ("example.com") are kept — the render-side allowlist
+ * shows them as plain text rather than a link.
+ */
+function safeWebsite(value: string | undefined): string | null {
+	const website = blankToNull(value);
+	return website !== null && hasNonHttpScheme(website) ? null : website;
 }
 
 /** Venue-level dietary markers OSM explicitly asserts (`diet:x=yes|only`), mapped to tag ids. */
@@ -404,10 +479,12 @@ export function mapFeature(feature: OsmFeature): PoiRow | null {
 		longitude,
 		address: composeAddress(props),
 		phone: blankToNull(props.phone ?? props['contact:phone']),
-		website: blankToNull(props.website ?? props['contact:website']),
+		website: safeWebsite(props.website ?? props['contact:website']),
 		opening_hours: blankToNull(props.opening_hours),
 		diet_markers: dietMarkers(props),
-		tags_json: JSON.stringify(props)
+		tags_json: JSON.stringify(props),
+		admin_city: null,
+		admin_region: null
 	};
 }
 

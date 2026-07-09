@@ -1,11 +1,13 @@
 import { expect, test, describe } from 'bun:test';
 import {
+	fillFreeSpace,
 	hashId,
 	holdZoom,
 	geoCellDegrees,
 	selectVisible,
 	stepSimulation,
 	LabelEngine,
+	type FillBox,
 	type LabelAnchor,
 	type SimNode,
 	type SimConfig,
@@ -297,6 +299,77 @@ describe('stepSimulation', () => {
 	});
 });
 
+describe('fillFreeSpace', () => {
+	const box = (id: string, x: number, y: number, priority = 1, half = 20): FillBox => ({
+		id,
+		x,
+		y,
+		hw: half,
+		hh: half,
+		priority
+	});
+	const NONE: ReadonlySet<string> = new Set();
+
+	test('admits clear room AND a resolvable co-located pair; a third on the pile stays out', () => {
+		const kept = [box('k', 0, 0)];
+		// 'free' has open room; 'stall' sits exactly on k — the mall pair, penetration
+		// 40 ≤ 56, the sim splits them apart; 'pile' would add 40 vs k AND 40 vs the
+		// admitted stall (80 > 56) — more jostling than an admission may ask for.
+		const admitted = fillFreeSpace(
+			kept,
+			[box('free', 100, 0, 3), box('stall', 0, 0, 2), box('pile', 0, 0, 1)],
+			NONE,
+			10
+		);
+		expect([...admitted].toSorted()).toEqual(['free', 'stall']);
+	});
+
+	test('admissions claim their space: of two co-located losers, the higher priority wins', () => {
+		// Either alone fits next to k (pen 40); together they'd stack (80) — the
+		// higher priority is processed first and claims the spot.
+		const admitted = fillFreeSpace(
+			[box('k', 0, 0)],
+			[box('lo', 0, 0, 1), box('hi', 0, 0, 2)],
+			NONE,
+			10
+		);
+		expect([...admitted]).toEqual(['hi']);
+	});
+
+	test('hysteresis: inside the budget band, incumbents stay and newcomers stay out', () => {
+		// 35-half boxes 10px apart on y: penetration min(70, 60) = 60 — above the
+		// admit budget (56), below the retain budget (64).
+		const kept = [box('k', 0, 0, 1, 35)];
+		const near = box('n', 0, 10, 1, 35);
+		expect(fillFreeSpace(kept, [near], NONE, 10).size).toBe(0);
+		expect([...fillFreeSpace(kept, [near], new Set(['n']), 10)]).toEqual(['n']);
+	});
+
+	test('hysteresis: penetration past the retain budget evicts even an incumbent', () => {
+		// Fully co-located 35-half boxes: penetration 70 > 64.
+		const kept = [box('k', 0, 0, 1, 35)];
+		expect(fillFreeSpace(kept, [box('n', 0, 0, 1, 35)], new Set(['n']), 10).size).toBe(0);
+	});
+
+	test('an incumbent holds its space against a higher-priority newcomer', () => {
+		// Both want the same spot and can't share it (70 > 56); the incumbent
+		// re-qualifies first regardless of priority, so the newcomer is the one out.
+		const admitted = fillFreeSpace(
+			[],
+			[box('new', 0, 0, 9, 35), box('old', 0, 0, 1, 35)],
+			new Set(['old']),
+			10
+		);
+		expect([...admitted]).toEqual(['old']);
+	});
+
+	test('respects the admission count budget in priority order', () => {
+		const rest = [box('a', 0, 0, 1), box('b', 100, 0, 3), box('c', 200, 0, 2)];
+		expect(fillFreeSpace([], rest, NONE, 0).size).toBe(0);
+		expect([...fillFreeSpace([], rest, NONE, 2)].toSorted()).toEqual(['b', 'c']);
+	});
+});
+
 describe('LabelEngine', () => {
 	// A fake projector: screen = anchor at (originX + lng*10, lat*10). `originX` mimics a
 	// horizontal pan; it now only moves where pills are CULLED (off-screen), since the
@@ -319,12 +392,82 @@ describe('LabelEngine', () => {
 		{ id: 'sel', name: 'Selected', lat: 5.1, lng: 5.1 } // crowds 'a'
 	];
 
-	test('keeps the selected pill and drops its lower-priority crowded neighbour', () => {
+	test('the selected pill wins its cell; the crowded neighbour returns via the fill', () => {
 		const engine = new LabelEngine();
 		const items = engine.recompute(makeOpts(cands, 'sel', 0));
 		expect(items.find((i) => i.id === 'sel')?.selected).toBe(true);
-		expect(items.some((i) => i.id === 'a')).toBe(false);
+		// 'a' loses the grid cell to the selected pill, but its overlap is a single
+		// resolvable pair — the free-space fill re-admits it.
+		expect(items.some((i) => i.id === 'a')).toBe(true);
 		expect(items.some((i) => i.id === 'b')).toBe(true);
+	});
+
+	// The two priority-wiring tests pass max: 1 so the fill budget (max − kept) is
+	// zero: any same-cell PAIR is otherwise re-admitted by the fill (by design),
+	// which would hide whether the GRID picked the right winner.
+	test('caller priority (the venue score) outranks the hash tie-break in a shared cell', () => {
+		// Give the WORSE-hashed candidate the higher priority, so a win can only
+		// come from the priority — never from the hash the old fallback used.
+		const [loHash, hiHash] = hashId('a') < hashId('b') ? ['a', 'b'] : ['b', 'a'];
+		const crowd: Candidate[] = [
+			{ id: loHash, name: 'Low hash, liked', lat: 5, lng: 5, priority: 3 },
+			{ id: hiHash, name: 'High hash, unliked', lat: 5.1, lng: 5.1, priority: 0 }
+		];
+		const items = new LabelEngine().recompute({ ...makeOpts(crowd, null, 0), max: 1 });
+		expect(items.map((i) => i.id)).toEqual([loHash]);
+	});
+
+	test('a resolvable neighbour is admitted; a pile past the sim budget stays hidden', () => {
+		// All four share one 42° declutter cell. 'winner' takes the cell; 'stall'
+		// sits essentially on top of it — the mall pair, one resolvable overlap —
+		// and must show anyway; 'pile' overlaps BOTH shown pills (past the
+		// penetration budget) and stays hidden; 'clear' has open room.
+		const crowd: Candidate[] = [
+			{ id: 'winner', name: 'Winner', lat: 5, lng: 5, priority: 9 },
+			{ id: 'stall', name: 'Stall next door', lat: 5.02, lng: 5.02, priority: 5 },
+			{ id: 'pile', name: 'Third on the pile', lat: 5.04, lng: 5.04, priority: 4 },
+			{ id: 'clear', name: 'Clear neighbour', lat: 25, lng: 5, priority: 3 }
+		];
+		const items = new LabelEngine().recompute(makeOpts(crowd, null, 0));
+		expect(items.map((i) => i.id).toSorted()).toEqual(['clear', 'stall', 'winner']);
+	});
+
+	test('equal priorities tie-break by the stable id hash, not input order', () => {
+		const crowd: Candidate[] = [
+			{ id: 'a', name: 'Alpha', lat: 5, lng: 5, priority: 2 },
+			{ id: 'b', name: 'Bravo', lat: 5.1, lng: 5.1, priority: 2 }
+		];
+		const expected = hashId('a') > hashId('b') ? 'a' : 'b';
+		const forward = new LabelEngine().recompute({ ...makeOpts(crowd, null, 0), max: 1 });
+		const reversed = new LabelEngine().recompute({
+			...makeOpts([...crowd].reverse(), null, 0),
+			max: 1
+		});
+		expect(forward.map((i) => i.id)).toEqual([expected]);
+		expect(reversed.map((i) => i.id)).toEqual([expected]);
+	});
+
+	test('clear() resets the fill hysteresis: incumbents re-qualify at the strict admit budget', () => {
+		const opts = (candidates: Candidate[]) => ({ ...makeOpts(candidates, null, 0), cellDeg: 0.5 });
+		const winner: Candidate = { id: 'k1', name: 'Winner', lat: 0, lng: 0, priority: 9 };
+		// Nearly on top of the winner: least-axis penetration ≈ 51.9px (unmeasured
+		// estimate boxes) — under the strict admit budget, so the fill admits it.
+		const loser: Candidate = { id: 'loser', name: 'Loser', lat: 0.01, lng: 0, priority: 1 };
+		// A second kept pill adding ~8px overlap, pushing the loser's summed
+		// penetration to ~59.9px — above the admit budget (56), inside the retain
+		// budget (64): only the hysteresis keeps the loser visible.
+		const flank: Candidate = { id: 'k2', name: 'Flank', lat: 0, lng: 14.4, priority: 9 };
+
+		const engine = new LabelEngine();
+		expect(engine.recompute(opts([winner, loser])).some((i) => i.id === 'loser')).toBe(true);
+		expect(engine.recompute(opts([winner, loser, flank])).some((i) => i.id === 'loser')).toBe(true);
+
+		// clear() forgets everything, the admitted set included — the same scene
+		// recomputed fresh judges the loser at the strict budget and rejects it.
+		engine.clear();
+		expect(engine.recompute(opts([winner, loser, flank])).some((i) => i.id === 'loser')).toBe(
+			false
+		);
 	});
 
 	test('tick re-projects anchors against the live camera', () => {
@@ -374,7 +517,9 @@ describe('LabelEngine', () => {
 					selectedId: null,
 					cellDeg: 2, // ~2° cells: hi & lo (1° apart) share one; far apart in screen px
 					perCell: 1,
-					max: 100
+					// max 1 zeroes the fill budget: the fill would re-admit 'lo' (one
+					// resolvable pair, by design), masking the GRID invariance under test.
+					max: 1
 				})
 				.map((i) => i.id)
 				.toSorted();

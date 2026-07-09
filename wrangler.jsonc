@@ -13,12 +13,18 @@
 	"observability": {
 		"enabled": true
 	},
-	// betterfoodmaps.com is the canonical domain that serves the app.
-	// betterfoodmap.com is also routed to this Worker but is 301-redirected to the
-	// canonical host by src/hooks.server.ts before any work is done.
+	// betterfoodmaps.com is the canonical domain that serves the app. The other
+	// hosts (its www, the legacy apex betterfoodmap.com and its www) are routed
+	// to this Worker only so src/hooks.server.ts can 301-redirect them to the
+	// canonical host before any work is done — custom_domain matches the exact
+	// hostname only, so each host that should redirect needs its own route.
+	// REDIRECT_HOSTS in src/hooks.server.ts must list every non-canonical
+	// pattern here (scripts/redirect.test.ts enforces that).
 	"routes": [
 		{ "pattern": "betterfoodmaps.com", "custom_domain": true },
-		{ "pattern": "betterfoodmap.com", "custom_domain": true }
+		{ "pattern": "www.betterfoodmaps.com", "custom_domain": true },
+		{ "pattern": "betterfoodmap.com", "custom_domain": true },
+		{ "pattern": "www.betterfoodmap.com", "custom_domain": true }
 	],
 	// D1 binding consumed by the app via `platform.env.DB`. Fill in `database_id`
 	// from `wrangler d1 create better-food-map` (see README "Deploying to

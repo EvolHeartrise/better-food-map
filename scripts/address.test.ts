@@ -50,6 +50,27 @@ describe('normalizeRegion', () => {
 		expect(normalizeRegion('Newfoundland and Labrador', 'CA')).toBe('NL');
 	});
 
+	test('folds ampersands, dotted abbreviations and PEI', () => {
+		expect(normalizeRegion('Newfoundland & Labrador', 'CA')).toBe('NL');
+		expect(normalizeRegion('PEI', 'CA')).toBe('PE');
+		expect(normalizeRegion('P.E.I.')).toBe('PE');
+		expect(normalizeRegion('pei')).toBe('PE');
+	});
+
+	test('resolves dotted code abbreviations', () => {
+		expect(normalizeRegion('B.C', 'CA')).toBe('BC');
+		expect(normalizeRegion('B.C.')).toBe('BC');
+		expect(normalizeRegion('ON.', 'CA')).toBe('ON');
+		// A dotted pair that is not a real code still fails.
+		expect(normalizeRegion('X.X.', 'CA')).toBeNull();
+	});
+
+	test('resolves bilingual OSM boundary labels', () => {
+		expect(normalizeRegion('New Brunswick / Nouveau-Brunswick', 'CA')).toBe('NB');
+		expect(normalizeRegion('ᓄᓇᕗᑦ Nunavut', 'CA')).toBe('NU');
+		expect(normalizeRegion('Yukon / Le Yukon')).toBe('YT');
+	});
+
 	test('maps full US state names to codes', () => {
 		expect(normalizeRegion('Washington', 'US')).toBe('WA');
 		expect(normalizeRegion('New York')).toBe('NY');
@@ -58,6 +79,17 @@ describe('normalizeRegion', () => {
 	test('rejects a code that is not valid for the stated country', () => {
 		expect(normalizeRegion('XX', 'CA')).toBeNull();
 		expect(normalizeRegion('BC', 'US')).toBeNull();
+	});
+
+	test('never resolves a region against CA/US tables for a third country', () => {
+		// Australia's "WA" is Western Australia, not Washington.
+		expect(normalizeRegion('WA', 'AU')).toBeNull();
+		expect(normalizeRegion('Washington', 'AU')).toBeNull();
+		expect(normalizeRegion('ON', 'GB')).toBeNull();
+		// The CA/US paths and the no-country auto-detect are unaffected.
+		expect(normalizeRegion('WA', 'US')).toBe('WA');
+		expect(normalizeRegion('ON', 'CA')).toBe('ON');
+		expect(normalizeRegion('WA')).toBe('WA');
 	});
 
 	test('returns null for unknown / empty input', () => {

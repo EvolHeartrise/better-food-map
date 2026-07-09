@@ -3,6 +3,7 @@
 // remote module doesn't re-implement the same guards.
 import { getRequestEvent } from '$app/server';
 import { error } from '@sveltejs/kit';
+import { m } from '$lib/paraglide/messages';
 import type { D1Like, User } from './db';
 
 /**
@@ -22,14 +23,20 @@ export function requireDb(): D1Like {
 	return binding;
 }
 
-/** The signed-in user for this request (set by the auth hook), or null. */
-export function currentUser(): User | null {
-	return getRequestEvent().locals.user;
+/**
+ * The signed-in user for this request, or null. Resolved lazily via the hook's
+ * memoized `locals.getSession()`: the first caller in a request pays the one D1
+ * session read (plus any cookie refresh/clear), later callers share its result,
+ * and requests where nothing asks pay nothing.
+ */
+export async function currentUser(): Promise<User | null> {
+	const resolved = await getRequestEvent().locals.getSession();
+	return resolved?.user ?? null;
 }
 
 /** Like {@link currentUser} but throws a 401 when signed out — for guarded mutations. */
-export function requireUser(): User {
-	const user = currentUser();
-	if (!user) error(401, 'You must be signed in to do that.');
+export async function requireUser(): Promise<User> {
+	const user = await currentUser();
+	if (!user) error(401, m.server_error_sign_in_required());
 	return user;
 }

@@ -5,8 +5,11 @@
 // D1. Imported by the db-layer test files; not a test file itself.
 
 import { Database } from 'bun:sqlite';
-import { readFileSync } from 'node:fs';
-import type { D1Like, D1PreparedLike } from '../src/lib/server/db';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { getMapCellsData } from '../src/lib/server/db';
+import type { Bounds, D1Like, D1PreparedLike, MapData, SearchFilter } from '../src/lib/server/db';
+import { FULL_CELL_DEG, cellsForBounds, levelCell, levelForBounds } from '../src/lib/grid';
 
 class TestStmt implements D1PreparedLike {
 	params: unknown[] = [];
@@ -44,30 +47,56 @@ export class TestD1 implements D1Like {
 		return new TestStmt(this.db, sql);
 	}
 	async batch(statements: D1PreparedLike[]): Promise<unknown[]> {
-		const tx = this.db.transaction((stmts: TestStmt[]) => {
-			for (const s of stmts) this.db.query(s._sql).run(...(s._params as never[]));
-		});
-		tx(statements as TestStmt[]);
-		return [];
+		// Real D1 returns one `{ results }` object per statement, in statement order,
+		// and read-through-batch callers (queryMapData's sub-reads) consume them —
+		// so mirror that shape. `.all()` yields `[]` for a statement that returns no
+		// rows (writes included), matching D1's empty `results` there.
+		const tx = this.db.transaction((stmts: TestStmt[]) =>
+			stmts.map((s) => ({ results: this.db.query(s._sql).all(...(s._params as never[])) }))
+		);
+		return tx(statements as TestStmt[]);
 	}
 }
 
-/** A fresh in-memory database with both migrations applied. */
+/** A fresh in-memory database with every migration in migrations/ applied. */
 export function freshDb(): TestD1 {
 	const db = new Database(':memory:');
-	db.exec(readFileSync('migrations/0001_init.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0002_chains.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0003_location_coords_index.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0004_unify_items_and_tags.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0005_require_address.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0006_tag_search_index.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0007_users_likes_searches.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0008_location_address_parts.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0009_require_address_parts.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0010_ingredient_aliases.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0011_menu_currency.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0013_user_dietary_profile.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0014_remove_ingredient_tags.sql', 'utf8'));
-	db.exec(readFileSync('migrations/0015_location_closed.sql', 'utf8'));
+	// Match production D1, which enforces foreign keys by default — otherwise the
+	// ON DELETE CASCADE behavior migrations advertise is never exercised in tests.
+	db.exec('PRAGMA foreign_keys = ON;');
+	for (const f of readdirSync('migrations').toSorted()) {
+		if (f.endsWith('.sql')) db.exec(readFileSync(join('migrations', f), 'utf8'));
+	}
 	return new TestD1(db);
+}
+
+/**
+ * The browse read for a whole viewport, composed exactly the way the map page
+ * composes it (level from the padded box, cells enumerated, one cells read) and
+ * merged back to a plain MapData. Test-side stand-in for the removed
+ * bounds-shaped getMapData, so viewport-behaviour tests keep exercising the
+ * REAL production path — grid selection + getMapCellsData — end to end.
+ */
+export async function viewportMapData(db: D1Like, bounds: Bounds): Promise<MapData> {
+	const level = levelForBounds(bounds);
+	const cells = cellsForBounds(bounds, levelCell(level));
+	const data = await getMapCellsData(db, level, cells);
+	return { locations: data.locations, menus: data.menus, menuMeta: data.menuMeta };
+}
+
+/**
+ * The SEARCH read over a viewport, at the FULL level so no per-cell
+ * representative trimming thins the matches — the shape membership tests need:
+ * "every venue in `bounds` matching `filter`". Exercises the real production
+ * filter path (searchMembership inside getMapCellsData); rep-level trimming
+ * under a filter is covered by its own tests in map-cells.test.ts.
+ */
+export async function searchMapData(
+	db: D1Like,
+	bounds: Bounds,
+	filter: SearchFilter
+): Promise<MapData> {
+	const cells = cellsForBounds(bounds, FULL_CELL_DEG);
+	const data = await getMapCellsData(db, 0, cells, filter);
+	return { locations: data.locations, menus: data.menus, menuMeta: data.menuMeta };
 }

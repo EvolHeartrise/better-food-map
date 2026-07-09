@@ -9,29 +9,42 @@
 // ---------------------------------------------------------------------------
 
 import type { D1Like } from '../../src/lib/server/db';
+import { normalizeCountry } from '../../src/lib/address';
 import { stripDiacritics } from '../../src/lib/text';
-import { bboxAround, haversineMeters, type Bbox } from './geo';
-import {
-	addressPartsFromLine,
-	osmOwnAddressParts,
-	osmUrl,
-	type PoiAddressParts
-} from './map-feature';
+import { bboxAround, haversineMeters, type Bounds } from './geo';
+import { effectivePoiAddressParts, osmUrl, poiCountry, type PoiAddressParts } from './map-feature';
 import type { OsmPoiStore, StoredPoi } from './poi-store';
 
 export interface SearchPoiParams {
 	/** Explicit bounding box. Provide this OR latitude+longitude+radius_km. */
-	bbox?: Bbox;
+	bbox?: Bounds;
 	latitude?: number;
 	longitude?: number;
 	radius_km?: number;
 	category?: StoredPoi['suggested_category'];
 	name?: string;
 	cuisine?: string;
+	/**
+	 * ISO-2 country scope (e.g. "CA"). Drops POIs whose address SIGNALS a
+	 * different country (explicit addr:country, or a region code that belongs to
+	 * another country — CA province and US state codes are disjoint); POIs with
+	 * no country signal are kept, since an unresolvable address can't prove the
+	 * POI is out of scope. Guards border-spanning bboxes: a Canada extract
+	 * carries some US border-town POIs.
+	 */
+	country?: string;
 	/** Drop POIs already present in D1 (default true). */
 	exclude_existing?: boolean;
+	/**
+	 * osm_ids to drop from the results — e.g. known false name matches that would
+	 * otherwise resurface on every re-search of the same area. Applied before
+	 * `limit`, so excluded candidates never crowd out real ones.
+	 */
+	exclude_osm_ids?: string[];
 	/** Max candidates to return (default 50). */
 	limit?: number;
+	/** Override the staging-store scan cap (testing only). */
+	scanCap?: number;
 }
 
 /** One POI returned to the caller, ready to hand to create_locations. */
@@ -48,12 +61,12 @@ export interface PoiCandidate {
 	longitude: number;
 	/**
 	 * Structured address parts (street/city/region/postcode/country, absent parts
-	 * dropped) — pass straight to create_locations, which normalizes region/postcode/
-	 * country. Taken from the POI's OWN `addr:*` tags when it has them, else recovered
-	 * from the address an enrichment feed (a containing OSM building, or Overture)
-	 * supplied. Omitted only when the POI has no address at all; then supply street/
-	 * city/region from the POI's admin context (never geocode). `country` is often
-	 * absent — create_locations defaults it to CA.
+	 * dropped), merged per part from the POI's OWN `addr:*` tags, the address an
+	 * enrichment feed (containing OSM building / Overture) supplied, and the
+	 * extract-time admin-boundary join for city/region — exactly what an `osm_id`
+	 * import stores, so there is nothing to copy through. Omitted only when no
+	 * source has any part. `country` is often absent — create_locations defaults
+	 * it to CA.
 	 */
 	address_parts?: PoiAddressParts;
 	/**
@@ -76,13 +89,62 @@ export interface SearchPoiResult {
 	total_in_area: number;
 	/** How many were dropped as already-in-DB (0 when exclude_existing is false). */
 	excluded_existing: number;
+	/** POIs dropped because their address signals a different country (only with `country`). */
+	excluded_foreign?: number;
+	/** Up to 10 of the foreign-dropped POIs, so the drop is auditable, never silent. */
+	excluded_foreign_sample?: { osm_id: string; name: string | null; country: string }[];
 	/** Whether results were capped by `limit`. */
 	truncated: boolean;
+	/**
+	 * Whether the staging-store scan hit its row cap BEFORE any exclusion, so the
+	 * box holds more food POIs than were even considered. When set, `total_in_area`
+	 * is a lower bound, and re-sweeping the same box after imports will keep
+	 * returning the same capped slice — narrow the bbox / lower the radius instead
+	 * of concluding the area is exhausted. Mirrors import_chain's `scan_truncated`.
+	 */
+	scan_truncated: boolean;
 }
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 const SCAN_CAP = 2000;
+const FOREIGN_SAMPLE = 10;
+
+/** One foreign-dropped POI, for the audit sample. */
+export interface ForeignDrop {
+	osm_id: string;
+	name: string | null;
+	/** The country the POI's address signalled (never the requested scope). */
+	country: string;
+}
+
+/**
+ * Splits POIs into those compatible with an ISO-2 country scope (matching
+ * signal, or no signal at all — an unresolvable address can't prove a POI
+ * foreign) and a sample-carrying summary of the dropped rest. The scope is
+ * folded through the same normalizeCountry as the per-POI signal, so spellings
+ * ("UK" vs "GB") can never disagree. Shared by search_poi and import_chain.
+ */
+export function partitionByCountry(
+	pois: StoredPoi[],
+	countryScope: string
+): { kept: StoredPoi[]; dropped: number; sample: ForeignDrop[] } {
+	const scope = normalizeCountry(countryScope) ?? countryScope.trim().toUpperCase();
+	const kept: StoredPoi[] = [];
+	let dropped = 0;
+	const sample: ForeignDrop[] = [];
+	for (const poi of pois) {
+		const c = poiCountry(poi);
+		if (c === null || c === scope) {
+			kept.push(poi);
+			continue;
+		}
+		dropped++;
+		if (sample.length < FOREIGN_SAMPLE)
+			sample.push({ osm_id: poi.osm_id, name: poi.name, country: c });
+	}
+	return { kept, dropped, sample };
+}
 
 // Dedup thresholds. A staging POI is considered already-present when an existing
 // location is essentially on the same spot, or close with a matching name.
@@ -96,16 +158,23 @@ const SAME_POINT_M = 10;
 const SAME_NAME_M = 150;
 const MIN_NAME_OVERLAP = 4;
 
-interface ExistingLocation {
+export interface ExistingLocation {
 	id: string;
 	name: string;
 	latitude: number;
 	longitude: number;
+	/**
+	 * The chain this venue belongs to, or null when it is independent. Carried so
+	 * a caller deduping against the map can tell an already-linked branch of its
+	 * chain (silent skip) from an UNLINKED lookalike sitting at the same spot (a
+	 * venue that should be adopted onto the chain, e.g. issue #242's stray A&W).
+	 */
+	brand_id?: string | null;
 }
 
 /** Resolves the query area to a bounding box, plus an optional centre for radius refine. */
-function resolveArea(params: SearchPoiParams): {
-	bbox: Bbox;
+export function resolveArea(params: SearchPoiParams): {
+	bbox: Bounds;
 	centre?: { lat: number; lon: number; radiusKm: number };
 } {
 	if (params.bbox) return { bbox: params.bbox };
@@ -148,37 +217,71 @@ function namesConflict(a: string, b: string): boolean {
 	return a !== '' && b !== '' && !namesMatch(a, b);
 }
 
-/** True if `poi` is essentially the same venue as one already in `existing`. */
-function isExistingDuplicate(poi: StoredPoi, existing: ExistingLocation[]): boolean {
+/**
+ * The existing venue `poi` is essentially the same as, or null when none —
+ * the match core behind {@link isExistingDuplicate}. Returns the matched row so
+ * a caller can inspect it (e.g. its `brand_id`, to tell an already-linked branch
+ * from an unlinked lookalike); the first match in `existing` order wins.
+ */
+export function findExistingDuplicate(
+	poi: StoredPoi,
+	existing: ExistingLocation[]
+): ExistingLocation | null {
 	const poiName = normalizeName(poi.name);
 	for (const loc of existing) {
 		const locName = normalizeName(loc.name);
 		const d = haversineMeters(poi.latitude, poi.longitude, loc.latitude, loc.longitude);
 		// Same spot: a duplicate unless the names clearly disagree (food-court neighbours).
-		if (d <= SAME_POINT_M && !namesConflict(poiName, locName)) return true;
+		if (d <= SAME_POINT_M && !namesConflict(poiName, locName)) return loc;
 		// Nearby with a matching name: the same venue, just slightly displaced.
-		if (d <= SAME_NAME_M && namesMatch(poiName, locName)) return true;
+		if (d <= SAME_NAME_M && namesMatch(poiName, locName)) return loc;
 	}
-	return false;
+	return null;
+}
+
+/** True if `poi` is essentially the same venue as one already in `existing`. */
+export function isExistingDuplicate(poi: StoredPoi, existing: ExistingLocation[]): boolean {
+	return findExistingDuplicate(poi, existing) !== null;
+}
+
+/**
+ * Pads `bbox` by SAME_NAME_M on every side, for the dedup fetch. A stored venue
+ * can sit just OUTSIDE the query bbox (e.g. its OSM node moved since import)
+ * while still within SAME_NAME_M of an in-bbox POI; fetching only the exact bbox
+ * would let that POI escape same-name dedup and become a duplicate pin.
+ * {@link bboxAround} supplies the metres→degrees math at the bbox's worst
+ * (widest-longitude) latitude, mirroring nearDuplicateWarnings in db-mcp-server.
+ */
+export function padBboxForDedup(bbox: Bounds): Bounds {
+	const worstLat = Math.max(Math.abs(bbox.minLat), Math.abs(bbox.maxLat));
+	const pad = bboxAround(worstLat, 0, SAME_NAME_M / 1000);
+	const padLat = pad.maxLat - worstLat; // degrees covering SAME_NAME_M in latitude
+	const padLon = pad.maxLng; // and in longitude at the worst latitude (centre lng 0)
+	return {
+		minLat: Math.max(bbox.minLat - padLat, -90),
+		maxLat: Math.min(bbox.maxLat + padLat, 90),
+		minLng: Math.max(bbox.minLng - padLon, -180),
+		maxLng: Math.min(bbox.maxLng + padLon, 180)
+	};
 }
 
 /** Fetches existing locations whose point falls within `bbox` from D1. */
-async function existingInBbox(db: D1Like, bbox: Bbox): Promise<ExistingLocation[]> {
+export async function existingInBbox(db: D1Like, bbox: Bounds): Promise<ExistingLocation[]> {
 	const { results } = await db
 		.prepare(
-			`SELECT id, name, latitude, longitude FROM locations
+			`SELECT id, name, latitude, longitude, brand_id FROM locations
 			 WHERE latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ?`
 		)
-		.bind(bbox.minLat, bbox.maxLat, bbox.minLon, bbox.maxLon)
+		.bind(bbox.minLat, bbox.maxLat, bbox.minLng, bbox.maxLng)
 		.all<ExistingLocation>();
 	return results;
 }
 
 function toCandidate(poi: StoredPoi, distance_m?: number): PoiCandidate {
-	// Prefer the POI's own addr:* tags; otherwise recover parts from the single-line
-	// address an enrichment feed (containing building / Overture) gave it, so dropping
-	// the raw single line from the output costs no address coverage.
-	const addressParts = osmOwnAddressParts(poi.tags_json) ?? addressPartsFromLine(poi.address);
+	// The same merged parts create_locations resolves an osm_id import against
+	// (own addr:* tags → enriched line → admin-boundary city/region), so what a
+	// candidate advertises is exactly what an import would store.
+	const addressParts = effectivePoiAddressParts(poi);
 	return {
 		osm_id: poi.osm_id,
 		osm_type: poi.osm_type,
@@ -214,12 +317,28 @@ export async function searchPoi(
 	const excludeExisting = params.exclude_existing ?? true;
 	const limit = Math.min(Math.max(1, params.limit ?? DEFAULT_LIMIT), MAX_LIMIT);
 
-	const rows = store.searchBbox(bbox, {
+	const scanCap = params.scanCap ?? SCAN_CAP;
+	let rows = store.searchBbox(bbox, {
 		category: params.category ?? undefined,
 		name: params.name,
 		cuisine: params.cuisine,
-		cap: SCAN_CAP
+		cap: scanCap
 	});
+	// Captured before any exclusion/partition shrinks `rows`: truncation is a
+	// property of the raw scan, not of what survives the filters.
+	const scanTruncated = rows.length >= scanCap;
+	if (params.exclude_osm_ids?.length) {
+		const excluded = new Set(params.exclude_osm_ids);
+		rows = rows.filter((poi) => !excluded.has(poi.osm_id));
+	}
+	let excludedForeign = 0;
+	let excludedForeignSample: ForeignDrop[] = [];
+	if (params.country) {
+		const { kept, dropped, sample } = partitionByCountry(rows, params.country);
+		rows = kept;
+		excludedForeign = dropped;
+		excludedForeignSample = sample;
+	}
 
 	// Attach distance and trim to the exact circle for centre+radius queries.
 	let withDistance: { poi: StoredPoi; distance_m?: number }[];
@@ -241,7 +360,9 @@ export async function searchPoi(
 	let excluded = 0;
 	if (excludeExisting) {
 		if (!db) throw new Error('exclude_existing requires a database handle.');
-		const existing = await existingInBbox(db, bbox);
+		// Padded past SAME_NAME_M: a moved-node venue just outside the bbox must
+		// still block same-name dedup for an in-bbox edge POI (see padBboxForDedup).
+		const existing = await existingInBbox(db, padBboxForDedup(bbox));
 		const kept: typeof withDistance = [];
 		for (const x of withDistance) {
 			if (isExistingDuplicate(x.poi, existing)) excluded++;
@@ -253,5 +374,13 @@ export async function searchPoi(
 	const truncated = withDistance.length > limit;
 	const candidates = withDistance.slice(0, limit).map((x) => toCandidate(x.poi, x.distance_m));
 
-	return { candidates, total_in_area: totalInArea, excluded_existing: excluded, truncated };
+	return {
+		candidates,
+		total_in_area: totalInArea,
+		excluded_existing: excluded,
+		...(params.country === undefined ? {} : { excluded_foreign: excludedForeign }),
+		...(excludedForeignSample.length ? { excluded_foreign_sample: excludedForeignSample } : {}),
+		truncated,
+		scan_truncated: scanTruncated
+	};
 }

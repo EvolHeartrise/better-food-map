@@ -29,13 +29,13 @@ function fakeD1(locations: ExistingLoc[]): D1Like {
 					return results[0] ?? null;
 				},
 				async all<T>() {
-					const [minLat, maxLat, minLon, maxLon] = params as number[];
+					const [minLat, maxLat, minLng, maxLng] = params as number[];
 					const results = locations.filter(
 						(l) =>
 							l.latitude >= minLat &&
 							l.latitude <= maxLat &&
-							l.longitude >= minLon &&
-							l.longitude <= maxLon
+							l.longitude >= minLng &&
+							l.longitude <= maxLng
 					);
 					return { results: results as T[] };
 				},
@@ -64,6 +64,8 @@ function row(over: Partial<PoiRow> & Pick<PoiRow, 'osm_id' | 'latitude' | 'longi
 		website: null,
 		opening_hours: null,
 		diet_markers: [],
+		admin_city: null,
+		admin_region: null,
 		tags_json: '{}',
 		...over
 	};
@@ -190,14 +192,50 @@ test('bbox query path works and respects limit + truncated flag', async () => {
 	);
 	const store = storeWith(rows);
 	const res = await searchPoi(store, null, {
-		bbox: { minLat: 49.2, maxLat: 49.3, minLon: -123.2, maxLon: -123.0 },
+		bbox: { minLat: 49.2, maxLat: 49.3, minLng: -123.2, maxLng: -123.0 },
 		exclude_existing: false,
 		limit: 2
 	});
 	expect(res.candidates.length).toBe(2);
 	expect(res.truncated).toBe(true);
+	// The 5-row store is nowhere near the scan cap.
+	expect(res.scan_truncated).toBe(false);
 	// bbox query has no centre, so no distance is attached
 	expect(res.candidates[0].distance_m).toBeUndefined();
+	store.close();
+});
+
+test('scan_truncated reports a saturated scan even when exclusions empty the results', async () => {
+	const rows = Array.from({ length: 4 }, (_, i) =>
+		row({ osm_id: `n${i}`, latitude: 49.28 + i * 0.0001, longitude: -123.12, name: `Spot ${i}` })
+	);
+	const store = storeWith(rows);
+	const bbox = { minLat: 49.2, maxLat: 49.3, minLng: -123.2, maxLng: -123.0 };
+
+	// Cap of 3 < 4 rows in the box: the scan is truncated regardless of filters.
+	const res = await searchPoi(store, null, {
+		bbox,
+		exclude_existing: false,
+		scanCap: 3
+	});
+	expect(res.scan_truncated).toBe(true);
+	expect(res.total_in_area).toBe(3); // pinned at the cap — a lower bound
+
+	// The fill-the-map failure mode: everything scanned is excluded, yet the box
+	// is NOT exhausted — scan_truncated must still say so while truncated is false.
+	const excluded = await searchPoi(store, null, {
+		bbox,
+		exclude_existing: false,
+		exclude_osm_ids: ['n0', 'n1', 'n2', 'n3'],
+		scanCap: 3
+	});
+	expect(excluded.candidates.length).toBe(0);
+	expect(excluded.truncated).toBe(false);
+	expect(excluded.scan_truncated).toBe(true);
+
+	// With the cap clear of the row count, the flag stays off.
+	const clear = await searchPoi(store, null, { bbox, exclude_existing: false, scanCap: 10 });
+	expect(clear.scan_truncated).toBe(false);
 	store.close();
 });
 
@@ -299,5 +337,113 @@ test('address_parts is recovered from an enrichment-supplied single-line address
 		region: 'Nova Scotia',
 		postcode: 'B3M 3W8'
 	});
+	store.close();
+});
+
+test('exclude_osm_ids drops candidates before the limit fills', async () => {
+	const store = storeWith([
+		row({ osm_id: 'n1', latitude: 49.2827, longitude: -123.1207, name: 'Keep' }),
+		row({ osm_id: 'n2', latitude: 49.2828, longitude: -123.1207, name: 'Known false match' }),
+		row({ osm_id: 'n3', latitude: 49.2829, longitude: -123.1207, name: 'Also keep' })
+	]);
+	const res = await searchPoi(store, null, {
+		latitude: CENTRE.lat,
+		longitude: CENTRE.lon,
+		radius_km: 1,
+		exclude_existing: false,
+		exclude_osm_ids: ['n2'],
+		limit: 2
+	});
+	// n2 is gone and does NOT count against the limit — both keepers fit.
+	expect(res.candidates.map((c) => c.osm_id)).toEqual(['n1', 'n3']);
+	store.close();
+});
+
+test('admin-boundary city/region fill address_parts when nothing else has them', async () => {
+	const store = storeWith([
+		row({
+			osm_id: 'n1',
+			latitude: 49.2827,
+			longitude: -123.1207,
+			name: 'Kiosk',
+			address: '465 Merecroft Road', // street-only enrichment line
+			admin_city: 'Campbell River',
+			admin_region: 'BC'
+		})
+	]);
+	const res = await searchPoi(store, null, {
+		latitude: CENTRE.lat,
+		longitude: CENTRE.lon,
+		radius_km: 1,
+		exclude_existing: false
+	});
+	expect(res.candidates[0].address_parts).toEqual({
+		street: '465 Merecroft Road',
+		city: 'Campbell River',
+		region: 'BC'
+	});
+	store.close();
+});
+
+test('country scope drops foreign-signalled POIs, keeps unknowns, and counts the drops', async () => {
+	const store = storeWith([
+		// Own addr:state = ME (Maine) → US-signalled → dropped under country "CA".
+		row({
+			osm_id: 'us1',
+			latitude: 47.25,
+			longitude: -68.6,
+			name: 'Subway',
+			tags_json: JSON.stringify({
+				'addr:housenumber': '100',
+				'addr:street': 'West Main Street',
+				'addr:state': 'ME'
+			})
+		}),
+		// Admin-joined Canadian province → kept.
+		row({
+			osm_id: 'ca1',
+			latitude: 49.1,
+			longitude: -123.1,
+			name: 'Subway',
+			admin_city: 'Vancouver',
+			admin_region: 'BC'
+		}),
+		// No country signal → kept (cannot be proven foreign).
+		row({ osm_id: 'unk1', latitude: 49.2, longitude: -123.2, name: 'Subway' })
+	]);
+	const bbox = { minLat: 45, minLng: -125, maxLat: 51, maxLng: -60 };
+
+	const scoped = await searchPoi(store, null, {
+		bbox,
+		country: 'CA',
+		exclude_existing: false
+	});
+	expect(scoped.candidates.map((c) => c.osm_id).toSorted()).toEqual(['ca1', 'unk1']);
+	expect(scoped.excluded_foreign).toBe(1);
+	expect(scoped.total_in_area).toBe(2); // foreign POIs are out before totals
+
+	// Without the scope the field is absent and nothing is dropped.
+	const unscoped = await searchPoi(store, null, { bbox, exclude_existing: false });
+	expect(unscoped.candidates.length).toBe(3);
+	expect('excluded_foreign' in unscoped).toBe(false);
+});
+
+test('exclude_existing catches a same-name venue stored just OUTSIDE the query bbox', async () => {
+	// The stored venue's OSM node moved since import: it now sits ~100 m north of
+	// the bbox's top edge while the staging POI is just inside. Fetching only the
+	// exact bbox would miss it and re-surface the POI as a duplicate candidate;
+	// the SAME_NAME_M padding on the dedup fetch keeps it blocking.
+	const store = storeWith([
+		row({ osm_id: 'n1', latitude: 49.2899, longitude: -123.1207, name: 'Tim Hortons' }),
+		row({ osm_id: 'n2', latitude: 49.28, longitude: -123.1207, name: 'Fresh Spot' })
+	]);
+	const bbox = { minLat: 49.27, maxLat: 49.29, minLng: -123.2, maxLng: -123.0 };
+	const db = fakeD1([
+		// ~100 m from n1, ~89 m outside the bbox — inside the padded fetch box.
+		{ id: 'a', name: 'Tim Hortons', latitude: 49.2908, longitude: -123.1207 }
+	]);
+	const res = await searchPoi(store, db, { bbox });
+	expect(res.candidates.map((c) => c.osm_id)).toEqual(['n2']);
+	expect(res.excluded_existing).toBe(1);
 	store.close();
 });

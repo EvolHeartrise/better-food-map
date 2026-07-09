@@ -1,18 +1,28 @@
 // See https://svelte.dev/docs/kit/types#app.d.ts
 // for information about these interfaces
 /// <reference types="@cloudflare/workers-types" />
-import type { Session, User } from '$lib/server/db';
+import type { Locale } from '$lib/paraglide/runtime';
+import type { ResolvedSession } from '$lib/server/session';
 
 declare global {
 	namespace App {
 		// interface Error {}
 		/**
-		 * Per-request auth state, populated by the session hook in hooks.server.ts
-		 * from the session cookie. Both are null when signed out.
+		 * Per-request auth state. `getSession` is installed by the session hook in
+		 * hooks.server.ts: a lazy, per-request-memoized resolver of the session
+		 * cookie. The D1 session read happens only on the first call (public paths
+		 * that never ask stay auth-free), and every call in the same request shares
+		 * that one read. Resolves to null when signed out.
 		 */
 		interface Locals {
-			user: User | null;
-			session: Session | null;
+			getSession(): Promise<ResolvedSession | null>;
+			/**
+			 * The locale resolved for this request by the `localize` hook in
+			 * hooks.server.ts (cookie → saved-user → Accept-Language → 'en'). It is
+			 * also what Paraglide's server `getLocale()` returns for the request and
+			 * what fills `<html lang>`. Present on every request.
+			 */
+			locale: Locale;
 		}
 		// interface PageData {}
 		/**
@@ -20,7 +30,9 @@ declare global {
 		 * in wrangler.jsonc; it is present in production and emulated locally by
 		 * the Cloudflare adapter during `vite dev`. `GOOGLE_CLIENT_ID` /
 		 * `GOOGLE_CLIENT_SECRET` are the Google OAuth credentials, supplied as
-		 * Worker secrets in production and via `.dev.vars` in local dev.
+		 * Worker secrets in production and via `.dev.vars` in local dev. `ctx` is
+		 * the Worker's ExecutionContext, whose `waitUntil` lets the auth hook run
+		 * the expired-session purge past the response.
 		 */
 		interface Platform {
 			env: {
@@ -30,6 +42,9 @@ declare global {
 			};
 			cf?: CfProperties;
 			ctx?: ExecutionContext;
+			// `caches` (the Workers Cache API, home of the per-cell map cache — see
+			// $lib/server/cell-cache) needs no declaration here: the adapter's
+			// ambient.d.ts already augments Platform with it.
 		}
 		interface PageState {
 			/**

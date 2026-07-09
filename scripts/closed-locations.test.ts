@@ -3,20 +3,22 @@
 // and it still blocks both re-creation and (via the unfiltered dedup read) re-listing.
 import { test, expect } from 'bun:test';
 import {
-	insertLocations,
-	setLocationClosed,
-	getMapData,
 	getLocationMapData,
 	getStats,
+	getLocationSlugFields,
+	setLocationLike,
+	getUserLikes
+} from '../src/lib/server/db';
+import {
+	insertLocations,
+	setLocationClosed,
 	getLocationById,
 	getLocationsWithTags,
 	existingLocationsAtCoords,
 	coordinateKey,
-	setLocationLike,
-	getUserLikes,
 	type LocationInsert
-} from '../src/lib/server/db';
-import { freshDb } from './test-d1';
+} from '../src/lib/server/db-write';
+import { freshDb, viewportMapData } from './test-d1';
 
 /** A complete-address venue with sensible defaults; override per test. */
 function venue(over: Partial<LocationInsert> & { name: string }): LocationInsert {
@@ -53,13 +55,25 @@ test('a born-closed location is hidden from reads but still blocks re-creation',
 	// Hidden from the single-detail read (queryMapData) and the viewport read.
 	expect((await getLocationMapData(db, closedId)).locations).toHaveLength(0);
 	expect((await getLocationMapData(db, openId)).locations.map((l) => l.id)).toEqual([openId]);
-	const viewportIds = (await getMapData(db, WIDE)).locations.map((l) => l.id);
+	const viewportIds = (await viewportMapData(db, WIDE)).locations.map((l) => l.id);
 	expect(viewportIds).toContain(openId);
 	expect(viewportIds).not.toContain(closedId);
 
 	// Hidden from get_location and list_locations, and left out of coverage stats.
 	expect(await getLocationById(db, closedId)).toBeNull();
 	expect(await getLocationById(db, openId)).not.toBeNull();
+
+	// The `/locations/<…>` gate's slug-fields probe distinguishes the three cases
+	// the gate must answer differently: open → the row's fields (`closed: false`,
+	// serve/redirect); closed → the row with `closed: true` (gate 410s it); a
+	// never-existed id → null (gate 404s it).
+	expect(await getLocationSlugFields(db, openId)).toMatchObject({
+		id: openId,
+		name: 'Open Spot',
+		closed: false
+	});
+	expect(await getLocationSlugFields(db, closedId)).toMatchObject({ id: closedId, closed: true });
+	expect(await getLocationSlugFields(db, 'no-such-id')).toBeNull();
 	const listedIds = (await getLocationsWithTags(db, {})).map((l) => l.id);
 	expect(listedIds).toEqual([openId]);
 	expect((await getStats(db)).locations).toBe(1);
@@ -85,14 +99,19 @@ test('soft-closing a live venue keeps its likes, then reopening restores it', as
 	expect((await getStats(db)).locations).toBe(1);
 	expect((await getUserLikes(db, 'u1')).locationIds).toEqual([id]);
 
-	// Close it with a cited reason.
-	const closed = await setLocationClosed(db, id, 1_700_000_000_000, 'Closed per owner notice', [
-		{ url: 'https://example.com/closure', label: 'Closure notice' }
-	]);
+	// Close it with a cited reason (evidence lives in the reason text — provenance is menu-level).
+	const closed = await setLocationClosed(
+		db,
+		id,
+		1_700_000_000_000,
+		'Closed per owner notice — https://example.com/closure'
+	);
 	expect(closed).toBe(true);
 
-	// Hidden from every display read...
+	// Hidden from every display read; the gate's probe still finds the row but
+	// flags it closed (so the gate 410s it rather than 404ing)...
 	expect(await getLocationById(db, id)).toBeNull();
+	expect(await getLocationSlugFields(db, id)).toMatchObject({ id, closed: true });
 	expect((await getLocationMapData(db, id)).locations).toHaveLength(0);
 	expect((await getStats(db)).locations).toBe(0);
 	// ...but the like row survived (the whole point vs a hard delete).
@@ -104,6 +123,7 @@ test('soft-closing a live venue keeps its likes, then reopening restores it', as
 	// Reopen: back on the map, likes intact.
 	expect(await setLocationClosed(db, id, null, null)).toBe(true);
 	expect(await getLocationById(db, id)).not.toBeNull();
+	expect(await getLocationSlugFields(db, id)).toMatchObject({ id, closed: false });
 	expect((await getStats(db)).locations).toBe(1);
 	expect((await getUserLikes(db, 'u1')).locationIds).toEqual([id]);
 });

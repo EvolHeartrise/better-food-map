@@ -27,16 +27,25 @@ import * as v from 'valibot';
 import { toJsonSchema } from '@valibot/to-json-schema';
 
 import {
+	DEFAULT_CURRENCY,
+	TAGS,
+	type Bounds,
+	type D1Like,
+	type Item,
+	type Location,
+	type LocationWithTags
+} from '../src/lib/server/db';
+import {
+	assertBrandMenuRefs,
+	countMenuItems,
 	getLocationsWithTags,
 	getLocationById,
 	getFoodByLocation,
 	getItemById,
 	updateItems,
 	deleteItem,
-	insertLocations,
 	insertFoods,
 	updateLocations,
-	deleteLocation,
 	setLocationClosed,
 	getBrands,
 	getBrandById,
@@ -54,24 +63,66 @@ import {
 	setLocationItemOverride,
 	deleteLocationItemOverride,
 	existingIds,
-	existingLocationsAtCoords,
-	coordinateKey,
+	countLocations,
 	findBrandIdsByName,
 	findMenuIdsByName,
 	itemNameCollisions,
-	DEFAULT_CURRENCY,
-	TAGS,
-	type D1Like,
-	type Item,
-	type LocationWithTags
-} from '../src/lib/server/db';
+	markLocationsDistinct,
+	unmarkLocationsDistinct
+} from '../src/lib/server/db-write';
 import { createHttpD1 } from '../src/lib/server/d1-http';
-import { normalizeRegion, normalizePostcode, normalizeCountry } from '../src/lib/address';
+import { CATEGORIES } from '../src/lib/category';
+import {
+	sourceInputSchema,
+	SOURCE_KINDS_HINT,
+	assertHasSource,
+	normalizeSources
+} from './mcp/source-input';
+import { ToolPartialFailure, partialFailureBody } from './mcp/partial-failure';
+import {
+	createLocationsBatch,
+	type CreateLocationInput,
+	type CreateLocationsResult,
+	type SkippedInvalid
+} from './mcp/create-locations';
+import { normalizeAddressPatch } from './mcp/address-patch';
+import { assertItemMenuMoves, assertLocationRefPatches } from './mcp/ref-validation';
+import { normalizeCountry } from '../src/lib/address';
+import { normalizePhone } from '../src/lib/phone';
+import { hasNonHttpScheme } from '../src/lib/safe-url';
 import { searchPoi } from './osm/search-poi';
+import { selectChainCandidates, partitionImportable } from './osm/import-chain';
 import { findCoordinateDrift } from './osm/find-coordinate-drift';
+import { findIdentityDrift } from './osm/find-identity-drift';
 import { findMissingAddress } from './osm/find-missing-address';
+import { findDuplicateLocations } from './osm/find-duplicate-locations';
+import { findIncompleteMenus } from './osm/find-incomplete-menus';
+import { findHtmlEntities } from './osm/find-html-entities';
+import { findMissingCourseTags } from './osm/find-missing-course-tags';
+import { findUnlinkedChainBranches } from './osm/find-unlinked-chain-branches';
+import {
+	resolveListLimit,
+	resolveListOffset,
+	buildListLocationsPage
+} from './mcp/list-locations-page';
+import { itemNameView, menuItemsSummary } from './mcp/menu-views';
+import { createChainBundle } from './mcp/create-chain';
+import { deleteLocationsBatch } from './mcp/delete-locations';
+import {
+	listLocationsOutput,
+	getLocationOutput,
+	getItemOutput,
+	getMenuOutput,
+	getBrandOutput,
+	auditLocationsOutput,
+	createLocationsOutput,
+	updateLocationsOutput,
+	createItemsOutput,
+	updateItemsOutput,
+	createChainOutput,
+	deleteLocationsOutput
+} from './mcp/output-schemas';
 import { OsmPoiStore } from './osm/poi-store';
-import { osmOwnAddressParts, osmUrl } from './osm/map-feature';
 import { bboxAround, haversineMeters } from './osm/geo';
 
 // The D1 client is created lazily so the server can start and advertise its
@@ -95,13 +146,44 @@ function getOsmStore(): OsmPoiStore {
 // and the JSON Schema advertised to the client)
 // ---------------------------------------------------------------------------
 
-const categorySchema = v.picklist(['cafe', 'fast_food', 'restaurant', 'bakery']);
+const categorySchema = v.picklist(CATEGORIES);
 const tagIdSchema = v.picklist(TAGS.map((t) => t.id) as [string, ...string[]]);
 
 // Tag ids grouped by type, derived from the canonical list so the descriptions
 // below stay in sync automatically as tags are added.
 const dietaryTagIds = TAGS.filter((t) => t.tag_type === 'dietary').map((t) => t.id);
 const courseTagIds = TAGS.filter((t) => t.tag_type === 'course').map((t) => t.id);
+const courseTagIdSet = new Set(courseTagIds);
+
+// --- Course-tag completeness/exclusivity checks (shared by itemSchema and
+// updateItemArgs) — every item needs at least one course tag; "food" (the
+// explicit not-a-dessert-not-a-drink marker) can never combine with "dessert"
+// or "drink"; a course tag is never valid inside `optional_tags` (it describes
+// what the item factually IS, not something addable/omittable on request).
+
+/** True when `tags` includes at least one course tag id. */
+function hasCourseTag(tags: readonly string[]): boolean {
+	return tags.some((t) => courseTagIdSet.has(t));
+}
+
+/** True when `tags` combines "food" with "dessert" and/or "drink" (never allowed). */
+function hasFoodConflict(tags: readonly string[]): boolean {
+	return tags.includes('food') && (tags.includes('dessert') || tags.includes('drink'));
+}
+
+/** True when any course tag id appears among `optionalTags` (never allowed). */
+function hasOptionalCourseTag(optionalTags: readonly string[] | undefined): boolean {
+	return (optionalTags ?? []).some((t) => courseTagIdSet.has(t));
+}
+
+const MISSING_COURSE_TAG_MSG =
+	`every item must carry a course tag: ${courseTagIds.join(', ')} ("food" = explicitly neither ` +
+	'dessert nor drink)';
+const FOOD_COURSE_CONFLICT_MSG =
+	'"food" (explicitly neither dessert nor drink) cannot combine with "dessert" or "drink" in `tags`';
+const OPTIONAL_COURSE_TAG_MSG =
+	'a course tag (food/dessert/drink) describes what the item factually is, not something addable/' +
+	'omittable on request — remove it from `optional_tags`';
 
 // The single source of truth for how tags are applied. Advertised to MCP clients
 // via the server `instructions`, and reused verbatim in every tag-bearing tool
@@ -111,8 +193,14 @@ const TAG_POLICY =
 	`explicitly designates the item — via a dietary marker/label/section heading, or when the item's ` +
 	`name as shown in the source contains the designation (e.g. "Vegan Burger", "Halal Chicken", ` +
 	`"Vegetarian Thali"). Never infer a dietary tag from the ingredient list or general knowledge of ` +
-	`the dish; when unsure, omit it. Course tags (${courseTagIds.join(', ')}) describe what kind of ` +
-	`item it is and are applied factually (a dessert gets "dessert", a beverage gets "drink").`;
+	`the dish; when unsure, omit it. Course tags (${courseTagIds.join(', ')}) are FACTUAL, not source-` +
+	'asserted, and every item REQUIRES at least one: "food" marks it as explicitly neither a dessert ' +
+	'nor a drink (so no course tag at all unambiguously means "never course-reviewed", not "food"), ' +
+	'and it can never combine with "dessert" or "drink". "dessert" and "drink" MAY combine on one item ' +
+	"when it's genuinely both (e.g. a milkshake). When an item's course is ambiguous, tie-break on the " +
+	'source menu\'s OWN section placement ("Desserts", "Drinks", …); if the source is unsectioned, tag ' +
+	'by what the item is served as. Course tags never belong in `optional_tags` — they describe what ' +
+	'the item factually is, not something addable/omittable on request.';
 
 // A one-line pointer to {@link TAG_POLICY} for the many per-field tag descriptions.
 // The full policy is advertised once in the server instructions and the item-tool
@@ -120,8 +208,10 @@ const TAG_POLICY =
 // advertised JSON Schema, so the fields just restate the load-bearing rule.
 const TAG_POLICY_SHORT =
 	'Dietary tags are SOURCE-ASSERTED — apply only when the source explicitly designates the item ' +
-	'(name or marker), never inferred from ingredients; course tags (dessert/drink) are factual. ' +
-	'See the server tag policy.';
+	'(name or marker), never inferred from ingredients. Course tags are factual and REQUIRED — every ' +
+	`item needs at least one of (${courseTagIds.join(', ')}); "food" = explicitly neither dessert nor ` +
+	'drink and never combines with them; dessert+drink may combine when genuinely both; never put a ' +
+	'course tag in `optional_tags`. See the server tag policy.';
 
 // How the two ways of storing a menu relate. Kept terse and advertised to
 // clients so an agent picks the right create_* tool for the situation.
@@ -141,20 +231,89 @@ const MODEL_OVERVIEW =
 	'for one venue. Once created, read/edit/remove items with get_item / update_items / delete_item ' +
 	'(editing a shared chain item changes it for every branch).\n' +
 	'Items carry tags: pass `tags` (dietary/course) and `optional_tags` for things that can be added ' +
-	'or left out (e.g. an item that can be made vegan). Items do NOT store ingredients.';
+	'or left out (e.g. an item that can be made vegan). Every item REQUIRES at least one course tag ' +
+	`(${courseTagIds.join(', ')}) — "food" marks it as explicitly neither dessert nor drink; dessert+` +
+	'drink may combine when genuinely both (a milkshake), but "food" never combines with either. ' +
+	'Items do NOT store ingredients.';
+
+// --- Field policies -------------------------------------------------------
+// The correctness-critical rules that used to be repeated verbatim on every
+// create/update field. Each full rule is stated ONCE here and advertised via the
+// server instructions; the per-field descriptions carry only a terse load-bearing
+// pointer (the *_SHORT / *_DESC constants) that references the policy by name.
+
+// The naming rule (used by create_locations.name, update_locations.name and
+// import_chain.location_name — was ~600 chars repeated three times).
+const NAME_POLICY =
+	"Naming — a location's `name` is the venue's own business/brand name as the source displays it " +
+	'(e.g. "A&W", "Cactus Club Cafe") and NOTHING else. NEVER bake location data into it to tell ' +
+	'branches apart: no street, intersection, city, neighbourhood, mall/plaza or landmark, and no ' +
+	'parenthetical/suffix locator like "(Scott Road)", "- 72 Ave" or " Surrey" — branches at ' +
+	'different addresses are EXPECTED to share an identical name (the map tells them apart by ' +
+	'address/coordinates). No editorial annotation either: no former name "(formerly Bandidas ' +
+	'Taqueria)", status note "(closed)", or tacked-on descriptor "(Tea & Coffee)". When adding from ' +
+	"OSM, use the POI's `name` tag verbatim, dropping any such locator/annotation. Keep a word that " +
+	'only LOOKS like an addition when the source shows it AS the name (e.g. "Published on Main", ' +
+	'"MeeT on Main", "Almond Dosa - Pure Vegetarian"): the test is whether the venue calls itself ' +
+	'that, not whether it locates or describes a branch.';
+
+// The OSM-import / coordinate-exact rule (used by create_locations.osm_id).
+const OSM_IMPORT_POLICY =
+	'OSM import (`osm_id`) — PREFER passing the `osm_id` of a search_poi candidate: the server takes ' +
+	"that POI's latitude/longitude VERBATIM (the coordinate-exact match the map's de-duplication " +
+	'relies on — never copy or geocode coordinates) and fills the address from its addr:* tags, ' +
+	'auto-citing osm_url. OMIT latitude/longitude when using osm_id (passing them is rejected); you ' +
+	"MAY still pass address parts to override or supply what the POI lacks (from the POI's admin " +
+	'context, never geocoded). Use manual latitude/longitude + address only for a venue not in OSM.';
+
+// The structured-address rule (used by the street/city/region/postcode/country
+// fields on both create_locations and update_locations).
+const ADDRESS_POLICY =
+	'Structured address — `street`, `city`, `region` and `country` are REQUIRED; `postcode` is ' +
+	"optional. Take every part from the venue's OSM/Overture data — never geocode or invent one. " +
+	'region/postcode/country are normalized server-side (province/state → 2-letter code, e.g. ' +
+	'"Ontario" → "ON"; postcode → canonical spacing; country → ISO-2, defaulting to CA), so a source ' +
+	'spelling is accepted as given; a partial/invalid postcode (e.g. a bare FSA) is dropped rather ' +
+	'than stored.';
+
+// The refresh-notes rule (used by create_menu.refresh_notes and update_menu.refresh_notes).
+const REFRESH_NOTES_POLICY =
+	"refresh_notes — banks HOW to refresh a menu's data for the next verification pass: the " +
+	'machine-readable feed endpoint (ordering API, nutrition PDF, CMS query) plus fetch caveats (e.g. ' +
+	'"menu page is client-rendered; use the ordering API behind it"). RECORD it whenever menu ' +
+	'research discovers a non-obvious source; CHECK it (get_menu) before re-researching from scratch.';
+
+// The one-line load-bearing pointer stamped on every name field (see NAME_POLICY).
+const NAME_DESC_SHORT =
+	"The venue's own name ONLY — no location/branch (street, neighbourhood, mall, landmark) or " +
+	'editorial annotation (former name, status note) baked in; branches share a name and are told ' +
+	'apart by address. See the naming policy in the server instructions.';
 
 const SERVER_INSTRUCTIONS =
 	'CRUD tools over the food-map database (locations, chains/brands, and their menu items). Each ' +
-	'location, menu, and item may carry source URLs documenting where the data came from — include ' +
-	'them whenever you add scraped data so it stays verifiable.\n\n' +
+	'Each MENU may carry source URLs documenting where its food data came from (the menu / ordering ' +
+	'link, official nutrition or dietary pages) — provenance is MENU-LEVEL, so cite it on create_menu / ' +
+	'update_menu (or via create_locations for an independent venue). Every menu should have at least one.\n\n' +
 	'To find venues still missing from the map, use search_poi: it reads a local OpenStreetMap ' +
 	'food-POI staging store (built offline, not the live D1), already de-duplicated against existing ' +
-	'locations, and returns candidates each carrying an `osm_id` (pass it to create_locations to import OSM coordinates + address verbatim) — then add each with ' +
-	`create_locations.\n\n${MODEL_OVERVIEW}\n\nTag policy: ${TAG_POLICY}`;
+	'locations, and returns candidates each carrying an `osm_id` (pass it to create_locations to ' +
+	'import OSM coordinates + address verbatim) — then add each with create_locations. To import a ' +
+	"CHAIN's branches, do NOT loop search_poi/create_locations by hand: create the brand, its shared " +
+	'menu and the menu items, then call import_chain once (dry_run first to vet the name allowlist; ' +
+	"pass `brand_wikidata` to catch name variants via OSM's brand tag, and `country` to keep " +
+	'neighbouring-country border POIs out) — it scans the whole area, filters by name, and imports ' +
+	'every branch with OSM-verbatim coordinates/addresses in one call. After bulk imports, ' +
+	'audit_locations ' +
+	'(check: "duplicate_locations") finds same-name pairs a few metres apart — OSM sometimes maps one ' +
+	`venue twice; verify against the venue's own locator, then delete_locations the extra row, or ` +
+	'mark_not_duplicate a verified two-real-venues pair so it is never re-flagged.\n\n' +
+	`${MODEL_OVERVIEW}\n\nTag policy: ${TAG_POLICY}\n\n` +
+	'Field policies — the full rules the terse per-field descriptions point to:\n\n' +
+	`${NAME_POLICY}\n\n${OSM_IMPORT_POLICY}\n\n${ADDRESS_POLICY}\n\n${REFRESH_NOTES_POLICY}`;
 
 const latitudeSchema = v.pipe(v.number(), v.minValue(-90), v.maxValue(90));
 const longitudeSchema = v.pipe(v.number(), v.minValue(-180), v.maxValue(180));
-const priceSchema = v.pipe(v.number(), v.minValue(0));
+const priceSchema = v.pipe(v.number(), v.finite(), v.minValue(0));
 
 // Currency is a property of the MENU (one region → one currency), so prices on it
 // are unambiguous. Stored upper-case; accepted as any case. Defaults to CAD.
@@ -167,6 +326,21 @@ const currencySchema = v.pipe(
 		`ISO 4217 currency code for this menu's prices, e.g. "CAD", "USD", "GBP". ` +
 			`Case-insensitive; stored upper-case. Defaults to ${DEFAULT_CURRENCY}.`
 	)
+);
+
+// An ISO-2 country scope for the POI tools (search_poi / import_chain). Folded
+// through the SAME normalizeCountry the write path and poiCountry use, so the
+// scope and the per-POI signal can never disagree on spelling: "UK"/"uk"/
+// "United Kingdom" all become "GB". A raw string compare here would silently
+// invert the filter (scope "UK" vs signal "GB" drops every UK POI).
+const countryScopeSchema = v.pipe(
+	v.string(),
+	v.trim(),
+	v.check(
+		(s) => normalizeCountry(s) !== null,
+		'country must be an ISO-3166-1 code or a recognized country name, e.g. "CA", "US", "GB"/"UK".'
+	),
+	v.transform((s) => normalizeCountry(s) as string)
 );
 
 // Addresses are stored as STRUCTURED parts (see src/lib/address.ts and migrations
@@ -188,172 +362,91 @@ const citySchema = v.pipe(v.string(), v.trim(), v.minLength(1, 'city is required
 const regionSchema = v.pipe(v.string(), v.trim(), v.minLength(1, 'region is required'));
 const postcodeSchema = v.pipe(v.string(), v.trim(), v.minLength(1));
 const countryPartSchema = v.pipe(v.string(), v.trim(), v.minLength(1));
+// Websites are rendered as anchor hrefs in the placecard, so reject values
+// smuggling a non-http(s) scheme (javascript:, data:, …). Scheme-less values
+// pass — the render-side allowlist shows those as plain text, not a link.
+const websiteSchema = v.pipe(
+	v.string(),
+	v.check(
+		(s) => !hasNonHttpScheme(s),
+		'website must be an http(s) URL (no javascript:/data:/other schemes)'
+	)
+);
 
-/** Field descriptions reused on create_locations and update_locations. */
-const NAME_DESC =
-	'The venue\'s own business/brand name as the source displays it, e.g. "A&W" or "Cactus Club ' +
-	'Cafe" — and NOTHING else. NEVER bake location data into the name to tell branches apart: no ' +
-	'street, intersection, city, neighbourhood, mall/plaza, or landmark, and no parenthetical/suffix ' +
-	'locator like "(Scott Road)", "- 72 Ave", or " Surrey". Branches at different addresses are ' +
-	'EXPECTED to share an identical name — the map tells them apart by their address/coordinates, not ' +
-	'by the name. No editorial annotation either: no former name like "(formerly Bandidas Taqueria)", ' +
-	'status note like "(closed)", or tacked-on descriptor like "(Tea & Coffee)" — that prose has no ' +
-	"place in the name. When adding from OSM, use the POI's `name` tag verbatim (dropping any such " +
-	'locator/annotation). Keep a word that only looks like an addition when the source shows it AS the ' +
-	'name (e.g. "Published on Main", "MeeT on Main", "Almond Dosa - Pure Vegetarian"); the test is ' +
-	'whether the venue calls itself that, not whether it locates or describes a branch.';
-const STREET_DESC =
-	'House number + street (+ unit), e.g. "1909 W 4th Ave". Take the street line from the candidate\'s ' +
-	'OSM/Overture address; never geocode or invent one.';
+// Terse per-field pointers reused on create_locations and update_locations — the
+// full rules live in SERVER_INSTRUCTIONS (NAME_POLICY / OSM_IMPORT_POLICY /
+// ADDRESS_POLICY above). NAME_DESC_SHORT is defined with the policies.
+const STREET_DESC = 'House number + street (+ unit), e.g. "1909 W 4th Ave".';
 const CITY_DESC = 'Municipality, e.g. "Vancouver".';
 const REGION_DESC =
-	'Province/state — a 2-letter code ("BC") or full name ("British Columbia"); stored as the 2-letter code.';
-const POSTCODE_DESC =
-	'Postal/ZIP code (optional). Stored canonically (e.g. "V6J 1M5"); omit when the source has none.';
-const COUNTRY_DESC =
-	'Country — name ("Canada") or ISO-2 code ("CA"); stored as ISO-2. Defaults to CA.';
+	'Province/state, e.g. "BC" or "British Columbia" (stored as the 2-letter code).';
+const POSTCODE_DESC = 'Postal/ZIP code (optional); omit when the source has none.';
+const COUNTRY_DESC = 'Country name or ISO-2 code (stored as ISO-2; defaults to CA).';
+const PHONE_DESC =
+	"The venue's phone (prefer its OSM contact:phone tag). Stored canonical (E.164, " +
+	'e.g. "+16045551234") regardless of the source spelling; the display form is derived on read.';
 const OSM_ID_DESC =
-	'PREFERRED way to add a venue: the `osm_id` of a search_poi candidate (same local OSM staging ' +
-	"store). When set, the server takes this venue's latitude/longitude VERBATIM from that OSM POI — " +
-	"guaranteeing the coordinate-exact match the map's de-duplication relies on, so you never copy or " +
-	"geocode coordinates — and fills the address from the POI's own addr:* tags, auto-citing its " +
-	'osm_url as a source. OMIT latitude/longitude when using osm_id (passing them is rejected). You may ' +
-	'still pass street/city/region/postcode/country to override or supply parts the POI lacks (e.g. ' +
-	"city/region) — take those from the POI's admin context, never geocode. Fall back to the manual " +
-	'latitude/longitude + address only for a venue genuinely not in OSM.';
-
-/**
- * Normalizes raw structured address args into the stored parts, throwing a clear
- * MCP error when a required part cannot be resolved. Reused by create_locations
- * and update_locations so storage stays uniform regardless of how a source spelled
- * a province / postcode / country.
- */
-function normalizeAddressParts(args: {
-	street: string;
-	city: string;
-	region: string;
-	postcode?: string | null;
-	country?: string | null;
-}): { street: string; city: string; region: string; postcode: string | null; country: string } {
-	const country = normalizeCountry(args.country ?? 'CA') ?? 'CA';
-	const region = normalizeRegion(args.region, country);
-	if (!region) {
-		throw new Error(
-			`region "${args.region}" is not a recognized province/state for ${country}. ` +
-				'Pass a 2-letter code or full name' +
-				(args.country === null || args.country === undefined
-					? ` (country defaulted to ${country}; if this venue is elsewhere, pass its country too).`
-					: '.')
-		);
-	}
-	let postcode: string | null = null;
-	if (args.postcode && args.postcode.trim()) {
-		postcode = normalizePostcode(args.postcode, country);
-		if (!postcode) {
-			throw new Error(
-				`postcode "${args.postcode}" is not a valid ${country} postal/ZIP code. ` +
-					'Omit it rather than storing a partial code.'
-			);
-		}
-	}
-	return { street: args.street.trim(), city: args.city.trim(), region, postcode, country };
-}
-
-/**
- * Normalizes only the address parts PRESENT in an update patch (a partial update
- * may touch just one part). region/postcode are validated against the patch's
- * country when given, else auto-detected (CA/US). Throws on an unresolvable value;
- * `postcode: null`/'' clears it.
- */
-function normalizeAddressPatch(patch: {
-	street?: string;
-	city?: string;
-	region?: string;
-	postcode?: string | null;
-	country?: string;
-}): Partial<{
-	street: string;
-	city: string;
-	region: string;
-	postcode: string | null;
-	country: string;
-}> {
-	const out: Partial<{
-		street: string;
-		city: string;
-		region: string;
-		postcode: string | null;
-		country: string;
-	}> = {};
-	if (patch.country !== undefined) {
-		const c = normalizeCountry(patch.country);
-		if (!c) throw new Error(`country "${patch.country}" is not a recognized country.`);
-		out.country = c;
-	}
-	if (patch.street !== undefined) out.street = patch.street.trim();
-	if (patch.city !== undefined) out.city = patch.city.trim();
-	if (patch.region !== undefined) {
-		const r = normalizeRegion(patch.region, out.country);
-		if (!r) throw new Error(`region "${patch.region}" is not a recognized province/state.`);
-		out.region = r;
-	}
-	if (patch.postcode !== undefined) {
-		if (patch.postcode === null || patch.postcode.trim() === '') {
-			out.postcode = null;
-		} else {
-			const p = normalizePostcode(patch.postcode, out.country);
-			if (!p) throw new Error(`postcode "${patch.postcode}" is not a valid postal/ZIP code.`);
-			out.postcode = p;
-		}
-	}
-	return out;
-}
+	'PREFERRED way to add a venue: the `osm_id` of a search_poi candidate — the server then takes ' +
+	"this venue's coordinates VERBATIM from that OSM POI (never geocoded/copied) and fills its " +
+	"address from the POI's addr:* tags, auto-citing osm_url. OMIT latitude/longitude when using " +
+	'osm_id (passing them is rejected). See the OSM-import policy in the server instructions.';
 
 // A single citation: a URL the data came from, plus an optional human label.
-const sourceSchema = v.object({
-	url: v.pipe(
-		v.string(),
-		v.url('Each source must be a valid URL, e.g. https://example.com/menu.'),
-		v.description('URL the data was obtained from.')
-	),
-	label: v.optional(
-		v.nullable(
-			v.pipe(v.string(), v.description("Optional human-readable label, e.g. 'Official menu'."))
-		)
-	)
-});
+// Sources are MENU-LEVEL (the app only records where a menu's food data came from
+// — the menu link, official nutrition/dietary pages), so these ride on the menu
+// tools (create_menu / update_menu / create_chain) and on create_locations' inline
+// private menu. Each entry is a bare URL string or a { url, label } object (see
+// source-input.ts).
+// Source-QUALITY rule, appended to every sources input description. Sources are
+// menu-level PROVENANCE a human reads to trust the data — so cite a few canonical,
+// browsable pages, never one link per item and never raw API endpoints (those read
+// as noise and build no trust). When the data came from a JSON/ordering API behind a
+// client-rendered page, cite the PUBLIC page a user can open and bank the API
+// endpoint in `refresh_notes` instead — the API is how you RE-FETCH, not how a reader
+// VERIFIES.
+const SOURCE_QUALITY_HINT =
+	'Keep sources FEW and user-friendly (usually 1–3 canonical, browsable pages): the official ' +
+	'menu/nutrition/allergen page, plus at most one aggregator (Uber Eats/DoorDash) or a nutrition PDF ' +
+	'when it corroborates something the official page lacks. Do NOT cite one URL per item, and do NOT ' +
+	'cite raw API/ordering endpoints (…/api/…, …/apiproxy/…, ?fuseaction=order): if the menu comes from ' +
+	'such a feed behind a JS-rendered page, cite the public page a reader can open and record the feed ' +
+	'endpoint in `refresh_notes` instead.';
 
-// Reused on create_* (append) and update_* (replace wholesale). The wording
-// nudges the scraping agent to cite where any added data came from.
+// Menu sources on a CREATE that MUST cite at least one link (create_menu, and
+// create_locations when it builds a private menu from inline items). Optional in
+// the schema so `[]` is a clear validation error rather than a missing field; the
+// tools enforce the non-empty requirement in their handlers.
 const createSourcesSchema = v.optional(
 	v.pipe(
-		v.array(sourceSchema),
+		v.array(sourceInputSchema),
 		v.description(
-			'Source URLs documenting where this data came from (each: a url and optional label). ' +
-				'Strongly encouraged whenever you add scraped data, so it stays verifiable. ' +
-				'May be omitted or [] when you genuinely have no source.'
+			`Menu source URLs — where this menu's food data came from (${SOURCE_KINDS_HINT}). ` +
+				'Each: a URL string, or { url, label }. Provide AT LEAST ONE link so the menu stays verifiable. ' +
+				SOURCE_QUALITY_HINT
 		)
 	)
 );
 
 const updateSourcesSchema = v.optional(
 	v.pipe(
-		v.array(sourceSchema),
+		v.array(sourceInputSchema),
 		v.description(
-			'REPLACES the full source set (each: a url and optional label). Pass [] to clear all sources. ' +
-				'To ADD a citation without resending the existing ones, use `add_sources` instead. ' +
-				'Encouraged: keep at least one source documenting where the data came from.'
+			"REPLACES the menu's full source set (each: a URL string, or { url, label }). Pass [] to clear all " +
+				'sources. To ADD a citation without resending the existing ones, use `add_sources` instead. ' +
+				`Keep at least one menu link (${SOURCE_KINDS_HINT}). ` +
+				SOURCE_QUALITY_HINT
 		)
 	)
 );
 
 const addSourcesSchema = v.optional(
 	v.pipe(
-		v.array(sourceSchema),
+		v.array(sourceInputSchema),
 		v.description(
 			'APPENDS these sources to the existing set (de-duplicated by url); existing sources are kept. ' +
-				'Use this to add a citation without re-sending the full set. Mutually exclusive with `sources` ' +
-				'(which replaces) — passing both is rejected.'
+				'Each: a URL string, or { url, label }. Use this to add a citation without re-sending the full ' +
+				'set. Mutually exclusive with `sources` (which replaces) — passing both is rejected. ' +
+				SOURCE_QUALITY_HINT
 		)
 	)
 );
@@ -384,8 +477,10 @@ const closeLocationArgs = v.object({
 			v.string(),
 			v.minLength(1),
 			v.description(
-				'Short note with the closure evidence, stored on the row (e.g. "Closed 2024 per Yelp + dead ' +
-					'site"). Strongly encouraged when closing; ignored when `reopen` is true.'
+				'Short note with the closure evidence INCLUDING the source link, stored on the row (e.g. ' +
+					'"Closed 2024 per Yelp permanently-closed + dead site https://…"). Provenance is menu-level, ' +
+					'so a closed venue keeps its evidence here in the reason text. Strongly encouraged when ' +
+					'closing; ignored when `reopen` is true.'
 			)
 		)
 	),
@@ -397,44 +492,58 @@ const closeLocationArgs = v.object({
 					'reappears on the map. Omit (or false) to close it.'
 			)
 		)
-	),
-	sources: addSourcesSchema
+	)
 });
+
+// The item `description` is the source's own words, never authored. Reused by
+// itemSchema (create) and updateItemArgs.
+const ITEM_DESCRIPTION_DESC =
+	"The item's description COPIED VERBATIM from the official menu source (the venue's own blurb " +
+	'for this item). Never write, paraphrase or embellish one yourself — if the source shows no ' +
+	'description, leave this null.';
 
 // One menu item. Shared by create_items (the batch's location_id/menu_id is given
 // once), and by the inline `menu_items` of an independent venue created via
 // create_locations.
-const itemSchema = v.object({
-	item_name: v.pipe(v.string(), v.minLength(1), v.description('Name of the menu item.')),
-	description: v.optional(v.nullable(v.string())),
-	price: v.optional(
-		v.nullable(
-			v.pipe(
-				priceSchema,
-				v.description(
-					"Price in the menu's currency (a bare number, no symbol; the menu's currency defaults to " +
-						`${DEFAULT_CURRENCY}). For a shared chain item this is the default a branch can override ` +
-						'per-location via set_location_item_override.'
+const itemSchema = v.pipe(
+	v.object({
+		item_name: v.pipe(v.string(), v.minLength(1), v.description('Name of the menu item.')),
+		description: v.optional(v.nullable(v.pipe(v.string(), v.description(ITEM_DESCRIPTION_DESC)))),
+		price: v.optional(
+			v.nullable(
+				v.pipe(
+					priceSchema,
+					v.description(
+						"Price in the menu's currency (a bare number, no symbol; the menu's currency defaults to " +
+							`${DEFAULT_CURRENCY}). For a shared chain item this is the default a branch can override ` +
+							'per-location via set_location_item_override.'
+					)
 				)
 			)
+		),
+		tags: v.pipe(
+			v.array(tagIdSchema),
+			v.description(
+				'Tags to apply to this item. REQUIRED to include at least one course tag. ' +
+					TAG_POLICY_SHORT
+			)
+		),
+		optional_tags: optionalTagsSchema,
+		id: v.optional(
+			v.pipe(
+				v.string(),
+				v.minLength(1),
+				v.description('Optional explicit id; a UUID is generated when omitted.')
+			)
 		)
-	),
-	tags: v.optional(
-		v.pipe(v.array(tagIdSchema), v.description('Tags to apply to this item. ' + TAG_POLICY_SHORT))
-	),
-	optional_tags: optionalTagsSchema,
-	sources: createSourcesSchema,
-	id: v.optional(
-		v.pipe(
-			v.string(),
-			v.minLength(1),
-			v.description('Optional explicit id; a UUID is generated when omitted.')
-		)
-	)
-});
+	}),
+	v.check((item) => hasCourseTag(item.tags), MISSING_COURSE_TAG_MSG),
+	v.check((item) => !hasFoodConflict(item.tags), FOOD_COURSE_CONFLICT_MSG),
+	v.check((item) => !hasOptionalCourseTag(item.optional_tags), OPTIONAL_COURSE_TAG_MSG)
+);
 
 const createLocationArgs = v.object({
-	name: v.pipe(v.string(), v.minLength(1), v.description(NAME_DESC)),
+	name: v.pipe(v.string(), v.minLength(1), v.description(NAME_DESC_SHORT)),
 	category: v.optional(
 		v.nullable(
 			v.pipe(
@@ -473,8 +582,8 @@ const createLocationArgs = v.object({
 	),
 	postcode: v.optional(v.nullable(v.pipe(postcodeSchema, v.description(POSTCODE_DESC)))),
 	country: v.optional(v.nullable(v.pipe(countryPartSchema, v.description(COUNTRY_DESC)))),
-	phone: v.optional(v.nullable(v.string())),
-	website: v.optional(v.nullable(v.string())),
+	phone: v.optional(v.nullable(v.pipe(v.string(), v.description(PHONE_DESC)))),
+	website: v.optional(v.nullable(websiteSchema)),
 	brand_id: v.optional(
 		v.nullable(
 			v.pipe(
@@ -491,8 +600,8 @@ const createLocationArgs = v.object({
 				v.minLength(1),
 				v.description(
 					'Shared brand menu this branch serves; its items then appear here automatically. ' +
-						'Leave unset for an independent venue (use create_items, or inline `menu_items`, ' +
-						'for its own menu).'
+						'Pass the owning `brand_id` with it. Leave unset for an independent venue ' +
+						'(use create_items, or inline `menu_items`, for its own menu).'
 				)
 			)
 		)
@@ -518,7 +627,18 @@ const createLocationArgs = v.object({
 			)
 		)
 	),
-	sources: createSourcesSchema,
+	sources: v.optional(
+		v.pipe(
+			v.array(sourceInputSchema),
+			v.description(
+				`Menu source URLs for this venue's menu (${SOURCE_KINDS_HINT}). Each: a URL string, or ` +
+					'{ url, label }. REQUIRED (at least one) when `menu_items` are given — they build the ' +
+					"venue's private menu, and every menu must cite where its food data came from. Ignored for a " +
+					'chain branch (its shared menu carries the sources) or a venue added with no menu. ' +
+					SOURCE_QUALITY_HINT
+			)
+		)
+	),
 	closed_reason: v.optional(
 		v.pipe(
 			v.string(),
@@ -548,50 +668,75 @@ const createLocationsArgs = v.object({
 		v.minLength(1),
 		v.maxLength(100),
 		v.description(
-			'Locations to create in one atomic batch (all-or-nothing). Pass a single item to add one place. ' +
+			'Locations to create in one batch. Pass a single item to add one place. ' +
 				'Ideal for bulk imports such as backfilling a chain across a region — set the same brand_id and ' +
 				'menu_id on every item so each branch serves the shared menu, and cite each source (e.g. the ' +
-				'osm_url from search_poi). Keep batches to ~50 items.'
+				'osm_url from search_poi). Keep batches to ~50 items. For importing a whole chain from the OSM ' +
+				'staging store, prefer import_chain (one call replaces the search_poi → create_locations loop).'
+		)
+	),
+	skip_invalid: v.optional(
+		v.pipe(
+			v.boolean(),
+			v.description(
+				'When true, an item that fails to resolve (e.g. an OSM POI with no recoverable street) is ' +
+					'SKIPPED and reported in `skipped_invalid` with its reason, and the valid items are still ' +
+					'created. Default false: any invalid item fails the whole batch (nothing is written), with ' +
+					'EVERY failing item listed in the error so one round-trip surfaces all of them.'
+			)
 		)
 	)
 });
 
 // One location patch within an update_locations batch. Every field but `id` is
-// optional; only the fields present are changed.
-const updateLocationItemArgs = v.object({
-	id: v.pipe(v.string(), v.minLength(1), v.description('Id of the location to update.')),
-	name: v.optional(
-		v.pipe(v.string(), v.minLength(1), v.description(`Replace the name. ${NAME_DESC}`))
-	),
-	category: v.optional(v.nullable(categorySchema)),
-	latitude: v.optional(latitudeSchema),
-	longitude: v.optional(longitudeSchema),
-	street: v.optional(v.pipe(streetSchema, v.description(`Replace the street. ${STREET_DESC}`))),
-	city: v.optional(v.pipe(citySchema, v.description(`Replace the city. ${CITY_DESC}`))),
-	region: v.optional(v.pipe(regionSchema, v.description(`Replace the region. ${REGION_DESC}`))),
-	postcode: v.optional(v.nullable(v.pipe(postcodeSchema, v.description(POSTCODE_DESC)))),
-	country: v.optional(
-		v.pipe(countryPartSchema, v.description(`Replace the country. ${COUNTRY_DESC}`))
-	),
-	phone: v.optional(v.nullable(v.string())),
-	website: v.optional(v.nullable(v.string())),
-	brand_id: v.optional(
-		v.nullable(
-			v.pipe(v.string(), v.minLength(1), v.description('Reassign to a chain; null detaches it.'))
-		)
-	),
-	menu_id: v.optional(
-		v.nullable(
-			v.pipe(
-				v.string(),
-				v.minLength(1),
-				v.description('Assign/replace the shared menu this branch serves; null detaches it.')
+// optional; only the fields present are changed. Strict so an unknown field
+// (e.g. the removed location-level `sources`, now menu-level on update_menu)
+// fails loudly instead of being silently dropped and reported as updated.
+// Exported for scripts/update-locations.test.ts.
+export const updateLocationItemArgs = v.pipe(
+	v.strictObject({
+		id: v.pipe(v.string(), v.minLength(1), v.description('Id of the location to update.')),
+		name: v.optional(
+			v.pipe(v.string(), v.minLength(1), v.description(`Replace the name. ${NAME_DESC_SHORT}`))
+		),
+		category: v.optional(v.nullable(categorySchema)),
+		latitude: v.optional(latitudeSchema),
+		longitude: v.optional(longitudeSchema),
+		street: v.optional(v.pipe(streetSchema, v.description(`Replace the street. ${STREET_DESC}`))),
+		city: v.optional(v.pipe(citySchema, v.description(`Replace the city. ${CITY_DESC}`))),
+		region: v.optional(v.pipe(regionSchema, v.description(`Replace the region. ${REGION_DESC}`))),
+		postcode: v.optional(v.nullable(v.pipe(postcodeSchema, v.description(POSTCODE_DESC)))),
+		country: v.optional(
+			v.pipe(countryPartSchema, v.description(`Replace the country. ${COUNTRY_DESC}`))
+		),
+		phone: v.optional(
+			v.nullable(v.pipe(v.string(), v.description(`Replace the phone. ${PHONE_DESC}`)))
+		),
+		website: v.optional(v.nullable(websiteSchema)),
+		brand_id: v.optional(
+			v.nullable(
+				v.pipe(v.string(), v.minLength(1), v.description('Reassign to a chain; null detaches it.'))
+			)
+		),
+		menu_id: v.optional(
+			v.nullable(
+				v.pipe(
+					v.string(),
+					v.minLength(1),
+					v.description(
+						'Assign/replace the shared menu this branch serves (pass the owning `brand_id` ' +
+							'with it); null detaches it.'
+					)
+				)
 			)
 		)
-	),
-	sources: updateSourcesSchema,
-	add_sources: addSourcesSchema
-});
+	}),
+	v.check(
+		(p) => (p.latitude === undefined) === (p.longitude === undefined),
+		'Pass `latitude` and `longitude` together (copied verbatim from the OSM POI) or neither — ' +
+			'a single-axis patch would move the venue to a point no OSM POI occupies.'
+	)
+);
 
 const updateLocationsArgs = v.object({
 	items: v.pipe(
@@ -603,6 +748,20 @@ const updateLocationsArgs = v.object({
 				'Each carries an `id` plus only the fields to change. Ideal for mass backfills from ' +
 				'audit_locations. Ids that do not exist are reported in ' +
 				'`not_found_ids` rather than failing the batch.'
+		)
+	)
+});
+
+const deleteLocationsArgs = v.object({
+	ids: v.pipe(
+		v.array(v.pipe(v.string(), v.minLength(1))),
+		v.minLength(1),
+		v.maxLength(100),
+		v.description(
+			'Ids of the locations to HARD-delete (1-100), mirroring the batched update_locations. Each ' +
+				"delete cascades that venue's sources/overrides/likes and orphans its private menu — PREFER " +
+				'close_location for a real venue that has permanently closed (it preserves likes); reserve ' +
+				'this for mistaken/duplicate rows. Ids matching no row come back in `not_found_ids`.'
 		)
 	)
 });
@@ -680,8 +839,34 @@ const listLocationsArgs = v.object({
 	category: v.optional(
 		v.pipe(categorySchema, v.description('Only return locations in this category.'))
 	),
+	brand_id: v.optional(
+		v.pipe(
+			v.string(),
+			v.minLength(1),
+			v.description(
+				"Only branches of this chain (exact brand_id match) — the reliable way to enumerate or count a chain's branches, unlike a name substring."
+			)
+		)
+	),
+	count_only: v.optional(
+		v.pipe(
+			v.boolean(),
+			v.description(
+				'Return just { count } of matching locations instead of the rows — e.g. to size a chain ' +
+					'before paging, or to audit branch counts cheaply. `limit`/`offset` are ignored.'
+			)
+		)
+	),
 	limit: v.optional(
-		v.pipe(v.number(), v.integer(), v.minValue(1), v.description('Maximum number to return.'))
+		v.pipe(
+			v.number(),
+			v.integer(),
+			v.minValue(1),
+			v.description(
+				'Maximum rows to return in this page (default 50, max 200; a larger value is clamped). ' +
+					'Ignored when `count_only` is true.'
+			)
+		)
 	),
 	offset: v.optional(
 		v.pipe(
@@ -689,6 +874,26 @@ const listLocationsArgs = v.object({
 			v.integer(),
 			v.minValue(0),
 			v.description('Skip this many results (paging).')
+		)
+	)
+});
+
+// get_location takes the SAME `view` selector as get_menu, but DEFAULTS to "full"
+// rather than "names": a single venue's own private menu is typically small, so
+// returning it in full by default is cheap and useful — unlike get_menu, whose
+// target is often a shared chain menu of hundreds of items. Only the default
+// differs; the three view shapes are identical (see scripts/mcp/menu-views.ts).
+const getLocationArgs = v.object({
+	id: v.pipe(v.string(), v.minLength(1), v.description('The record id (UUID).')),
+	view: v.optional(
+		v.pipe(
+			v.picklist(['full', 'names', 'summary']),
+			v.description(
+				'Payload size for the inline `menu`. DEFAULT is "full" — every owned item with its ' +
+					"description, sources and optional-tag detail (a single venue's menu is usually small). " +
+					'"names" returns items as just { id, item_name, price, tags }; "summary" returns no item ' +
+					'list, just counts and a per-tag histogram. (Contrast get_menu, which defaults to "names".)'
+			)
 		)
 	)
 });
@@ -701,6 +906,16 @@ const bboxSchema = v.object({
 	max_lat: latitudeSchema,
 	max_lon: longitudeSchema
 });
+
+/** MCP wire bbox (snake_case) → the shared {@link Bounds} shape everything internal uses. */
+function toBounds(b: v.InferOutput<typeof bboxSchema>): Bounds {
+	return {
+		minLat: b.min_lat,
+		maxLat: b.max_lat,
+		minLng: b.min_lon,
+		maxLng: b.max_lon
+	};
+}
 
 const searchPoiArgs = v.pipe(
 	v.object({
@@ -741,10 +956,43 @@ const searchPoiArgs = v.pipe(
 				v.description('Case-insensitive substring match on the OSM cuisine tag.')
 			)
 		),
+		country: v.optional(
+			v.pipe(
+				countryScopeSchema,
+				v.description(
+					'ISO-2 country scope, e.g. "CA". Drops POIs whose address SIGNALS a different country ' +
+						'(explicit addr:country, or a region code belonging to another country); POIs with no ' +
+						'country signal are kept. Recommended for border-spanning areas — a Canada extract carries ' +
+						'some US border-town POIs. Dropped count returned as `excluded_foreign`.'
+				)
+			)
+		),
 		exclude_existing: v.optional(
 			v.pipe(
 				v.boolean(),
 				v.description('Omit POIs already present in the database (default true).')
+			)
+		),
+		exclude_osm_ids: v.optional(
+			v.pipe(
+				v.array(v.pipe(v.string(), v.minLength(1))),
+				v.maxLength(1000),
+				v.description(
+					'osm_ids to drop from the results — e.g. known false name matches, so they stop ' +
+						'resurfacing on every re-search of the same area. Applied before `limit`.'
+				)
+			)
+		),
+		compact: v.optional(
+			v.pipe(
+				v.boolean(),
+				v.description(
+					'Return the minimal per-candidate shape instead: { osm_id, name, suggested_category, ' +
+						'latitude, longitude, has_address, distance_m? } (has_address: "full" = street+city+region ' +
+						'all resolvable, "partial", or "none"). Use for large sweeps (limit 200) so the result ' +
+						'stays well under tool-output caps — an osm_id import needs nothing more; fetch details ' +
+						'for specific candidates with a non-compact call if needed.'
+				)
 			)
 		),
 		limit: v.optional(
@@ -769,12 +1017,166 @@ const searchPoiArgs = v.pipe(
 	}, 'Provide EITHER `bbox` OR all of `latitude`, `longitude` and `radius_km` (not both, and centre coordinates must be complete).')
 );
 
+const importChainArgs = v.pipe(
+	v.object({
+		brand_id: v.pipe(
+			v.string(),
+			v.minLength(1),
+			v.description('The chain (create_brand) every imported branch belongs to.')
+		),
+		menu_id: v.pipe(
+			v.string(),
+			v.minLength(1),
+			v.description(
+				'The shared regional menu (create_menu) every imported branch serves — create the brand, ' +
+					'menu and its items FIRST, then import the branches.'
+			)
+		),
+		location_name: v.pipe(
+			v.string(),
+			v.minLength(1),
+			v.description(
+				'The canonical name stored on every imported branch, e.g. "Harvey\'s". ' + NAME_DESC_SHORT
+			)
+		),
+		name_match: v.pipe(
+			v.array(v.pipe(v.string(), v.minLength(1))),
+			v.minLength(1),
+			v.maxLength(50),
+			v.description(
+				'Source names accepted as this chain, matched STRICTLY by normalized equality (case, accents, ' +
+					'punctuation and "&"/"and" folded) — e.g. ["Mary Brown\'s", "Mary Brown\'s Chicken", ' +
+					'"Mary Browns"]. POIs whose name is not an exact normalized match are NEVER imported; they ' +
+					'come back counted in `name_buckets`, so run dry_run first and extend this list from what ' +
+					'you see there (also passing `brand_wikidata` catches most variants automatically).'
+			)
+		),
+		brand_wikidata: v.optional(
+			v.pipe(
+				v.string(),
+				v.trim(),
+				v.transform((s) => s.toUpperCase()),
+				v.regex(/^Q\d+$/, 'brand_wikidata must be a Wikidata QID, e.g. "Q37158".'),
+				v.description(
+					"The chain's Wikidata QID, matched against each POI's OSM `brand:wikidata` tag (e.g. " +
+						'"Q37158" for Starbucks — dry_run first and read it off the main bucket\'s ' +
+						'`brand_wikidata` annotation). ALSO accepts name variants no allowlist entry anticipated ' +
+						'("Tim Hortons Express"), but only on TWO-SIGNAL agreement: the POI name must still ' +
+						'contain (or be contained by) an accepted name. A brand-tagged POI with a conflicting ' +
+						'name (a real OSM mistag pattern, e.g. a "Second Cup" carrying the Starbucks QID) is ' +
+						'never imported, and neither is a co-branded unit name ("Wendy\'s / Tim Hortons" — ' +
+						"importing it under one chain would block the other chain's import of that venue) — both " +
+						'stay in `name_buckets` with their QID for explicit vetting. Buckets whose POIs were ' +
+						'accepted via this path are flagged `matched_via_brand: true` in the dry run — review ' +
+						'them like any allowlist extension.'
+				)
+			)
+		),
+		country: v.optional(
+			v.pipe(
+				countryScopeSchema,
+				v.description(
+					'ISO-2 country scope, e.g. "CA". Drops POIs whose address signals a different country before ' +
+						'matching (counted in `excluded_foreign`); POIs with no country signal are kept. ' +
+						'Recommended for country-wide imports — a Canada extract carries some US border-town POIs ' +
+						'that would otherwise fail (or worse, import) under the wrong country.'
+				)
+			)
+		),
+		latitude: v.optional(
+			v.pipe(latitudeSchema, v.description('Centre latitude (with longitude + radius_km).'))
+		),
+		longitude: v.optional(
+			v.pipe(longitudeSchema, v.description('Centre longitude (with latitude + radius_km).'))
+		),
+		radius_km: v.optional(
+			v.pipe(
+				v.number(),
+				v.minValue(0),
+				v.maxValue(50),
+				v.description('Search radius in km around the centre (max 50).')
+			)
+		),
+		bbox: v.optional(
+			v.pipe(
+				bboxSchema,
+				v.description('Bounding box to import from. Provide this OR latitude+longitude+radius_km.')
+			)
+		),
+		category: v.optional(
+			v.pipe(
+				categorySchema,
+				v.description(
+					"Force this category on every branch; omit to use each POI's suggested category."
+				)
+			)
+		),
+		website: v.optional(
+			v.pipe(
+				websiteSchema,
+				v.minLength(1),
+				v.description(
+					"Fallback website for branches whose POI has none tagged (typically the chain's own site)."
+				)
+			)
+		),
+		max: v.optional(
+			v.pipe(
+				v.number(),
+				v.integer(),
+				v.minValue(1),
+				v.maxValue(1000),
+				v.description(
+					'Cap on branches imported in this call (default 500), applied to the IMPORTABLE candidates ' +
+						'only — address-unresolvable POIs are summarized in `skipped_unresolvable` and never ' +
+						'consume the cap. Anything beyond it is counted in `remaining_beyond_max` — call again to ' +
+						'continue (already-imported branches are excluded automatically).'
+				)
+			)
+		),
+		include_location_ids: v.optional(
+			v.pipe(
+				v.boolean(),
+				v.description(
+					'Also return the created location ids (default false — a 1000-branch import would return ' +
+						'1000 UUIDs; enumerate branches later with list_locations brand_id instead).'
+				)
+			)
+		),
+		dry_run: v.optional(
+			v.pipe(
+				v.boolean(),
+				v.description(
+					'Preview without writing: how many branches would import, the full `name_buckets` histogram ' +
+						'(to vet the allowlist), and a sample of candidates. ALWAYS dry-run a new chain first.'
+				)
+			)
+		)
+	}),
+	v.check((input) => {
+		const hasBbox = input.bbox !== undefined;
+		const centreCount = [input.latitude, input.longitude, input.radius_km].filter(
+			(value) => value !== undefined
+		).length;
+		return hasBbox ? centreCount === 0 : centreCount === 3;
+	}, 'Provide EITHER `bbox` OR all of `latitude`, `longitude` and `radius_km` (not both, and centre coordinates must be complete).')
+);
+
 // One tool, two audits against the local OSM staging store, selected by `check`.
 // `limit`/`search_radius_m` apply to both; the remaining options are mode-specific
 // (flagged in their descriptions) and simply ignored by the audit they don't apply to.
 const auditLocationsArgs = v.object({
 	check: v.pipe(
-		v.picklist(['coordinate_drift', 'missing_address']),
+		v.picklist([
+			'coordinate_drift',
+			'identity_drift',
+			'missing_address',
+			'duplicate_locations',
+			'empty_menu',
+			'html_entities',
+			'missing_course_tag',
+			'unlinked_chain_branch'
+		]),
 		v.description(
 			'Which audit to run:\n' +
 				'• "coordinate_drift" — locations whose stored coordinates do NOT coincide with their ' +
@@ -782,12 +1184,90 @@ const auditLocationsArgs = v.object({
 				'`osm_longitude`, `distance_m`, `matched_osm_name`) — pass `osm_latitude`/`osm_longitude` to ' +
 				'update_locations to snap it back, citing `osm_url`. Locations with no name-matching POI nearby ' +
 				'are reported as `no_osm_match` (omit via include_unmatched=false).\n' +
+				'• "identity_drift" — locations whose staging POI AT their exact stored coordinates no longer ' +
+				'carries their name. Coordinates are OSM-verbatim, so the POI at ~0 m IS the source node: ' +
+				'"renamed" means OSM re-tagged that node to a new occupant (`current_osm_name`, `osm_url`) — the ' +
+				'venue was likely replaced or moved; "vanished" means no POI sits there at all (node deleted, ' +
+				'moved, or extract-dropped as closed-tagged; omit via include_vanished=false). Either may carry a ' +
+				'`relocation_lead` (the nearest name-matching POI within `search_radius_m` — a hint the venue ' +
+				"moved, not closed). Verify against the venue's own site, then close_location the departed row, " +
+				'update_locations onto the relocation lead, and/or import the new occupant. Complements ' +
+				'coordinate_drift (which anchors on the NAME; this anchors on the POSITION) — and it is only as ' +
+				'fresh as the staging store, so rebuild that (bun run osm:extract) before trusting a sweep.\n' +
 				'• "missing_address" — locations whose stored address is empty (`reason: "missing"`) or, unless ' +
 				'include_incomplete=false, a streetless fragment like a bare house number/postcode (`reason: ' +
 				'"incomplete"`). Each entry is classified `osm_fix_available` (a nearby name-matching POI HAS an ' +
 				'address — pass its `osm_address_parts` to update_locations, or split the `osm_address` preview ' +
 				'when parts are absent, and cite `osm_url`), `osm_has_no_address`, or `no_osm_match`. Set ' +
-				'include_unfixable=false for just the OSM-fixable work list.'
+				'include_unfixable=false for just the OSM-fixable work list.\n' +
+				'• "duplicate_locations" — pairs of live locations within `radius_m` (default 150) whose names ' +
+				'match or that share a brand: probably ONE venue stored twice (OSM sometimes carries two stale ' +
+				"nodes for one place — coordinate-exact dedup cannot catch that). Each pair carries both halves' " +
+				'phone/website/postcode, a `same_phone` flag (a shared phone ≈ the same store) and a `confidence` ' +
+				'classification: "high" (name match within ~30 m, or shared phone) vs "review". Nearest pairs ' +
+				"first; scope a post-import sweep with `brand_id`. Verify each against the venue's own store " +
+				'locator before delete_locations — two real branches CAN sit close together.\n' +
+				'• "empty_menu" — OPEN locations whose EFFECTIVE menu has fewer than `min_items` items (default ' +
+				'1, so only truly-empty menus; raise it to hunt suspiciously thin ones). Effective count = the ' +
+				"items on the location's menu (its private menu, or a chain branch's shared menu) MINUS the ones " +
+				'this branch overrode to unavailable; a location with no menu counts as 0. Surfaces venues that ' +
+				'violate the EXHAUSTIVE-menu policy — a create_locations never followed by create_items, an ' +
+				'import_chain onto an empty menu. Each `locations` entry is { id, name, address, item_count, ' +
+				'brand_id, menu_id }, worst-first (0-item menus lead). Reads only the live D1.\n' +
+				'• "html_entities" — display text still carrying HTML-ENCODED character references ' +
+				'("Bacon &amp; Egg", "&#39;") instead of the decoded character. Every write path decodes on ' +
+				'ingestion, so this should always be EMPTY — a hit means encoded text predates the decoder or ' +
+				'slipped in some other way. Scans item names/descriptions plus location/menu/brand names; ' +
+				'returns { items, locations, menus, brands } where every entry carries the stored `value`/`name` ' +
+				'and the `decoded` text to write back (via update_items / update_locations / update_menu / ' +
+				'update_brand), and each flagged item lists the locations serving its menu. Reads only the live D1.\n' +
+				'• "missing_course_tag" — items with NO required (non-optional) course tag (food/dessert/' +
+				'drink). Per the course-tag mandate, no course tag means the item was never course-reviewed ' +
+				'(NOT "food" by default). This audit is PAGED — use `limit`/`offset` (this check only) to work ' +
+				'through the backlog, `total` is the full flagged count. Each entry is { id, item_name, menu_id, ' +
+				'menu_name, location_count, hint }: `location_count` is how many live locations serve that menu; ' +
+				"`hint` ('drink' | 'dessert' | null) is a CHEAP KEYWORD HEURISTIC suggesting the likely tag — " +
+				'verify against the source before applying it, never trust it blindly. Ordered hint-first (drink, ' +
+				'then dessert, then no hint), then by menu. Fix by re-tagging with update_items, passing the full ' +
+				'corrected `tags` set (course tag plus any dietary tags the source supports). Reads only the live D1.\n' +
+				'• "unlinked_chain_branch" — INDEPENDENT venues (brand_id IS NULL) whose name matches an existing ' +
+				'chain: a branch that was never linked to its chain, so it serves a stale private menu instead of ' +
+				'the shared chain menu every real branch shows (issue #242). import_chain excludes a pre-existing ' +
+				"venue at a chain's spot as an already-on-the-map dedup but leaves it un-adopted, and " +
+				'duplicate_locations cannot catch it (no second row was created to pair against). Each `unlinked` ' +
+				'entry is { id, name, address, menu_id, item_count, brand: { id, name } }; the name match reuses ' +
+				"import_chain's own normalized matching. Verify against the chain's locator, then adopt with " +
+				'update_locations (set brand_id + the shared menu_id) and delete_menu its private menu, or ' +
+				'delete_locations a bad row. Only OPEN venues are flagged. Reads only the live D1.'
+		)
+	),
+	radius_m: v.optional(
+		v.pipe(
+			v.number(),
+			v.minValue(0),
+			v.maxValue(1000),
+			v.description('[duplicate_locations only] Pair-flagging distance in metres (default 150).')
+		)
+	),
+	min_items: v.optional(
+		v.pipe(
+			v.number(),
+			v.integer(),
+			v.minValue(1),
+			v.description(
+				'[empty_menu only] Flag locations whose effective menu has FEWER than this many items ' +
+					'(default 1 ⇒ only empty menus; raise it to catch suspiciously thin menus).'
+			)
+		)
+	),
+	brand_id: v.optional(
+		v.pipe(
+			v.string(),
+			v.minLength(1),
+			v.description(
+				'[duplicate_locations only] Only pairs where at least one half belongs to this chain — scopes ' +
+					'a post-import sweep to the chain just imported.'
+			)
 		)
 	),
 	limit: v.optional(
@@ -816,8 +1296,9 @@ const auditLocationsArgs = v.object({
 			v.number(),
 			v.minValue(0),
 			v.description(
-				'[coordinate_drift only] A location counts as OSM-aligned when a name-matching POI sits ' +
-					'within this many metres (default 1).'
+				'[coordinate_drift / identity_drift] How close (metres) a POI must sit to count as AT the ' +
+					"location — coordinate_drift's aligned threshold, identity_drift's same-spot threshold " +
+					'(default 1: coordinates are OSM-verbatim, so the source POI is coordinate-exact).'
 			)
 		)
 	),
@@ -826,6 +1307,15 @@ const auditLocationsArgs = v.object({
 			v.boolean(),
 			v.description(
 				'[coordinate_drift only] Also report locations with no name-matching OSM POI nearby (default true).'
+			)
+		)
+	),
+	include_vanished: v.optional(
+		v.pipe(
+			v.boolean(),
+			v.description(
+				'[identity_drift only] Also report locations whose staging POI is gone entirely from their ' +
+					'coordinates, not just renamed ones (default true).'
 			)
 		)
 	),
@@ -847,10 +1337,70 @@ const auditLocationsArgs = v.object({
 					'work list (default true).'
 			)
 		)
+	),
+	offset: v.optional(
+		v.pipe(
+			v.number(),
+			v.integer(),
+			v.minValue(0),
+			v.description(
+				'[missing_course_tag only] Skip this many flagged items (paging) — the backlog is large, so ' +
+					'drain it in pages via `limit`/`offset` rather than in one call.'
+			)
+		)
 	)
 });
 
+const markNotDuplicateArgs = v.pipe(
+	v.object({
+		location_id_a: v.pipe(
+			v.string(),
+			v.minLength(1),
+			v.description('One half of the flagged pair (order does not matter).')
+		),
+		location_id_b: v.pipe(
+			v.string(),
+			v.minLength(1),
+			v.description('The other half of the flagged pair.')
+		),
+		reason: v.optional(
+			v.pipe(
+				v.string(),
+				v.minLength(1),
+				v.description(
+					'The verification evidence, stored on the verdict — e.g. "both branches listed separately ' +
+						'on restaurants.subway.com with distinct phone numbers". Required unless `revoke` is true.'
+				)
+			)
+		),
+		revoke: v.optional(
+			v.pipe(
+				v.boolean(),
+				v.description(
+					'Set true to WITHDRAW a previous verdict — the pair shows up in duplicate audits again.'
+				)
+			)
+		)
+	}),
+	v.check(
+		(input) => input.location_id_a !== input.location_id_b,
+		'location_id_a and location_id_b must be two different locations.'
+	),
+	v.check(
+		(input) => Boolean(input.revoke) || Boolean(input.reason?.trim()),
+		'A `reason` (the verification evidence) is required when recording a verdict.'
+	)
+);
+
 // --- Chains: brands, menus, menu items, per-location overrides ---
+
+// Written at research time, read before ANY re-verification — re-discovering how
+// to fetch a chain's menu (finding the API behind a client-rendered page) is the
+// dominant cost of a refresh, and this is where that knowledge is banked.
+const REFRESH_NOTES_DESC =
+	"HOW to re-fetch this menu's source, banked for the next verification pass (the machine-readable " +
+	'feed endpoint + fetch caveats) and read back (get_menu) before re-researching from scratch. ' +
+	'See the refresh-notes policy in the server instructions.';
 
 const createBrandArgs = v.object({
 	name: v.pipe(
@@ -858,7 +1408,7 @@ const createBrandArgs = v.object({
 		v.minLength(1),
 		v.description('Chain / brand name, e.g. "McDonald\'s".')
 	),
-	website: v.optional(v.nullable(v.string())),
+	website: v.optional(v.nullable(websiteSchema)),
 	logo_url: v.optional(
 		v.nullable(v.pipe(v.string(), v.url(), v.description('URL of the brand logo/marker image.')))
 	),
@@ -874,7 +1424,7 @@ const createBrandArgs = v.object({
 const updateBrandArgs = v.object({
 	id: v.pipe(v.string(), v.minLength(1), v.description('Id of the brand to update.')),
 	name: v.optional(v.pipe(v.string(), v.minLength(1))),
-	website: v.optional(v.nullable(v.string())),
+	website: v.optional(v.nullable(websiteSchema)),
 	logo_url: v.optional(v.nullable(v.pipe(v.string(), v.url())))
 });
 
@@ -892,6 +1442,7 @@ const createMenuArgs = v.object({
 	),
 	currency: v.optional(currencySchema),
 	// last_verified is not accepted: it is auto-stamped to today on every write.
+	refresh_notes: v.optional(v.nullable(v.pipe(v.string(), v.description(REFRESH_NOTES_DESC)))),
 	sources: createSourcesSchema,
 	id: v.optional(
 		v.pipe(
@@ -909,8 +1460,40 @@ const updateMenuArgs = v.object({
 	region: v.optional(v.nullable(v.string())),
 	currency: v.optional(currencySchema),
 	// last_verified is not accepted: any update re-stamps it to today automatically.
+	refresh_notes: v.optional(
+		v.nullable(v.pipe(v.string(), v.description(REFRESH_NOTES_DESC + ' Pass null to clear.')))
+	),
 	sources: updateSourcesSchema,
 	add_sources: addSourcesSchema
+});
+
+// create_chain bundles create_brand + create_menu + create_items into one call.
+// The sub-schemas are REUSED verbatim (no duplicated validation): `createBrandArgs`
+// for the brand, `createMenuArgs` minus its brand_id (the bundled brand supplies it)
+// for the menu, and the shared `itemSchema` for the items.
+const createChainArgs = v.object({
+	brand: v.pipe(
+		createBrandArgs,
+		v.description(
+			'The chain/brand to create — or reuse by passing an existing `id` (a no-op returning ' +
+				'already_existed).'
+		)
+	),
+	menu: v.pipe(
+		v.omit(createMenuArgs, ['brand_id']),
+		v.description(
+			'The shared regional menu to create under the brand (its brand_id is the bundled brand). ' +
+				'Reuse by passing an existing `id` (a no-op returning already_existed).'
+		)
+	),
+	items: v.pipe(
+		v.array(itemSchema),
+		v.maxLength(500),
+		v.description(
+			"The menu's shared items (same shape as create_items). May be [] to scaffold just the brand + " +
+				'menu now and add the items later with create_items (using the returned menu_id).'
+		)
+	)
 });
 
 const listMenusArgs = v.object({
@@ -919,29 +1502,60 @@ const listMenusArgs = v.object({
 	)
 });
 
-// One item patch within an update_items batch. Every field but `id` is optional;
-// only the fields present are changed.
-const updateItemArgs = v.object({
-	id: v.pipe(v.string(), v.minLength(1), v.description('Id of the item to update.')),
-	menu_id: v.optional(
-		v.pipe(v.string(), v.minLength(1), v.description('Move the item to a different menu (rare).'))
-	),
-	item_name: v.optional(v.pipe(v.string(), v.minLength(1))),
-	description: v.optional(v.nullable(v.string())),
-	price: v.optional(v.nullable(priceSchema)),
-	tags: v.optional(
+const getMenuArgs = v.object({
+	id: v.pipe(v.string(), v.minLength(1), v.description('The record id (UUID).')),
+	view: v.optional(
 		v.pipe(
-			v.array(tagIdSchema),
+			v.picklist(['full', 'names', 'summary']),
 			v.description(
-				'Replaces the full dietary/course tag set for this item (pass [] to clear). ' +
-					TAG_POLICY_SHORT
+				'Payload size. DEFAULT is "names" — id/item_name/price/tags per item only. Pass view: "full" ' +
+					'to get item descriptions, sources and optional-tag detail — REQUIRED when verifying dietary ' +
+					'tags or reading descriptions; a shared chain menu can be hundreds of items, so full is ' +
+					'opt-in. "summary" returns no item list, just counts and a per-tag histogram.'
 			)
 		)
-	),
-	optional_tags: optionalTagsSchema,
-	sources: updateSourcesSchema,
-	add_sources: addSourcesSchema
+	)
 });
+
+// One item patch within an update_items batch. Every field but `id` is optional;
+// only the fields present are changed.
+const updateItemArgs = v.pipe(
+	v.object({
+		id: v.pipe(v.string(), v.minLength(1), v.description('Id of the item to update.')),
+		menu_id: v.optional(
+			v.pipe(
+				v.string(),
+				v.minLength(1),
+				v.description(
+					'Move the item to a different menu of the SAME brand (rare). A move targeting a ' +
+						"nonexistent menu, another venue's private menu, or another brand's shared menu is rejected."
+				)
+			)
+		),
+		item_name: v.optional(v.pipe(v.string(), v.minLength(1))),
+		description: v.optional(
+			v.nullable(v.pipe(v.string(), v.description(ITEM_DESCRIPTION_DESC + ' Pass null to clear.')))
+		),
+		price: v.optional(v.nullable(priceSchema)),
+		tags: v.optional(
+			v.pipe(
+				v.array(tagIdSchema),
+				v.description(
+					'Replaces the full dietary/course tag set for this item. Must include at least one course ' +
+						'tag when provided (an item always needs one) — omit `tags` entirely to leave it unchanged. ' +
+						TAG_POLICY_SHORT
+				)
+			)
+		),
+		optional_tags: optionalTagsSchema
+	}),
+	v.check((item) => item.tags === undefined || hasCourseTag(item.tags), MISSING_COURSE_TAG_MSG),
+	v.check(
+		(item) => item.tags === undefined || !hasFoodConflict(item.tags),
+		FOOD_COURSE_CONFLICT_MSG
+	),
+	v.check((item) => !hasOptionalCourseTag(item.optional_tags), OPTIONAL_COURSE_TAG_MSG)
+);
 
 const updateItemsArgs = v.object({
 	items: v.pipe(
@@ -1013,6 +1627,14 @@ interface ToolDef<S extends AnySchema> {
 	schema: S;
 	/** MCP behavioural hints advertised to clients (read-only/destructive/idempotent). */
 	annotations?: Tool['annotations'];
+	/**
+	 * Optional valibot schema advertised as the tool's MCP `outputSchema` (and the
+	 * contract its `structuredContent` conforms to). Declared only for the high-value
+	 * object-returning tools; kept PERMISSIVE (see scripts/mcp/output-schemas.ts) so a
+	 * strict client never rejects a valid response. A tool that returns a bare array,
+	 * null or a primitive omits it — structuredContent must be a JSON object.
+	 */
+	outputSchema?: AnySchema;
 	handler: (input: v.InferOutput<S>) => unknown;
 }
 
@@ -1028,20 +1650,17 @@ function defineTool<S extends AnySchema>(def: ToolDef<S>): ToolDef<S> {
 //     set_location_item_override is a PARTIAL patch (an omitted field keeps its stored
 //     value), but it is still marked destructive because it overwrites existing override data.
 const READ_ONLY = { readOnlyHint: true, openWorldHint: false } as const;
-const CREATE = { readOnlyHint: false, destructiveHint: false, openWorldHint: false } as const;
+const CREATE = {
+	readOnlyHint: false,
+	destructiveHint: false,
+	openWorldHint: false
+} as const;
 const DESTRUCTIVE = {
 	readOnlyHint: false,
 	destructiveHint: true,
 	idempotentHint: true,
 	openWorldHint: false
 } as const;
-
-/** Normalizes optional source labels to null so they match the DB `Source` type. */
-function normalizeSources(
-	sources: { url: string; label?: string | null }[] | undefined
-): { url: string; label: string | null }[] | undefined {
-	return sources?.map((s) => ({ url: s.url, label: s.label ?? null }));
-}
 
 /**
  * Guards the mutually-exclusive `sources` (replace) vs `add_sources` (append) update
@@ -1055,136 +1674,6 @@ function assertSourcesNotBoth(sources: unknown, addSources: unknown, label?: str
 				'`add_sources` (append), not both.'
 		);
 	}
-}
-
-/**
- * Validates that any referenced brand/menu exists (and, when both are given,
- * that the menu belongs to that brand) before linking a location to them.
- * `null`/`undefined` ids are skipped (detaching is always allowed).
- */
-async function assertBrandMenuRefs(
-	brandId: string | null | undefined,
-	menuId: string | null | undefined
-): Promise<void> {
-	if (brandId) {
-		if (!(await getBrandById(getDb(), brandId))) throw new Error(`No brand with id "${brandId}".`);
-	}
-	if (menuId) {
-		const menu = await getMenuById(getDb(), menuId);
-		if (!menu) throw new Error(`No menu with id "${menuId}".`);
-		if (brandId && menu.brand_id && menu.brand_id !== brandId) {
-			throw new Error(
-				`Menu "${menuId}" belongs to brand "${menu.brand_id}", not "${brandId}". ` +
-					`Pass a matching brand_id or omit it.`
-			);
-		}
-	}
-}
-
-type CreateLocationItem = v.InferOutput<typeof createLocationArgs>;
-
-/** Coordinates + normalized address + category + sources, ready for insertLocations. */
-interface ResolvedLocationCore {
-	latitude: number;
-	longitude: number;
-	category: v.InferOutput<typeof categorySchema> | null;
-	street: string;
-	city: string;
-	region: string;
-	postcode: string | null;
-	country: string;
-	sources: { url: string; label: string | null }[] | undefined;
-}
-
-/**
- * Resolves one create_locations item's coordinates + address, enforcing the
- * OSM-based coordinate policy. With `osm_id` the coordinates come VERBATIM from the
- * matching staging-store POI (and its osm_url is auto-cited); the address defaults
- * to the POI's own addr:* tags, with any caller-supplied part overriding. Without
- * `osm_id`, latitude/longitude and street/city/region are required and used as
- * given. Throws an MCP-friendly error on unresolved or conflicting input.
- */
-function resolveLocationInsertCore(it: CreateLocationItem): ResolvedLocationCore {
-	const sources = normalizeSources(it.sources);
-	if (it.osm_id) {
-		if (it.latitude !== undefined || it.longitude !== undefined) {
-			throw new Error(
-				`"${it.name}": do not pass latitude/longitude together with osm_id — coordinates are taken ` +
-					'verbatim from the OSM POI to guarantee an exact match. Omit them.'
-			);
-		}
-		const poi = getOsmStore().getByOsmId(it.osm_id);
-		if (!poi) {
-			throw new Error(
-				`No OSM POI "${it.osm_id}" in the staging store. Use an osm_id from a search_poi candidate, ` +
-					'or omit osm_id and pass latitude/longitude + address for a venue not in OSM.'
-			);
-		}
-		// Caller-supplied parts override the POI's own addr:* tags; absent parts fall
-		// back to the POI. (`??` means a caller can't blank a POI-derived part — there's
-		// no reason to import a venue and then strip its address, so that's intended.)
-		const own = osmOwnAddressParts(poi.tags_json) ?? {};
-		const street = it.street ?? own.street;
-		const city = it.city ?? own.city;
-		const region = it.region ?? own.region;
-		const missing = (
-			[
-				['street', street],
-				['city', city],
-				['region', region]
-			] as const
-		)
-			.filter(([, value]) => !value)
-			.map(([key]) => key);
-		if (missing.length) {
-			throw new Error(
-				`OSM POI "${it.osm_id}" (${poi.name ?? 'unnamed'}) has no ${missing.join('/')} in its ` +
-					`addr:* tags — pass ${missing.join(', ')} explicitly (from the POI's admin context; never geocode).`
-			);
-		}
-		const addr = normalizeAddressParts({
-			street: street as string,
-			city: city as string,
-			region: region as string,
-			postcode: it.postcode ?? own.postcode ?? null,
-			country: it.country ?? own.country ?? null
-		});
-		const osmHref = osmUrl(poi.osm_type, poi.numeric_id);
-		const hasOsmSource = sources?.some((s) => s.url === osmHref) ?? false;
-		const withOsmSource: { url: string; label: string | null }[] = hasOsmSource
-			? (sources as { url: string; label: string | null }[])
-			: [{ url: osmHref, label: 'OpenStreetMap' }, ...(sources ?? [])];
-		return {
-			latitude: poi.latitude,
-			longitude: poi.longitude,
-			category: it.category ?? poi.suggested_category ?? null,
-			...addr,
-			sources: withOsmSource
-		};
-	}
-	if (it.latitude === undefined || it.longitude === undefined) {
-		throw new Error(
-			`"${it.name}": latitude and longitude are required — or pass an osm_id to import them verbatim from OSM.`
-		);
-	}
-	if (it.street === undefined || it.city === undefined || it.region === undefined) {
-		throw new Error(
-			`"${it.name}": street, city and region are required — or pass an osm_id to import the address from OSM.`
-		);
-	}
-	return {
-		latitude: it.latitude,
-		longitude: it.longitude,
-		category: it.category ?? null,
-		...normalizeAddressParts({
-			street: it.street,
-			city: it.city,
-			region: it.region,
-			postcode: it.postcode,
-			country: it.country
-		}),
-		sources
-	};
 }
 
 /** Lightweight location overview, returned by list_locations. */
@@ -1215,16 +1704,17 @@ async function queryLocations(opts: {
 	near?: { latitude: number; longitude: number; radius_km: number };
 	category?: v.InferOutput<typeof categorySchema>;
 	nameLike?: string;
+	brandId?: string;
 	limit?: number;
 	offset?: number;
 }) {
-	const { near, category, nameLike, limit, offset } = opts;
+	const { near, category, nameLike, brandId, limit, offset } = opts;
 	if (near) {
-		const box = bboxAround(near.latitude, near.longitude, near.radius_km);
 		const rows = await getLocationsWithTags(getDb(), {
-			bbox: { minLat: box.minLat, maxLat: box.maxLat, minLng: box.minLon, maxLng: box.maxLon },
+			bbox: bboxAround(near.latitude, near.longitude, near.radius_km),
 			category,
-			nameLike
+			nameLike,
+			brandId
 		});
 		const withinCircle = rows
 			.map((r) => ({
@@ -1237,7 +1727,13 @@ async function queryLocations(opts: {
 		const page = withinCircle.slice(start, limit === undefined ? undefined : start + limit);
 		return page.map((x) => projectLocationOverview(x.r));
 	}
-	const rows = await getLocationsWithTags(getDb(), { category, nameLike, limit, offset });
+	const rows = await getLocationsWithTags(getDb(), {
+		category,
+		nameLike,
+		brandId,
+		limit,
+		offset
+	});
 	return rows.map(projectLocationOverview);
 }
 
@@ -1259,52 +1755,103 @@ const tools = [
 	defineTool({
 		name: 'list_locations',
 		annotations: READ_ONLY,
+		outputSchema: listLocationsOutput,
 		description:
 			'List locations in the LIVE map database as a lightweight overview — id, name, category, ' +
 			'coordinates, address, phone, website, brand_id/menu_id (set for chain branches), and the distinct ' +
 			'tag ids offered across the effective menu (no per-item detail, no source URLs). Pass `query` to ' +
 			'match by name (case-insensitive substring) — e.g. to check whether a venue is already on the map ' +
 			'(de-dup before adding) or to find one to edit; this reads the live D1, distinct from search_poi ' +
-			'which finds OSM venues NOT yet on the map. Optionally narrow with `near`/`category` and page with ' +
-			'`limit`/`offset`. Use get_location for a single place with its full menu and sources.',
+			'which finds OSM venues NOT yet on the map. Narrow with `near`/`category`/`brand_id` (exact chain ' +
+			'membership — better than a name substring for enumerating branches). Returns ' +
+			'{ locations, returned, has_more, limit, offset }: a page of at most `limit` rows (default 50, ' +
+			'max 200), with `has_more: true` when more match beyond this page — pass `offset` to fetch the ' +
+			'next page. Pass `count_only: true` for just { count } of matching locations (cheap chain-size ' +
+			'audits; `limit`/`offset` ignored). Use get_location for a single place with its full menu and sources.',
 		schema: listLocationsArgs,
-		handler: ({ query, near, category, limit, offset }) =>
-			queryLocations({ near, category, nameLike: query, limit, offset })
+		handler: async ({ query, near, category, brand_id, count_only, limit, offset }) => {
+			if (count_only) {
+				// `near` counts refine to the exact circle via the same query path.
+				if (near) {
+					const rows = await queryLocations({
+						near,
+						category,
+						nameLike: query,
+						brandId: brand_id
+					});
+					return { count: rows.length };
+				}
+				return {
+					count: await countLocations(getDb(), {
+						category,
+						nameLike: query,
+						brandId: brand_id
+					})
+				};
+			}
+			// Cap + truncation signal, mirroring search_poi/audit_locations. Over-fetch one
+			// row (limit + 1) so `has_more` is free — no second COUNT query. The +1 probe
+			// works for both the SQL path and the in-memory `near` slice.
+			const effLimit = resolveListLimit(limit);
+			const effOffset = resolveListOffset(offset);
+			const rows = await queryLocations({
+				near,
+				category,
+				nameLike: query,
+				brandId: brand_id,
+				limit: effLimit + 1,
+				offset: effOffset
+			});
+			return buildListLocationsPage(rows, effLimit, effOffset);
+		}
 	}),
 	defineTool({
 		name: 'get_location',
 		annotations: READ_ONLY,
+		outputSchema: getLocationOutput,
 		description:
-			'Get a single location with its source URLs. `menu` lists only the items owned directly by this ' +
-			'venue (on its own private menu); each item omits the menu-level `currency`/`menu_id`, surfaced ' +
-			'once as the top-level `currency` (the venue serves one private menu). If `menu_id` is a shared ' +
-			'brand menu the location is a chain branch — call get_menu to see/edit those items; `overrides` ' +
-			"lists this branch's per-item deviations from them. Returns null if not found.",
-		schema: idArgs,
-		handler: async ({ id }) => {
+			"Get a single location with its `sources` (its menu's source URLs — provenance is menu-level) " +
+			'and its inline `menu` (the items owned directly ' +
+			'by this venue on its own private menu; each omits the menu-level `currency`/`menu_id`, ' +
+			'surfaced once as the top-level `currency`). `view` controls the `menu` payload and DEFAULTS ' +
+			'to "full" (every item in detail, since a single venue\'s menu is typically small); pass ' +
+			'"names" for id/item_name/price/tags per item, or "summary" for counts + a tag histogram ' +
+			'with no item list. If `menu_id` is a shared brand menu the location is a chain branch — call ' +
+			"get_menu to see/edit those items; `overrides` lists this branch's per-item deviations from " +
+			'them. Returns null if not found.',
+		schema: getLocationArgs,
+		handler: async ({ id, view }) => {
 			const location = await getLocationById(getDb(), id);
 			if (!location) return null;
-			const [menu, overrides] = await Promise.all([
+			const [menu, overrides, menuRow] = await Promise.all([
 				getFoodByLocation(getDb(), id),
-				getLocationItemOverrides(getDb(), id)
+				getLocationItemOverrides(getDb(), id),
+				// Provenance is menu-level: surface the venue's menu sources as its `sources`.
+				location.menu_id ? getMenuById(getDb(), location.menu_id) : Promise.resolve(null)
 			]);
 			// An independent venue's items all live on one private menu, so the menu-level
 			// currency/menu_id are identical across them: surface currency once at the top
 			// and drop the per-item copies (see itemWithinParent).
 			const currency = menu[0]?.currency;
-			return {
+			const base = {
 				...location,
-				...(currency ? { currency } : {}),
-				menu: menu.map(itemWithinParent),
-				overrides
+				sources: menuRow?.sources ?? [],
+				...(currency ? { currency } : {})
 			};
+			if (view === 'summary') {
+				// counts + tag histogram, no item list (mirrors get_menu's summary view).
+				return { ...base, ...menuItemsSummary(menu), overrides };
+			}
+			const menuItems = view === 'names' ? menu.map(itemNameView) : menu.map(itemWithinParent);
+			return { ...base, menu: menuItems, overrides };
 		}
 	}),
 	defineTool({
 		name: 'create_locations',
 		annotations: CREATE,
+		outputSchema: createLocationsOutput,
 		description:
-			'Create one or more locations in a single atomic batch (all-or-nothing) — the only way to add ' +
+			'Create one or more locations in a single batch — the only way to add ' +
 			"locations; pass a one-item `items` array for a single place. PREFERRED: set each item's " +
 			'`osm_id` from a search_poi candidate (see the `osm_id` field doc) so coordinates + address come ' +
 			'from OSM verbatim; otherwise pass latitude/longitude + a structured address (street/city/region/' +
@@ -1313,204 +1860,127 @@ const tools = [
 			'neighbourhood/mall/landmark) or an editorial annotation (former name, status note) into it; ' +
 			'branches share a name and are told apart by address (see the `name` field doc). For a chain branch set `menu_id`/`brand_id`; for an independent venue omit them and ' +
 			'optionally pass `menu_items` to create its private menu in the same batch (else use create_items). ' +
+			'(To import a whole chain from the OSM staging store, prefer import_chain.) ' +
 			'Idempotent on explicit ids (skipped → `skipped_existing_ids`; give an inline-`menu_items` location ' +
 			'an explicit id too, so its items skip with it) and coordinate-deduped against the map and earlier ' +
-			'batch items (skipped → `skipped_duplicate_locations`), so retries/re-imports are safe. If any ' +
-			'remaining item is invalid, nothing is written. Returns { created, location_ids, items_created, ' +
-			'item_ids, skipped_existing_ids, skipped_duplicate_locations } — fetch details with get_location if needed.',
+			'batch items (skipped → `skipped_duplicate_locations`), so retries/re-imports are safe. By default ' +
+			'any invalid item fails the whole batch with EVERY failing item listed (nothing written); with ' +
+			'`skip_invalid: true` the valid items are created and the failures come back in `skipped_invalid`. ' +
+			'Large batches are written in bounded chunks (each location atomic with its inline menu); if a ' +
+			'later chunk fails, the error reports the committed part as a partial failure — re-running the ' +
+			'same call is safe (committed rows skip via id/coordinate dedup). ' +
+			'Returns { created, location_ids, items_created, item_ids, skipped_existing_ids, ' +
+			'skipped_duplicate_locations, skipped_invalid, warnings } — `warnings` flags dropped partial ' +
+			'postcodes and same-name venues within ~150 m (possible OSM double-mapping worth verifying); ' +
+			'fetch details with get_location if needed.',
 		schema: createLocationsArgs,
-		handler: async ({ items }) => {
-			// Validate each DISTINCT brand/menu pair once — a chain backfill reuses a
-			// single pair across the whole batch, so this is usually one check.
-			const checkedPairs = new Set<string>();
-			for (const it of items) {
-				const key = `${it.brand_id ?? ''}|${it.menu_id ?? ''}`;
-				if (checkedPairs.has(key)) continue;
-				checkedPairs.add(key);
-				await assertBrandMenuRefs(it.brand_id, it.menu_id);
-			}
-			// Idempotency: skip items whose explicit id already exists, so retrying a batch
-			// that already landed is a no-op rather than a primary-key collision.
-			const explicitIds = items.map((it) => it.id).filter((id): id is string => Boolean(id));
-			const already = explicitIds.length
-				? await existingIds(getDb(), 'locations', explicitIds)
-				: new Set<string>();
-			const skippedExistingIds: string[] = [];
-			const afterIdSkip = items.filter((it) => {
-				if (it.id && already.has(it.id)) {
-					skippedExistingIds.push(it.id);
-					return false;
-				}
-				return true;
-			});
-			// Resolve coordinates + address for each survivor (also rejects an inline-items /
-			// chain-link conflict) before the coordinate de-dup can compare points.
-			const resolved = afterIdSkip.map((it) => {
-				if (it.menu_items?.length && (it.brand_id || it.menu_id)) {
-					throw new Error(
-						`"${it.name}" has \`menu_items\` but is linked to a chain (brand_id/menu_id). Inline items ` +
-							`are for an independent venue's own menu; a chain branch shares its menu — use ` +
-							`create_items with the menu_id, or set_location_item_override for a per-branch delta.`
-					);
-				}
-				if (it.closed_reason && it.menu_items?.length) {
-					throw new Error(
-						`"${it.name}" has both \`closed_reason\` and \`menu_items\` — a permanently-closed venue has ` +
-							`no menu. Drop the items to file it as a closed tombstone, or drop closed_reason to add it live.`
-					);
-				}
-				return { it, core: resolveLocationInsertCore(it) };
-			});
-			// Coordinate-exact de-dup: a location already on the map (OSM coords are stored
-			// verbatim, so a true duplicate is coordinate-identical), or a point repeated
-			// earlier in THIS batch, is skipped rather than creating a duplicate pin.
-			const existingAtCoords = await existingLocationsAtCoords(
-				getDb(),
-				resolved.map(({ core }) => ({ latitude: core.latitude, longitude: core.longitude }))
-			);
-			const skippedDuplicateLocations: { name: string; existing_id: string | null }[] = [];
-			const seenCoords = new Set<string>();
-			const toInsert = resolved.filter(({ it, core }) => {
-				const key = coordinateKey(core.latitude, core.longitude);
-				const onMap = existingAtCoords.get(key);
-				if (onMap) {
-					skippedDuplicateLocations.push({ name: it.name, existing_id: onMap.id });
-					return false;
-				}
-				if (seenCoords.has(key)) {
-					// Duplicate of an earlier item in this same batch (no id yet → null).
-					skippedDuplicateLocations.push({ name: it.name, existing_id: null });
-					return false;
-				}
-				seenCoords.add(key);
-				return true;
-			});
-			// Pre-assign ids to any inline menu_items so we can return them; the location,
-			// its private menu and these items all land in the one atomic batch.
-			const itemIds: string[] = [];
-			const inserts = toInsert.map(({ it, core }) => {
-				const menuItems = (it.menu_items ?? []).map((mi) => {
-					const id = mi.id ?? crypto.randomUUID();
-					itemIds.push(id);
-					return {
-						id,
-						item_name: mi.item_name,
-						description: mi.description ?? null,
-						price: mi.price ?? null,
-						tags: mi.tags,
-						optionalTags: mi.optional_tags,
-						sources: normalizeSources(mi.sources)
-					};
-				});
-				return {
-					id: it.id,
-					name: it.name,
-					category: core.category,
-					latitude: core.latitude,
-					longitude: core.longitude,
-					street: core.street,
-					city: core.city,
-					region: core.region,
-					postcode: core.postcode,
-					country: core.country,
-					phone: it.phone ?? null,
-					website: it.website ?? null,
-					brand_id: it.brand_id ?? null,
-					menu_id: it.menu_id ?? null,
-					currency: it.currency,
-					sources: core.sources,
-					// A born-closed tombstone: stamp closed_at now so it's hidden from the map yet
-					// still blocks re-creation / search_poi re-suggestion (migration 0015).
-					...(it.closed_reason ? { closed_at: Date.now(), closed_reason: it.closed_reason } : {}),
-					...(menuItems.length ? { items: menuItems } : {})
-				};
-			});
-			const ids = inserts.length ? await insertLocations(getDb(), inserts) : [];
-			return {
-				created: ids.length,
-				location_ids: ids,
-				items_created: itemIds.length,
-				item_ids: itemIds,
-				skipped_existing_ids: skippedExistingIds,
-				...(skippedDuplicateLocations.length
-					? { skipped_duplicate_locations: skippedDuplicateLocations }
-					: {})
-			};
-		}
+		handler: ({ items, skip_invalid }) =>
+			createLocationsBatch(getDb(), getOsmStore(), items, { skipInvalid: skip_invalid })
 	}),
 	defineTool({
 		name: 'update_locations',
 		annotations: DESTRUCTIVE,
+		outputSchema: updateLocationsOutput,
 		description:
 			'Update one or more existing locations in a single atomic batch — pass a one-item `items` array to ' +
-			'edit one place. Each patch carries an `id` plus only the fields to change; a given `sources` array ' +
-			"replaces that location's whole source set (pass [] to clear), or use `add_sources` to append a " +
-			'citation without resending the rest. Set `menu_id`/`brand_id` to attach a ' +
+			'edit one place. Each patch carries an `id` plus only the fields to change; unknown fields are ' +
+			'rejected. Provenance is MENU-level, so there is no `sources` field here — cite sources on the ' +
+			"venue's menu via update_menu instead. Set `menu_id`/`brand_id` (together) to attach a " +
 			'branch to a chain menu, or null to detach it. region/postcode/country are normalized for you. ' +
 			'Ideal for mass backfills from audit_locations. Ids that do not exist ' +
 			'are skipped and listed in `not_found_ids`. Returns { updated, updated_ids, not_found_ids }.',
 		schema: updateLocationsArgs,
 		handler: async ({ items }) => {
-			// Validate only the DISTINCT brand/menu pairs a patch actually SETS.
-			const checkedPairs = new Set<string>();
-			for (const it of items) {
-				if (it.brand_id === undefined && it.menu_id === undefined) continue;
-				const key = `${it.brand_id ?? ''}|${it.menu_id ?? ''}`;
-				if (checkedPairs.has(key)) continue;
-				checkedPairs.add(key);
-				await assertBrandMenuRefs(it.brand_id, it.menu_id);
-			}
-			const patches = items.map(
-				({ id, sources, add_sources, street, city, region, postcode, country, ...patch }) => {
-					assertSourcesNotBoth(sources, add_sources, id);
+			// Stored rows serve two validations — a single-sided brand/menu patch
+			// merges with the stored pair, and a region/postcode patch scopes to the
+			// stored country — so fetch each id at most once and share the result.
+			const storedRows = new Map<string, Promise<Location | null>>();
+			const getStored = (id: string): Promise<Location | null> => {
+				let row = storedRows.get(id);
+				if (!row) {
+					row = getLocationById(getDb(), id);
+					storedRows.set(id, row);
+				}
+				return row;
+			};
+			// Validate brand/menu references BEFORE any write: a full pair as given,
+			// a single-sided patch against the EFFECTIVE post-patch pair (see
+			// assertLocationRefPatches) — { brand_id: null } alone on a chain branch
+			// or a lone cross-brand brand_id must not slip past assertBrandMenuRefs.
+			await assertLocationRefPatches(getDb(), items, getStored);
+			const patches = await Promise.all(
+				items.map(async ({ id, street, city, region, postcode, country, phone, ...patch }) => {
+					// A patch that touches region/postcode/phone WITHOUT a country must
+					// resolve against the row's STORED country, not the CA∪US fallback: a
+					// region-only patch could otherwise store a US state code on a CA row,
+					// and a bare (no-`+`) phone could be falsely coerced to +1 on a
+					// non-NANP row. A missing row skips the lookup — updateLocations reports
+					// it in not_found_ids and the patch is never applied.
+					const needsStoredCountry =
+						country === undefined &&
+						(region !== undefined ||
+							(postcode !== undefined && postcode !== null) ||
+							(phone !== undefined && phone !== null));
+					const storedCountry = needsStoredCountry ? (await getStored(id))?.country : undefined;
 					return {
 						id,
 						...patch,
-						...normalizeAddressPatch({ street, city, region, postcode, country }),
-						sources: normalizeSources(sources),
-						addSources: normalizeSources(add_sources)
+						// `phone: null` clears it; a value is stored canonical (E.164). NANP
+						// inference is scoped to the effective country (patch's, else the row's
+						// stored one), so a `+`-less number on a non-NANP venue stays as given.
+						...(phone !== undefined
+							? {
+									phone:
+										phone === null
+											? null
+											: normalizePhone(phone, normalizeCountry(country) ?? storedCountry)
+								}
+							: {}),
+						...normalizeAddressPatch({ street, city, region, postcode, country }, storedCountry)
 					};
-				}
+				})
 			);
 			const { updatedIds, notFoundIds } = await updateLocations(getDb(), patches);
-			return { updated: updatedIds.length, updated_ids: updatedIds, not_found_ids: notFoundIds };
+			return {
+				updated: updatedIds.length,
+				updated_ids: updatedIds,
+				not_found_ids: notFoundIds
+			};
 		}
 	}),
 	defineTool({
-		name: 'delete_location',
+		name: 'delete_locations',
 		annotations: DESTRUCTIVE,
+		outputSchema: deleteLocationsOutput,
 		description:
-			'HARD-delete a location row. Cascades its sources, per-item overrides, and any user LIKES of the ' +
-			'venue (liked_locations); its private menu + items are left orphaned, not removed. Returns ' +
-			'{ deleted: true } if a row was removed. Prefer close_location for a venue that has permanently ' +
-			'closed — that preserves the likes and keeps the record for analysis; reserve delete_location for ' +
-			'a mistaken/duplicate row that should never have existed.',
-		schema: idArgs,
-		handler: async ({ id }) => ({ deleted: await deleteLocation(getDb(), id) })
+			'HARD-delete one or more location rows in a single batch (1-100 ids), mirroring the batched ' +
+			"update_locations. Each delete cascades that row's per-item overrides and any user " +
+			"LIKES (liked_locations), and deletes the venue's PRIVATE menu — with its items and sources — " +
+			'when no other location references it (a shared brand menu is never touched). PREFER close_location for a real ' +
+			'venue that has permanently closed — that preserves the likes and keeps the record for analysis; ' +
+			'reserve delete for mistaken/duplicate rows that should never have existed. Ids matching no row ' +
+			'come back in `not_found_ids`. Returns { deleted, deleted_ids, not_found_ids } (deleted = count ' +
+			'actually removed).',
+		schema: deleteLocationsArgs,
+		handler: ({ ids }) => deleteLocationsBatch(getDb(), ids)
 	}),
 	defineTool({
 		name: 'close_location',
 		annotations: DESTRUCTIVE,
 		description:
 			'Mark a location that is ALREADY on the map as PERMANENTLY CLOSED (soft-delete), or reopen one. ' +
-			'The row is kept — so its user likes, menu and sources survive for analysis — and simply hidden ' +
+			'The row is kept — so its user likes and menu survive for analysis — and simply hidden ' +
 			'from the map, search, list_locations, get_location and the coverage stats; it still blocks ' +
 			're-creation and search_poi re-suggestion, so a closed venue never resurfaces to waste research ' +
-			'time. Pass `reason` (closure evidence) and optionally `sources` to cite it; pass `reopen: true` ' +
+			'time. Pass `reason` (closure evidence, INCLUDING the source link) to record it; pass `reopen: true` ' +
 			'to bring it back. Returns { closed: true } / { reopened: true }, or { not_found: true } if no ' +
 			'such id. For a venue NOT yet on the map that you have verified is closed, use create_locations ' +
 			'with `closed_reason` instead (a born-closed tombstone) rather than adding it and closing it.',
 		schema: closeLocationArgs,
-		handler: async ({ id, reason, reopen, sources }) => {
+		handler: async ({ id, reason, reopen }) => {
 			const ok = reopen
 				? await setLocationClosed(getDb(), id, null, null)
-				: await setLocationClosed(
-						getDb(),
-						id,
-						Date.now(),
-						reason ?? null,
-						normalizeSources(sources)
-					);
+				: await setLocationClosed(getDb(), id, Date.now(), reason ?? null);
 			if (!ok) return { closed: false, not_found: true, id };
 			return reopen ? { reopened: true, id } : { closed: true, id };
 		}
@@ -1518,6 +1988,7 @@ const tools = [
 	defineTool({
 		name: 'create_items',
 		annotations: CREATE,
+		outputSchema: createItemsOutput,
 		description:
 			'Create one or more menu items in a single transaction (all-or-nothing): if any item is invalid, ' +
 			'none are written. Target EITHER an independent venue (pass `location_id` — items go on its own ' +
@@ -1527,7 +1998,8 @@ const tools = [
 			'one call. Returns { created, item_ids, skipped_existing_ids, name_collisions } — ids already present ' +
 			'are skipped (retries are safe); `name_collisions` lists incoming names that already exist on the ' +
 			'target menu so you can update the existing item instead of duplicating it. Read full items with ' +
-			'get_item / get_location / get_menu if needed.',
+			'get_item / get_location / get_menu if needed. (Provenance is menu-level: cite the menu with ' +
+			'create_menu / update_menu, or via create_locations inline for an independent venue — not per item.)',
 		schema: createItemsArgs,
 		handler: async (input) => {
 			// Resolve the target menu: an independent venue's private menu (location_id), or a
@@ -1580,8 +2052,7 @@ const tools = [
 									description: it.description ?? null,
 									price: it.price ?? null,
 									tags: it.tags,
-									optionalTags: it.optional_tags,
-									sources: normalizeSources(it.sources)
+									optionalTags: it.optional_tags
 								})),
 								input.currency
 							)
@@ -1594,8 +2065,7 @@ const tools = [
 									description: it.description ?? null,
 									price: it.price ?? null,
 									tags: it.tags,
-									optionalTags: it.optional_tags,
-									sources: normalizeSources(it.sources)
+									optionalTags: it.optional_tags
 								}))
 							);
 			}
@@ -1610,9 +2080,11 @@ const tools = [
 	defineTool({
 		name: 'get_item',
 		annotations: READ_ONLY,
+		outputSchema: getItemOutput,
 		description:
 			"Get any menu item by id — a venue's own item or a chain's shared one — with its tags " +
-			"(dietary, course) and source URLs. To browse a venue's items use get_location; " +
+			"(dietary, course). Provenance is menu-level — read a menu's sources with get_menu. To browse a " +
+			"venue's items use get_location; " +
 			'for a chain menu use get_menu. Returns null if not found.',
 		schema: idArgs,
 		handler: async ({ id }) => getItemById(getDb(), id)
@@ -1620,27 +2092,29 @@ const tools = [
 	defineTool({
 		name: 'update_items',
 		annotations: DESTRUCTIVE,
+		outputSchema: updateItemsOutput,
 		description:
 			'Update one or more menu items by id in a single atomic batch — pass a one-item `items` array to ' +
 			'edit one. Each patch carries an `id` plus only the fields to change; editing a shared chain item ' +
 			'changes it for EVERY branch serving its menu — for a one-branch difference use ' +
-			'set_location_item_override instead. Replace-set semantics per item: `tags`/`optional_tags` ' +
-			'together replace the dietary/course set; `sources` replaces sources (pass []/"" to clear) ' +
-			'while `add_sources` appends without resending the rest (not both). Ideal for menu-wide ' +
+			'set_location_item_override instead. Per-set replace semantics: `tags` replaces only the ' +
+			'required dietary/course set and `optional_tags` only the optional set — omitting one leaves ' +
+			'it untouched (pass `[]` to clear a set; pass both to replace everything). (Provenance is ' +
+			'menu-level — edit sources with ' +
+			'update_menu, not per item.) Ideal for menu-wide ' +
 			'corrections in one call. Ids that do not exist are reported in `not_found_ids`. ' +
 			'Returns { updated, updated_ids, not_found_ids }.',
 		schema: updateItemsArgs,
 		handler: async ({ items }) => {
-			const patches = items.map(({ id, sources, add_sources, optional_tags, ...patch }) => {
-				assertSourcesNotBoth(sources, add_sources, id);
-				return {
-					id,
-					...patch,
-					optionalTags: optional_tags,
-					sources: normalizeSources(sources),
-					addSources: normalizeSources(add_sources)
-				};
-			});
+			// Validate any menu MOVE before writing: the target must exist and stay
+			// within the item's own brand — never another venue's private menu or
+			// another brand's shared menu (see assertItemMenuMoves).
+			await assertItemMenuMoves(getDb(), items);
+			const patches = items.map(({ id, optional_tags, ...patch }) => ({
+				id,
+				...patch,
+				optionalTags: optional_tags
+			}));
 			const { updatedIds, notFoundIds } = await updateItems(getDb(), patches);
 			return {
 				updated: updatedIds.length,
@@ -1664,6 +2138,46 @@ const tools = [
 // Chain tools: brands → menus → shared menu items, plus per-location overrides.
 // Kept in a separate array purely for grouping; merged into `allTools` below.
 const chainTools = [
+	defineTool({
+		name: 'create_chain',
+		annotations: CREATE,
+		outputSchema: createChainOutput,
+		description:
+			'Bootstrap a chain in ONE call: create the brand, one regional menu under it, and that ' +
+			"menu's shared items — the create_brand -> create_menu -> create_items sequence bundled " +
+			'(mirroring how create_locations takes inline menu_items). Pass `items: []` to scaffold just ' +
+			'the brand + menu and add the items later with create_items (using the returned menu_id). Then ' +
+			'point branches at the menu with import_chain (preferred) or create_locations. Idempotent on ' +
+			'explicit brand/menu ids (an existing id is a no-op, reported in `already_existed`) and flags a ' +
+			'same-name brand/menu in `warnings`, so retries are safe. Returns { brand_id, menu_id, ' +
+			'item_ids, created_items, already_existed?, warnings? }. If a stage fails mid-sequence the error ' +
+			'reply carries the committed ids (partial_failure) — re-run passing those ids back (no-ops) to ' +
+			'resume.',
+		schema: createChainArgs,
+		handler: (input) => {
+			// Provenance is menu-level: the chain's shared menu must cite at least one source link.
+			assertHasSource(input.menu.sources, `menu "${input.menu.name}"`);
+			return createChainBundle(getDb(), {
+				brand: input.brand,
+				menu: {
+					name: input.menu.name,
+					region: input.menu.region,
+					currency: input.menu.currency,
+					refresh_notes: input.menu.refresh_notes,
+					sources: normalizeSources(input.menu.sources),
+					id: input.menu.id
+				},
+				items: input.items.map((it) => ({
+					id: it.id,
+					item_name: it.item_name,
+					description: it.description ?? null,
+					price: it.price ?? null,
+					tags: it.tags,
+					optionalTags: it.optional_tags
+				}))
+			});
+		}
+	}),
 	defineTool({
 		name: 'create_brand',
 		annotations: CREATE,
@@ -1690,7 +2204,11 @@ const chainTools = [
 							`brand (${id}) anyway — if this is the same chain, delete it and reuse the existing brand.`
 					]
 				: [];
-			return { id, already_existed: false, ...(warnings.length ? { warnings } : {}) };
+			return {
+				id,
+				already_existed: false,
+				...(warnings.length ? { warnings } : {})
+			};
 		}
 	}),
 	defineTool({
@@ -1704,9 +2222,10 @@ const chainTools = [
 	defineTool({
 		name: 'get_brand',
 		annotations: READ_ONLY,
+		outputSchema: getBrandOutput,
 		description:
-			'Get a brand plus its menus as summaries (id, name, region, currency, last_verified, item_count). Call ' +
-			"get_menu for a menu's items. Returns null if not found.",
+			'Get a brand plus its menus as summaries (id, name, region, currency, last_verified, item_count, ' +
+			"location_count = open branches serving it). Call get_menu for a menu's items. Returns null if not found.",
 		schema: idArgs,
 		handler: async ({ id }) => {
 			const brand = await getBrandById(getDb(), id);
@@ -1738,10 +2257,12 @@ const chainTools = [
 			'Create a regional menu under a brand (e.g. name "Subway UK", region "GB", currency "GBP"). Add its ' +
 			'shared items with create_items (using this menu_id), then point each branch at it via ' +
 			'location.menu_id. Set ' +
-			`\`currency\` so item prices are unambiguous (defaults to ${DEFAULT_CURRENCY}). Optionally cite the ` +
-			"official menu once via `sources`. The menu's freshness date (last_verified) is set " +
-			'automatically to today here and on every later write — never pass it. Returns { id } — read ' +
-			'it back with get_menu.',
+			`\`currency\` so item prices are unambiguous (defaults to ${DEFAULT_CURRENCY}). Cite the menu via ` +
+			'`sources` — AT LEAST ONE link is required (the menu / ordering link, official nutrition or dietary ' +
+			'page) — and bank HOW to re-fetch it in `refresh_notes` (feed ' +
+			"endpoint + caveats) so the next verification skips source re-discovery. The menu's freshness " +
+			'date (last_verified) is set automatically to today here and on every later write — never pass ' +
+			'it. Returns { id } — read it back with get_menu.',
 		schema: createMenuArgs,
 		handler: async (input) => {
 			if (!(await getBrandById(getDb(), input.brand_id))) {
@@ -1751,6 +2272,8 @@ const chainTools = [
 			if (input.id && (await getMenuById(getDb(), input.id))) {
 				return { id: input.id, already_existed: true };
 			}
+			// Provenance is menu-level: a new menu must cite at least one source link.
+			assertHasSource(input.sources, `menu "${input.name}"`);
 			// Flag (don't block) a same-name menu under this brand as a likely duplicate.
 			const dupIds = await findMenuIdsByName(getDb(), input.brand_id, input.name);
 			const id = await insertMenu(getDb(), {
@@ -1759,6 +2282,7 @@ const chainTools = [
 				name: input.name,
 				region: input.region ?? null,
 				currency: input.currency,
+				refresh_notes: input.refresh_notes ?? null,
 				sources: normalizeSources(input.sources)
 			});
 			const warnings = dupIds.length
@@ -1767,38 +2291,57 @@ const chainTools = [
 							`Created a new menu (${id}) anyway — reuse the existing one if this is a duplicate.`
 					]
 				: [];
-			return { id, already_existed: false, ...(warnings.length ? { warnings } : {}) };
+			return {
+				id,
+				already_existed: false,
+				...(warnings.length ? { warnings } : {})
+			};
 		}
 	}),
 	defineTool({
 		name: 'list_menus',
 		annotations: READ_ONLY,
 		description:
-			'List menus (id, brand_id, name, region, currency, last_verified, item_count), optionally filtered to one ' +
-			"brand. Use get_menu for a menu's items.",
+			'List menus (id, brand_id, name, region, currency, last_verified, item_count, location_count = ' +
+			"open branches serving it), optionally filtered to one brand. Use get_menu for a menu's items.",
 		schema: listMenusArgs,
 		handler: ({ brand_id }) => getMenus(getDb(), brand_id)
 	}),
 	defineTool({
 		name: 'get_menu',
 		annotations: READ_ONLY,
+		outputSchema: getMenuOutput,
 		description:
-			"Get a menu with its full item list (each item carries its tags and sources) and the menu's own " +
-			'source URLs. Each item omits the menu-level `currency`/`menu_id`, which the menu itself carries ' +
-			'once. Returns null if not found.',
-		schema: idArgs,
-		handler: async ({ id }) => {
+			"Get a menu with its own source URLs and `refresh_notes` (HOW to re-fetch the menu's source — " +
+			'read these before re-researching a menu from scratch). `view` picks the payload size and ' +
+			'DEFAULTS to "names" — each item as just { id, item_name, price, tags } — so a large shared ' +
+			'chain menu is not returned in full unless asked. Pass view: "full" to get every item WITH its ' +
+			'description, sources and optional-tag detail (REQUIRED to verify dietary tags or read ' +
+			'descriptions); "summary" returns no item list, just counts (item_count, a per-tag histogram, ' +
+			'how many items have a price). Each full-view item omits the menu-level ' +
+			'`currency`/`menu_id`, which the menu itself carries once. Returns null if not found.',
+		schema: getMenuArgs,
+		handler: async ({ id, view }) => {
 			const menu = await getMenuWithItems(getDb(), id);
 			if (!menu) return null;
-			// The menu already carries its id + currency; drop the identical per-item copies.
-			return { ...menu, items: menu.items.map(itemWithinParent) };
+			if (view === 'summary') {
+				const { items, ...meta } = menu;
+				return { ...meta, ...menuItemsSummary(items) };
+			}
+			if (view === 'full') {
+				// The menu already carries its id + currency; drop the identical per-item copies.
+				return { ...menu, items: menu.items.map(itemWithinParent) };
+			}
+			// DEFAULT "names" (view undefined or "names"): lean id/item_name/price/tag-ids per item.
+			return { ...menu, items: menu.items.map(itemNameView) };
 		}
 	}),
 	defineTool({
 		name: 'update_menu',
 		annotations: DESTRUCTIVE,
 		description:
-			'Update a menu (including its `currency`). Only provided fields change; if `sources` is given it ' +
+			'Update a menu (including its `currency` and `refresh_notes` — bank a newly discovered feed ' +
+			'endpoint here). Only provided fields change; if `sources` is given it ' +
 			'replaces the whole source set (pass [] to clear), or use `add_sources` to append one. Any update ' +
 			"also refreshes the menu's `last_verified` date to today automatically. Returns the updated menu, " +
 			'or null if the id does not exist.',
@@ -1830,7 +2373,7 @@ const chainTools = [
 		description:
 			'Record how ONE branch differs from its shared menu for ONE item: available=false hides the item ' +
 			'at that branch; price overrides it there. This is a PARTIAL patch — a field you OMIT keeps its ' +
-			'current stored value (so toggling just `available` no longer wipes a previously-set `price`); ' +
+			'current stored value (so toggling just `available` never wipes a previously-set `price`); ' +
 			'pass an explicit null for a field to reset it to inherit the menu default. Returns the resulting ' +
 			'merged override. Prefer this over editing the shared item when only one branch differs.',
 		schema: setOverrideArgs,
@@ -1870,44 +2413,248 @@ const osmTools = [
 			'`osm_id` and `osm_url`, a `suggested_category` (cafe/fast_food/restaurant/bakery, ' +
 			'or null for bars/pubs/ice_cream/food_court — pick the best fit), OSM ' +
 			'phone/website/cuisine/opening_hours where tagged, and structured `address_parts` ' +
-			"(from the POI's own OSM tags or an enrichment feed). Workflow: call this, then pass each " +
-			"candidate's `osm_id` to create_locations to import it (coordinates + address come from OSM " +
-			'verbatim, auto-cited).',
+			"(the POI's own OSM tags, enrichment feeds, and admin-boundary city/region merged — exactly " +
+			'what an import stores). Pass `compact: true` for large sweeps (minimal shape, fits 200 ' +
+			'candidates well under output caps) and `exclude_osm_ids` to silence known false matches. ' +
+			'If `scan_truncated` is true the box exceeded the internal scan cap: `total_in_area` is only a ' +
+			'lower bound and re-sweeping the same box will NOT surface the uncounted POIs — narrow the bbox ' +
+			'or lower radius_km until it clears. ' +
+			"Workflow: call this, then pass each candidate's `osm_id` to create_locations to import it " +
+			'(coordinates + address come from OSM verbatim, auto-cited) — or, for a chain, use ' +
+			'import_chain to do the whole loop in one call.',
 		schema: searchPoiArgs,
 		handler: async (input) => {
 			const db = input.exclude_existing === false ? null : getDb();
-			return searchPoi(getOsmStore(), db, {
-				bbox: input.bbox
-					? {
-							minLat: input.bbox.min_lat,
-							minLon: input.bbox.min_lon,
-							maxLat: input.bbox.max_lat,
-							maxLon: input.bbox.max_lon
-						}
-					: undefined,
+			const result = await searchPoi(getOsmStore(), db, {
+				bbox: input.bbox ? toBounds(input.bbox) : undefined,
 				latitude: input.latitude,
 				longitude: input.longitude,
 				radius_km: input.radius_km,
 				category: input.category,
 				name: input.name,
 				cuisine: input.cuisine,
+				country: input.country,
 				exclude_existing: input.exclude_existing,
+				exclude_osm_ids: input.exclude_osm_ids,
 				limit: input.limit
 			});
+			if (!input.compact) return result;
+			return {
+				...result,
+				candidates: result.candidates.map((c) => {
+					const parts = c.address_parts;
+					const has_address = !parts
+						? 'none'
+						: parts.street && parts.city && parts.region
+							? 'full'
+							: 'partial';
+					return {
+						osm_id: c.osm_id,
+						name: c.name,
+						suggested_category: c.suggested_category,
+						latitude: c.latitude,
+						longitude: c.longitude,
+						has_address,
+						...(c.distance_m === undefined ? {} : { distance_m: c.distance_m })
+					};
+				})
+			};
+		}
+	}),
+	defineTool({
+		name: 'import_chain',
+		annotations: CREATE,
+		description:
+			'Import EVERY branch of a chain from the OSM staging store in one call — the preferred way to ' +
+			'add chain locations (it replaces the search_poi → filter → create_locations loop). Prerequisites: ' +
+			'the brand, its shared menu and the menu items already exist (a non-dry-run import fails if the ' +
+			'menu has no items). Given an area and the source names ' +
+			'accepted as this chain (`name_match`, strict normalized equality), it scans the store, drops ' +
+			'venues already on the map, and creates each remaining branch pointed at `brand_id`/`menu_id` — ' +
+			'coordinates + structured address come from OSM verbatim per branch (own addr:* tags, enrichment ' +
+			'feeds, admin-boundary city/region), each auto-citing its osm_url. Branches that still cannot ' +
+			'resolve (e.g. no recoverable street) are reported in `skipped_invalid` with reasons, never ' +
+			'silently dropped; `warnings` flags same-name branches within ~150 m (possible OSM double-mapping ' +
+			"— verify against the chain's own locator before deleting). `name_buckets` histograms every POI " +
+			'name seen in the area — each bucket annotated with its dominant OSM `brand:wikidata` QID — so ' +
+			'you can vet variants and extend `name_match` (or pass `brand_wikidata` to accept brand-tagged ' +
+			'variants automatically, and `country` to keep border-town POIs of a neighbouring country out); ' +
+			're-runs are safe (already-imported branches are excluded). ALWAYS call with `dry_run: true` ' +
+			'first to vet the allowlist. Returns { imported, location_ids, excluded_existing, ' +
+			'unlinked_existing?, excluded_foreign?, matched_by_brand?, skipped_duplicate_locations, ' +
+			'skipped_invalid, warnings, name_buckets, remaining_beyond_max, scan_truncated }. ' +
+			'`unlinked_existing` lists venues already on the map at a branch spot that are NOT linked to this ' +
+			'chain (an independent or other-brand lookalike import excluded but never adopted, e.g. a stray ' +
+			'A&W on a stale private menu) — verify, then adopt with update_locations onto the shared menu. ' +
+			'If a D1 failure interrupts the import ' +
+			'partway, the error reply still carries the committed partial state (`partial_failure: true` plus ' +
+			'imported/warnings/skipped so far) — read its `warnings` before re-running, since committed ' +
+			'branches count as excluded_existing on the re-run and those warnings never resurface.',
+		schema: importChainArgs,
+		handler: async (input) => {
+			await assertBrandMenuRefs(getDb(), input.brand_id, input.menu_id);
+			// The documented prerequisite ("brand, shared menu and menu items already
+			// exist") is enforced here: importing hundreds of branches onto an empty
+			// menu (a forgotten create_items) would put menu-less venues on the map.
+			if (!input.dry_run && (await countMenuItems(getDb(), input.menu_id)) === 0) {
+				throw new Error(
+					`Menu "${input.menu_id}" has no items yet — add the chain's shared items with ` +
+						`create_items (menu_id) before importing branches, or run with dry_run: true.`
+				);
+			}
+			const selection = await selectChainCandidates(getOsmStore(), getDb(), {
+				area: {
+					bbox: input.bbox ? toBounds(input.bbox) : undefined,
+					latitude: input.latitude,
+					longitude: input.longitude,
+					radius_km: input.radius_km
+				},
+				nameMatch: input.name_match,
+				brandWikidata: input.brand_wikidata,
+				country: input.country,
+				brandId: input.brand_id
+			});
+			// The cap applies to IMPORTABLE candidates only: slicing the raw matched
+			// list would let a long run of address-unresolvable POIs occupy the window
+			// forever, leaving valid branches behind them unreachable on every re-run.
+			const { importable, unresolvable } = partitionImportable(selection.matched);
+			const max = input.max ?? 500;
+			const toImport = importable.slice(0, max);
+			const remaining = importable.length - toImport.length;
+
+			if (input.dry_run) {
+				return {
+					dry_run: true,
+					would_import: toImport.length,
+					remaining_beyond_max: remaining,
+					skipped_unresolvable: unresolvable,
+					excluded_existing: selection.excluded_existing,
+					...(selection.unlinked_existing.length
+						? { unlinked_existing: selection.unlinked_existing }
+						: {}),
+					...(input.country ? { excluded_foreign: selection.excluded_foreign } : {}),
+					...(selection.excluded_foreign_sample.length
+						? { excluded_foreign_sample: selection.excluded_foreign_sample }
+						: {}),
+					...(input.brand_wikidata ? { matched_by_brand: selection.matched_by_brand } : {}),
+					scan_truncated: selection.scan_truncated,
+					name_buckets: selection.name_buckets,
+					sample: toImport.slice(0, 10).map((poi) => ({
+						osm_id: poi.osm_id,
+						name: poi.name,
+						address: poi.address,
+						admin_city: poi.admin_city,
+						admin_region: poi.admin_region
+					}))
+				};
+			}
+
+			// Import through the same core as create_locations, in bounded chunks so
+			// one D1 batch never carries hundreds of statements. skip_invalid semantics:
+			// a residual invalid row (normalization edge case) is reported, not fatal.
+			const CHUNK = 50;
+			const locationIds: string[] = [];
+			const skippedDuplicates: { name: string; existing_id: string | null }[] = [];
+			const skippedInvalid: SkippedInvalid[] = [];
+			const warnings: string[] = [];
+			let created = 0;
+			for (let i = 0; i < toImport.length; i += CHUNK) {
+				const items = toImport.slice(i, i + CHUNK).map(
+					(poi): CreateLocationInput => ({
+						name: input.location_name,
+						osm_id: poi.osm_id,
+						category: input.category,
+						phone: poi.phone,
+						website: poi.website ?? input.website ?? null,
+						brand_id: input.brand_id,
+						menu_id: input.menu_id
+					})
+				);
+				let res: CreateLocationsResult;
+				try {
+					res = await createLocationsBatch(getDb(), getOsmStore(), items, { skipInvalid: true });
+				} catch (err) {
+					// Chunks 1..N-1 are committed; surface their results instead of
+					// discarding them with the error (see ToolPartialFailure). Chunk N
+					// is a single D1 batch (atomic), so its branches count as
+					// unprocessed alongside the tail.
+					const cause = err instanceof Error ? err.message : String(err);
+					throw new ToolPartialFailure(
+						`import_chain failed after importing ${created} of ${toImport.length} branches ` +
+							`(chunk starting at index ${i}): ${cause}. The ${created} imported branches are ` +
+							`committed — re-run the same call to import the rest (committed branches are ` +
+							`excluded as existing on re-runs).`,
+						{
+							imported: created,
+							...(input.include_location_ids ? { location_ids: locationIds } : {}),
+							...(skippedDuplicates.length
+								? { skipped_duplicate_locations: skippedDuplicates }
+								: {}),
+							...(skippedInvalid.length ? { skipped_invalid: skippedInvalid } : {}),
+							...(warnings.length ? { warnings } : {}),
+							remaining_beyond_max: remaining + (toImport.length - i)
+						}
+					);
+				}
+				created += res.created;
+				locationIds.push(...res.location_ids);
+				skippedDuplicates.push(...(res.skipped_duplicate_locations ?? []));
+				skippedInvalid.push(...(res.skipped_invalid ?? []));
+				warnings.push(...(res.warnings ?? []));
+			}
+			return {
+				imported: created,
+				...(input.include_location_ids ? { location_ids: locationIds } : {}),
+				excluded_existing: selection.excluded_existing,
+				...(selection.unlinked_existing.length
+					? { unlinked_existing: selection.unlinked_existing }
+					: {}),
+				...(input.country ? { excluded_foreign: selection.excluded_foreign } : {}),
+				...(selection.excluded_foreign_sample.length
+					? { excluded_foreign_sample: selection.excluded_foreign_sample }
+					: {}),
+				...(input.brand_wikidata ? { matched_by_brand: selection.matched_by_brand } : {}),
+				skipped_unresolvable: unresolvable,
+				...(skippedDuplicates.length ? { skipped_duplicate_locations: skippedDuplicates } : {}),
+				...(skippedInvalid.length ? { skipped_invalid: skippedInvalid } : {}),
+				...(warnings.length ? { warnings } : {}),
+				name_buckets: selection.name_buckets,
+				remaining_beyond_max: remaining,
+				scan_truncated: selection.scan_truncated
+			};
 		}
 	}),
 	defineTool({
 		name: 'audit_locations',
 		annotations: READ_ONLY,
+		outputSchema: auditLocationsOutput,
 		description:
-			'Audit existing locations against the LOCAL OSM staging store and surface a work-list to fix with ' +
-			'update_locations. `check` selects the audit: "coordinate_drift" (stored coordinates that do NOT ' +
-			'coincide with the location\'s OSM POI) or "missing_address" (empty or streetless addresses, with ' +
-			'the OSM address to backfill where available). Coordinates and addresses must be OSM-sourced (see ' +
-			'create_locations), so a healthy location sits ~0 m from its OSM POI and this finds the exceptions. ' +
-			'Results are worst-first / actionable-first; `limit` caps how many are returned, `additional` is ' +
-			'how many more exist beyond it, and `counts` breaks them down by classification. See the `check` ' +
-			"field for each mode's entry shape and which options apply.",
+			'Audit existing locations and surface a work-list. `check` selects the audit: "coordinate_drift" ' +
+			"(stored coordinates that do NOT coincide with the location's OSM POI — fix with " +
+			'update_locations), "identity_drift" (the staging POI at a location\'s exact coordinates was ' +
+			'RENAMED to a new occupant or is gone — the venue likely moved, closed or was replaced; verify, ' +
+			'then close_location / update_locations / import the new occupant), "missing_address" (empty or ' +
+			'streetless addresses, with the OSM address to ' +
+			'backfill where available), "duplicate_locations" (same-name/same-brand pairs within a small ' +
+			"radius — probably one venue stored twice; verify against the venue's own locator, then EITHER " +
+			'delete_locations the extra row OR record a confirmed two-real-venues pair with ' +
+			'mark_not_duplicate so it stops being re-flagged — such pairs are counted in ' +
+			'`suppressed_reviewed`, never re-listed), "empty_menu" (open venues whose effective menu is ' +
+			'empty or thinner than `min_items` — they violate the EXHAUSTIVE-menu policy; backfill with ' +
+			'create_items), "html_entities" (text still carrying HTML-encoded references like "&amp;" — ' +
+			'ingestion decodes these, so any hit is legacy/anomalous data; fix with the matching update tool), ' +
+			'or "missing_course_tag" (items with no required course tag — food/dessert/drink; per the course-' +
+			'tag mandate this means the item was never course-reviewed, NOT that it defaults to "food". PAGED ' +
+			'via `limit`/`offset`, since the pre-mandate backlog is large; each entry carries a heuristic ' +
+			'`hint` to verify, not to auto-apply; fix by re-tagging with update_items), ' +
+			'or "unlinked_chain_branch" (INDEPENDENT venues whose name matches an existing chain, a branch ' +
+			'never linked to its chain, so it serves a stale private menu instead of the shared chain menu; ' +
+			'adopt with update_locations onto the shared menu, or delete_locations a bad row). ' +
+			'The address/coordinate checks compare against the LOCAL OSM staging store; the other checks read ' +
+			'only the live D1. ' +
+			'Results are worst-first / actionable-first; `limit` caps how many are returned and `additional` ' +
+			"is how many more exist beyond it. See the `check` field for each mode's entry shape and which " +
+			'options apply.',
 		schema: auditLocationsArgs,
 		handler: async (input) => {
 			if (input.check === 'coordinate_drift') {
@@ -1918,12 +2665,86 @@ const osmTools = [
 					include_unmatched: input.include_unmatched
 				});
 			}
+			if (input.check === 'identity_drift') {
+				return findIdentityDrift(getOsmStore(), getDb(), {
+					limit: input.limit,
+					tolerance_m: input.tolerance_m,
+					search_radius_m: input.search_radius_m,
+					include_vanished: input.include_vanished
+				});
+			}
+			if (input.check === 'duplicate_locations') {
+				// Reads only the live D1 — no staging store needed.
+				return findDuplicateLocations(getDb(), {
+					radius_m: input.radius_m,
+					limit: input.limit,
+					brand_id: input.brand_id
+				});
+			}
+			if (input.check === 'empty_menu') {
+				// Reads only the live D1 — no staging store needed.
+				return findIncompleteMenus(getDb(), {
+					min_items: input.min_items,
+					limit: input.limit
+				});
+			}
+			if (input.check === 'html_entities') {
+				// Reads only the live D1 — no staging store needed.
+				return findHtmlEntities(getDb(), { limit: input.limit });
+			}
+			if (input.check === 'missing_course_tag') {
+				// Reads only the live D1 — no staging store needed.
+				return findMissingCourseTags(getDb(), { limit: input.limit, offset: input.offset });
+			}
+			if (input.check === 'unlinked_chain_branch') {
+				// Reads only the live D1 — no staging store needed.
+				return findUnlinkedChainBranches(getDb(), { limit: input.limit });
+			}
 			return findMissingAddress(getOsmStore(), getDb(), {
 				limit: input.limit,
 				search_radius_m: input.search_radius_m,
 				include_incomplete: input.include_incomplete,
 				include_unfixable: input.include_unfixable
 			});
+		}
+	}),
+	defineTool({
+		name: 'mark_not_duplicate',
+		annotations: CREATE,
+		description:
+			'Record the verdict that two locations flagged by audit_locations (check: "duplicate_locations") ' +
+			'are in fact two REAL venues — not one venue double-mapped — so the pair is suppressed from every ' +
+			'future duplicate audit (counted in its `suppressed_reviewed`) and the verification work is never ' +
+			"re-paid. Use ONLY after verifying against the chain's/venue's own store locator or equally strong " +
+			'evidence, and put that evidence in `reason`. The verdict is per-pair and survives until either ' +
+			'location is deleted (it cascades away with the row). Idempotent: re-marking replaces the ' +
+			'reason/date. Pass `revoke: true` to withdraw a verdict so the pair audits normally again. For the ' +
+			'opposite verdict — one venue stored twice — do NOT use this; delete_locations the redundant row.',
+		schema: markNotDuplicateArgs,
+		handler: async (input) => {
+			if (input.revoke) {
+				const revoked = await unmarkLocationsDistinct(
+					getDb(),
+					input.location_id_a,
+					input.location_id_b
+				);
+				return { revoked };
+			}
+			const reason = input.reason?.trim();
+			if (!reason) throw new Error('A `reason` (the verification evidence) is required.');
+			const [locA, locB] = await Promise.all([
+				getLocationById(getDb(), input.location_id_a),
+				getLocationById(getDb(), input.location_id_b)
+			]);
+			if (!locA) throw new Error(`No location with id "${input.location_id_a}".`);
+			if (!locB) throw new Error(`No location with id "${input.location_id_b}".`);
+			const res = await markLocationsDistinct(
+				getDb(),
+				input.location_id_a,
+				input.location_id_b,
+				reason
+			);
+			return { marked: true, already_reviewed: res.already_reviewed };
 		}
 	})
 ] as const;
@@ -1957,6 +2778,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 		name: t.name,
 		description: t.description,
 		inputSchema: inputSchemaFor(t.schema),
+		// Advertised only for the tools that declare one (object-returning); the JSON
+		// Schema shares the same valibot→JSON helper, so it stays open/permissive.
+		...(t.outputSchema
+			? { outputSchema: inputSchemaFor(t.outputSchema) as Tool['outputSchema'] }
+			: {}),
 		...(t.annotations ? { annotations: t.annotations } : {})
 	}))
 }));
@@ -1974,10 +2800,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 	try {
 		const input = v.parse(tool.schema, rawArgs ?? {});
 		const result = await tool.handler(input as never);
+		// Keep the text content block for backward compatibility (older clients read
+		// only text); ADDITIONALLY attach structuredContent when the result is a plain
+		// JSON object — the MCP spec requires structuredContent to be an object, so a
+		// null (get_* not-found), array (list_brands/list_menus) or primitive stays text-only.
+		const structured =
+			result !== null && typeof result === 'object' && !Array.isArray(result)
+				? { structuredContent: result as Record<string, unknown> }
+				: {};
 		return {
-			content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }]
+			content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+			...structured
 		};
 	} catch (err) {
+		// A partial failure stays an error (isError), but its body carries the
+		// state the tool committed before failing — see ToolPartialFailure.
+		if (err instanceof ToolPartialFailure) {
+			return {
+				content: [{ type: 'text' as const, text: partialFailureBody(err) }],
+				isError: true
+			};
+		}
 		const message =
 			err instanceof v.ValiError
 				? `Invalid arguments: ${err.issues.map((i) => `${i.path?.map((p) => p.key).join('.') ?? '(root)'}: ${i.message}`).join('; ')}`
@@ -1991,6 +2834,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 	}
 });
 
-const transport = new StdioServerTransport();
-await server.connect(transport);
-console.error('[better-food-map-db] MCP server ready on stdio');
+// Only wire up stdio when run as the entrypoint (bun run db:mcp) — tests import
+// this module for its exported schemas and must not capture the test runner's stdio.
+if (import.meta.main) {
+	const transport = new StdioServerTransport();
+	await server.connect(transport);
+	console.error('[better-food-map-db] MCP server ready on stdio');
+}

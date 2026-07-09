@@ -5,11 +5,19 @@
 // -free, so it can be unit-tested and kept out of the Svelte component, which is
 // left as thin glue around `LabelEngine`:
 //
-//   • `selectVisible` decides WHICH pills to show at the current zoom. It greedily
-//     keeps the highest-priority labels whose anchors aren't packed tighter than
-//     `minGap` px and hides the rest. Because the projected anchors spread apart on
-//     screen as the user zooms in, more labels clear the bar at higher zoom — that
-//     is how names reveal progressively without ever drawing a dot.
+//   • `selectVisible` decides WHICH pills to show at the current zoom: per cell of
+//     an absolute geographic lattice, the highest-priority `perCell` labels survive
+//     and the rest hide. Because the lattice shrinks (in degrees) as the user zooms
+//     in, more labels win a cell at higher zoom — that is how names reveal
+//     progressively without ever drawing a dot.
+//
+//   • `fillFreeSpace` then re-admits grid losers whose overlap the force sim can
+//     RESOLVE: the grid bounds density but is blind to actual room, so without this
+//     pass two venues sharing a cell always cost one its pill — even two co-located
+//     mall stalls whose pills merely need a nudge apart. Admission is budgeted on
+//     least-axis penetration (the sim's own separating move), with hysteresis
+//     (entering is stricter than staying) because screen distances aren't
+//     pan-invariant on the globe.
 //
 //   • `stepSimulation` advances the force model one frame: every pill is pulled
 //     strongly toward its origin (a spring), so it wants to sit centred on its venue's
@@ -138,7 +146,7 @@ export function hashId(id: string): number {
  * screen-space lattice is only pan-invariant under an affine projection; the globe, where
  * a pan is a sphere rotation, is not affine — which is the trap an earlier version fell
  * into.) Only ZOOM resizes the lattice, moving venues between cells — the progressive
- * reveal, mirroring the server's absolute lattice in `getMapData`.
+ * reveal, mirroring the shared absolute lattice in $lib/grid.
  *
  * Bucketing on a fixed grid is O(n) (one cell lookup per anchor) and, crucially, caps
  * the number of pills handed to the force simulation, so an over-dense viewport can't
@@ -176,6 +184,116 @@ export function selectVisible(anchors: LabelAnchor[], perCell: number, max: numb
 	}
 
 	return new Set(kept.map((a) => a.id));
+}
+
+// --- Free-space fill ---------------------------------------------------------
+// The declutter grid guarantees bounded, pan-stable density, but it is blind to
+// actual screen room: two venues sharing a grid cell always cost one of them its
+// pill even when the force sim could easily lay both out. This second pass
+// re-admits grid losers whose overlap the sim can RESOLVE — the grid stays the
+// density GUARANTEE, the fill is opportunistic on top. Admission is budgeted on
+// penetration, not clearance: two co-located venues (food stalls in a mall)
+// never have clear anchor-to-anchor room at ANY reachable zoom, but their pills
+// only overlap by a pill-height — exactly the least-penetration nudge
+// stepSimulation resolves — so both show, sitting a little off their shared
+// point. A pile-up beyond what the sim can spread stays hidden.
+
+/** A pill's projected anchor + half-box, the unit the free-space fill packs. */
+export type FillBox = {
+	id: string;
+	x: number;
+	y: number;
+	hw: number;
+	hh: number;
+	priority: number;
+};
+
+/**
+ * Total penetration (px, summed over every shown pill it overlaps, each pair
+ * measured on its least axis — the axis the sim separates along) a grid loser
+ * may ADD and still be admitted by the free-space fill. This is the nudging an
+ * admission asks of the layout: sized to admit a fully co-located PAIR even at
+ * the unmeasured-box estimate (2 × {@link FILL_EST_HALF_H_PX} = 52), while a
+ * third pill on the same point doubles the sum and stays out — so a mall pair
+ * splits apart and shows, a food-court pile-up doesn't jostle forever. Well
+ * inside the sim's maxLeader, so the resolving nudges stay near the anchors.
+ */
+export const FILL_ADMIT_BUDGET_PX = 56;
+/**
+ * The (looser) penetration an already-admitted pill may carry and STAY
+ * admitted. The gap above {@link FILL_ADMIT_BUDGET_PX} is the hysteresis band:
+ * screen-space penetration is NOT pan-invariant (on the globe a pan is a
+ * sphere rotation, and even flat Mercator zoom scales it), so a pill that
+ * barely qualified would otherwise flicker in and out as the camera slides
+ * across the admission boundary. Entering is strict; only clearly-worse
+ * overlap evicts.
+ */
+export const FILL_RETAIN_BUDGET_PX = 64;
+/**
+ * Half-box (px) assumed for a pill that has never been rendered, hence never
+ * measured (the engine measures on DOM attach). Sized generously — a bit above
+ * the typical two-line pill — so an estimate admission rarely turns out worse
+ * once its real box lands; over-estimating only delays an admission by a
+ * pass, while under-estimating admits a pill that then must be evicted.
+ */
+export const FILL_EST_HALF_W_PX = 76;
+export const FILL_EST_HALF_H_PX = 26;
+
+/**
+ * How deeply two boxes interpenetrate on their LEAST axis (0 when apart) — the
+ * separating nudge stepSimulation's collision pass would apply to the pair.
+ */
+function pairPenetration(a: FillBox, b: FillBox): number {
+	const px = a.hw + b.hw - Math.abs(a.x - b.x);
+	const py = a.hh + b.hh - Math.abs(a.y - b.y);
+	return px > 0 && py > 0 ? Math.min(px, py) : 0;
+}
+
+/**
+ * The grid losers to show anyway because the sim can lay them out: greedy
+ * admission in descending priority order, each candidate charged the TOTAL
+ * least-axis penetration its box adds against everything already shown and
+ * admitted while under the budget. Previously-admitted pills (`prevAdmitted`)
+ * re-qualify first, against the looser retain budget — the hysteresis that
+ * keeps a pan from churning the admitted set, and lets an incumbent hold its
+ * space against a higher-priority newcomer (churn again) — then new
+ * admissions, each claiming their box before lower-priority candidates test
+ * theirs. `budget` caps how many admissions may be added on top of the kept
+ * set (the caller passes `max - kept`, so the global pill ceiling holds).
+ * O(rest × shown) axis-aligned box tests, bounded by the payload caps
+ * upstream. Greedy pairwise-at-anchor sums don't PROVE the final multi-pill
+ * layout is overlap-free — the sim's settle backstop covers the rare
+ * over-constrained cluster.
+ */
+export function fillFreeSpace(
+	kept: FillBox[],
+	rest: FillBox[],
+	prevAdmitted: ReadonlySet<string>,
+	budget: number
+): Set<string> {
+	const admitted = new Set<string>();
+	if (budget <= 0) return admitted;
+	const shown = [...kept];
+	// Returning members first — an incumbent must not lose its spot to a newcomer
+	// that packs the same space at higher priority mid-pan (that's churn, exactly
+	// what the hysteresis exists to prevent) — then both groups by priority.
+	const ordered = rest.toSorted(
+		(a, b) =>
+			Number(prevAdmitted.has(b.id)) - Number(prevAdmitted.has(a.id)) || b.priority - a.priority
+	);
+	for (const box of ordered) {
+		if (admitted.size >= budget) break;
+		const allowance = prevAdmitted.has(box.id) ? FILL_RETAIN_BUDGET_PX : FILL_ADMIT_BUDGET_PX;
+		let need = 0;
+		for (const s of shown) {
+			need += pairPenetration(box, s);
+			if (need > allowance) break;
+		}
+		if (need > allowance) continue;
+		admitted.add(box.id);
+		shown.push(box);
+	}
+	return admitted;
 }
 
 /**
@@ -264,8 +382,10 @@ export function stepSimulation(nodes: SimNode[], cfg: SimConfig): void {
 
 /**
  * A label candidate, with the geographic origin its pill anchors to. `priority`
- * overrides the default declutter tie-break (a stable id hash) when a caller wants a
- * specific ordering among labels that compete for the same screen cell.
+ * ranks labels that compete for the same screen cell (higher wins; the map passes
+ * the venue's like-derived score). It should be integer-valued: the engine adds a
+ * stable [0,1) id hash as a fractional tiebreak, which a fractional priority could
+ * otherwise interleave with. Omitted means 0 — tie-break only.
  */
 export type Candidate = {
 	id: string;
@@ -317,6 +437,11 @@ export type RecomputeOptions = {
 export class LabelEngine {
 	private nodes = new Map<string, LabelNode>();
 	private visibleIds: string[] = [];
+	// Ids currently shown via the free-space fill (grid losers admitted into free
+	// screen room). Persisted across recomputes — membership feeds the fill's
+	// hysteresis, so an admitted pill isn't re-judged against the strict admission
+	// clearance every pass as the camera slides.
+	private admitted = new Set<string>();
 
 	/**
 	 * Re-pick the visible labels for the current camera: project every candidate,
@@ -328,6 +453,7 @@ export class LabelEngine {
 		const { candidates, project, width, height, margin, selectedId, cellDeg, perCell, max } = opts;
 
 		const anchors: LabelAnchor[] = [];
+		const boxes = new Map<string, FillBox>();
 		const candidateIds = new Set<string>();
 		for (const c of candidates) {
 			candidateIds.add(c.id);
@@ -338,24 +464,55 @@ export class LabelEngine {
 			if (p.x < -margin || p.y < -margin || p.x > width + margin || p.y > height + margin) {
 				continue;
 			}
+			// Caller priority (an integer rank — the venue score) plus the stable
+			// [0,1) id hash as a fractional tiebreak, so equal-priority candidates
+			// still order deterministically from the DATA alone — never from input
+			// order, which varies with fetch/merge order and would flip a cell's
+			// winner between pans. Selection trumps everything.
+			const priority = c.id === selectedId ? Infinity : (c.priority ?? 0) + hashId(c.id);
 			anchors.push({
 				id: c.id,
 				// Bucket on the absolute geographic lattice: the venue's coordinate, shifted
 				// non-negative before the floor so it floors consistently across the equator/
-				// prime-meridian (matching the server grid in getMapData). A pan doesn't move
+				// prime-meridian (matching the shared grid in $lib/grid). A pan doesn't move
 				// the coordinate, so the cell is pan-invariant on the globe as well as Mercator.
 				cellX: Math.floor((c.lng + 180) / cellDeg),
 				cellY: Math.floor((c.lat + 90) / cellDeg),
-				priority: c.id === selectedId ? Infinity : (c.priority ?? hashId(c.id))
+				priority
+			});
+			// The candidate's box for the free-space fill: the measured pill where one
+			// has rendered before (nodes persist while the venue stays a candidate),
+			// the generous estimate for a pill that has never mounted.
+			const node = this.nodes.get(c.id);
+			const measured = node !== undefined && node.hw > 1;
+			boxes.set(c.id, {
+				id: c.id,
+				x: p.x,
+				y: p.y,
+				hw: measured ? node.hw : FILL_EST_HALF_W_PX,
+				hh: measured ? node.hh : FILL_EST_HALF_H_PX,
+				priority
 			});
 		}
 
 		const keep = selectVisible(anchors, perCell, max);
+		// Second pass: grid losers whose overlap the force sim can resolve are shown
+		// anyway (see fillFreeSpace) — the grid bounds density, the fill stops it
+		// hiding a venue the layout actually has room for (nudged pills included).
+		// The count budget keeps the global ceiling: kept + admitted ≤ max.
+		const keptBoxes: FillBox[] = [];
+		const restBoxes: FillBox[] = [];
+		for (const a of anchors) {
+			const box = boxes.get(a.id);
+			if (box === undefined) continue;
+			(keep.has(a.id) ? keptBoxes : restBoxes).push(box);
+		}
+		this.admitted = fillFreeSpace(keptBoxes, restBoxes, this.admitted, max - keep.size);
 
 		const items: RenderItem[] = [];
 		const visible: string[] = [];
 		for (const c of candidates) {
-			if (!keep.has(c.id)) continue;
+			if (!keep.has(c.id) && !this.admitted.has(c.id)) continue;
 			let node = this.nodes.get(c.id);
 			if (node) {
 				node.name = c.name;
@@ -459,9 +616,10 @@ export class LabelEngine {
 		return active;
 	}
 
-	/** Forget every pill (e.g. when the camera drops below the overlay floor). */
+	/** Forget every pill (on unmount). */
 	clear(): void {
 		this.nodes.clear();
 		this.visibleIds = [];
+		this.admitted.clear();
 	}
 }

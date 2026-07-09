@@ -1,28 +1,14 @@
 import { expect, test, describe } from 'bun:test';
 import { DIET_OPTIONS, DIET_IDS, sanitizeDiet } from '../src/lib/diet-profile';
-
-// The curated dietary tag ids the map's TAGS vocabulary defines. Every diet option
-// must map to one of these, or the selector would filter on a tag no item can carry.
-// Mirrored here (rather than imported from the server-only db module) to keep this
-// test client-safe.
-const DIETARY_TAG_IDS = new Set([
-	'vegan',
-	'vegetarian',
-	'gluten_free',
-	'dairy_free',
-	'nut_free',
-	'halal'
-]);
+import { TAGS } from '../src/lib/tags';
 
 describe('catalog integrity', () => {
-	test('every diet option maps to a real dietary tag', () => {
-		for (const option of DIET_OPTIONS) {
-			expect(DIETARY_TAG_IDS.has(option.id)).toBe(true);
-		}
-	});
-
-	test('options cover exactly the dietary tag vocabulary', () => {
-		expect(new Set(DIET_OPTIONS.map((o) => o.id))).toEqual(DIETARY_TAG_IDS);
+	test('options cover exactly the dietary tag vocabulary, with its display names', () => {
+		// DIET_OPTIONS is derived from TAGS, so this is a sanity check on the
+		// derivation (dietary-only, id + name carried through), not a hand-sync.
+		expect(DIET_OPTIONS).toEqual(
+			TAGS.filter((t) => t.tag_type === 'dietary').map((t) => ({ id: t.id, label: t.name }))
+		);
 	});
 
 	test('ids are unique and DIET_IDS mirrors the options', () => {
@@ -51,5 +37,14 @@ describe('sanitizeDiet', () => {
 		// Course tags are not selectable diets.
 		expect(sanitizeDiet('dessert')).toBeNull();
 		expect(sanitizeDiet('')).toBeNull();
+	});
+
+	test('collapses forged filter values to null (getMapCells cache-key guard)', () => {
+		// getMapCells' schema only length-caps `diet`; the handler relies on
+		// sanitizeDiet to keep forged values out of the shared colo block-cache
+		// key and out of the SQL filter (the cache assumes 6-value cardinality).
+		expect(sanitizeDiet('x'.repeat(64))).toBeNull();
+		expect(sanitizeDiet('VEGAN')).toBeNull(); // ids are exact, lowercase tokens
+		expect(sanitizeDiet("vegan' OR 1=1")).toBeNull();
 	});
 });

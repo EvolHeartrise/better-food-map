@@ -4,9 +4,9 @@
 //
 // Pure and runtime-agnostic (no node/bun/Worker APIs), so every layer shares
 // ONE definition of "what a normalized address looks like":
-//   • the Worker/app  — src/lib/server/db.ts derives the display line from parts
-//   • the MCP server  — scripts/db-mcp-server.ts canonicalizes agent-supplied parts
-//   • the backfill    — scripts/backfill-address-parts.ts re-derives parts from OSM
+//   • the Worker/app   — src/lib/server/db.ts derives the display line from parts
+//   • the MCP server   — scripts/db-mcp-server.ts canonicalizes agent-supplied parts
+//   • the OSM pipeline — scripts/osm/map-feature.ts composes each POI's address parts
 //
 // A location stores `street`, `city`, `region`, `country` (all required) and an
 // optional `postcode`. `region` is a 2-letter province/state code and `country`
@@ -101,6 +101,7 @@ const CA_REGION_NAMES: Record<string, string> = {
 	nunavut: 'NU',
 	ontario: 'ON',
 	'prince edward island': 'PE',
+	pei: 'PE',
 	quebec: 'QC',
 	saskatchewan: 'SK',
 	yukon: 'YT'
@@ -222,6 +223,21 @@ function foldName(value: string): string {
 }
 
 /**
+ * Folds the spelling variants sources use for region names: "&" for "and"
+ * ("Newfoundland & Labrador"), dotted abbreviations ("P.E.I."), and non-Latin
+ * co-names in bilingual OSM labels ("ᓄᓇᕗᑦ Nunavut"). Applied only on the
+ * full-name path of {@link normalizeRegion} — codes never carry any of these.
+ */
+function foldRegionName(value: string): string {
+	return foldName(
+		stripDiacritics(value)
+			.replace(/&/g, ' and ')
+			.replace(/\./g, '')
+			.replace(/[^\x20-\x7e]+/g, ' ')
+	);
+}
+
+/**
  * Normalizes a province/state to its 2-letter code. Accepts an existing code
  * (any case) or a full name (CA or US). `countryCode` (ISO-2) disambiguates and
  * scopes the lookup when known. Returns null when it cannot be resolved — the
@@ -238,6 +254,12 @@ export function normalizeRegion(
 	const upper = raw.toUpperCase();
 	const cc = countryCode?.toUpperCase();
 
+	// Only CA/US regions are known. When the caller says the address is in some
+	// OTHER country, a lookup against the CA/US tables would launder a foreign
+	// region into a CA/US code (Australia's "WA" is not Washington) — so it is
+	// unresolvable, full stop. No country still auto-detects across CA ∪ US.
+	if (cc && cc !== 'CA' && cc !== 'US') return null;
+
 	// Already a code?
 	if (/^[A-Z]{2}$/.test(upper)) {
 		if (cc === 'CA') return CA_REGION_CODES.has(upper) ? upper : null;
@@ -246,11 +268,42 @@ export function normalizeRegion(
 		return null;
 	}
 
-	// Full name → code.
-	const key = foldName(raw);
-	if (cc === 'CA') return CA_REGION_NAMES[key] ?? null;
-	if (cc === 'US') return US_REGION_NAMES[key] ?? null;
-	return CA_REGION_NAMES[key] ?? US_REGION_NAMES[key] ?? null;
+	// Full name → code. A bilingual OSM label ("New Brunswick / Nouveau-Brunswick")
+	// is tried whole first, then one slash-separated segment at a time.
+	const keys = [raw, ...(raw.includes('/') ? raw.split('/') : [])].map(foldRegionName);
+	for (const key of keys) {
+		if (!key) continue;
+		// A dotted/spaced code ("B.C.", "ON.") folds down to two letters — validate
+		// it as a code rather than looking it up as a name.
+		if (/^[a-z]{2}$/.test(key)) {
+			const asCode = normalizeRegion(key.toUpperCase(), cc);
+			if (asCode) return asCode;
+			continue;
+		}
+		const code =
+			cc === 'CA'
+				? CA_REGION_NAMES[key]
+				: cc === 'US'
+					? US_REGION_NAMES[key]
+					: (CA_REGION_NAMES[key] ?? US_REGION_NAMES[key]);
+		if (code) return code;
+	}
+	return null;
+}
+
+/**
+ * The country a province/state belongs to, from a raw region value (code or
+ * full name, any of the spellings {@link normalizeRegion} accepts). The CA and
+ * US code sets are disjoint, so a resolvable region uniquely determines its
+ * country. Returns null when the region cannot be resolved — the caller decides
+ * whether "unknown" is a match or a miss.
+ */
+export function regionCountry(value: string | null | undefined): 'CA' | 'US' | null {
+	const code = normalizeRegion(value);
+	if (!code) return null;
+	if (CA_REGION_CODES.has(code)) return 'CA';
+	if (US_REGION_CODES.has(code)) return 'US';
+	return null;
 }
 
 const CA_POSTCODE = /^([A-Za-z]\d[A-Za-z])\s*(\d[A-Za-z]\d)$/;
@@ -320,6 +373,113 @@ export function normalizeCountry(value: string | null | undefined): string | nul
 		return COUNTRY_NAMES[raw.toLowerCase()] ?? code;
 	}
 	return COUNTRY_NAMES[foldName(raw)] ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Display labels: the inverse of the normalizers above — a stored 2-letter
+// region/country code back to a human name, for the geographic browse pages
+// (src/routes/[country]/…). Written out explicitly rather than inverting the
+// name→code maps, whose keys are lower-cased and many-to-one (so inversion would
+// lose the canonical casing and pick an arbitrary spelling). The CA and US code
+// sets are disjoint (see {@link regionCountry}), so one code→name map is
+// unambiguous across both.
+// ---------------------------------------------------------------------------
+
+/** Province/state code → canonical display name (CA provinces, then US states). */
+const REGION_LABELS: Record<string, string> = {
+	AB: 'Alberta',
+	BC: 'British Columbia',
+	MB: 'Manitoba',
+	NB: 'New Brunswick',
+	NL: 'Newfoundland and Labrador',
+	NS: 'Nova Scotia',
+	NT: 'Northwest Territories',
+	NU: 'Nunavut',
+	ON: 'Ontario',
+	PE: 'Prince Edward Island',
+	QC: 'Quebec',
+	SK: 'Saskatchewan',
+	YT: 'Yukon',
+	AL: 'Alabama',
+	AK: 'Alaska',
+	AZ: 'Arizona',
+	AR: 'Arkansas',
+	CA: 'California',
+	CO: 'Colorado',
+	CT: 'Connecticut',
+	DE: 'Delaware',
+	FL: 'Florida',
+	GA: 'Georgia',
+	HI: 'Hawaii',
+	ID: 'Idaho',
+	IL: 'Illinois',
+	IN: 'Indiana',
+	IA: 'Iowa',
+	KS: 'Kansas',
+	KY: 'Kentucky',
+	LA: 'Louisiana',
+	ME: 'Maine',
+	MD: 'Maryland',
+	MA: 'Massachusetts',
+	MI: 'Michigan',
+	MN: 'Minnesota',
+	MS: 'Mississippi',
+	MO: 'Missouri',
+	MT: 'Montana',
+	NE: 'Nebraska',
+	NV: 'Nevada',
+	NH: 'New Hampshire',
+	NJ: 'New Jersey',
+	NM: 'New Mexico',
+	NY: 'New York',
+	NC: 'North Carolina',
+	ND: 'North Dakota',
+	OH: 'Ohio',
+	OK: 'Oklahoma',
+	OR: 'Oregon',
+	PA: 'Pennsylvania',
+	RI: 'Rhode Island',
+	SC: 'South Carolina',
+	SD: 'South Dakota',
+	TN: 'Tennessee',
+	TX: 'Texas',
+	UT: 'Utah',
+	VT: 'Vermont',
+	VA: 'Virginia',
+	WA: 'Washington',
+	WV: 'West Virginia',
+	WI: 'Wisconsin',
+	WY: 'Wyoming',
+	DC: 'District of Columbia'
+};
+
+/** ISO-3166-1 alpha-2 country code → display name (the countries we cover). */
+const COUNTRY_LABELS: Record<string, string> = {
+	CA: 'Canada',
+	US: 'United States',
+	GB: 'United Kingdom',
+	AU: 'Australia',
+	NZ: 'New Zealand',
+	IE: 'Ireland'
+};
+
+/**
+ * A stored region code back to its display name (e.g. "ON" → "Ontario"). Falls
+ * back to the upper-cased code for anything not in the CA/US table, so an
+ * unexpected value still renders sanely rather than blank.
+ */
+export function regionLabel(code: string): string {
+	const upper = code.toUpperCase();
+	return REGION_LABELS[upper] ?? upper;
+}
+
+/**
+ * A stored country code back to its display name (e.g. "CA" → "Canada"). Falls
+ * back to the upper-cased code for anything outside the covered set.
+ */
+export function countryLabel(code: string): string {
+	const upper = code.toUpperCase();
+	return COUNTRY_LABELS[upper] ?? upper;
 }
 
 /**

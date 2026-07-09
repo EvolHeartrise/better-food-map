@@ -12,7 +12,7 @@ import { sanitizeDiet } from '$lib/diet-profile';
  * filter" rather than a broken selection.
  */
 export const getDiet = query(async (): Promise<string | null> => {
-	const user = currentUser();
+	const user = await currentUser();
 	if (!user) return null;
 	return sanitizeDiet(await getUserDiet(requireDb(), user.id));
 });
@@ -24,7 +24,7 @@ export const getDiet = query(async (): Promise<string | null> => {
  * storing — an unknown value is stored as `null` (no filter).
  */
 export const setDiet = command(v.nullable(v.string()), async (dietId) => {
-	const user = requireUser();
+	const user = await requireUser();
 	await setUserDiet(requireDb(), user.id, sanitizeDiet(dietId), Date.now());
 	void getDiet().refresh();
 });

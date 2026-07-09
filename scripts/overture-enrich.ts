@@ -124,34 +124,69 @@ interface RawPlace {
 /** Maps a raw cache record to an {@link OverturePlace}, or null if it can't be used. */
 function toPlace(raw: RawPlace): OverturePlace | null {
 	if (!raw.id || typeof raw.lon !== 'number' || typeof raw.lat !== 'number') return null;
+	// A place with no street line cannot fill a missing address: composing its
+	// locality-only remainder would later be re-parsed with the lone segment as
+	// the STREET (addressPartsFromLine's rule), inventing streets like
+	// "Curry County". Overture rows routinely carry freeform: "" — require it.
+	if (!raw.freeform?.trim()) return null;
 	const address = composeOvertureAddress(raw);
 	if (!address) return null;
 	return { id: raw.id, name: raw.name ?? null, latitude: raw.lat, longitude: raw.lon, address };
 }
 
-/** Loads the cache (auto-detecting a JSON array vs newline-delimited JSON). */
-async function loadPlaces(path: string): Promise<OverturePlace[]> {
-	const file = Bun.file(path);
-	const text = await file.text();
-	const places: OverturePlace[] = [];
-	const trimmed = text.trimStart();
-	if (trimmed.startsWith('[')) {
-		for (const raw of JSON.parse(trimmed) as RawPlace[]) {
+/**
+ * Streams the cache as an async generator (newline-delimited JSON, or a JSON
+ * array for small hand-made caches) — a country-scale NDJSON runs to millions
+ * of lines / ~1 GB, which must never be materialized in memory. `stats.seen`
+ * counts usable places for the summary line.
+ */
+async function* loadPlaces(path: string, stats: { seen: number }): AsyncGenerator<OverturePlace> {
+	const head = Bun.file(path).slice(0, 1);
+	const isArray = (await head.text()).trimStart().startsWith('[');
+	if (isArray) {
+		for (const raw of JSON.parse(await Bun.file(path).text()) as RawPlace[]) {
 			const p = toPlace(raw);
-			if (p) places.push(p);
+			if (p) {
+				stats.seen++;
+				yield p;
+			}
 		}
-	} else {
-		for (const line of text.split('\n')) {
+		return;
+	}
+	const decoder = new TextDecoder();
+	let buf = '';
+	const stream = Bun.file(path).stream() as unknown as AsyncIterable<Uint8Array>;
+	for await (const chunk of stream) {
+		buf += decoder.decode(chunk, { stream: true });
+		let nl = buf.indexOf('\n');
+		while (nl >= 0) {
+			const line = buf.slice(0, nl);
+			buf = buf.slice(nl + 1);
+			nl = buf.indexOf('\n');
 			if (!line.trim()) continue;
 			try {
 				const p = toPlace(JSON.parse(line) as RawPlace);
-				if (p) places.push(p);
+				if (p) {
+					stats.seen++;
+					yield p;
+				}
 			} catch {
 				// skip malformed line
 			}
 		}
 	}
-	return places;
+	buf += decoder.decode();
+	if (buf.trim()) {
+		try {
+			const p = toPlace(JSON.parse(buf) as RawPlace);
+			if (p) {
+				stats.seen++;
+				yield p;
+			}
+		} catch {
+			// skip malformed tail
+		}
+	}
 }
 
 async function main(): Promise<void> {
@@ -169,13 +204,12 @@ async function main(): Promise<void> {
 	const pois = store.addresslessPois();
 	console.error(`Address-less POIs in store: ${pois.length}`);
 
-	const places = await loadPlaces(args.input);
-	console.error(`Overture places loaded from cache: ${places.length}`);
-
-	const matches = matchOverturePlaces(pois, places, {
+	const stats = { seen: 0 };
+	const matches = await matchOverturePlaces(pois, loadPlaces(args.input, stats), {
 		radiusM: args.radiusM,
 		releaseLabel: args.release
 	});
+	console.error(`Overture places streamed from cache: ${stats.seen}`);
 
 	// Distance summary for a quick confidence read.
 	const dists = matches.map((m) => m.distance_m).toSorted((a, b) => a - b);

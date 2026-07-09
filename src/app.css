@@ -6,6 +6,10 @@
 	--color-border: #e3e3e8;
 	--color-accent: #2f6f4f;
 	--color-accent-hover: #245a40;
+	/* Allergen-avoidance dietary icons (dairy-/nut-/gluten-free) read in this orange,
+	   set against the accent green of the positive-diet icons (vegan/vegetarian/halal).
+	   Muted to sit alongside the accent, and dark enough to stay legible at ~15px. */
+	--color-caution: #c2410c;
 
 	--container-width: 72rem;
 	--radius: 0.5rem;
@@ -74,4 +78,82 @@ img {
 
 main {
 	width: 100%;
+}
+
+/* Shared hover tooltip ($lib/tooltip). The bubble is a singleton appended to
+   document.body, so its styles live here rather than in any component. Dark
+   bubble on the light UI (shadcn-style, keyed to --color-text); positioned by
+   the action via inline top/left, with data-side driving the arrow edge and
+   the entrance's fly direction. */
+.tooltip {
+	position: fixed;
+	z-index: 100;
+	display: none;
+	max-width: 18rem;
+	padding: 0.3rem 0.65rem;
+	border-radius: 0.375rem;
+	background: var(--color-text);
+	color: #fff;
+	font-size: 0.75rem;
+	line-height: 1.35;
+	font-weight: 500;
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+	pointer-events: none;
+}
+
+.tooltip--visible {
+	display: block;
+}
+
+/* Entrance: fade in with a slight fly out of the anchor into place — starting
+   nearer the trigger and settling away from it (a top bubble rises, a bottom
+   one drops). Applied only on a fresh open; hopping between triggers while a
+   tooltip is already up repositions without replaying this. */
+.tooltip--in[data-side='top'] {
+	animation: tooltip-fly-up 120ms ease-out;
+}
+
+.tooltip--in[data-side='bottom'] {
+	animation: tooltip-fly-down 120ms ease-out;
+}
+
+@keyframes tooltip-fly-up {
+	from {
+		opacity: 0;
+		transform: translateY(4px);
+	}
+}
+
+@keyframes tooltip-fly-down {
+	from {
+		opacity: 0;
+		transform: translateY(-4px);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.tooltip--in[data-side='top'],
+	.tooltip--in[data-side='bottom'] {
+		animation: none;
+	}
+}
+
+/* The arrow: an 8px square sharing the bubble's background, rotated into a
+   diamond and poking out of the anchor-facing edge. left is set inline so it
+   keeps pointing at the anchor when the bubble clamps to a viewport edge. */
+.tooltip__arrow {
+	position: absolute;
+	width: 8px;
+	height: 8px;
+	margin-left: -4px;
+	background: inherit;
+	transform: rotate(45deg);
+}
+
+.tooltip[data-side='top'] .tooltip__arrow {
+	bottom: -3px;
+}
+
+.tooltip[data-side='bottom'] .tooltip__arrow {
+	top: -3px;
 }

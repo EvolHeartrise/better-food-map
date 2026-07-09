@@ -60,10 +60,18 @@ export function resolveConfig(overrides: Partial<D1HttpConfig> = {}): D1HttpConf
 	return { accountId, databaseId, apiToken };
 }
 
-/** Renders a bound value as a SQL literal. Used only for {@link batch} inlining. */
-function toSqlLiteral(value: unknown): string {
+/**
+ * Renders a bound value as a SQL literal. Used only for {@link inlineParams}.
+ * Exported for unit tests.
+ */
+export function toSqlLiteral(value: unknown): string {
 	if (value === null || value === undefined) return 'NULL';
-	if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'NULL';
+	if (typeof value === 'number') {
+		// SQL has no literal for NaN/Infinity; degrading to NULL would silently
+		// drop the value, so refuse the bind instead.
+		if (!Number.isFinite(value)) throw new Error(`non-finite number cannot be bound: ${value}`);
+		return String(value);
+	}
 	if (typeof value === 'bigint') return value.toString();
 	if (typeof value === 'boolean') return value ? '1' : '0';
 	// Remaining values are strings; single-quote and double up embedded quotes.
@@ -72,17 +80,75 @@ function toSqlLiteral(value: unknown): string {
 }
 
 /**
- * Substitutes each `?` placeholder in `sql` with the next bound value as an
- * escaped literal. Safe here because every statement passed to {@link batch} is
- * code-authored (in db.ts) and contains no `?` inside string literals — the
- * only `?` are real placeholders. Never use this for caller-supplied SQL.
+ * Skips a quoted region (single-quoted string literal or double-quoted
+ * identifier) starting at the opening quote; returns the index just past the
+ * closing quote. A doubled quote (`''` / `""`) is SQLite's escape and stays
+ * inside the region. An unterminated region runs to the end of the SQL — the
+ * D1 API will reject the malformed statement, and the strict placeholder
+ * count below usually surfaces the mistake first.
  */
-function inlineParams(sql: string, params: unknown[]): string {
+function skipQuoted(sql: string, start: number, quote: string): number {
+	let i = start + 1;
+	for (;;) {
+		i = sql.indexOf(quote, i);
+		if (i === -1) return sql.length;
+		if (sql[i + 1] !== quote) return i + 1;
+		i += 2;
+	}
+}
+
+/** Returns the index just past `end` (or the end of `sql` if never found). */
+function skipTo(sql: string, from: number, end: string): number {
+	const at = sql.indexOf(end, from);
+	return at === -1 ? sql.length : at + end.length;
+}
+
+/**
+ * Substitutes each `?` placeholder in `sql` with the next bound value as an
+ * escaped literal, producing the single-request atomic batch for {@link batch}.
+ * These statements write to the PRODUCTION database, so correctness is
+ * ENFORCED here rather than assumed by convention:
+ *
+ * - The SQL is scanned character-by-character, and a `?` inside an opaque
+ *   region — a single-quoted string literal (with `''` escaping), a
+ *   double-quoted identifier (with `""` escaping), a `--` line comment, or a
+ *   block comment — is never treated as a placeholder, so quoted text cannot
+ *   shift subsequent bindings into the wrong columns.
+ * - The number of placeholders must equal `params.length` exactly; both too
+ *   few AND too many params throw instead of silently mis-binding.
+ *
+ * Substituted literals are spliced in, never re-scanned, so a bound value
+ * containing `?` or quotes cannot open a new region or consume a param.
+ * Still never use this for caller-supplied SQL.
+ */
+export function inlineParams(sql: string, params: unknown[]): string {
+	// First pass: locate every real placeholder, skipping opaque regions whole.
+	const placeholders: number[] = [];
 	let i = 0;
-	return sql.replace(/\?/g, () => {
-		if (i >= params.length) throw new Error(`Too few params for statement: ${sql}`);
-		return toSqlLiteral(params[i++]);
-	});
+	while (i < sql.length) {
+		const ch = sql[i];
+		if (ch === '?') placeholders.push(i++);
+		else if (ch === "'" || ch === '"') i = skipQuoted(sql, i, ch);
+		else if (ch === '-' && sql[i + 1] === '-') i = skipTo(sql, i + 2, '\n');
+		else if (ch === '/' && sql[i + 1] === '*') i = skipTo(sql, i + 2, '*/');
+		else i++;
+	}
+
+	if (placeholders.length !== params.length) {
+		throw new Error(
+			`Statement has ${placeholders.length} placeholder(s) but ${params.length} param(s) were bound: ${sql}`
+		);
+	}
+
+	// Second pass: splice each literal into place. The rendered literal is
+	// appended verbatim — it is never part of the scanned text above.
+	let out = '';
+	let prev = 0;
+	for (let n = 0; n < placeholders.length; n++) {
+		out += sql.slice(prev, placeholders[n]) + toSqlLiteral(params[n]);
+		prev = placeholders[n] + 1;
+	}
+	return out + sql.slice(prev);
 }
 
 class HttpD1PreparedStatement implements D1PreparedLike {

@@ -1,92 +1,146 @@
 import * as v from 'valibot';
 import { query, getRequestEvent } from '$app/server';
 import { requireDb as db } from '$lib/server/context';
+import { requestSafeTtlMemo } from '$lib/server/request-memo';
+import { getMapCellsCached } from '$lib/server/cell-cache';
 import {
-	getMapData,
 	getLocationMapData,
-	getSearchMapData,
-	getBrands as getBrandsFromDb,
 	getStats as getStatsFromDb,
-	type Brand,
+	type Item,
+	type MapCellsData,
 	type MapData,
 	type MapStats
 } from '$lib/server/db';
+import { searchableQuery } from '$lib/search';
+import { sanitizeDiet } from '$lib/diet-profile';
+import {
+	FULL_LEVEL_MAX_CELLS,
+	MAX_GRID_LEVEL,
+	MIN_REP_LEVEL,
+	REP_LEVEL_MAX_CELLS,
+	levelCell
+} from '$lib/grid';
 
 /**
- * A map viewport (bounding box) the client asks for data within. Validated
- * because `getLocations` is exposed as an HTTP endpoint — the argument arrives
- * untrusted. `v.number()` rejects `NaN`, so a malformed box can't slip through.
+ * A batch of same-level grid cells the map page asks for (see $lib/grid for the
+ * level/cell model; the page enumerates the cells covering its viewport and
+ * sends only the ones its client store is missing), with the ACTIVE SEARCH
+ * riding along: `q` is the combined free-text term and `diet` the dietary-tag
+ * selector, both narrowing what each cell returns (see SearchFilter in
+ * $lib/server/db) — so searching stays cell-based and panning under a search
+ * fetches matches for the newly visible cells. Validated because this is
+ * an open HTTP endpoint: `level` must be a level a real client can produce
+ * (level 0, or a representative rung at/above the ~440 m floor — anything else
+ * would spray the server cache with junk keys), the cell count is capped per
+ * level (rep batches are bounded by the coarsening invariant; full-detail
+ * batches by narrow-viewport geometry, so a forged request can't fan a
+ * full-menu read across hundreds of cells), each index must lie inside the
+ * lat/lng data domain, and the filter lengths bound what reaches the FTS index
+ * (200 far exceeds any real search term). `diet` is only length-capped here;
+ * the handler collapses anything outside the six-id dietary vocabulary to null
+ * via `sanitizeDiet` ($lib/diet-profile) — matching what the client renders for
+ * no selection — so a forged value can't mint junk colo-cache keys per block or
+ * force guaranteed-empty D1 reads (the cache design assumes the documented
+ * 6-value diet cardinality).
  */
-const BoundsSchema = v.object({
-	minLat: v.number(),
-	maxLat: v.number(),
-	minLng: v.number(),
-	maxLng: v.number()
-});
+const CellIndexSchema = v.pipe(v.number(), v.integer(), v.minValue(0));
+const MapCellsQuerySchema = v.pipe(
+	v.object({
+		level: v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(MAX_GRID_LEVEL)),
+		cells: v.pipe(
+			v.array(v.tuple([CellIndexSchema, CellIndexSchema])),
+			v.minLength(1),
+			v.maxLength(REP_LEVEL_MAX_CELLS)
+		),
+		q: v.optional(v.pipe(v.string(), v.maxLength(200)), ''),
+		diet: v.optional(v.nullable(v.pipe(v.string(), v.maxLength(64))), null)
+	}),
+	v.check((q) => q.level === 0 || q.level >= MIN_REP_LEVEL, 'Unknown grid level'),
+	v.check(
+		(q) => q.level !== 0 || q.cells.length <= FULL_LEVEL_MAX_CELLS,
+		'Too many full-detail cells'
+	),
+	v.check((q) => {
+		const cell = levelCell(q.level);
+		const maxI = Math.floor(180 / cell);
+		const maxJ = Math.floor(360 / cell);
+		return q.cells.every(([i, j]) => i <= maxI && j <= maxJ);
+	}, 'Cell outside the coordinate domain')
+);
 
 /**
- * Returns everything the map page needs for the given viewport (see
- * {@link MapData}): every location inside `bounds` with its own `food` items and
- * per-item overrides, plus each shared brand menu those branches reference,
- * resolved once and keyed by menu_id. The client joins the two to rebuild each
- * location's effective menu, so a chain's shared menu is sent over the wire a
- * single time rather than copied onto every branch. Called again as the user
- * pans/zooms, so only what's on screen is ever fetched. Used to render markers
- * and, under each result, the menu items matching the active search/filter query.
+ * Returns everything the map page needs for a batch of grid cells (see
+ * {@link MapCellsData}): each requested cell's locations with their per-item
+ * overrides, plus each shared brand menu those locations reference, resolved
+ * once and keyed by menu_id — the same lean wire shape the old whole-viewport
+ * read used (#83), plus the per-cell membership record the client store slices
+ * by. Panning fetches only newly uncovered cells (#84), and the
+ * server answers repeat cells from a colo-shared cache instead of re-running
+ * the D1 read per visitor (#93) — see $lib/server/cell-cache.
+ *
+ * With `q`/`diet` set the same read returns only MATCHING venues per cell, so
+ * an active search follows the viewport exactly like browse. The searchable
+ * gate is applied HERE, before the cache layer, so the canonical filter keys
+ * the colo cache: text the trigram index can't serve (no 3+ char wildcard-free
+ * run — see $lib/search) is treated as absent rather than full-scanned; the
+ * map page applies the same gate and never sends such text, so only a forged
+ * request hits this floor, and it degrades to the diet-only filter or, with no
+ * diet either, the plain browse read (#103/#104) — exactly what the client
+ * itself renders for a short query.
  *
  * Public: the map is open to everyone (no sign-in gate), so this read carries no
  * `requireUser()`. Only the user-scoped functions (likes, saved diet) require auth.
  */
-export const getLocations = query(BoundsSchema, async (bounds): Promise<MapData> => {
-	return getMapData(db(), bounds);
-});
+export const getMapCells = query(
+	MapCellsQuerySchema,
+	async ({ level, cells, q, diet }): Promise<MapCellsData> => {
+		const text = searchableQuery(q);
+		// Collapse anything outside the six known diet ids to null (plain browse),
+		// like the searchable gate above: only a forged request can send junk here,
+		// and it must degrade rather than key the shared colo cache with it.
+		const dietTagId = sanitizeDiet(diet);
+		const search = text !== '' || dietTagId !== null ? { query: text, dietTagId } : null;
+		return getMapCellsCached(level, cells, search);
+	}
+);
 
 /**
  * Returns a single location (by id) in the same {@link MapData} shape as
- * {@link getLocations}. Backs the detail view when the open location isn't in the
- * current viewport — a shared `/locations/<id>` link, or one panned off screen —
- * so it always resolves. Yields an empty payload if no location has that id.
+ * {@link getMapCells}, but with FULL items — description and price — and its
+ * menu's sources on `menuMeta` (provenance is menu-level). The detail panel always resolves the
+ * open venue through this read (deduped by id on the client), which is what lets
+ * the bulk viewport/search payloads stay lean (#83). Yields an empty payload if
+ * no location has that id. Ids are UUIDs or short slugs; the length cap only
+ * rejects hostile payloads.
  */
-export const getLocationData = query(v.string(), async (id): Promise<MapData> => {
-	return getLocationMapData(db(), id);
-});
-
-/**
- * A GLOBAL menu search, anchored to the current map centre. Whereas
- * {@link getLocations} is bounded to the viewport, this searches the whole index
- * and returns the matches nearest the anchor (nearest first, same {@link MapData}
- * shape), so an active search is answered from everywhere on the map rather than
- * only what's on screen. `query` is one combined free-text term matched against the
- * venue name OR its item names; the `dietTagId` selector narrows it further. Both
- * mirror the client's own filtering; see {@link getSearchMapData}. Validated
- * because, like every remote query, the argument arrives untrusted over HTTP.
- */
-const SearchQuerySchema = v.object({
-	query: v.string(),
-	dietTagId: v.nullable(v.string()),
-	lat: v.number(),
-	lng: v.number()
-});
-
-export const searchLocations = query(SearchQuerySchema, async (q): Promise<MapData> => {
-	return getSearchMapData(db(), q);
-});
-
-/**
- * Returns every chain/brand (id, name, website, logo). Used by the map page to
- * label deduped chain result groups (e.g. "KFC — 511 locations") with the brand
- * name rather than relying on each branch's own `name`.
- */
-export const getBrands = query(async (): Promise<Brand[]> => {
-	return getBrandsFromDb(db());
-});
+export const getLocationData = query(
+	v.pipe(v.string(), v.maxLength(128)),
+	async (id): Promise<MapData<Item>> => {
+		return getLocationMapData(db(), id);
+	}
+);
 
 /**
  * Aggregate coverage totals (locations, items, cities) for the zoomed-out landing
  * overlay. Public — no sign-in required, and it returns only counts, never any row
  * data.
+ *
+ * Memoised for 5 minutes: the query behind it is three full-table COUNT scans run
+ * for every landing-page visitor, yet the totals only move when data is ingested,
+ * so minutes of staleness is invisible on the overlay. The cache is per-isolate
+ * (module scope in a Worker isolate — each isolate warms its own copy, eviction
+ * resets it), which is fine here: the worst case is one extra scan per isolate
+ * per window. `db()` reads the request-scoped event, so it must be resolved
+ * inside the memoised fn — safe, because a cache miss only ever happens while a
+ * request is being served.
+ *
+ * The landing page reads this resource non-suspending, so an SSR render can
+ * return before the COUNT scans settle — the never-settling-promise hazard
+ * `requestSafeTtlMemo` exists to guard against (see its doc comment).
  */
-export const getStats = query((): Promise<MapStats> => getStatsFromDb(db()));
+const cachedStats = requestSafeTtlMemo(5 * 60 * 1000, () => getStatsFromDb(db()));
+
+export const getStats = query((): Promise<MapStats> => cachedStats());
 
 /**
  * Best-effort opening location for the map, from Cloudflare's edge IP
