@@ -55,8 +55,10 @@ const DIETARY_TAGS = TAGS.filter((tag) => tag.tag_type === 'dietary');
 /** `"a"` | `"a and b"` | `"a, b and c"` — serial join, no Oxford comma. */
 function joinList(parts: string[]): string {
 	if (parts.length <= 1) return parts[0] ?? '';
-	if (parts.length === 2) return `${parts[0]} and ${parts[1]}`;
-	return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+	return m.head_list_pair({
+		first: parts.slice(0, -1).join(', '),
+		last: parts[parts.length - 1]
+	});
 }
 
 /**
@@ -106,7 +108,7 @@ export function venueHeadMeta(venue: HeadVenue): HeadMeta {
 	const title = `${venue.name}${where ? ` – ${where}` : ''} | BetterFoodMaps`;
 
 	const category = categoryLabel(venue.category);
-	const lead = `${venue.name}${category ? `, ${category.toLowerCase()}` : ''}${where ? ` in ${where}` : ''}.`;
+	const lead = `${venue.name}${category ? `, ${category.toLowerCase()}` : ''}${where ? ` ${m.head_located_in({ where })}` : ''}.`;
 
 	const coverage = dietaryCoverageClause(venue.menu);
 	const count = venue.menu.length;
