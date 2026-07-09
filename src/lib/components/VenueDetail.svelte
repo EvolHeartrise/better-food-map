@@ -406,6 +406,20 @@
 		background: rgba(0, 0, 0, 0.09);
 	}
 
+	/* Touch target: the ✕ stays visually 1.6rem, but on a coarse pointer a
+	   transparent overlay grows the tappable area to the 44px floor. */
+	@media (pointer: coarse) {
+		.placecard__close::after {
+			content: '';
+			position: absolute;
+			top: 50%;
+			left: 50%;
+			width: 44px;
+			height: 44px;
+			transform: translate(-50%, -50%);
+		}
+	}
+
 	.placecard__head {
 		display: flex;
 		align-items: center;
@@ -572,6 +586,7 @@
 	/* The "N Sources" button opening the sources modal: a quiet outlined pill that
 	   reads as a control without competing with the menu items below it. */
 	.placecard__sources-btn {
+		position: relative;
 		flex-shrink: 0;
 		margin-left: auto;
 		padding: 0.2rem 0.6rem;
@@ -592,6 +607,21 @@
 		border-color: color-mix(in srgb, var(--color-accent) 45%, #fff);
 	}
 
+	/* Touch target: the short pill (~24px tall) keeps its look, but a coarse pointer
+	   gets a 44px-tall transparent overlay so the finger target clears the floor
+	   vertically (its width already covers the label). */
+	@media (pointer: coarse) {
+		.placecard__sources-btn::after {
+			content: '';
+			position: absolute;
+			top: 50%;
+			left: 0;
+			width: 100%;
+			height: 44px;
+			transform: translateY(-50%);
+		}
+	}
+
 	/* The course filter row above the menu list: quiet outlined pills matching the
 	   sources button's visual family; the active pill fills with the accent like
 	   the category badge. */
@@ -602,6 +632,7 @@
 	}
 
 	.coursebar__btn {
+		position: relative;
 		padding: 0.2rem 0.65rem;
 		font-size: 0.72rem;
 		font-weight: 600;
@@ -625,6 +656,22 @@
 		color: #fff;
 		background: var(--color-accent);
 		border-color: var(--color-accent);
+	}
+
+	/* Touch target: same trick as the sources pill — a 44px-tall transparent overlay
+	   on coarse pointers, so each course pill clears the floor without the row
+	   growing taller. Pills sit side by side in one row, so extending only the
+	   height keeps neighbours' hit areas from overlapping. */
+	@media (pointer: coarse) {
+		.coursebar__btn::after {
+			content: '';
+			position: absolute;
+			top: 50%;
+			left: 0;
+			width: 100%;
+			height: 44px;
+			transform: translateY(-50%);
+		}
 	}
 
 	/* On narrow screens the detail panel becomes a bottom sheet: the map keeps the
