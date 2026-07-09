@@ -19,6 +19,7 @@
 	],
 	"search_failed": "Échec de la recherche — affichage des résultats précédents.",
 	"browse_failed": "Impossible de charger les lieux de cette zone — affichage des résultats précédents.",
+	"map_aria": "Carte des lieux de restauration",
 
 	"venue_details_aria": "Détails du lieu",
 	"venue_close_aria": "Fermer les détails du lieu",

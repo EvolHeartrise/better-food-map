@@ -138,6 +138,7 @@
 	}
 
 	.sources-modal__close {
+		position: relative;
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -160,6 +161,20 @@
 	.sources-modal__close:hover {
 		color: var(--color-text);
 		background: rgba(0, 0, 0, 0.09);
+	}
+
+	/* Touch target: keep the 1.6rem ✕, but extend the tappable area to the 44px
+	   floor on coarse pointers with a transparent centred overlay. */
+	@media (pointer: coarse) {
+		.sources-modal__close::after {
+			content: '';
+			position: absolute;
+			top: 50%;
+			left: 50%;
+			width: 44px;
+			height: 44px;
+			transform: translate(-50%, -50%);
+		}
 	}
 
 	/* The list scrolls inside the fixed-height box when a venue cites many sources. */

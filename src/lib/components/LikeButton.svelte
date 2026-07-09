@@ -34,6 +34,7 @@
 
 <style>
 	.like {
+		position: relative;
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
@@ -41,13 +42,32 @@
 		border: none;
 		border-radius: 999px;
 		background: transparent;
-		color: rgba(0, 0, 0, 0.4);
+		/* Idle stroke: 40% black sits at ≈3:1 on the panel and dips below the WCAG 1.4.11
+		   floor where the glass surface darkens; 55% keeps the quiet look and clears the bar. */
+		color: rgba(0, 0, 0, 0.55);
 		cursor: pointer;
 		line-height: 0;
 		transition:
 			color 0.15s ease,
 			background 0.15s ease,
 			transform 0.1s ease;
+	}
+
+	/* Touch targets: the heart is deliberately small (~26px) so it fits a tight menu
+	   row beside the price, but that's under the 44px iOS / 48dp Android floor. On a
+	   coarse pointer, extend the *tappable* area to 44px with a transparent overlay
+	   centred on the button — the visible heart is unchanged, and the wider hit area
+	   makes it far harder to miss (or tap the wrong row) with a fingertip. */
+	@media (pointer: coarse) {
+		.like::after {
+			content: '';
+			position: absolute;
+			top: 50%;
+			left: 50%;
+			width: 44px;
+			height: 44px;
+			transform: translate(-50%, -50%);
+		}
 	}
 
 	.like:hover {
