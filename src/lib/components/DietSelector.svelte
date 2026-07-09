@@ -303,6 +303,16 @@
 		background: rgba(0, 0, 0, 0.06);
 	}
 
+	/* Touch targets: the options are a stacked list, so grow each row to the 44px
+	   floor on coarse pointers (a genuine min-height, not an overlay, keeps adjacent
+	   rows' hit areas from overlapping). The dropdown floats over the map, so the
+	   extra height pushes nothing. */
+	@media (pointer: coarse) {
+		.menu__option {
+			min-height: 44px;
+		}
+	}
+
 	/* The current selection: bold, with a tint of its OWN tone (currentColor is the
 	   option's inline tone color) so the highlight matches the option's text/icon. */
 	.menu__option--selected {
