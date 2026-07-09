@@ -91,6 +91,14 @@
 	"sources_title": "Sources",
 	"sources_close_aria": "Fermer les sources",
 
+	"directions_button_tooltip": "Obtenir l’itinéraire",
+	"directions_button_aria": "Obtenir l’itinéraire vers {address}",
+	"directions_dialog_aria": "Choisir une application de cartes",
+	"directions_title": "Obtenir l’itinéraire",
+	"directions_close_aria": "Fermer l’itinéraire",
+	"directions_apple_maps": "Apple Maps",
+	"directions_google_maps": "Google Maps",
+
 	"landing_intro_aria": "À propos de BetterFoodMaps",
 	"landing_title": "Trouvez des plats adaptés à votre régime, partout sur la carte.",
 	"landing_actions_aria": "Couverture et prise en main",
