@@ -716,11 +716,12 @@
 
 <svelte:head>
 	<!-- Warm the tile connection early (issue #224): the map is this route's LCP
-	     element, and its vector tiles + TileJSON now come from our single self-hosted
-	     PMTiles origin, tiles.betterfoodmaps.com (see mapStyle in LocationMap.svelte)
-	     — a `preconnect` shaves the TLS handshake off the first tile fetch.
-	     `crossorigin` matches MapLibre's anonymous CORS tile fetch, so the warmed
-	     connection is actually reused. -->
+	     element, and its vector tiles come from our single self-hosted PMTiles
+	     origin, tiles.betterfoodmaps.com (see mapStyle in LocationMap.svelte; the
+	     tile URL template is inlined there, so tiles are the origin's FIRST fetch)
+	     — a `preconnect` shaves the TLS handshake off it. `crossorigin` matches
+	     MapLibre's anonymous CORS tile fetch, so the warmed connection is actually
+	     reused. -->
 	<link rel="preconnect" href="https://tiles.betterfoodmaps.com" crossorigin="anonymous" />
 	{#if headMeta}
 		<!-- Venue head for an open location. On a hard /locations/<id> load this is
