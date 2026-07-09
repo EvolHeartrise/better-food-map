@@ -3,34 +3,49 @@
 
 	// A small chooser opened by tapping the venue address: it offers the maps apps
 	// a user might prefer (Apple Maps / Google Maps) rather than hard-coding one,
-	// each linking to a PLACE PIN dropped at the venue's OSM-exact coordinates. It
-	// owns nothing but its DOM: `open` is bindable so the page can layer its own
-	// Escape handling under this one (Escape closes only the topmost layer — see the
-	// page's onWindowKeydown). A native <dialog> in the top layer gives the
-	// backdrop, focus trap and Escape-to-close for free (mirrors SourcesModal).
+	// each linking to the venue so the user can navigate to it. It owns nothing but
+	// its DOM: `open` is bindable so the page can layer its own Escape handling under
+	// this one (Escape closes only the topmost layer — see the page's
+	// onWindowKeydown). A native <dialog> in the top layer gives the backdrop, focus
+	// trap and Escape-to-close for free (mirrors SourcesModal).
 	let {
 		latitude,
 		longitude,
 		name,
+		address,
 		open = $bindable(false)
 	}: {
 		latitude: number;
 		longitude: number;
 		name: string;
+		address: string;
 		open?: boolean;
 	} = $props();
 
 	let dialog = $state<HTMLDialogElement | null>(null);
 
-	// Deep links built from the venue's own OSM-exact coordinates — never an address
-	// string, which is what the coordinate policy buys us. The pin sits at the exact
-	// `lat,lng`; Apple Maps additionally labels it with the venue name (`q` acts as a
-	// label when `ll` fixes the location). On a phone the OS routes these hosts to the
-	// installed native app; on desktop they open the maps site.
+	// The two apps want different inputs to land on the venue nicely:
+	//
+	// • Apple Maps drops a pin at the EXACT OSM coordinates (`ll`) labelled with the
+	//   venue name (`q` acts as a label once `ll` fixes the location) — a named pin
+	//   at the precise spot.
+	//
+	// • Google Maps ignores a name when you hand it bare coordinates: `query=lat,lng`
+	//   drops an anonymous "dropped pin" with no place card. Per Google's Maps URLs
+	//   guidance ("avoid using only latitude/longitude … when your goal is to display
+	//   a specific place's details"; recommended `query=PLACE_NAME, ADDRESS`), we send
+	//   a `name, address` text query instead, which resolves to the venue's real place
+	//   card (name, hours, Directions). It falls back to the coordinates if a venue
+	//   somehow has no address.
+	//
+	// These are display links handed to a third-party app, not stored data, so the
+	// text query is no exception to the OSM-coordinate policy (which governs what WE
+	// persist — our own pin stays coordinate-exact).
 	const coord = $derived(`${latitude},${longitude}`);
 	const appleUrl = $derived(`https://maps.apple.com/?ll=${coord}&q=${encodeURIComponent(name)}`);
+	const googleQuery = $derived(address ? `${name}, ${address}` : coord);
 	const googleUrl = $derived(
-		`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(coord)}`
+		`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(googleQuery)}`
 	);
 
 	// Drive the platform modal from `open`. showModal() puts the dialog in the top

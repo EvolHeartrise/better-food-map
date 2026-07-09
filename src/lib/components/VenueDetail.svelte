@@ -340,7 +340,7 @@
 				{#if loc.address}
 					<!-- The address is the launch point for navigation (the #1 action after
 					     finding a venue on a phone): tapping it opens the maps-app chooser,
-					     which links a place pin at the venue's OSM-exact coordinates. -->
+					     which links the venue in Apple/Google Maps (see DirectionsModal). -->
 					<div class="info__row">
 						<dt>{m.venue_address_label()}</dt>
 						<dd>
@@ -489,6 +489,7 @@
 		latitude={loc.latitude}
 		longitude={loc.longitude}
 		name={loc.name}
+		address={loc.address}
 		bind:open={directionsOpen}
 	/>
 	<SourcesModal sources={loc.sources} bind:open={sourcesOpen} />
