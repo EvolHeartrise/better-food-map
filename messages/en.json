@@ -88,6 +88,14 @@
 	"sources_title": "Sources",
 	"sources_close_aria": "Close sources",
 
+	"directions_button_tooltip": "Get directions",
+	"directions_button_aria": "Get directions to {address}",
+	"directions_dialog_aria": "Choose a maps app",
+	"directions_title": "Get directions",
+	"directions_close_aria": "Close directions",
+	"directions_apple_maps": "Apple Maps",
+	"directions_google_maps": "Google Maps",
+
 	"landing_intro_aria": "About BetterFoodMaps",
 	"landing_title": "Find food that fits your diet, anywhere on the map.",
 	"landing_actions_aria": "Coverage and getting started",

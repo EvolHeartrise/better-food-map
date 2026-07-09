@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { fly, type FlyParams } from 'svelte/transition';
 	import DietaryIcons from '$lib/components/DietaryIcons.svelte';
+	import DirectionsModal from '$lib/components/DirectionsModal.svelte';
 	import SourcesModal from '$lib/components/SourcesModal.svelte';
 	import LikeButton from '$lib/components/LikeButton.svelte';
 	import { categoryLabel } from '$lib/category';
@@ -20,8 +21,9 @@
 	// diet-filtered. The page owns the selection (what's open, URL/history,
 	// focus management) and the like state; this component owns the panel's DOM.
 	// `el` is bindable so the page's focus effect can target the aside;
-	// `sourcesOpen` is bindable so the page can layer its window-level Escape
-	// handling under the modal's (Escape closes only the topmost layer).
+	// `sourcesOpen`/`directionsOpen` are bindable so the page can layer its
+	// window-level Escape handling under those modals' (Escape closes only the
+	// topmost layer).
 	let {
 		location,
 		user,
@@ -32,6 +34,7 @@
 		onClose,
 		flyParams,
 		sourcesOpen = $bindable(false),
+		directionsOpen = $bindable(false),
 		el = $bindable(null)
 	}: {
 		location: ResolvedLocation<Item>;
@@ -43,6 +46,7 @@
 		onClose: () => void;
 		flyParams: FlyParams;
 		sourcesOpen?: boolean;
+		directionsOpen?: boolean;
 		el?: HTMLElement | null;
 	} = $props();
 
@@ -201,9 +205,23 @@
 		{#if loc.address || phone || loc.website}
 			<dl class="info">
 				{#if loc.address}
+					<!-- The address is the launch point for navigation (the #1 action after
+					     finding a venue on a phone): tapping it opens the maps-app chooser,
+					     which links a place pin at the venue's OSM-exact coordinates. -->
 					<div class="info__row">
 						<dt>{m.venue_address_label()}</dt>
-						<dd>{loc.address}</dd>
+						<dd>
+							<button
+								type="button"
+								class="info__directions"
+								aria-haspopup="dialog"
+								aria-label={m.directions_button_aria({ address: loc.address })}
+								onclick={() => (directionsOpen = true)}
+								use:tooltip={m.directions_button_tooltip()}
+							>
+								{loc.address}
+							</button>
+						</dd>
 					</div>
 				{/if}
 				{#if phone}
@@ -334,6 +352,12 @@
 		</footer>
 	{/if}
 
+	<DirectionsModal
+		latitude={loc.latitude}
+		longitude={loc.longitude}
+		name={loc.name}
+		bind:open={directionsOpen}
+	/>
 	<SourcesModal sources={loc.sources} bind:open={sourcesOpen} />
 </aside>
 
@@ -560,6 +584,24 @@
 		margin: 0;
 		font-size: 0.85rem;
 		word-break: break-word;
+	}
+
+	/* The address renders as a link-styled button (opens the maps-app chooser). It
+	   matches the phone/website anchors beside it — accent colour, underline on
+	   hover — rather than looking like a form control: strip the button chrome and
+	   let it wrap like the plain text it replaced. */
+	.info__directions {
+		display: inline;
+		padding: 0;
+		border: none;
+		background: none;
+		color: var(--color-accent);
+		text-align: left;
+		word-break: break-word;
+	}
+
+	.info__directions:hover {
+		text-decoration: underline;
 	}
 
 	/* The Menu header row: the "Menu" label with its item-count/freshness note
