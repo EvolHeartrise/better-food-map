@@ -113,6 +113,7 @@
 	"server_error_no_location_or_item": "Aucun lieu ou article correspondant.",
 	"server_error_sign_in_required": "Vous devez être connecté pour effectuer cette action.",
 	"server_error_location_not_found": "Lieu introuvable",
+	"server_error_location_gone": "Ce lieu a définitivement fermé.",
 	"server_error_database_unavailable": "Base de données indisponible.",
 	"server_error_oauth_invalid_callback": "Réponse OAuth invalide.",
 	"server_error_oauth_code_validation": "Échec de la validation du code d’autorisation.",
