@@ -1,5 +1,8 @@
 {
-	"*.{js,mjs,cjs,ts}": ["oxfmt", "oxlint --fix"],
-	"*.svelte": ["oxfmt", "eslint --fix"],
-	"*.{json,jsonc,html,css,md,yaml,yml}": ["oxfmt"]
+	"*.{js,mjs,cjs,ts}": [
+		"oxfmt --no-error-on-unmatched-pattern",
+		"oxlint --no-error-on-unmatched-pattern --fix"
+	],
+	"*.svelte": ["oxfmt --no-error-on-unmatched-pattern", "eslint --fix"],
+	"*.{json,jsonc,html,css,md,yaml,yml}": ["oxfmt --no-error-on-unmatched-pattern"]
 }

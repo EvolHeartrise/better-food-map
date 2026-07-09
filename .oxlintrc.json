@@ -1,5 +1,8 @@
 {
 	"$schema": "./node_modules/oxlint/configuration_schema.json",
+	// Vendored third-party sources (the PMTiles worker) are kept byte-identical
+	// to upstream so future diffs stay readable — repo lint rules don't apply.
+	"ignorePatterns": ["workers/tiles/src"],
 	"globals": {
 		"$state": "readonly",
 		"$derived": "readonly",
