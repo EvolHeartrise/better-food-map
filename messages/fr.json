@@ -23,6 +23,7 @@
 
 	"venue_details_aria": "Détails du lieu",
 	"venue_close_aria": "Fermer les détails du lieu",
+	"sheet_resize_aria": "Redimensionner les détails — glissez, touchez ou utilisez les flèches",
 	"venue_like": "Aimer ce lieu",
 	"venue_unlike": "Ne plus aimer ce lieu",
 	"venue_address_label": "Adresse",
