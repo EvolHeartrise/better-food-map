@@ -15,6 +15,7 @@
 	} from '$lib/label-layout';
 	import { DEFAULT_MAP_CENTER } from '$lib/map-defaults';
 	import { m } from '$lib/paraglide/messages';
+	import { getLocale } from '$lib/paraglide/runtime';
 	// The shared bounding-box shape ($lib/bounds is client-safe, so importing it
 	// pulls no server code into the browser bundle), reported to the parent as the
 	// visible area.
@@ -401,7 +402,13 @@
 					attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
 				}
 			},
-			layers: basemapLayers('protomaps', namedFlavor('light'), { lang: 'en' }),
+			// Basemap labels (cities, streets, countries) follow the UI locale: the tiles
+			// carry multilingual name tags, and the flavor's label expressions prefer
+			// `name:<lang>` with a fallback to the local name. Every Paraglide locale must
+			// be a Protomaps-supported label language (see language_script_pairs in
+			// @protomaps/basemaps) — both 'en' and 'fr' are. Read once per map build:
+			// switching locale reloads the page (see AccountMenu), which rebuilds the map.
+			layers: basemapLayers('protomaps', namedFlavor('light'), { lang: getLocale() }),
 			sky: {
 				'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 0, 1, 5, 1, 7, 0]
 			}
@@ -668,7 +675,17 @@
 				touchPitch: false,
 				pitchWithRotate: false,
 				// The OSM credit is shown; MapLibre adds no self-attribution of its own.
-				attributionControl: { compact: false }
+				attributionControl: { compact: false },
+				// MapLibre's built-in UI strings default to English; route the ones this
+				// map actually renders through the message catalog. That's the canvas's
+				// own aria-label (nested inside the wrapper div's m.map_aria() label) and
+				// the zoom buttons' titles — the compass, attribution toggle (compact:
+				// false) and other controls carrying the remaining keys are never shown.
+				locale: {
+					'Map.Title': m.map_aria(),
+					'NavigationControl.ZoomIn': m.map_zoom_in_aria(),
+					'NavigationControl.ZoomOut': m.map_zoom_out_aria()
+				}
 			});
 
 			// Zoom control sits bottom-left, clear of the floating search (top-left)
