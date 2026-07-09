@@ -43,9 +43,14 @@
 		// The archive names the worker will serve (comma-separated; anything else
 		// 404s — see src/worker.ts). First the current version token, which must
 		// match TILE_ARCHIVE in src/lib/components/LocationMap.svelte at the repo
-		// root; "planet" is the legacy pre-versioning name — clients hold the old
-		// TileJSON pointing at it for up to a day (its old max-age), after which
-		// it is safe to drop from this list.
+		// root; "planet" is the legacy pre-versioning name. Pre-versioning app
+		// code fetches /planet.json (which now browser-caches for a YEAR — it
+		// went out immutable in the config-flip window) and follows it to
+		// /planet/… tiles, and keeps doing so until the tab picks up the new app
+		// code — so drop "planet" only once pre-versioning sessions are
+		// realistically gone (think weeks, not the TileJSON's old max-age).
+		// Dropping it degrades gracefully: those URLs 404 uncached, so a
+		// straggler tab gets a grey basemap until reload, nothing pinned.
 		"ARCHIVES": "planet-2026-07-09,planet",
 		// Browser/edge cache lifetime for tiles and TileJSON. Tile URLs carry the
 		// version token above and a refresh bumps it, so every URL's content is
