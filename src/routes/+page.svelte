@@ -717,13 +717,13 @@
 		<!-- A venue page is a physical place: the OG restaurant vertical (issue #224)
 		     carries the venue's exact OSM coordinates for geo-aware unfurlers, and
 		     inherits the `place:location:*` properties the generic `website` type
-		     lacks. -->
+		     lacks. `ogPlace` is non-null here (it derives from the same `headVenue`
+		     that gates `headMeta`), so the guard is only for the compiler's null
+		     narrowing — the venue head always emits the restaurant vertical. -->
 		{#if ogPlace}
 			<meta property="og:type" content="restaurant.restaurant" />
 			<meta property="place:location:latitude" content={String(ogPlace.latitude)} />
 			<meta property="place:location:longitude" content={String(ogPlace.longitude)} />
-		{:else}
-			<meta property="og:type" content="website" />
 		{/if}
 		<!-- schema.org JSON-LD (issue #218): the machine-readable venue graph
 		     crawlers parse for rich results, built in $lib/venue-jsonld and injected
