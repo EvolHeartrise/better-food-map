@@ -21,6 +21,7 @@
 
 	"venue_details_aria": "Location details",
 	"venue_close_aria": "Close place details",
+	"sheet_resize_aria": "Resize details — drag, tap, or use the arrow keys",
 	"venue_like": "Like this place",
 	"venue_unlike": "Unlike this place",
 	"venue_address_label": "Address",
