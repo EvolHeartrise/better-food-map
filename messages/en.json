@@ -99,7 +99,8 @@
 
 	"landing_intro_aria": "About BetterFoodMaps",
 	"landing_title": "Find food that fits your diet, anywhere on the map.",
-	"landing_actions_aria": "Coverage and getting started",
+	"landing_stats_aria": "Map coverage",
+	"landing_actions_aria": "Getting started",
 	"stat_venues": "venues",
 	"stat_menu_items": "menu items",
 	"stat_cities": "cities",
