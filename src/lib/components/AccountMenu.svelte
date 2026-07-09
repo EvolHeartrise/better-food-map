@@ -310,7 +310,9 @@
 		font-weight: 600;
 		letter-spacing: 0.02em;
 		text-transform: uppercase;
-		color: rgba(0, 0, 0, 0.5);
+		/* 50% black (≈3.9:1) fails WCAG 1.4.3 for this ~11.5px uppercase label; the muted
+		   token (#5c5c66, ≈6.3:1) matches the pill count fix and clears 4.5:1. */
+		color: var(--color-text-muted);
 	}
 
 	.account__langs {

@@ -894,7 +894,9 @@
 	   under a long (ellipsized) venue name. */
 	.pill__count {
 		flex: none;
-		color: rgba(0, 0, 0, 0.45);
+		/* 45% black (≈3.5:1 on the white pill) fails WCAG 1.4.3 for 11px semibold text;
+		   the muted token (#5c5c66, ≈6.3:1) clears it with no visible design change. */
+		color: var(--color-text-muted);
 		font-size: 11px;
 		font-weight: 600;
 		font-variant-numeric: tabular-nums;
