@@ -18,6 +18,7 @@
 	],
 	"search_failed": "Search failed - showing previous results.",
 	"browse_failed": "Couldn’t load places for this area - showing previous results.",
+	"map_aria": "Map of food locations",
 
 	"venue_details_aria": "Location details",
 	"venue_close_aria": "Close place details",

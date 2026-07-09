@@ -12,6 +12,7 @@
 		type SimConfig
 	} from '$lib/label-layout';
 	import { DEFAULT_MAP_CENTER } from '$lib/map-defaults';
+	import { m } from '$lib/paraglide/messages';
 	// The shared bounding-box shape ($lib/bounds is client-safe, so importing it
 	// pulls no server code into the browser bundle), reported to the parent as the
 	// visible area.
@@ -474,8 +475,8 @@
 	// settling; once everything is at rest it parks itself (see `wake`), so an idle map
 	// costs nothing per frame.
 	function frame(time: number) {
-		const m = map;
-		if (!m) {
+		const mp = map;
+		if (!mp) {
 			running = false;
 			return;
 		}
@@ -486,15 +487,15 @@
 		// the pills are at rest — they must track their anchors every frame. The sim's
 		// own motion is tracked separately so the settle backstop can tell "the camera
 		// is moving" (must keep going) from "the sim won't settle" (give it a budget).
-		const cameraMoving = m.isMoving();
+		const cameraMoving = mp.isMoving();
 		let simMoving = false;
 
-		// A projector bound to the live camera (`m` is the narrowed, non-null map).
-		const project: Projector = (lng, lat) => m.project([lng, lat]);
+		// A projector bound to the live camera (`mp` is the narrowed, non-null map).
+		const project: Projector = (lng, lat) => mp.project([lng, lat]);
 
 		if (time - lastDeclutter > DECLUTTER_INTERVAL_MS) {
 			lastDeclutter = time;
-			recomputeVisible(project, m.getZoom());
+			recomputeVisible(project, mp.getZoom());
 		}
 
 		// Re-project the name-pill anchors and advance the force model one step (each
@@ -636,10 +637,10 @@
 				else ondeselect?.();
 			});
 			map.on('mousemove', (e) => {
-				const m = map;
-				if (!m) return;
+				const mp = map;
+				if (!mp) return;
 				const hit = engine.hitTest(e.point.x, e.point.y, HIT_SLOP);
-				m.getCanvas().style.cursor = hit ? 'pointer' : '';
+				mp.getCanvas().style.cursor = hit ? 'pointer' : '';
 			});
 
 			// Any camera motion or container resize wakes the (possibly parked) layout
@@ -766,7 +767,7 @@
 </script>
 
 <div class="map-wrap">
-	<div class="map" bind:this={mapEl} role="application" aria-label="Map of food locations"></div>
+	<div class="map" bind:this={mapEl} role="application" aria-label={m.map_aria()}></div>
 	<!-- Pills are presentational: pointer-transparent so map gestures pass through, with
 	     click-to-select handled by the map's hit-test (see onMount). Each pill shows the
 	     venue name and, beneath it, a rotating food-item line. The accessible path to
@@ -789,7 +790,7 @@
 				<div class="pill__head">
 					<span class="pill__name">{item.name}</span>
 					{#if names.length > 0}
-						<span class="pill__count">{names.length} {names.length === 1 ? 'item' : 'items'}</span>
+						<span class="pill__count">{m.menu_items_count({ count: names.length })}</span>
 					{/if}
 				</div>
 				<!-- The rotating food-item line: the current item, ellipsized within a fixed
