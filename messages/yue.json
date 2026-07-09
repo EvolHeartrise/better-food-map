@@ -1,0 +1,145 @@
+{
+	"$schema": "https://inlang.com/schema/inlang-message-format",
+
+	"search_bar_aria": "搜尋同篩選",
+	"search_placeholder": "搵餐廳同菜式…",
+	"search_input_aria": "用餐廳或者菜式名搜尋",
+	"results_nav_aria": "符合嘅餐廳",
+	"results_cap": "只顯示 {total} 間餐廳之中嘅頭 {max} 間。請收窄搜尋範圍。",
+	"places_found": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=other": "搵到 {count} 間餐廳"
+			}
+		}
+	],
+	"search_failed": "搜尋失敗，顯示之前嘅結果。",
+	"browse_failed": "載入唔到呢一帶嘅餐廳，顯示之前嘅結果。",
+	"map_aria": "美食地圖",
+	"map_zoom_in_aria": "放大",
+	"map_zoom_out_aria": "縮小",
+
+	"venue_details_aria": "餐廳詳情",
+	"venue_close_aria": "閂埋餐廳詳情",
+	"sheet_resize_aria": "調整詳情面板大細：拖曳、輕按或者用方向鍵",
+	"venue_like": "鍾意呢間餐廳",
+	"venue_unlike": "取消鍾意呢間餐廳",
+	"venue_address_label": "地址",
+	"venue_phone_label": "電話",
+	"venue_phone_extension": "內線 {ext}",
+	"venue_website_label": "網站",
+	"venue_menu_label": "餐牌",
+	"venue_no_menu": "暫時未有餐牌。",
+	"menu_items_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=other": "{count} 款"
+			}
+		}
+	],
+	"menu_last_scanned": "餐牌上次核對：{date}",
+	"sources_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=other": "{count} 個來源"
+			}
+		}
+	],
+	"course_filter_aria": "按類別篩選餐牌",
+	"course_all": "全部",
+	"item_like": "鍾意呢款菜式",
+	"item_unlike": "取消鍾意呢款菜式",
+
+	"scanned_date": "喺 {date} 核對過",
+	"scanned": "{relative}核對過",
+
+	"tag_vegan": "純素",
+	"tag_vegetarian": "素食",
+	"tag_halal": "清真",
+	"tag_gluten_free": "無麩質",
+	"tag_dairy_free": "無奶類",
+	"tag_nut_free": "無堅果",
+	"tag_food": "食物",
+	"tag_dessert": "甜品",
+	"tag_drink": "飲品",
+
+	"category_cafe": "咖啡店",
+	"category_fast_food": "快餐店",
+	"category_restaurant": "餐廳",
+	"category_bakery": "麵包舖",
+
+	"diet_any": "唔限飲食",
+	"diet_filter_aria": "飲食篩選",
+	"diet_can_be_made": "可以整做{diet}",
+
+	"account_default_name": "帳戶",
+	"account_signed_in": "已登入",
+	"account_sign_out": "登出",
+	"account_sign_in": "登入",
+	"language_label": "語言",
+
+	"sources_dialog_aria": "資料來源",
+	"sources_title": "來源",
+	"sources_close_aria": "閂埋來源",
+
+	"directions_button_tooltip": "用其他地圖 App 打開",
+	"directions_button_aria": "用其他地圖 App 打開 {address}",
+	"directions_dialog_aria": "揀一個地圖 App",
+	"directions_title": "用其他地圖 App 打開",
+	"directions_close_aria": "閂埋路線選項",
+	"directions_apple_maps": "Apple Maps",
+	"directions_google_maps": "Google Maps",
+
+	"landing_intro_aria": "關於 BetterFoodMaps",
+	"landing_title": "地圖上任何地方，都搵到啱你飲食需要嘅美食。",
+	"landing_stats_aria": "地圖覆蓋範圍",
+	"landing_actions_aria": "開始使用",
+	"stat_venues": "餐廳",
+	"stat_menu_items": "菜式",
+	"stat_cities": "城市",
+	"stat_vegan": "純素菜式",
+	"stat_vegetarian": "素食菜式",
+	"stat_halal": "清真菜式",
+	"stat_gluten_free": "無麩質菜式",
+	"stat_dairy_free": "無奶類菜式",
+	"stat_nut_free": "無堅果菜式",
+	"landing_cta": "即刻開始用地圖",
+	"landing_browse_link": "或者按城市睇美食 →",
+
+	"error_not_found": "搵唔到呢一頁",
+	"error_generic": "出咗問題",
+	"error_back": "返去地圖",
+	"error_page_title": "{status} · BetterFoodMaps",
+
+	"server_error_no_location_or_item": "冇呢間餐廳或者菜式。",
+	"server_error_sign_in_required": "要登入先可以咁做。",
+	"server_error_location_not_found": "搵唔到呢間餐廳",
+	"server_error_location_gone": "呢間餐廳已經永久結業。",
+	"server_error_database_unavailable": "資料庫暫時用唔到。",
+	"server_error_oauth_invalid_callback": "OAuth callback 無效。",
+	"server_error_oauth_code_validation": "授權碼驗證失敗。",
+	"server_error_oauth_missing_subject": "Google 嘅回應冇 subject claim。",
+
+	"head_site_description": "喺互動地圖上探索世界各地嘅咖啡店、快餐店同餐廳。",
+	"head_desc_no_menu": "喺 BetterFoodMaps 睇餐牌。",
+	"head_located_in": "位於 {where}",
+	"head_list_pair": "{first}同{last}",
+	"head_desc_on_brand": "{content}，盡在 BetterFoodMaps。",
+	"head_coverage_diet": "{diet}菜式 {count} 款",
+	"head_coverage_clause": "餐牌有{list}",
+	"head_menu_item_noun": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=other": "款菜式"
+			}
+		}
+	]
+}

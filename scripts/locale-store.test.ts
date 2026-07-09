@@ -43,9 +43,10 @@ test('getUserLocale: an unsupported stored value reads as no saved locale', asyn
 	const db = await dbWithUser();
 	// Bypass setUserLocale (which only accepts a validated Locale) to simulate a value
 	// left over from a dropped locale — it must read back as null, not leak through.
+	// 'tlh' (Klingon) is safely outside any plausible supported-locale set.
 	await db
 		.prepare(`INSERT INTO user_locale (user_id, locale, updated_at) VALUES (?, ?, ?)`)
-		.bind('u1', 'de', 1000)
+		.bind('u1', 'tlh', 1000)
 		.run();
 	expect(await getUserLocale(db, 'u1')).toBeNull();
 });

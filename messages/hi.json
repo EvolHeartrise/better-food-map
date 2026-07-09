@@ -1,0 +1,149 @@
+{
+	"$schema": "https://inlang.com/schema/inlang-message-format",
+
+	"search_bar_aria": "खोज और फ़िल्टर",
+	"search_placeholder": "जगहें और व्यंजन खोजें…",
+	"search_input_aria": "जगह या व्यंजन के नाम से खोजें",
+	"results_nav_aria": "मेल खाती जगहें",
+	"results_cap": "{total} में से पहली {max} जगहें दिखाई जा रही हैं। सूची छोटी करने के लिए अपनी खोज को और सटीक बनाएँ।",
+	"places_found": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} जगह मिली",
+				"countPlural=other": "{count} जगहें मिलीं"
+			}
+		}
+	],
+	"search_failed": "खोज नहीं हो सकी — पिछले नतीजे दिखाए जा रहे हैं।",
+	"browse_failed": "इस इलाक़े की जगहें लोड नहीं हो सकीं — पिछले नतीजे दिखाए जा रहे हैं।",
+	"map_aria": "खाने-पीने की जगहों का नक्शा",
+	"map_zoom_in_aria": "ज़ूम इन करें",
+	"map_zoom_out_aria": "ज़ूम आउट करें",
+
+	"venue_details_aria": "जगह का विवरण",
+	"venue_close_aria": "जगह का विवरण बंद करें",
+	"sheet_resize_aria": "विवरण का आकार बदलें — खींचें, टैप करें या तीर कुंजियों का इस्तेमाल करें",
+	"venue_like": "इस जगह को पसंद करें",
+	"venue_unlike": "इस जगह को पसंद से हटाएँ",
+	"venue_address_label": "पता",
+	"venue_phone_label": "फ़ोन",
+	"venue_phone_extension": "एक्सटेंशन {ext}",
+	"venue_website_label": "वेबसाइट",
+	"venue_menu_label": "मेनू",
+	"venue_no_menu": "अभी कोई मेनू दर्ज नहीं है।",
+	"menu_items_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} आइटम",
+				"countPlural=other": "{count} आइटम"
+			}
+		}
+	],
+	"menu_last_scanned": "मेनू आख़िरी बार {date} को जाँचा गया",
+	"sources_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} स्रोत",
+				"countPlural=other": "{count} स्रोत"
+			}
+		}
+	],
+	"course_filter_aria": "मेनू को कोर्स के अनुसार फ़िल्टर करें",
+	"course_all": "सभी",
+	"item_like": "इस आइटम को पसंद करें",
+	"item_unlike": "इस आइटम को पसंद से हटाएँ",
+
+	"scanned_date": "{date} को जाँचा गया",
+	"scanned": "{relative} जाँचा गया",
+
+	"tag_vegan": "वीगन",
+	"tag_vegetarian": "शाकाहारी",
+	"tag_halal": "हलाल",
+	"tag_gluten_free": "ग्लूटेन-मुक्त",
+	"tag_dairy_free": "डेयरी-मुक्त",
+	"tag_nut_free": "नट-मुक्त",
+	"tag_food": "खाना",
+	"tag_dessert": "मिठाई",
+	"tag_drink": "पेय",
+
+	"category_cafe": "कैफ़े",
+	"category_fast_food": "फ़ास्ट फ़ूड",
+	"category_restaurant": "रेस्टोरेंट",
+	"category_bakery": "बेकरी",
+
+	"diet_any": "कोई भी डाइट",
+	"diet_filter_aria": "डाइट फ़िल्टर",
+	"diet_can_be_made": "अनुरोध पर {diet} बनाया जा सकता है",
+
+	"account_default_name": "खाता",
+	"account_signed_in": "साइन इन हैं",
+	"account_sign_out": "साइन आउट करें",
+	"account_sign_in": "साइन इन करें",
+	"language_label": "भाषा",
+
+	"sources_dialog_aria": "डेटा स्रोत",
+	"sources_title": "स्रोत",
+	"sources_close_aria": "स्रोत बंद करें",
+
+	"directions_button_tooltip": "किसी दूसरे मैप्स ऐप में खोलें",
+	"directions_button_aria": "{address} को किसी दूसरे मैप्स ऐप में खोलें",
+	"directions_dialog_aria": "मैप्स ऐप चुनें",
+	"directions_title": "किसी दूसरे मैप्स ऐप में खोलें",
+	"directions_close_aria": "दिशा-निर्देश बंद करें",
+	"directions_apple_maps": "Apple Maps",
+	"directions_google_maps": "Google Maps",
+
+	"landing_intro_aria": "BetterFoodMaps के बारे में",
+	"landing_title": "नक्शे पर कहीं भी, अपनी डाइट के मुताबिक खाना खोजें।",
+	"landing_stats_aria": "नक्शे का कवरेज",
+	"landing_actions_aria": "शुरुआत करें",
+	"stat_venues": "जगहें",
+	"stat_menu_items": "मेनू आइटम",
+	"stat_cities": "शहर",
+	"stat_vegan": "वीगन व्यंजन",
+	"stat_vegetarian": "शाकाहारी व्यंजन",
+	"stat_halal": "हलाल व्यंजन",
+	"stat_gluten_free": "ग्लूटेन-मुक्त व्यंजन",
+	"stat_dairy_free": "डेयरी-मुक्त व्यंजन",
+	"stat_nut_free": "नट-मुक्त व्यंजन",
+	"landing_cta": "नक्शा इस्तेमाल करना शुरू करें",
+	"landing_browse_link": "या शहर के अनुसार खाना देखें →",
+
+	"error_not_found": "यह पेज मौजूद नहीं है",
+	"error_generic": "कुछ गड़बड़ हो गई",
+	"error_back": "नक्शे पर वापस जाएँ",
+	"error_page_title": "{status} · BetterFoodMaps",
+
+	"server_error_no_location_or_item": "ऐसी कोई जगह या आइटम नहीं है।",
+	"server_error_sign_in_required": "इसके लिए आपको साइन इन करना होगा।",
+	"server_error_location_not_found": "जगह नहीं मिली",
+	"server_error_location_gone": "यह जगह स्थायी रूप से बंद हो चुकी है।",
+	"server_error_database_unavailable": "डेटाबेस उपलब्ध नहीं है।",
+	"server_error_oauth_invalid_callback": "अमान्य OAuth कॉलबैक।",
+	"server_error_oauth_code_validation": "प्राधिकरण कोड सत्यापित नहीं हो सका।",
+	"server_error_oauth_missing_subject": "Google की प्रतिक्रिया में subject क्लेम नहीं था।",
+
+	"head_site_description": "इंटरैक्टिव नक्शे पर दुनिया भर के कैफ़े, फ़ास्ट फ़ूड और रेस्टोरेंट देखें।",
+	"head_desc_no_menu": "BetterFoodMaps पर मेनू देखें।",
+	"head_located_in": "{where} में",
+	"head_list_pair": "{first} और {last}",
+	"head_desc_on_brand": "{content} — BetterFoodMaps पर।",
+	"head_coverage_diet": "{count} {diet}",
+	"head_coverage_clause": "{list} {noun}",
+	"head_menu_item_noun": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "मेनू आइटम",
+				"countPlural=other": "मेनू आइटम"
+			}
+		}
+	]
+}
