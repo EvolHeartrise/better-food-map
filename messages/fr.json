@@ -5,7 +5,7 @@
 	"search_placeholder": "Rechercher un lieu ou un plat…",
 	"search_input_aria": "Rechercher par nom de lieu ou de plat",
 	"results_nav_aria": "Lieux correspondants",
-	"results_cap": "Affichage des {max} premiers lieux sur {total}. Précisez la recherche pour affiner la liste.",
+	"results_cap": "Affichage des {max} premiers lieux sur {total}. Affinez la recherche pour réduire la liste.",
 	"places_found": [
 		{
 			"declarations": ["input count", "local countPlural = count: plural"],
@@ -25,7 +25,7 @@
 
 	"venue_details_aria": "Détails du lieu",
 	"venue_close_aria": "Fermer les détails du lieu",
-	"sheet_resize_aria": "Redimensionner les détails — glissez, touchez ou utilisez les flèches",
+	"sheet_resize_aria": "Redimensionner les détails — faites glisser, touchez ou utilisez les touches fléchées",
 	"venue_like": "Aimer ce lieu",
 	"venue_unlike": "Ne plus aimer ce lieu",
 	"venue_address_label": "Adresse",
@@ -45,7 +45,7 @@
 			}
 		}
 	],
-	"menu_last_scanned": "Menu vérifié pour la dernière fois le {date}",
+	"menu_last_scanned": "Dernière vérification du menu le {date}",
 	"sources_count": [
 		{
 			"declarations": ["input count", "local countPlural = count: plural"],
@@ -72,7 +72,7 @@
 	"tag_dairy_free": "Sans produits laitiers",
 	"tag_nut_free": "Sans noix",
 	"tag_food": "Plats",
-	"tag_dessert": "Dessert",
+	"tag_dessert": "Desserts",
 	"tag_drink": "Boissons",
 
 	"category_cafe": "Café",
@@ -81,8 +81,8 @@
 	"category_bakery": "Boulangerie",
 
 	"diet_any": "Tous les régimes",
-	"diet_filter_aria": "Filtre par régime alimentaire",
-	"diet_can_be_made": "Peut être préparé {diet}",
+	"diet_filter_aria": "Filtrer par régime alimentaire",
+	"diet_can_be_made": "{diet} sur demande",
 
 	"account_default_name": "Compte",
 	"account_signed_in": "Connecté",
@@ -115,7 +115,7 @@
 	"stat_gluten_free": "plats sans gluten",
 	"stat_dairy_free": "plats sans produits laitiers",
 	"stat_nut_free": "plats sans noix",
-	"landing_cta": "Commencer à utiliser la carte",
+	"landing_cta": "Explorer la carte",
 	"landing_browse_link": "Ou parcourez les plats par ville →",
 
 	"error_not_found": "Cette page n’existe pas",
@@ -124,25 +124,29 @@
 	"error_page_title": "{status} · BetterFoodMaps",
 
 	"server_error_no_location_or_item": "Aucun lieu ou article correspondant.",
-	"server_error_sign_in_required": "Vous devez être connecté pour effectuer cette action.",
+	"server_error_sign_in_required": "Connectez-vous pour effectuer cette action.",
 	"server_error_location_not_found": "Lieu introuvable",
-	"server_error_location_gone": "Ce lieu a définitivement fermé.",
+	"server_error_location_gone": "Ce lieu est définitivement fermé.",
 	"server_error_database_unavailable": "Base de données indisponible.",
 	"server_error_oauth_invalid_callback": "Réponse OAuth invalide.",
 	"server_error_oauth_code_validation": "Échec de la validation du code d’autorisation.",
 	"server_error_oauth_missing_subject": "La réponse de Google ne contenait pas l’identifiant (subject).",
 
-	"head_site_description": "Explorez cafés, restauration rapide et restaurants du monde entier sur une carte interactive.",
+	"head_site_description": "Explorez cafés, restaurants et comptoirs de restauration rapide du monde entier sur une carte interactive.",
 	"head_desc_no_menu": "Consultez le menu sur BetterFoodMaps.",
+	"head_located_in": "à {where}",
+	"head_list_pair": "{first} et {last}",
 	"head_desc_on_brand": "{content} sur BetterFoodMaps.",
+	"head_coverage_diet": "{diet} ({count})",
+	"head_coverage_clause": "Au menu\u00a0: {list}",
 	"head_menu_item_noun": [
 		{
 			"declarations": ["input count", "local countPlural = count: plural"],
 			"selectors": ["countPlural"],
 			"match": {
-				"countPlural=one": "article",
-				"countPlural=other": "articles",
-				"countPlural=many": "articles"
+				"countPlural=one": "article au menu",
+				"countPlural=other": "articles au menu",
+				"countPlural=many": "articles au menu"
 			}
 		}
 	]

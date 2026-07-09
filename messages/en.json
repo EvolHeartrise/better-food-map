@@ -131,7 +131,11 @@
 
 	"head_site_description": "Explore cafes, fast food and restaurants around the world on an interactive map.",
 	"head_desc_no_menu": "See the menu on BetterFoodMaps.",
+	"head_located_in": "in {where}",
+	"head_list_pair": "{first} and {last}",
 	"head_desc_on_brand": "{content} on BetterFoodMaps.",
+	"head_coverage_diet": "{count} {diet}",
+	"head_coverage_clause": "{list} {noun}",
 	"head_menu_item_noun": [
 		{
 			"declarations": ["input count", "local countPlural = count: plural"],
