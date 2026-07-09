@@ -347,6 +347,14 @@
 		return t?.isLocationOccluded?.(new lib.LngLat(lng, lat)) ?? false;
 	}
 
+	// The versioned archive name in the basemap tile URLs. A cache-bust token, not
+	// an object name: the tile worker (workers/tiles) maps every allowed name onto
+	// the single planet.pmtiles in R2 and serves the tiles immutable for a year, so
+	// refreshing the planet data means bumping this token in lockstep with the
+	// worker's ARCHIVES allowlist — never purging a cache. The full procedure is in
+	// workers/tiles/README.md.
+	const TILE_ARCHIVE = 'planet-2026-07-09';
+
 	// The map style: self-hosted Protomaps vector tiles (light flavor) on a 3D globe
 	// projection. MapLibre renders this flat (Web Mercator) when zoomed in and
 	// smoothly curves it into a globe as the user zooms out, with no work on our
@@ -374,15 +382,22 @@
 			sources: {
 				protomaps: {
 					type: 'vector',
-					// TileJSON from our PMTiles worker (workers/tiles); it reports the
-					// tile URL template and the data zoom range (0–15) for the planet
-					// archive, and MapLibre overzooms beyond that on its own.
-					url: 'https://tiles.betterfoodmaps.com/planet.json',
+					// The tile URL template, zoom range and attribution are inlined
+					// instead of pointing `url:` at the worker's TileJSON: the TileJSON
+					// only restates these static facts, and fetching it is a serial round
+					// trip gating the first tile — pure LCP latency, since the map is
+					// this route's LCP element.
+					tiles: [`https://tiles.betterfoodmaps.com/${TILE_ARCHIVE}/{z}/{x}/{y}.mvt`],
+					// The planet archive's data zoom range. maxzoom is load-bearing (the
+					// TileJSON used to report it): without it MapLibre would request
+					// tiles past z15 — which 404 — instead of overzooming, which vector
+					// data does crisply on its own (hence the camera cap of 19 above).
+					minzoom: 0,
+					maxzoom: 15,
 					// The tiles are an ODbL Produced Work over OpenStreetMap data, so this
 					// credit is a license requirement; MapLibre surfaces it in the
-					// attribution control automatically (this inline value takes precedence
-					// over the TileJSON's). A Protomaps credit is not required for
-					// self-hosted builds and is deliberately omitted.
+					// attribution control automatically. A Protomaps credit is not required
+					// for self-hosted builds and is deliberately omitted.
 					attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
 				}
 			},

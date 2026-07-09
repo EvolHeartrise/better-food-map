@@ -5,7 +5,9 @@
 	// the {name}.pmtiles archive out of R2 (a few KB per tile — never the whole
 	// ~137 GB object). Source is vendored from protomaps/PMTiles (see src/).
 	"name": "better-food-map-tiles",
-	"main": "src/index.ts",
+	// worker.ts is a thin cache-key guard (archive-name allowlist + query-string
+	// strip) in front of the vendored handler in index.ts — see its header.
+	"main": "src/worker.ts",
 	"compatibility_date": "2025-09-23",
 	// Custom-domain-only: the route below attaches tiles.betterfoodmaps.com on
 	// deploy (same pattern as the app's root wrangler.jsonc); the *.workers.dev
@@ -33,8 +35,26 @@
 		// are always pointed at the public custom domain regardless of which
 		// host the TileJSON request itself arrived on.
 		"PUBLIC_HOSTNAME": "tiles.betterfoodmaps.com",
-		// Browser/edge cache lifetime for tiles and TileJSON. Tiles only change
-		// when a new planet.pmtiles is uploaded, so a day of staleness is fine.
-		"CACHE_CONTROL": "public, max-age=86400"
+		// Every archive {name} in the URL maps to this one R2 object: the {name}
+		// is a cache-bust VERSION TOKEN, not an object key, so bumping it (here
+		// in ARCHIVES and in the app's tile URL) rolls the whole cache without
+		// copying the ~137 GB archive. See README.md "Refreshing the planet".
+		"PMTILES_PATH": "planet.pmtiles",
+		// The archive names the worker will serve (comma-separated; anything else
+		// 404s — see src/worker.ts). First the current version token, which must
+		// match TILE_ARCHIVE in src/lib/components/LocationMap.svelte at the repo
+		// root; "planet" is the legacy pre-versioning name. Pre-versioning app
+		// code fetches /planet.json (which now browser-caches for a YEAR — it
+		// went out immutable in the config-flip window) and follows it to
+		// /planet/… tiles, and keeps doing so until the tab picks up the new app
+		// code — so drop "planet" only once pre-versioning sessions are
+		// realistically gone (think weeks, not the TileJSON's old max-age).
+		// Dropping it degrades gracefully: those URLs 404 uncached, so a
+		// straggler tab gets a grey basemap until reload, nothing pinned.
+		"ARCHIVES": "planet-2026-07-09,planet",
+		// Browser/edge cache lifetime for tiles and TileJSON. Tile URLs carry the
+		// version token above and a refresh bumps it, so every URL's content is
+		// immutable — cache as long as possible instead of re-fetching daily.
+		"CACHE_CONTROL": "public, max-age=31536000, immutable"
 	}
 }

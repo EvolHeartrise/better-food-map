@@ -231,9 +231,10 @@ const localize: Handle = async ({ event, resolve }) => {
 //   CSP would be a separate, riskier change.
 // • MapLibre GL spawns its worker from a blob: URL (worker-src blob:) and may
 //   materialize tile/sprite images as blob:/data: URLs (img-src blob: data:).
-// • Vector tiles + TileJSON are FETCHED by MapLibre (XHR/fetch, not <img>) from
-//   our self-hosted PMTiles worker at tiles.betterfoodmaps.com (see mapStyle in
-//   LocationMap.svelte), so that origin lives in connect-src. Glyphs and sprites
+// • Vector tiles are FETCHED by MapLibre (XHR/fetch, not <img>) from our
+//   self-hosted PMTiles worker at tiles.betterfoodmaps.com (see mapStyle in
+//   LocationMap.svelte; the tile URL template is inlined there, so tiles are
+//   the only fetch), so that origin lives in connect-src. Glyphs and sprites
 //   are same-origin under /basemaps-assets ('self'); MapLibre materializes tile
 //   and sprite images as blob:/data: URLs, already covered by img-src.
 // • Signed-in users' Google avatars (`user.picture`, AccountMenu.svelte) are
