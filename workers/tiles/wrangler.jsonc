@@ -18,6 +18,22 @@
 	"observability": {
 		"enabled": true
 	},
+	// Workers Cache: a tiered cache (regional + global upper tier) in front of
+	// the Worker — a hit serves the stored response without executing any code,
+	// and cold-colo misses fill from the upper tier instead of re-walking the
+	// PMTiles archive in R2. Driven by the same Cache-Control the responses
+	// already carry: tiles/TileJSON store for a year (immutable versioned URLs),
+	// guard errors are no-store so they are never stored, and `Vary: Origin` is
+	// honored per RFC 9111 (variants per requesting origin). Guard 404s carry no
+	// Cache-Control and fall under heuristic freshness (~3 min) — cheap junk-URL
+	// damping, and unlike the year-long CACHE_CONTROL never pins a bad entry.
+	// cross_version_cache keeps entries across deploys of THIS worker: tile URLs
+	// carry the archive version token, so a stale-code-version response for a
+	// given URL is still byte-correct.
+	"cache": {
+		"enabled": true,
+		"cross_version_cache": true
+	},
 	// The bucket holding planet.pmtiles (whole-planet Protomaps build). The
 	// worker reads it via the BUCKET binding, which the vendored source expects
 	// by exactly that name (env.BUCKET).
