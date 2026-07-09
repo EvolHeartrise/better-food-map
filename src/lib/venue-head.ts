@@ -24,6 +24,7 @@ import { TAGS, tagDisplayName } from './tags';
 import { locationPath } from './location-path';
 import { CANONICAL_ORIGIN } from './canonical';
 import { m } from '$lib/paraglide/messages';
+import { getLocale } from '$lib/paraglide/runtime';
 
 // Re-exported for backward compatibility: the shared origin now lives in
 // ./canonical (one definition for the head, the sitemap and the browse pages).
@@ -52,11 +53,15 @@ export interface HeadMeta {
 /** The six dietary tags in display order (course tags never surface here). */
 const DIETARY_TAGS = TAGS.filter((tag) => tag.tag_type === 'dietary');
 
-/** `"a"` | `"a and b"` | `"a, b and c"` — serial join, no Oxford comma. */
+/**
+ * `"a"` | `"a and b"` | `"a, b and c"` — serial join, no Oxford comma. Both the
+ * separator (head_list_sep: "、" in zh/yue, "، " in ar) and the final pair
+ * (head_list_pair) are message-driven so a locale owns its list punctuation.
+ */
 function joinList(parts: string[]): string {
 	if (parts.length <= 1) return parts[0] ?? '';
 	return m.head_list_pair({
-		first: parts.slice(0, -1).join(', '),
+		first: parts.slice(0, -1).join(m.head_list_sep()),
 		last: parts[parts.length - 1]
 	});
 }
@@ -78,8 +83,10 @@ function joinList(parts: string[]): string {
 export function dietaryCoverageClause(menu: HeadVenue['menu'], limit = 3): string | null {
 	const covered = DIETARY_TAGS.map((tag, order) => ({
 		// The diet word localizes through the shared tag-label helper (English
-		// values match the old `tag.name`, lower-cased for mid-sentence flow).
-		label: tagDisplayName(tag.id).toLowerCase(),
+		// values match the old `tag.name`, lower-cased for mid-sentence flow —
+		// locale-aware, and diet labels are adjectives so they lowercase even in
+		// German, unlike the category noun in venueHeadMeta).
+		label: tagDisplayName(tag.id).toLocaleLowerCase(getLocale()),
 		count: menu.reduce((n, item) => n + (item.tags.some((t) => t.id === tag.id) ? 1 : 0), 0),
 		order
 	}))
@@ -118,20 +125,37 @@ export function venueHeadMeta(venue: HeadVenue): HeadMeta {
 		.join(', ');
 	const title = `${venue.name}${where ? ` – ${where}` : ''} | BetterFoodMaps`;
 
+	// The lead's frame is message-driven — the category/where clauses carry their
+	// own separators (head_lead_category/head_lead_where) and head_lead its own
+	// terminator — so a locale controls its punctuation (zh/yue ，/。, ar/ur/fa ،,
+	// hi/pa ।, ur ۔) instead of inheriting the English ", " / " " / ".".
 	const category = categoryLabel(venue.category);
-	const lead = `${venue.name}${category ? `, ${category.toLowerCase()}` : ''}${where ? ` ${m.head_located_in({ where })}` : ''}.`;
+	const locale = getLocale();
+	// Mid-sentence the category noun lowercases — except in German, where nouns
+	// keep their capital anywhere in the sentence.
+	const midSentenceCategory = locale === 'de' ? category : category.toLocaleLowerCase(locale);
+	const lead = m.head_lead({
+		name: venue.name,
+		categoryClause: category ? m.head_lead_category({ category: midSentenceCategory }) : '',
+		whereClause: where ? m.head_lead_where({ locatedIn: m.head_located_in({ where }) }) : ''
+	});
 
 	const coverage = dietaryCoverageClause(venue.menu);
 	const count = venue.menu.length;
 	const tail = coverage
 		? m.head_desc_on_brand({ content: coverage })
 		: count > 0
-			? m.head_desc_on_brand({ content: `${count} ${m.head_menu_item_noun({ count })}` })
+			? m.head_desc_on_brand({
+					// The plain-count fallback is a message so a locale can reorder or
+					// add a counter word (ko "메뉴 5개", fil "5 na menu item").
+					content: m.head_plain_count({ count, noun: m.head_menu_item_noun({ count }) })
+				})
 			: m.head_desc_no_menu();
 
 	return {
 		title,
-		description: `${lead} ${tail}`,
+		// head_desc joins the two sentences — a space in most locales, none in zh/yue.
+		description: m.head_desc({ lead, tail }),
 		// The canonical descriptive URL (`/locations/<name>-<city>-<uuid>`, issue
 		// #221) — the SAME address the sitemap emits and the server 301s bare/
 		// wrong-slug URLs onto, shared through locationPath so all three can't drift.
