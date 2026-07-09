@@ -136,7 +136,7 @@ overwriteGetLocale(() => localeStorage.getStore() ?? baseLocale);
 //   2. signed-in user's saved locale            (folded into getSessionWithUser)
 //   3. Accept-Language header, q-value weighted  (Paraglide's own negotiator,
 //      which matches full tags then base tags against the supported locales)
-//   4. baseLocale ('en')
+//   4. baseLocale ('en-US')
 //
 // Async because step 2 awaits the session lookup. `authenticate` runs before
 // `localize` in the sequence (below), so `event.locals.getSession` is installed
@@ -222,8 +222,14 @@ const localize: Handle = async ({ event, resolve }) => {
 	event.locals.locale = locale;
 	return localeStorage.run(locale, () =>
 		resolve(event, {
+			// replaceAll, not replace: a stray copy of a token elsewhere in the chunk
+			// (it happened — an app.html comment once swallowed the one-shot replace
+			// and shipped literal %lang%, snapping every client render back to the
+			// base locale) must never leave the real attribute unstamped.
 			transformPageChunk: ({ html }) =>
-				html.replace('%lang%', locale).replace('%textdir%', RTL_LOCALES.has(locale) ? 'rtl' : 'ltr')
+				html
+					.replaceAll('%lang%', locale)
+					.replaceAll('%textdir%', RTL_LOCALES.has(locale) ? 'rtl' : 'ltr')
 		})
 	);
 };

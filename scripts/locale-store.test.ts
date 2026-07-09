@@ -30,8 +30,8 @@ test('getUserLocale / setUserLocale: round-trips and upserts per user', async ()
 	expect(await getUserLocale(db, 'u1')).toBe('fr');
 
 	// A second save for the same user overwrites (upsert), not duplicates.
-	await setUserLocale(db, 'u1', 'en', 2000);
-	expect(await getUserLocale(db, 'u1')).toBe('en');
+	await setUserLocale(db, 'u1', 'en-US', 2000);
+	expect(await getUserLocale(db, 'u1')).toBe('en-US');
 
 	const { results } = await db
 		.prepare(`SELECT COUNT(*) AS n FROM user_locale WHERE user_id = 'u1'`)

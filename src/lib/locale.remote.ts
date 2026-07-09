@@ -16,7 +16,7 @@ import { locales, type Locale } from '$lib/paraglide/runtime';
  * `query` remote functions from writing cookies (see the note in hooks.server.ts
  * `authenticate`). `command`/`form` reach the request event's cookies.
  *
- * The argument is validated to a supported locale (`'en' | 'fr'`) before either
+ * The argument is validated to a supported locale (e.g. `'en-US' | 'fr'`) before either
  * write, so nothing unsupported is ever stored — the source-of-truth for the
  * allowlist is Paraglide's `locales`. The caller reloads the page afterwards so
  * the SSR-rendered strings and `<html lang>` re-render together in the new locale
