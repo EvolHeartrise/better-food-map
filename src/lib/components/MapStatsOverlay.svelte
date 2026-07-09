@@ -256,7 +256,7 @@
 	     frame by the projection loop above). They're real content — kept in the DOM for
 	     crawlers and assistive tech — presented as bodies drifting through space; only
 	     their transform/opacity animate. -->
-	<ul class="stats" aria-label={m.landing_actions_aria()}>
+	<ul class="stats" aria-label={m.landing_stats_aria()}>
 		{#each figures as figure, i (figure.key)}
 			<li class="stat" bind:this={statEls[i]}>
 				<span class="stat__value">{stats ? fmt(figure.value) : '—'}</span>

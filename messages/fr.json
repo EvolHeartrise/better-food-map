@@ -102,7 +102,8 @@
 
 	"landing_intro_aria": "À propos de BetterFoodMaps",
 	"landing_title": "Trouvez des plats adaptés à votre régime, partout sur la carte.",
-	"landing_actions_aria": "Couverture et prise en main",
+	"landing_stats_aria": "Couverture de la carte",
+	"landing_actions_aria": "Prise en main",
 	"stat_venues": "lieux",
 	"stat_menu_items": "articles au menu",
 	"stat_cities": "villes",
