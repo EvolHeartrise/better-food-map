@@ -5,7 +5,7 @@
 	"search_placeholder": "جگہیں اور پکوان تلاش کریں…",
 	"search_input_aria": "جگہ یا پکوان کے نام سے تلاش کریں",
 	"results_nav_aria": "مماثل جگہیں",
-	"results_cap": "{total} میں سے پہلی {max} جگہیں دکھائی جا رہی ہیں۔ فہرست مختصر کرنے کے لیے تلاش کو مزید واضح کریں۔",
+	"results_cap": "{total} میں سے پہلی {max} جگہیں دکھائی جا رہی ہیں۔ فہرست مختصر کرنے کے لیے اپنی تلاش مزید مخصوص کریں۔",
 	"places_found": [
 		{
 			"declarations": ["input count", "local countPlural = count: plural"],
@@ -24,15 +24,15 @@
 
 	"venue_details_aria": "جگہ کی تفصیلات",
 	"venue_close_aria": "جگہ کی تفصیلات بند کریں",
-	"sheet_resize_aria": "تفصیلات کا سائز تبدیل کریں — گھسیٹیں، ٹیپ کریں یا تیر والی کلیدیں استعمال کریں",
+	"sheet_resize_aria": "تفصیلات کا سائز تبدیل کریں — گھسیٹیں، ٹیپ کریں یا تیر والے بٹن استعمال کریں",
 	"venue_like": "اس جگہ کو پسند کریں",
 	"venue_unlike": "اس جگہ سے پسند ہٹائیں",
 	"venue_address_label": "پتہ",
 	"venue_phone_label": "فون",
 	"venue_phone_extension": "ایکسٹینشن {ext}",
 	"venue_website_label": "ویب سائٹ",
-	"venue_menu_label": "مینیو",
-	"venue_no_menu": "ابھی کوئی مینیو درج نہیں ہے۔",
+	"venue_menu_label": "مینو",
+	"venue_no_menu": "ابھی کوئی مینو درج نہیں ہے۔",
 	"menu_items_count": [
 		{
 			"declarations": ["input count", "local countPlural = count: plural"],
@@ -43,18 +43,18 @@
 			}
 		}
 	],
-	"menu_last_scanned": "مینیو کی آخری جانچ {date} کو ہوئی",
+	"menu_last_scanned": "مینو کی آخری جانچ {date} کو ہوئی",
 	"sources_count": [
 		{
 			"declarations": ["input count", "local countPlural = count: plural"],
 			"selectors": ["countPlural"],
 			"match": {
-				"countPlural=one": "{count} ماخذ",
-				"countPlural=other": "{count} مآخذ"
+				"countPlural=one": "{count} ذریعہ",
+				"countPlural=other": "{count} ذرائع"
 			}
 		}
 	],
-	"course_filter_aria": "مینیو کو کورس کے لحاظ سے فلٹر کریں",
+	"course_filter_aria": "مینو کو کورس کے لحاظ سے فلٹر کریں",
 	"course_all": "سب",
 	"item_like": "اس آئٹم کو پسند کریں",
 	"item_unlike": "اس آئٹم سے پسند ہٹائیں",
@@ -63,11 +63,11 @@
 	"scanned": "{relative} جانچا گیا",
 
 	"tag_vegan": "ویگن",
-	"tag_vegetarian": "سبزی خور",
+	"tag_vegetarian": "ویجیٹیرین",
 	"tag_halal": "حلال",
-	"tag_gluten_free": "گلوٹن سے پاک",
-	"tag_dairy_free": "ڈیری سے پاک",
-	"tag_nut_free": "گری دار میووں سے پاک",
+	"tag_gluten_free": "گلوٹن فری",
+	"tag_dairy_free": "ڈیری فری",
+	"tag_nut_free": "نٹ فری",
 	"tag_food": "کھانا",
 	"tag_dessert": "میٹھا",
 	"tag_drink": "مشروبات",
@@ -79,23 +79,23 @@
 
 	"diet_any": "کوئی بھی غذا",
 	"diet_filter_aria": "غذائی فلٹر",
-	"diet_can_be_made": "درخواست پر {diet} بن سکتا ہے",
+	"diet_can_be_made": "درخواست پر {diet} بنایا جا سکتا ہے",
 
 	"account_default_name": "اکاؤنٹ",
-	"account_signed_in": "سائن اِن ہیں",
+	"account_signed_in": "آپ سائن اِن ہیں",
 	"account_sign_out": "سائن آؤٹ کریں",
 	"account_sign_in": "سائن اِن کریں",
 	"language_label": "زبان",
 
-	"sources_dialog_aria": "ڈیٹا کے مآخذ",
-	"sources_title": "مآخذ",
-	"sources_close_aria": "مآخذ بند کریں",
+	"sources_dialog_aria": "ڈیٹا کے ذرائع",
+	"sources_title": "ذرائع",
+	"sources_close_aria": "ذرائع بند کریں",
 
 	"directions_button_tooltip": "کسی اور میپس ایپ میں کھولیں",
 	"directions_button_aria": "{address} کو کسی اور میپس ایپ میں کھولیں",
 	"directions_dialog_aria": "میپس ایپ منتخب کریں",
 	"directions_title": "کسی اور میپس ایپ میں کھولیں",
-	"directions_close_aria": "راستے بند کریں",
+	"directions_close_aria": "ڈائریکشنز بند کریں",
 	"directions_apple_maps": "Apple Maps",
 	"directions_google_maps": "Google Maps",
 
@@ -104,14 +104,14 @@
 	"landing_stats_aria": "نقشے کی کوریج",
 	"landing_actions_aria": "شروع کریں",
 	"stat_venues": "جگہیں",
-	"stat_menu_items": "مینیو آئٹمز",
+	"stat_menu_items": "مینو آئٹمز",
 	"stat_cities": "شہر",
 	"stat_vegan": "ویگن پکوان",
-	"stat_vegetarian": "سبزی خور پکوان",
+	"stat_vegetarian": "ویجیٹیرین پکوان",
 	"stat_halal": "حلال پکوان",
-	"stat_gluten_free": "گلوٹن سے پاک پکوان",
-	"stat_dairy_free": "ڈیری سے پاک پکوان",
-	"stat_nut_free": "گری دار میووں سے پاک پکوان",
+	"stat_gluten_free": "گلوٹن فری پکوان",
+	"stat_dairy_free": "ڈیری فری پکوان",
+	"stat_nut_free": "نٹ فری پکوان",
 	"landing_cta": "نقشہ استعمال کرنا شروع کریں",
 	"landing_browse_link": "یا شہر کے لحاظ سے کھانا دیکھیں ←",
 
@@ -130,10 +130,10 @@
 	"server_error_oauth_missing_subject": "Google کے جواب میں subject کلیم موجود نہیں تھا۔",
 
 	"head_site_description": "انٹرایکٹو نقشے پر دنیا بھر کے کیفے، فاسٹ فوڈ اور ریستوران دریافت کریں۔",
-	"head_desc_no_menu": "BetterFoodMaps پر مینیو دیکھیں۔",
+	"head_desc_no_menu": "BetterFoodMaps پر مینو دیکھیں۔",
 	"head_located_in": "{where} میں",
 	"head_list_pair": "{first} اور {last}",
-	"head_desc_on_brand": "{content} — BetterFoodMaps پر۔",
+	"head_desc_on_brand": "BetterFoodMaps پر {content}۔",
 	"head_coverage_diet": "{count} {diet}",
 	"head_coverage_clause": "{list} {noun}",
 	"head_menu_item_noun": [
@@ -141,8 +141,8 @@
 			"declarations": ["input count", "local countPlural = count: plural"],
 			"selectors": ["countPlural"],
 			"match": {
-				"countPlural=one": "مینیو آئٹم",
-				"countPlural=other": "مینیو آئٹمز"
+				"countPlural=one": "مینو آئٹم",
+				"countPlural=other": "مینو آئٹمز"
 			}
 		}
 	]

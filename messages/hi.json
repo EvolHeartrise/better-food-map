@@ -5,7 +5,7 @@
 	"search_placeholder": "जगहें और व्यंजन खोजें…",
 	"search_input_aria": "जगह या व्यंजन के नाम से खोजें",
 	"results_nav_aria": "मेल खाती जगहें",
-	"results_cap": "{total} में से पहली {max} जगहें दिखाई जा रही हैं। सूची छोटी करने के लिए खोज को और सटीक करें।",
+	"results_cap": "{total} में से पहली {max} जगहें दिखाई जा रही हैं। सूची छोटी करने के लिए अपनी खोज को और सटीक बनाएँ।",
 	"places_found": [
 		{
 			"declarations": ["input count", "local countPlural = count: plural"],
@@ -16,17 +16,17 @@
 			}
 		}
 	],
-	"search_failed": "खोज विफल रही — पिछले परिणाम दिखाए जा रहे हैं।",
-	"browse_failed": "इस क्षेत्र की जगहें लोड नहीं हो सकीं — पिछले परिणाम दिखाए जा रहे हैं।",
+	"search_failed": "खोज नहीं हो सकी — पिछले नतीजे दिखाए जा रहे हैं।",
+	"browse_failed": "इस इलाक़े की जगहें लोड नहीं हो सकीं — पिछले नतीजे दिखाए जा रहे हैं।",
 	"map_aria": "खाने-पीने की जगहों का नक्शा",
 	"map_zoom_in_aria": "ज़ूम इन करें",
 	"map_zoom_out_aria": "ज़ूम आउट करें",
 
 	"venue_details_aria": "जगह का विवरण",
 	"venue_close_aria": "जगह का विवरण बंद करें",
-	"sheet_resize_aria": "विवरण का आकार बदलें — खींचें, टैप करें या तीर कुंजियों का उपयोग करें",
+	"sheet_resize_aria": "विवरण का आकार बदलें — खींचें, टैप करें या तीर कुंजियों का इस्तेमाल करें",
 	"venue_like": "इस जगह को पसंद करें",
-	"venue_unlike": "इस जगह से पसंद हटाएँ",
+	"venue_unlike": "इस जगह को पसंद से हटाएँ",
 	"venue_address_label": "पता",
 	"venue_phone_label": "फ़ोन",
 	"venue_phone_extension": "एक्सटेंशन {ext}",
@@ -57,7 +57,7 @@
 	"course_filter_aria": "मेनू को कोर्स के अनुसार फ़िल्टर करें",
 	"course_all": "सभी",
 	"item_like": "इस आइटम को पसंद करें",
-	"item_unlike": "इस आइटम से पसंद हटाएँ",
+	"item_unlike": "इस आइटम को पसंद से हटाएँ",
 
 	"scanned_date": "{date} को जाँचा गया",
 	"scanned": "{relative} जाँचा गया",
@@ -74,12 +74,12 @@
 
 	"category_cafe": "कैफ़े",
 	"category_fast_food": "फ़ास्ट फ़ूड",
-	"category_restaurant": "रेस्तराँ",
+	"category_restaurant": "रेस्टोरेंट",
 	"category_bakery": "बेकरी",
 
-	"diet_any": "कोई भी आहार",
-	"diet_filter_aria": "आहार फ़िल्टर",
-	"diet_can_be_made": "अनुरोध पर {diet} बन सकता है",
+	"diet_any": "कोई भी डाइट",
+	"diet_filter_aria": "डाइट फ़िल्टर",
+	"diet_can_be_made": "अनुरोध पर {diet} बनाया जा सकता है",
 
 	"account_default_name": "खाता",
 	"account_signed_in": "साइन इन हैं",
@@ -100,7 +100,7 @@
 	"directions_google_maps": "Google Maps",
 
 	"landing_intro_aria": "BetterFoodMaps के बारे में",
-	"landing_title": "नक्शे पर कहीं भी, अपने आहार के अनुकूल खाना खोजें।",
+	"landing_title": "नक्शे पर कहीं भी, अपनी डाइट के मुताबिक खाना खोजें।",
 	"landing_stats_aria": "नक्शे का कवरेज",
 	"landing_actions_aria": "शुरुआत करें",
 	"stat_venues": "जगहें",
@@ -121,7 +121,7 @@
 	"error_page_title": "{status} · BetterFoodMaps",
 
 	"server_error_no_location_or_item": "ऐसी कोई जगह या आइटम नहीं है।",
-	"server_error_sign_in_required": "यह करने के लिए आपको साइन इन होना होगा।",
+	"server_error_sign_in_required": "इसके लिए आपको साइन इन करना होगा।",
 	"server_error_location_not_found": "जगह नहीं मिली",
 	"server_error_location_gone": "यह जगह स्थायी रूप से बंद हो चुकी है।",
 	"server_error_database_unavailable": "डेटाबेस उपलब्ध नहीं है।",
@@ -129,7 +129,7 @@
 	"server_error_oauth_code_validation": "प्राधिकरण कोड सत्यापित नहीं हो सका।",
 	"server_error_oauth_missing_subject": "Google की प्रतिक्रिया में subject क्लेम नहीं था।",
 
-	"head_site_description": "इंटरैक्टिव नक्शे पर दुनिया भर के कैफ़े, फ़ास्ट फ़ूड और रेस्तराँ देखें।",
+	"head_site_description": "इंटरैक्टिव नक्शे पर दुनिया भर के कैफ़े, फ़ास्ट फ़ूड और रेस्टोरेंट देखें।",
 	"head_desc_no_menu": "BetterFoodMaps पर मेनू देखें।",
 	"head_located_in": "{where} में",
 	"head_list_pair": "{first} और {last}",

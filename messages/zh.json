@@ -5,7 +5,7 @@
 	"search_placeholder": "搜索地点和菜品…",
 	"search_input_aria": "按地点或菜品名称搜索",
 	"results_nav_aria": "匹配的地点",
-	"results_cap": "仅显示 {total} 个地点中的前 {max} 个。请细化搜索以缩小范围。",
+	"results_cap": "共 {total} 个地点，仅显示前 {max} 个。请调整搜索条件以缩小范围。",
 	"places_found": [
 		{
 			"declarations": ["input count", "local countPlural = count: plural"],
@@ -15,8 +15,8 @@
 			}
 		}
 	],
-	"search_failed": "搜索失败，显示之前的结果。",
-	"browse_failed": "无法加载该区域的地点，显示之前的结果。",
+	"search_failed": "搜索失败，仍显示之前的结果。",
+	"browse_failed": "无法加载该区域的地点，仍显示之前的结果。",
 	"map_aria": "餐饮地点地图",
 	"map_zoom_in_aria": "放大",
 	"map_zoom_out_aria": "缩小",
@@ -28,7 +28,7 @@
 	"venue_unlike": "取消喜欢这个地点",
 	"venue_address_label": "地址",
 	"venue_phone_label": "电话",
-	"venue_phone_extension": "分机 {ext}",
+	"venue_phone_extension": "转 {ext}",
 	"venue_website_label": "网站",
 	"venue_menu_label": "菜单",
 	"venue_no_menu": "暂无菜单。",
@@ -37,7 +37,7 @@
 			"declarations": ["input count", "local countPlural = count: plural"],
 			"selectors": ["countPlural"],
 			"match": {
-				"countPlural=other": "{count} 个菜品"
+				"countPlural=other": "{count} 道菜品"
 			}
 		}
 	],
@@ -76,7 +76,7 @@
 
 	"diet_any": "不限饮食",
 	"diet_filter_aria": "饮食筛选",
-	"diet_can_be_made": "可做成{diet}",
+	"diet_can_be_made": "可做{diet}",
 
 	"account_default_name": "账户",
 	"account_signed_in": "已登录",
@@ -97,10 +97,10 @@
 	"directions_google_maps": "Google Maps",
 
 	"landing_intro_aria": "关于 BetterFoodMaps",
-	"landing_title": "在地图上随时随地找到适合您饮食的美食。",
+	"landing_title": "在地图上的任何角落，找到符合您饮食需求的美食。",
 	"landing_stats_aria": "地图覆盖范围",
 	"landing_actions_aria": "开始使用",
-	"stat_venues": "地点",
+	"stat_venues": "商家",
 	"stat_menu_items": "菜品",
 	"stat_cities": "城市",
 	"stat_vegan": "纯素菜品",
@@ -132,13 +132,13 @@
 	"head_list_pair": "{first}和{last}",
 	"head_desc_on_brand": "{content}，尽在 BetterFoodMaps。",
 	"head_coverage_diet": "{diet}（{count}）",
-	"head_coverage_clause": "菜单包含：{list}",
+	"head_coverage_clause": "菜单包含{list}",
 	"head_menu_item_noun": [
 		{
 			"declarations": ["input count", "local countPlural = count: plural"],
 			"selectors": ["countPlural"],
 			"match": {
-				"countPlural=other": "个菜单项"
+				"countPlural=other": "道菜品"
 			}
 		}
 	]

@@ -2,9 +2,9 @@
 	"$schema": "https://inlang.com/schema/inlang-message-format",
 
 	"search_bar_aria": "Поиск и фильтры",
-	"search_placeholder": "Ищите заведения и блюда…",
+	"search_placeholder": "Поиск заведений и блюд…",
 	"search_input_aria": "Поиск по названию заведения или блюда",
-	"results_nav_aria": "Подходящие заведения",
+	"results_nav_aria": "Найденные заведения",
 	"results_cap": "Показаны первые {max} из {total} заведений. Уточните запрос, чтобы сузить список.",
 	"places_found": [
 		{
@@ -18,9 +18,9 @@
 			}
 		}
 	],
-	"search_failed": "Поиск не удался — показаны предыдущие результаты.",
-	"browse_failed": "Не удалось загрузить заведения в этой области — показаны предыдущие результаты.",
-	"map_aria": "Карта заведений с едой",
+	"search_failed": "Не удалось выполнить поиск — показаны предыдущие результаты.",
+	"browse_failed": "Не удалось загрузить заведения в этой части карты — показаны предыдущие результаты.",
+	"map_aria": "Карта заведений питания",
 	"map_zoom_in_aria": "Приблизить",
 	"map_zoom_out_aria": "Отдалить",
 
@@ -47,7 +47,7 @@
 			}
 		}
 	],
-	"menu_last_scanned": "Меню последний раз проверялось {date}",
+	"menu_last_scanned": "Последняя проверка меню: {date}",
 	"sources_count": [
 		{
 			"declarations": ["input count", "local countPlural = count: plural"],
@@ -60,7 +60,7 @@
 			}
 		}
 	],
-	"course_filter_aria": "Фильтровать меню по типу блюд",
+	"course_filter_aria": "Фильтр меню по типу блюд",
 	"course_all": "Все",
 	"item_like": "Поставить лайк позиции",
 	"item_unlike": "Убрать лайк с позиции",
@@ -85,7 +85,7 @@
 
 	"diet_any": "Любая диета",
 	"diet_filter_aria": "Фильтр по диете",
-	"diet_can_be_made": "{diet} — по запросу",
+	"diet_can_be_made": "По запросу: {diet}",
 
 	"account_default_name": "Аккаунт",
 	"account_signed_in": "Вы вошли",
@@ -101,12 +101,12 @@
 	"directions_button_aria": "Открыть {address} в другом приложении карт",
 	"directions_dialog_aria": "Выбрать приложение карт",
 	"directions_title": "Открыть в другом приложении карт",
-	"directions_close_aria": "Закрыть маршруты",
+	"directions_close_aria": "Закрыть окно маршрутов",
 	"directions_apple_maps": "Apple Maps",
 	"directions_google_maps": "Google Maps",
 
 	"landing_intro_aria": "О BetterFoodMaps",
-	"landing_title": "Находите еду, подходящую вашей диете, в любой точке карты.",
+	"landing_title": "Находите еду под свою диету в любой точке карты.",
 	"landing_stats_aria": "Покрытие карты",
 	"landing_actions_aria": "Начало работы",
 	"stat_venues": "заведений",
@@ -118,8 +118,8 @@
 	"stat_gluten_free": "блюд без глютена",
 	"stat_dairy_free": "блюд без молочных продуктов",
 	"stat_nut_free": "блюд без орехов",
-	"landing_cta": "Начать пользоваться картой",
-	"landing_browse_link": "Или смотрите еду по городам →",
+	"landing_cta": "Открыть карту",
+	"landing_browse_link": "Или смотрите заведения по городам →",
 
 	"error_not_found": "Такой страницы нет",
 	"error_generic": "Что-то пошло не так",

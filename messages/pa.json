@@ -4,8 +4,8 @@
 	"search_bar_aria": "ਖੋਜ ਅਤੇ ਫਿਲਟਰ",
 	"search_placeholder": "ਥਾਵਾਂ ਅਤੇ ਪਕਵਾਨ ਖੋਜੋ…",
 	"search_input_aria": "ਥਾਂ ਜਾਂ ਪਕਵਾਨ ਦੇ ਨਾਂ ਨਾਲ ਖੋਜੋ",
-	"results_nav_aria": "ਮਿਲਦੀਆਂ ਥਾਵਾਂ",
-	"results_cap": "{total} ਵਿੱਚੋਂ ਪਹਿਲੀਆਂ {max} ਥਾਵਾਂ ਦਿਖਾਈਆਂ ਜਾ ਰਹੀਆਂ ਹਨ। ਸੂਚੀ ਘਟਾਉਣ ਲਈ ਖੋਜ ਨੂੰ ਹੋਰ ਸਟੀਕ ਕਰੋ।",
+	"results_nav_aria": "ਮੇਲ ਖਾਂਦੀਆਂ ਥਾਵਾਂ",
+	"results_cap": "{total} ਵਿੱਚੋਂ ਪਹਿਲੀਆਂ {max} ਥਾਵਾਂ ਦਿਖਾਈਆਂ ਜਾ ਰਹੀਆਂ ਹਨ। ਸੂਚੀ ਛੋਟੀ ਕਰਨ ਲਈ ਖੋਜ ਨੂੰ ਹੋਰ ਖਾਸ ਬਣਾਓ।",
 	"places_found": [
 		{
 			"declarations": ["input count", "local countPlural = count: plural"],
@@ -16,11 +16,11 @@
 			}
 		}
 	],
-	"search_failed": "ਖੋਜ ਅਸਫਲ ਰਹੀ — ਪਿਛਲੇ ਨਤੀਜੇ ਦਿਖਾਏ ਜਾ ਰਹੇ ਹਨ।",
+	"search_failed": "ਖੋਜ ਨਹੀਂ ਹੋ ਸਕੀ — ਪਿਛਲੇ ਨਤੀਜੇ ਦਿਖਾਏ ਜਾ ਰਹੇ ਹਨ।",
 	"browse_failed": "ਇਸ ਇਲਾਕੇ ਦੀਆਂ ਥਾਵਾਂ ਲੋਡ ਨਹੀਂ ਹੋ ਸਕੀਆਂ — ਪਿਛਲੇ ਨਤੀਜੇ ਦਿਖਾਏ ਜਾ ਰਹੇ ਹਨ।",
 	"map_aria": "ਖਾਣ-ਪੀਣ ਦੀਆਂ ਥਾਵਾਂ ਦਾ ਨਕਸ਼ਾ",
-	"map_zoom_in_aria": "ਜ਼ੂਮ ਇਨ",
-	"map_zoom_out_aria": "ਜ਼ੂਮ ਆਊਟ",
+	"map_zoom_in_aria": "ਜ਼ੂਮ ਇਨ ਕਰੋ",
+	"map_zoom_out_aria": "ਜ਼ੂਮ ਆਊਟ ਕਰੋ",
 
 	"venue_details_aria": "ਥਾਂ ਦੇ ਵੇਰਵੇ",
 	"venue_close_aria": "ਥਾਂ ਦੇ ਵੇਰਵੇ ਬੰਦ ਕਰੋ",
@@ -69,8 +69,8 @@
 	"tag_dairy_free": "ਡੇਅਰੀ-ਮੁਕਤ",
 	"tag_nut_free": "ਨਟ-ਮੁਕਤ",
 	"tag_food": "ਖਾਣਾ",
-	"tag_dessert": "ਮਿਠਿਆਈ",
-	"tag_drink": "ਪੀਣ ਵਾਲੀਆਂ ਚੀਜ਼ਾਂ",
+	"tag_dessert": "ਮਠਿਆਈ",
+	"tag_drink": "ਡਰਿੰਕਸ",
 
 	"category_cafe": "ਕੈਫ਼ੇ",
 	"category_fast_food": "ਫਾਸਟ ਫੂਡ",
@@ -95,12 +95,12 @@
 	"directions_button_aria": "{address} ਨੂੰ ਕਿਸੇ ਹੋਰ ਨਕਸ਼ਾ ਐਪ ਵਿੱਚ ਖੋਲ੍ਹੋ",
 	"directions_dialog_aria": "ਨਕਸ਼ਾ ਐਪ ਚੁਣੋ",
 	"directions_title": "ਕਿਸੇ ਹੋਰ ਨਕਸ਼ਾ ਐਪ ਵਿੱਚ ਖੋਲ੍ਹੋ",
-	"directions_close_aria": "ਰਾਹ ਬੰਦ ਕਰੋ",
+	"directions_close_aria": "ਦਿਸ਼ਾਵਾਂ ਬੰਦ ਕਰੋ",
 	"directions_apple_maps": "Apple Maps",
 	"directions_google_maps": "Google Maps",
 
 	"landing_intro_aria": "BetterFoodMaps ਬਾਰੇ",
-	"landing_title": "ਨਕਸ਼ੇ ਉੱਤੇ ਕਿਤੇ ਵੀ ਆਪਣੀ ਖੁਰਾਕ ਦੇ ਅਨੁਕੂਲ ਖਾਣਾ ਲੱਭੋ।",
+	"landing_title": "ਨਕਸ਼ੇ ਉੱਤੇ ਕਿਤੇ ਵੀ ਆਪਣੀ ਖੁਰਾਕ ਮੁਤਾਬਕ ਖਾਣਾ ਲੱਭੋ।",
 	"landing_stats_aria": "ਨਕਸ਼ੇ ਦੀ ਕਵਰੇਜ",
 	"landing_actions_aria": "ਸ਼ੁਰੂਆਤ ਕਰੋ",
 	"stat_venues": "ਥਾਵਾਂ",

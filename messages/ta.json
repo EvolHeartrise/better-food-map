@@ -5,7 +5,7 @@
 	"search_placeholder": "இடங்களையும் உணவுகளையும் தேடுங்கள்…",
 	"search_input_aria": "இடம் அல்லது உணவின் பெயரால் தேடுங்கள்",
 	"results_nav_aria": "பொருந்தும் இடங்கள்",
-	"results_cap": "{total} இடங்களில் முதல் {max} காட்டப்படுகின்றன. பட்டியலைச் சுருக்க தேடலை மேலும் துல்லியமாக்குங்கள்.",
+	"results_cap": "{total} இடங்களில் முதல் {max} காட்டப்படுகின்றன. பட்டியலைச் சுருக்கத் தேடலை மேலும் துல்லியமாக்குங்கள்.",
 	"places_found": [
 		{
 			"declarations": ["input count", "local countPlural = count: plural"],
@@ -26,13 +26,13 @@
 	"venue_close_aria": "இட விவரங்களை மூடு",
 	"sheet_resize_aria": "விவரங்களின் அளவை மாற்று — இழுக்கவும், தட்டவும் அல்லது அம்புக்குறி விசைகளைப் பயன்படுத்தவும்",
 	"venue_like": "இந்த இடத்தை விரும்பு",
-	"venue_unlike": "இந்த இடத்தின் விருப்பத்தை நீக்கு",
+	"venue_unlike": "இந்த இடத்திற்கான விருப்பத்தை நீக்கு",
 	"venue_address_label": "முகவரி",
 	"venue_phone_label": "தொலைபேசி",
-	"venue_phone_extension": "இணைப்பு {ext}",
+	"venue_phone_extension": "நீட்டிப்பு {ext}",
 	"venue_website_label": "இணையதளம்",
 	"venue_menu_label": "மெனு",
-	"venue_no_menu": "இன்னும் மெனு பதிவு செய்யப்படவில்லை.",
+	"venue_no_menu": "மெனு இன்னும் சேர்க்கப்படவில்லை.",
 	"menu_items_count": [
 		{
 			"declarations": ["input count", "local countPlural = count: plural"],
@@ -57,7 +57,7 @@
 	"course_filter_aria": "மெனுவை வகைப்படி வடிகட்டு",
 	"course_all": "அனைத்தும்",
 	"item_like": "இந்த உருப்படியை விரும்பு",
-	"item_unlike": "இந்த உருப்படியின் விருப்பத்தை நீக்கு",
+	"item_unlike": "இந்த உருப்படிக்கான விருப்பத்தை நீக்கு",
 
 	"scanned_date": "{date} அன்று சரிபார்க்கப்பட்டது",
 	"scanned": "{relative} சரிபார்க்கப்பட்டது",
@@ -65,9 +65,9 @@
 	"tag_vegan": "வீகன்",
 	"tag_vegetarian": "சைவம்",
 	"tag_halal": "ஹலால்",
-	"tag_gluten_free": "குளூட்டன் இல்லாத",
-	"tag_dairy_free": "பால் பொருள்கள் இல்லாத",
-	"tag_nut_free": "கொட்டைகள் இல்லாத",
+	"tag_gluten_free": "குளூட்டன் இல்லாதது",
+	"tag_dairy_free": "பால் பொருள் இல்லாதது",
+	"tag_nut_free": "நட்ஸ் இல்லாதது",
 	"tag_food": "உணவு",
 	"tag_dessert": "இனிப்பு",
 	"tag_drink": "பானங்கள்",
@@ -79,12 +79,12 @@
 
 	"diet_any": "எந்த உணவுமுறையும்",
 	"diet_filter_aria": "உணவுமுறை வடிப்பான்",
-	"diet_can_be_made": "கோரிக்கையின் பேரில் {diet} ஆகக் கிடைக்கும்",
+	"diet_can_be_made": "கேட்டால் {diet} கிடைக்கும்",
 
 	"account_default_name": "கணக்கு",
 	"account_signed_in": "உள்நுழைந்துள்ளீர்கள்",
 	"account_sign_out": "வெளியேறு",
-	"account_sign_in": "உள்நுழை",
+	"account_sign_in": "உள்நுழைக",
 	"language_label": "மொழி",
 
 	"sources_dialog_aria": "தரவு ஆதாரங்கள்",
@@ -101,7 +101,7 @@
 
 	"landing_intro_aria": "BetterFoodMaps பற்றி",
 	"landing_title": "வரைபடத்தில் எங்கும் உங்கள் உணவுமுறைக்கு ஏற்ற உணவைக் கண்டறியுங்கள்.",
-	"landing_stats_aria": "வரைபட உள்ளடக்கம்",
+	"landing_stats_aria": "வரைபடப் புள்ளிவிவரங்கள்",
 	"landing_actions_aria": "தொடங்குங்கள்",
 	"stat_venues": "இடங்கள்",
 	"stat_menu_items": "மெனு உருப்படிகள்",
@@ -110,10 +110,10 @@
 	"stat_vegetarian": "சைவ உணவுகள்",
 	"stat_halal": "ஹலால் உணவுகள்",
 	"stat_gluten_free": "குளூட்டன் இல்லாத உணவுகள்",
-	"stat_dairy_free": "பால் பொருள்கள் இல்லாத உணவுகள்",
-	"stat_nut_free": "கொட்டைகள் இல்லாத உணவுகள்",
-	"landing_cta": "வரைபடத்தைப் பயன்படுத்தத் தொடங்கு",
-	"landing_browse_link": "அல்லது நகரம் வாரியாக உணவுகளைப் பாருங்கள் →",
+	"stat_dairy_free": "பால் பொருள் இல்லாத உணவுகள்",
+	"stat_nut_free": "நட்ஸ் இல்லாத உணவுகள்",
+	"landing_cta": "வரைபடத்தைப் பயன்படுத்தத் தொடங்குங்கள்",
+	"landing_browse_link": "அல்லது நகர வாரியாக உணவுகளைப் பாருங்கள் →",
 
 	"error_not_found": "இந்தப் பக்கம் இல்லை",
 	"error_generic": "ஏதோ தவறு நடந்துவிட்டது",
@@ -129,7 +129,7 @@
 	"server_error_oauth_code_validation": "அங்கீகாரக் குறியீட்டைச் சரிபார்க்க முடியவில்லை.",
 	"server_error_oauth_missing_subject": "Google இன் பதிலில் subject உரிமைக்கோரல் இல்லை.",
 
-	"head_site_description": "உலகம் முழுவதும் உள்ள கஃபேகள், துரித உணவகங்கள், உணவகங்களை ஊடாடும் வரைபடத்தில் கண்டறியுங்கள்.",
+	"head_site_description": "உலகம் முழுவதும் உள்ள கஃபேகள், துரித உணவு நிலையங்கள், உணவகங்கள் ஆகியவற்றை ஊடாடும் வரைபடத்தில் கண்டறியுங்கள்.",
 	"head_desc_no_menu": "BetterFoodMaps இல் மெனுவைப் பாருங்கள்.",
 	"head_located_in": "{where} இல்",
 	"head_list_pair": "{first} மற்றும் {last}",

@@ -5,7 +5,7 @@
 	"search_placeholder": "Busca lugares y platos…",
 	"search_input_aria": "Buscar por nombre de lugar o plato",
 	"results_nav_aria": "Lugares coincidentes",
-	"results_cap": "Mostrando los primeros {max} de {total} lugares. Afina la búsqueda para reducir la lista.",
+	"results_cap": "Mostrando los primeros {max} de {total} lugares. Ajusta la búsqueda para reducir la lista.",
 	"places_found": [
 		{
 			"declarations": ["input count", "local countPlural = count: plural"],
@@ -17,9 +17,9 @@
 			}
 		}
 	],
-	"search_failed": "La búsqueda falló: se muestran los resultados anteriores.",
-	"browse_failed": "No se pudieron cargar los lugares de esta zona: se muestran los resultados anteriores.",
-	"map_aria": "Mapa de lugares de comida",
+	"search_failed": "No se pudo completar la búsqueda. Se muestran los resultados anteriores.",
+	"browse_failed": "No se pudieron cargar los lugares de esta zona. Se muestran los resultados anteriores.",
+	"map_aria": "Mapa de lugares para comer",
 	"map_zoom_in_aria": "Acercar",
 	"map_zoom_out_aria": "Alejar",
 
@@ -27,7 +27,7 @@
 	"venue_close_aria": "Cerrar los detalles del lugar",
 	"sheet_resize_aria": "Cambiar el tamaño de los detalles: arrastra, toca o usa las teclas de flecha",
 	"venue_like": "Me gusta este lugar",
-	"venue_unlike": "Quitar el me gusta a este lugar",
+	"venue_unlike": "Ya no me gusta este lugar",
 	"venue_address_label": "Dirección",
 	"venue_phone_label": "Teléfono",
 	"venue_phone_extension": "ext. {ext}",
@@ -57,10 +57,10 @@
 			}
 		}
 	],
-	"course_filter_aria": "Filtrar el menú por tipo de plato",
+	"course_filter_aria": "Filtrar el menú por categoría",
 	"course_all": "Todo",
 	"item_like": "Me gusta este artículo",
-	"item_unlike": "Quitar el me gusta a este artículo",
+	"item_unlike": "Ya no me gusta este artículo",
 
 	"scanned_date": "Revisado el {date}",
 	"scanned": "Revisado {relative}",
@@ -103,7 +103,7 @@
 	"directions_google_maps": "Google Maps",
 
 	"landing_intro_aria": "Acerca de BetterFoodMaps",
-	"landing_title": "Encuentra comida que se adapte a tu dieta, en cualquier punto del mapa.",
+	"landing_title": "Encuentra comida que se adapte a tu dieta, en cualquier parte del mapa.",
 	"landing_stats_aria": "Cobertura del mapa",
 	"landing_actions_aria": "Primeros pasos",
 	"stat_venues": "locales",
@@ -124,11 +124,11 @@
 	"error_page_title": "{status} · BetterFoodMaps",
 
 	"server_error_no_location_or_item": "No existe ese lugar o artículo.",
-	"server_error_sign_in_required": "Debes iniciar sesión para hacer eso.",
+	"server_error_sign_in_required": "Debes iniciar sesión para realizar esta acción.",
 	"server_error_location_not_found": "Lugar no encontrado",
-	"server_error_location_gone": "Este local ha cerrado definitivamente.",
+	"server_error_location_gone": "Este local cerró permanentemente.",
 	"server_error_database_unavailable": "Base de datos no disponible.",
-	"server_error_oauth_invalid_callback": "Callback de OAuth no válido.",
+	"server_error_oauth_invalid_callback": "Callback de OAuth inválido.",
 	"server_error_oauth_code_validation": "No se pudo validar el código de autorización.",
 	"server_error_oauth_missing_subject": "La respuesta de Google no incluía el claim subject.",
 

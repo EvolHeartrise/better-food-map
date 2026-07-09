@@ -5,7 +5,7 @@
 	"search_placeholder": "Tìm địa điểm và món ăn…",
 	"search_input_aria": "Tìm theo tên địa điểm hoặc món ăn",
 	"results_nav_aria": "Các địa điểm phù hợp",
-	"results_cap": "Đang hiển thị {max} địa điểm đầu tiên trong số {total}. Hãy thu hẹp tìm kiếm để rút gọn danh sách.",
+	"results_cap": "Đang hiển thị {max} địa điểm đầu tiên trong tổng số {total}. Hãy thu hẹp tìm kiếm để rút gọn danh sách.",
 	"places_found": [
 		{
 			"declarations": ["input count", "local countPlural = count: plural"],
@@ -15,7 +15,7 @@
 			}
 		}
 	],
-	"search_failed": "Tìm kiếm thất bại — đang hiển thị kết quả trước đó.",
+	"search_failed": "Tìm kiếm không thành công — đang hiển thị kết quả trước đó.",
 	"browse_failed": "Không tải được địa điểm cho khu vực này — đang hiển thị kết quả trước đó.",
 	"map_aria": "Bản đồ các địa điểm ăn uống",
 	"map_zoom_in_aria": "Phóng to",
@@ -28,10 +28,10 @@
 	"venue_unlike": "Bỏ thích địa điểm này",
 	"venue_address_label": "Địa chỉ",
 	"venue_phone_label": "Điện thoại",
-	"venue_phone_extension": "số máy lẻ {ext}",
+	"venue_phone_extension": "máy lẻ {ext}",
 	"venue_website_label": "Trang web",
 	"venue_menu_label": "Thực đơn",
-	"venue_no_menu": "Chưa có thực đơn.",
+	"venue_no_menu": "Chưa có dữ liệu thực đơn.",
 	"menu_items_count": [
 		{
 			"declarations": ["input count", "local countPlural = count: plural"],
@@ -51,7 +51,7 @@
 			}
 		}
 	],
-	"course_filter_aria": "Lọc thực đơn theo loại",
+	"course_filter_aria": "Lọc thực đơn theo loại món",
 	"course_all": "Tất cả",
 	"item_like": "Thích món này",
 	"item_unlike": "Bỏ thích món này",
@@ -86,7 +86,7 @@
 
 	"sources_dialog_aria": "Nguồn dữ liệu",
 	"sources_title": "Nguồn",
-	"sources_close_aria": "Đóng nguồn",
+	"sources_close_aria": "Đóng danh sách nguồn",
 
 	"directions_button_tooltip": "Mở trong ứng dụng bản đồ khác",
 	"directions_button_aria": "Mở {address} trong ứng dụng bản đồ khác",
@@ -97,7 +97,7 @@
 	"directions_google_maps": "Google Maps",
 
 	"landing_intro_aria": "Giới thiệu về BetterFoodMaps",
-	"landing_title": "Tìm món ăn hợp với chế độ ăn của bạn, ở bất cứ đâu trên bản đồ.",
+	"landing_title": "Tìm món ăn phù hợp với chế độ ăn của bạn, ở bất cứ đâu trên bản đồ.",
 	"landing_stats_aria": "Phạm vi bản đồ",
 	"landing_actions_aria": "Bắt đầu",
 	"stat_venues": "địa điểm",
@@ -117,8 +117,8 @@
 	"error_back": "Quay lại bản đồ",
 	"error_page_title": "{status} · BetterFoodMaps",
 
-	"server_error_no_location_or_item": "Không có địa điểm hoặc món này.",
-	"server_error_sign_in_required": "Bạn cần đăng nhập để làm việc này.",
+	"server_error_no_location_or_item": "Không tìm thấy địa điểm hoặc món này.",
+	"server_error_sign_in_required": "Bạn cần đăng nhập để thực hiện thao tác này.",
 	"server_error_location_not_found": "Không tìm thấy địa điểm",
 	"server_error_location_gone": "Địa điểm này đã đóng cửa vĩnh viễn.",
 	"server_error_database_unavailable": "Cơ sở dữ liệu không khả dụng.",

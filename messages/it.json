@@ -19,7 +19,7 @@
 	],
 	"search_failed": "Ricerca non riuscita: vengono mostrati i risultati precedenti.",
 	"browse_failed": "Impossibile caricare i locali di questa zona: vengono mostrati i risultati precedenti.",
-	"map_aria": "Mappa dei locali gastronomici",
+	"map_aria": "Mappa dei posti dove mangiare",
 	"map_zoom_in_aria": "Aumenta lo zoom",
 	"map_zoom_out_aria": "Riduci lo zoom",
 
@@ -45,7 +45,7 @@
 			}
 		}
 	],
-	"menu_last_scanned": "Menu verificato l’ultima volta il {date}",
+	"menu_last_scanned": "Ultima verifica del menu: {date}",
 	"sources_count": [
 		{
 			"declarations": ["input count", "local countPlural = count: plural"],
@@ -81,7 +81,7 @@
 	"category_bakery": "Panetteria",
 
 	"diet_any": "Qualsiasi dieta",
-	"diet_filter_aria": "Filtro dietetico",
+	"diet_filter_aria": "Filtro per dieta",
 	"diet_can_be_made": "{diet} su richiesta",
 
 	"account_default_name": "Account",
@@ -116,10 +116,10 @@
 	"stat_dairy_free": "piatti senza latticini",
 	"stat_nut_free": "piatti senza frutta a guscio",
 	"landing_cta": "Inizia a usare la mappa",
-	"landing_browse_link": "Oppure sfoglia i piatti per città →",
+	"landing_browse_link": "Oppure esplora i piatti per città →",
 
 	"error_not_found": "Questa pagina non esiste",
-	"error_generic": "Si è verificato un errore",
+	"error_generic": "Qualcosa è andato storto",
 	"error_back": "Torna alla mappa",
 	"error_page_title": "{status} · BetterFoodMaps",
 
@@ -133,7 +133,7 @@
 	"server_error_oauth_missing_subject": "La risposta di Google non conteneva il claim subject.",
 
 	"head_site_description": "Esplora caffetterie, fast food e ristoranti di tutto il mondo su una mappa interattiva.",
-	"head_desc_no_menu": "Guarda il menu su BetterFoodMaps.",
+	"head_desc_no_menu": "Scopri il menu su BetterFoodMaps.",
 	"head_located_in": "a {where}",
 	"head_list_pair": "{first} e {last}",
 	"head_desc_on_brand": "{content} su BetterFoodMaps.",

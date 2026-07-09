@@ -5,13 +5,13 @@
 	"search_placeholder": "장소와 메뉴 검색…",
 	"search_input_aria": "장소 또는 메뉴 이름으로 검색",
 	"results_nav_aria": "일치하는 장소",
-	"results_cap": "전체 {total}곳 중 처음 {max}곳을 표시하고 있습니다. 검색어를 좁혀 목록을 줄여 보세요.",
+	"results_cap": "전체 {total}곳 중 처음 {max}곳만 표시됩니다. 검색어를 더 구체적으로 입력해 보세요.",
 	"places_found": [
 		{
 			"declarations": ["input count", "local countPlural = count: plural"],
 			"selectors": ["countPlural"],
 			"match": {
-				"countPlural=other": "{count}곳의 장소를 찾았습니다"
+				"countPlural=other": "장소 {count}곳을 찾았습니다"
 			}
 		}
 	],
@@ -23,7 +23,7 @@
 
 	"venue_details_aria": "장소 상세 정보",
 	"venue_close_aria": "장소 상세 정보 닫기",
-	"sheet_resize_aria": "상세 정보 크기 조절 — 드래그하거나 탭하거나 화살표 키를 사용하세요",
+	"sheet_resize_aria": "상세 정보 크기 조절 — 드래그, 탭 또는 화살표 키를 사용하세요",
 	"venue_like": "이 장소 좋아요",
 	"venue_unlike": "이 장소 좋아요 취소",
 	"venue_address_label": "주소",
@@ -37,11 +37,11 @@
 			"declarations": ["input count", "local countPlural = count: plural"],
 			"selectors": ["countPlural"],
 			"match": {
-				"countPlural=other": "{count}개 항목"
+				"countPlural=other": "메뉴 {count}개"
 			}
 		}
 	],
-	"menu_last_scanned": "{date}에 메뉴 최종 확인",
+	"menu_last_scanned": "메뉴 최종 확인: {date}",
 	"sources_count": [
 		{
 			"declarations": ["input count", "local countPlural = count: plural"],
@@ -51,10 +51,10 @@
 			}
 		}
 	],
-	"course_filter_aria": "메뉴를 종류별로 필터",
+	"course_filter_aria": "메뉴 종류별 필터",
 	"course_all": "전체",
-	"item_like": "이 항목 좋아요",
-	"item_unlike": "이 항목 좋아요 취소",
+	"item_like": "이 메뉴 좋아요",
+	"item_unlike": "이 메뉴 좋아요 취소",
 
 	"scanned_date": "{date} 확인",
 	"scanned": "{relative} 확인",
@@ -62,7 +62,7 @@
 	"tag_vegan": "비건",
 	"tag_vegetarian": "채식",
 	"tag_halal": "할랄",
-	"tag_gluten_free": "글루텐 프리",
+	"tag_gluten_free": "글루텐프리",
 	"tag_dairy_free": "유제품 무함유",
 	"tag_nut_free": "견과류 무함유",
 	"tag_food": "식사",
@@ -71,7 +71,7 @@
 
 	"category_cafe": "카페",
 	"category_fast_food": "패스트푸드",
-	"category_restaurant": "레스토랑",
+	"category_restaurant": "음식점",
 	"category_bakery": "베이커리",
 
 	"diet_any": "모든 식단",
@@ -89,7 +89,7 @@
 	"sources_close_aria": "출처 닫기",
 
 	"directions_button_tooltip": "다른 지도 앱에서 열기",
-	"directions_button_aria": "{address}을(를) 다른 지도 앱에서 열기",
+	"directions_button_aria": "다른 지도 앱에서 {address} 열기",
 	"directions_dialog_aria": "지도 앱 선택",
 	"directions_title": "다른 지도 앱에서 열기",
 	"directions_close_aria": "길찾기 닫기",
@@ -98,38 +98,38 @@
 
 	"landing_intro_aria": "BetterFoodMaps 소개",
 	"landing_title": "지도 위 어디서든 내 식단에 맞는 음식을 찾아보세요.",
-	"landing_stats_aria": "지도 커버리지",
+	"landing_stats_aria": "지도 등록 현황",
 	"landing_actions_aria": "시작하기",
 	"stat_venues": "장소",
-	"stat_menu_items": "메뉴 항목",
+	"stat_menu_items": "메뉴",
 	"stat_cities": "도시",
 	"stat_vegan": "비건 메뉴",
 	"stat_vegetarian": "채식 메뉴",
 	"stat_halal": "할랄 메뉴",
-	"stat_gluten_free": "글루텐 프리 메뉴",
+	"stat_gluten_free": "글루텐프리 메뉴",
 	"stat_dairy_free": "유제품 무함유 메뉴",
 	"stat_nut_free": "견과류 무함유 메뉴",
-	"landing_cta": "지도 사용 시작",
+	"landing_cta": "지도 바로가기",
 	"landing_browse_link": "또는 도시별로 음식 둘러보기 →",
 
-	"error_not_found": "존재하지 않는 페이지입니다",
+	"error_not_found": "페이지를 찾을 수 없습니다",
 	"error_generic": "문제가 발생했습니다",
 	"error_back": "지도로 돌아가기",
 	"error_page_title": "{status} · BetterFoodMaps",
 
-	"server_error_no_location_or_item": "해당 장소나 항목이 없습니다.",
-	"server_error_sign_in_required": "이 작업을 하려면 로그인해야 합니다.",
+	"server_error_no_location_or_item": "해당 장소 또는 메뉴가 없습니다.",
+	"server_error_sign_in_required": "이 작업을 하려면 로그인이 필요합니다.",
 	"server_error_location_not_found": "장소를 찾을 수 없습니다",
-	"server_error_location_gone": "이 장소는 영구 폐업했습니다.",
+	"server_error_location_gone": "이 장소는 폐업했습니다.",
 	"server_error_database_unavailable": "데이터베이스를 사용할 수 없습니다.",
 	"server_error_oauth_invalid_callback": "잘못된 OAuth 콜백입니다.",
 	"server_error_oauth_code_validation": "인증 코드 확인에 실패했습니다.",
 	"server_error_oauth_missing_subject": "Google 응답에 subject 클레임이 없습니다.",
 
-	"head_site_description": "전 세계의 카페, 패스트푸드, 레스토랑을 인터랙티브 지도에서 살펴보세요.",
+	"head_site_description": "전 세계의 카페, 패스트푸드점, 음식점을 인터랙티브 지도에서 살펴보세요.",
 	"head_desc_no_menu": "BetterFoodMaps에서 메뉴를 확인하세요.",
 	"head_located_in": "{where} 소재",
-	"head_list_pair": "{first} 및 {last}",
+	"head_list_pair": "{first}와 {last}",
 	"head_desc_on_brand": "{content} — BetterFoodMaps에서 확인하세요.",
 	"head_coverage_diet": "{diet} {count}개",
 	"head_coverage_clause": "메뉴: {list}",
@@ -138,7 +138,7 @@
 			"declarations": ["input count", "local countPlural = count: plural"],
 			"selectors": ["countPlural"],
 			"match": {
-				"countPlural=other": "개 메뉴 항목"
+				"countPlural=other": "개 메뉴"
 			}
 		}
 	]

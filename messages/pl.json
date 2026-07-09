@@ -5,7 +5,7 @@
 	"search_placeholder": "Szukaj miejsc i dań…",
 	"search_input_aria": "Szukaj po nazwie miejsca lub dania",
 	"results_nav_aria": "Pasujące miejsca",
-	"results_cap": "Wyświetlane jest pierwszych {max} z {total} miejsc. Doprecyzuj wyszukiwanie, aby zawęzić listę.",
+	"results_cap": "Wyświetlamy pierwszych {max} z {total} miejsc. Doprecyzuj wyszukiwanie, aby zawęzić listę.",
 	"places_found": [
 		{
 			"declarations": ["input count", "local countPlural = count: plural"],
@@ -18,15 +18,15 @@
 			}
 		}
 	],
-	"search_failed": "Wyszukiwanie nie powiodło się — wyświetlane są poprzednie wyniki.",
-	"browse_failed": "Nie udało się wczytać miejsc dla tego obszaru — wyświetlane są poprzednie wyniki.",
+	"search_failed": "Wyszukiwanie nie powiodło się — pokazujemy poprzednie wyniki.",
+	"browse_failed": "Nie udało się wczytać miejsc z tego obszaru — pokazujemy poprzednie wyniki.",
 	"map_aria": "Mapa miejsc z jedzeniem",
 	"map_zoom_in_aria": "Przybliż",
 	"map_zoom_out_aria": "Oddal",
 
 	"venue_details_aria": "Szczegóły miejsca",
 	"venue_close_aria": "Zamknij szczegóły miejsca",
-	"sheet_resize_aria": "Zmień rozmiar szczegółów — przeciągnij, stuknij lub użyj klawiszy strzałek",
+	"sheet_resize_aria": "Zmień rozmiar panelu szczegółów — przeciągnij, stuknij lub użyj klawiszy strzałek",
 	"venue_like": "Polub to miejsce",
 	"venue_unlike": "Cofnij polubienie tego miejsca",
 	"venue_address_label": "Adres",
@@ -34,7 +34,7 @@
 	"venue_phone_extension": "wew. {ext}",
 	"venue_website_label": "Strona internetowa",
 	"venue_menu_label": "Menu",
-	"venue_no_menu": "Brak menu w bazie.",
+	"venue_no_menu": "Nie mamy jeszcze menu tego miejsca.",
 	"menu_items_count": [
 		{
 			"declarations": ["input count", "local countPlural = count: plural"],
@@ -47,7 +47,7 @@
 			}
 		}
 	],
-	"menu_last_scanned": "Menu ostatnio sprawdzono {date}",
+	"menu_last_scanned": "Ostatnie sprawdzenie menu: {date}",
 	"sources_count": [
 		{
 			"declarations": ["input count", "local countPlural = count: plural"],
@@ -97,11 +97,11 @@
 	"sources_title": "Źródła",
 	"sources_close_aria": "Zamknij źródła",
 
-	"directions_button_tooltip": "Otwórz w innej aplikacji map",
-	"directions_button_aria": "Otwórz {address} w innej aplikacji map",
-	"directions_dialog_aria": "Wybierz aplikację map",
-	"directions_title": "Otwórz w innej aplikacji map",
-	"directions_close_aria": "Zamknij trasy",
+	"directions_button_tooltip": "Otwórz w innej aplikacji z mapami",
+	"directions_button_aria": "Otwórz {address} w innej aplikacji z mapami",
+	"directions_dialog_aria": "Wybierz aplikację z mapami",
+	"directions_title": "Otwórz w innej aplikacji z mapami",
+	"directions_close_aria": "Zamknij wybór aplikacji",
 	"directions_apple_maps": "Apple Maps",
 	"directions_google_maps": "Google Maps",
 
@@ -119,7 +119,7 @@
 	"stat_dairy_free": "dań bez nabiału",
 	"stat_nut_free": "dań bez orzechów",
 	"landing_cta": "Zacznij korzystać z mapy",
-	"landing_browse_link": "Albo przeglądaj jedzenie według miast →",
+	"landing_browse_link": "Możesz też przeglądać jedzenie według miast →",
 
 	"error_not_found": "Ta strona nie istnieje",
 	"error_generic": "Coś poszło nie tak",
@@ -133,13 +133,13 @@
 	"server_error_database_unavailable": "Baza danych jest niedostępna.",
 	"server_error_oauth_invalid_callback": "Nieprawidłowe wywołanie zwrotne OAuth.",
 	"server_error_oauth_code_validation": "Nie udało się zweryfikować kodu autoryzacji.",
-	"server_error_oauth_missing_subject": "W odpowiedzi Google brakowało oświadczenia subject.",
+	"server_error_oauth_missing_subject": "W odpowiedzi Google zabrakło pola subject.",
 
 	"head_site_description": "Odkrywaj kawiarnie, fast foody i restauracje na całym świecie na interaktywnej mapie.",
 	"head_desc_no_menu": "Zobacz menu w BetterFoodMaps.",
 	"head_located_in": "w {where}",
 	"head_list_pair": "{first} i {last}",
-	"head_desc_on_brand": "{content} — w BetterFoodMaps.",
+	"head_desc_on_brand": "{content} — sprawdź w BetterFoodMaps.",
 	"head_coverage_diet": "{diet} ({count})",
 	"head_coverage_clause": "W menu: {list}",
 	"head_menu_item_noun": [
