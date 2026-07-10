@@ -142,3 +142,40 @@ test('orders worst-first (0 items, then ascending count, then name) and honours 
 	expect(capped.total).toBe(4);
 	expect(capped.additional).toBe(2);
 });
+
+test('a dismissal pins the verified item count — a changed count re-flags', async () => {
+	const { splitDismissKey } = await import('./audit-dismiss');
+	const db = freshDb();
+	const [venue] = await insertLocations(db, [loc({ name: 'Nothing Yet Cafe' })]);
+
+	const first = await findIncompleteMenus(db);
+	expect(first.locations.length).toBe(1);
+	expect(first.locations[0].dismiss_key).toBe(`${venue}#0`);
+
+	const { subject, fingerprint } = splitDismissKey(first.locations[0].dismiss_key)!;
+	const dismissals = new Map([
+		[subject, { fingerprint, reason: 'source lists nothing yet', dismissed_at: '2026-07-09' }]
+	]);
+	const suppressed = await findIncompleteMenus(db, { dismissals });
+	expect(suppressed.locations.length).toBe(0);
+	expect(suppressed.suppressed_dismissed).toBe(1);
+	expect(suppressed.total).toBe(0);
+
+	// Under include_dismissed the venue surfaces annotated instead.
+	const surfaced = await findIncompleteMenus(db, { dismissals, include_dismissed: true });
+	expect(surfaced.locations.length).toBe(1);
+	expect(surfaced.locations[0].dismissed?.reason).toBe('source lists nothing yet');
+
+	// A venue verified at a DIFFERENT count is new evidence — a dismissal recorded
+	// at "0" does not suppress a 2-item venue surfaced by a thin-menu hunt.
+	const [thin] = await insertLocations(db, [
+		loc({ name: 'Thin Cafe', items: [{ item_name: 'One' }, { item_name: 'Two' }] })
+	]);
+	const stale = new Map([
+		[thin, { fingerprint: '0', reason: 'stale verdict', dismissed_at: '2026-07-09' }]
+	]);
+	const reflagged = await findIncompleteMenus(db, { min_items: 5, dismissals: stale });
+	expect(reflagged.locations.map((l) => l.id)).toContain(thin);
+	expect(reflagged.locations.find((l) => l.id === thin)?.dismiss_key).toBe(`${thin}#2`);
+	expect(reflagged.suppressed_dismissed).toBe(0);
+});

@@ -16,7 +16,8 @@
 // ---------------------------------------------------------------------------
 
 import { type D1Like } from '../../src/lib/server/db';
-import { orderedPair, reviewedPairKeys } from '../../src/lib/server/db-write';
+import { orderedPair } from '../../src/lib/server/db-write';
+import { DismissFilter, type DismissableFinding, type DismissalOpts } from './audit-dismiss';
 import { SpatialGrid, haversineMeters } from './geo';
 import { namesMatch, normalizeName } from './search-poi';
 
@@ -34,7 +35,7 @@ export interface DuplicateHalf {
 	website: string | null;
 }
 
-export interface DuplicatePair {
+export interface DuplicatePair extends DismissableFinding {
 	/** Metres between the two points (the sort key — closest pairs first). */
 	distance_m: number;
 	/** True when the two names match after normalization. */
@@ -59,10 +60,11 @@ export interface FindDuplicateLocationsResult {
 	/** Flagged pairs beyond `limit`. */
 	additional: number;
 	/**
-	 * Pairs that WOULD have been flagged but carry a reviewed-distinct verdict
-	 * (mark_not_duplicate) — verified as two real venues, so not re-flagged.
+	 * Pairs that WOULD have been flagged but carry a dismissal
+	 * (dismiss_audit_finding) — verified as two real venues, so not re-flagged
+	 * (annotated instead of dropped under include_dismissed).
 	 */
-	suppressed_reviewed: number;
+	suppressed_dismissed: number;
 	/** Open locations examined. */
 	scanned: number;
 	radius_m: number;
@@ -96,20 +98,18 @@ function phoneKey(phone: string | null): string {
  */
 export async function findDuplicateLocations(
 	db: D1Like,
-	opts: { radius_m?: number; limit?: number; brand_id?: string } = {}
+	opts: { radius_m?: number; limit?: number; brand_id?: string } & DismissalOpts = {}
 ): Promise<FindDuplicateLocationsResult> {
 	const radiusM = opts.radius_m ?? DEFAULT_RADIUS_M;
 	const limit = opts.limit ?? DEFAULT_LIMIT;
+	const filter = new DismissFilter(opts);
 
-	const [{ results: locations }, reviewed] = await Promise.all([
-		db
-			.prepare(
-				`SELECT id, name, brand_id, latitude, longitude, street, city, postcode, phone, website
-				 FROM locations WHERE closed_at IS NULL`
-			)
-			.all<DuplicateHalf>(),
-		reviewedPairKeys(db)
-	]);
+	const { results: locations } = await db
+		.prepare(
+			`SELECT id, name, brand_id, latitude, longitude, street, city, postcode, phone, website
+			 FROM locations WHERE closed_at IS NULL`
+		)
+		.all<DuplicateHalf>();
 
 	const grid = new SpatialGrid(CELL_DEG);
 	locations.forEach((loc, i) => grid.insert(i, loc.latitude, loc.longitude));
@@ -120,7 +120,6 @@ export async function findDuplicateLocations(
 	const padDeg = (radiusM / 111_320) * 4;
 
 	const pairs: DuplicatePair[] = [];
-	let suppressed = 0;
 	locations.forEach((a, i) => {
 		for (const j of grid.candidatesInBbox({
 			minLat: a.latitude - padDeg,
@@ -136,12 +135,11 @@ export async function findDuplicateLocations(
 			const nameHit = namesMatch(normalized[i], normalized[j]);
 			const brandHit = Boolean(a.brand_id) && a.brand_id === b.brand_id;
 			if (!nameHit && !brandHit) continue;
-			// A reviewed-distinct verdict means this exact pair was already verified
-			// as two real venues — suppress it instead of re-flagging forever.
-			if (reviewed.has(orderedPair(a.id, b.id).join('|'))) {
-				suppressed++;
-				continue;
-			}
+			// A dismissal means this exact pair was already verified as two real
+			// venues — suppress it instead of re-flagging forever. The pair itself is
+			// the evidence, so the fingerprint has no further dimension.
+			const decision = filter.evaluate(orderedPair(a.id, b.id).join('|'), '');
+			if (decision.drop) continue;
 			const phoneHit = phoneKey(a.phone).length > 0 && phoneKey(a.phone) === phoneKey(b.phone);
 			pairs.push({
 				distance_m: Math.round(distance),
@@ -150,7 +148,8 @@ export async function findDuplicateLocations(
 				same_phone: phoneHit,
 				confidence: (nameHit && distance <= HIGH_CONFIDENCE_M) || phoneHit ? 'high' : 'review',
 				a,
-				b
+				b,
+				...decision.fields
 			});
 		}
 	});
@@ -159,7 +158,7 @@ export async function findDuplicateLocations(
 	return {
 		pairs: pairs.slice(0, limit),
 		additional: Math.max(0, pairs.length - limit),
-		suppressed_reviewed: suppressed,
+		suppressed_dismissed: filter.suppressed,
 		scanned: locations.length,
 		radius_m: radiusM
 	};

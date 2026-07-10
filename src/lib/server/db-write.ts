@@ -1275,11 +1275,15 @@ export async function deleteMenu(db: D1Like, id: string): Promise<boolean> {
 }
 
 // ---------------------------------------------------------------------------
-// Duplicate-audit verdicts (location_pair_reviews, migration 0018): a durable
-// "these two locations are DISTINCT venues" record, so the duplicate audit
-// stops re-flagging a pair someone already verified against the venue's own
-// locator. Confirmed duplicates need no verdict — deleting the extra row
-// resolves them (and cascades away any verdict either half carried).
+// Audit-finding dismissals (audit_dismissals, migration 0025): a durable
+// "this audit finding was reviewed and is NOT a problem" record, so no audit
+// re-flags a finding someone already verified (two real venues near each
+// other, a cosmetic OSM rename, a POI the staging store lacks). A dismissal
+// is keyed by (check, subject) and pins the evidence it judged in
+// `fingerprint`: the audits suppress a finding only while they compute the
+// SAME fingerprint for that subject — materially new evidence re-flags.
+// Findings that are real problems need no dismissal: fixing them (delete the
+// duplicate row, backfill the address, re-tag the item) unflags them.
 // ---------------------------------------------------------------------------
 
 /** Canonical ordered form of an unordered location pair (a < b). */
@@ -1287,56 +1291,73 @@ export function orderedPair(idA: string, idB: string): [string, string] {
 	return idA < idB ? [idA, idB] : [idB, idA];
 }
 
+/** One stored dismissal, keyed by (check, subject) in `audit_dismissals`. */
+export interface DismissalRecord {
+	fingerprint: string;
+	reason: string;
+	dismissed_at: string;
+}
+
 /**
- * Records that two locations were verified as two REAL venues — not one venue
- * double-mapped — with the evidence in `reason`. Idempotent: re-marking the
- * pair replaces the reason and re-stamps the review date. Returns whether a
- * verdict already existed.
+ * Records that an audit finding was verified as not a problem, with the
+ * evidence in `reason`. Idempotent: re-dismissing the same (check, subject)
+ * replaces the fingerprint/reason and re-stamps the date — which is also how a
+ * dismissal is refreshed after the finding's fingerprint changed. Returns
+ * whether a dismissal for this subject already existed.
  */
-export async function markLocationsDistinct(
+export async function dismissAuditFinding(
 	db: D1Like,
-	idA: string,
-	idB: string,
+	check: string,
+	subjectKey: string,
+	fingerprint: string,
 	reason: string
-): Promise<{ already_reviewed: boolean }> {
-	const [a, b] = orderedPair(idA, idB);
+): Promise<{ already_dismissed: boolean }> {
 	const existing = await db
-		.prepare(
-			`SELECT 1 AS x FROM location_pair_reviews WHERE location_id_a = ? AND location_id_b = ?`
-		)
-		.bind(a, b)
+		.prepare(`SELECT 1 AS x FROM audit_dismissals WHERE check_name = ? AND subject_key = ?`)
+		.bind(check, subjectKey)
 		.first<{ x: number }>();
 	await db
 		.prepare(
-			`INSERT OR REPLACE INTO location_pair_reviews
-				(location_id_a, location_id_b, verdict, reason, reviewed_at)
-			 VALUES (?, ?, 'distinct', ?, ?)`
+			`INSERT OR REPLACE INTO audit_dismissals
+				(check_name, subject_key, fingerprint, reason, dismissed_at)
+			 VALUES (?, ?, ?, ?, ?)`
 		)
-		.bind(a, b, reason, currentVerificationDate())
+		.bind(check, subjectKey, fingerprint, reason, currentVerificationDate())
 		.run();
-	return { already_reviewed: Boolean(existing) };
+	return { already_dismissed: Boolean(existing) };
 }
 
-/** Revokes a distinct-pair verdict (the pair audits normally again). True when a row was deleted. */
-export async function unmarkLocationsDistinct(
+/** Revokes a dismissal (the finding audits normally again). True when a row was deleted. */
+export async function undismissAuditFinding(
 	db: D1Like,
-	idA: string,
-	idB: string
+	check: string,
+	subjectKey: string
 ): Promise<boolean> {
-	const [a, b] = orderedPair(idA, idB);
 	const res = await db
-		.prepare(`DELETE FROM location_pair_reviews WHERE location_id_a = ? AND location_id_b = ?`)
-		.bind(a, b)
+		.prepare(`DELETE FROM audit_dismissals WHERE check_name = ? AND subject_key = ?`)
+		.bind(check, subjectKey)
 		.run();
 	return res.meta.changes > 0;
 }
 
-/** Every reviewed-distinct pair as an ordered "a|b" key set (audit suppression). */
-export async function reviewedPairKeys(db: D1Like): Promise<Set<string>> {
+/** Every dismissal recorded for `check`, keyed by subject (audit suppression). */
+export async function auditDismissals(
+	db: D1Like,
+	check: string
+): Promise<Map<string, DismissalRecord>> {
 	const { results } = await db
-		.prepare(`SELECT location_id_a, location_id_b FROM location_pair_reviews`)
-		.all<{ location_id_a: string; location_id_b: string }>();
-	return new Set(results.map((r) => `${r.location_id_a}|${r.location_id_b}`));
+		.prepare(
+			`SELECT subject_key, fingerprint, reason, dismissed_at
+			 FROM audit_dismissals WHERE check_name = ?`
+		)
+		.bind(check)
+		.all<{ subject_key: string; fingerprint: string; reason: string; dismissed_at: string }>();
+	return new Map(
+		results.map((r) => [
+			r.subject_key,
+			{ fingerprint: r.fingerprint, reason: r.reason, dismissed_at: r.dismissed_at }
+		])
+	);
 }
 
 // ---------------------------------------------------------------------------

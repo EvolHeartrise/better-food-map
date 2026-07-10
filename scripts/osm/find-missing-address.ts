@@ -18,11 +18,12 @@
 
 import type { D1Like } from '../../src/lib/server/db';
 import { composeAddressLine } from '../../src/lib/address';
+import { DismissFilter, type DismissableFinding, type DismissalOpts } from './audit-dismiss';
 import { addressPartsFromLine, osmOwnAddressParts, osmUrl } from './map-feature';
 import type { OsmPoiStore, StoredPoi } from './poi-store';
 import { LOCATION_AUDIT, nearestNameMatch } from './poi-match';
 
-export interface FindMissingAddressParams {
+export interface FindMissingAddressParams extends DismissalOpts {
 	/** Max flagged locations to return (default 50, max 200). */
 	limit?: number;
 	/**
@@ -46,7 +47,7 @@ export interface FindMissingAddressParams {
 	include_unfixable?: boolean;
 }
 
-export interface MissingAddressLocation {
+export interface MissingAddressLocation extends DismissableFinding {
 	id: string;
 	name: string;
 	latitude: number;
@@ -100,6 +101,8 @@ export interface FindMissingAddressResult {
 	returned: number;
 	/** Flagged locations NOT returned because of `limit` / `include_unfixable`. */
 	additional: number;
+	/** Findings a stored dismissal matched (dropped, or annotated under include_dismissed). */
+	suppressed_dismissed: number;
 	/** Full breakdown of what was found, regardless of include_unfixable. */
 	counts: {
 		osm_fix_available: number;
@@ -203,6 +206,7 @@ export async function findMissingAddress(
 	const fixable: MissingAddressLocation[] = [];
 	const osmHasNoAddress: MissingAddressLocation[] = [];
 	const noOsmMatch: MissingAddressLocation[] = [];
+	const filter = new DismissFilter(params);
 	let missingCount = 0;
 	let incompleteCount = 0;
 
@@ -220,6 +224,12 @@ export async function findMissingAddress(
 		} else {
 			continue; // all required parts present — nothing to do
 		}
+		// A dismissal says the stored address is acceptable AS IS (e.g. the venue
+		// genuinely has no street line), so the fingerprint carries exactly WHICH
+		// required parts were absent — losing any further part is new evidence.
+		// (missingRequiredParts emits a fixed street,city,region,country order.)
+		const decision = filter.evaluate(loc.id, `${reason}:${missingParts.join(',')}`);
+		if (decision.drop) continue;
 		if (reason === 'missing') missingCount++;
 		else incompleteCount++;
 
@@ -234,7 +244,8 @@ export async function findMissingAddress(
 			longitude: loc.longitude,
 			current_address: displayParts(loc),
 			missing_parts: missingParts,
-			reason
+			reason,
+			...decision.fields
 		} as const;
 
 		if (!best) {
@@ -276,6 +287,7 @@ export async function findMissingAddress(
 		total_missing: totalMissing,
 		returned: returned.length,
 		additional: totalMissing - returned.length,
+		suppressed_dismissed: filter.suppressed,
 		counts: {
 			osm_fix_available: fixable.length,
 			osm_has_no_address: osmHasNoAddress.length,
