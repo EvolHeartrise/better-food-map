@@ -11,7 +11,7 @@ The archive `{name}` is a **version token, not an R2 object key**: `PMTILES_PATH
 
 The app's map style (`TILE_ARCHIVE` in `src/lib/components/LocationMap.svelte` at the repo root) inlines the versioned tile URL template directly — it does not fetch the TileJSON, which would cost a serial round trip before the first tile on the map's LCP path.
 
-`ALLOWED_ORIGINS` (CORS) includes the mobile app's WebView origins — `capacitor://localhost` (iOS) and `https://localhost` (Android) — alongside the production site and `http://localhost:5050` (vite dev), so the Capacitor app's map fetches tiles too. This Worker is **deployed manually** (see below), so an origin change here only takes effect on the next manual deploy — it does not ride the app's CI.
+`ALLOWED_ORIGINS` (CORS) includes the mobile app's WebView origins — `capacitor://localhost` (iOS) and `https://localhost` (Android) — alongside the production site and `http://localhost:5050` (vite dev), so the Capacitor app's map fetches tiles too. On top of that exact-match list, `src/worker.ts` reflects any plain-http loopback origin (`http://localhost:<port>` / `http://127.0.0.1:<port>`) into the allowlist per-request, so a dev server on a non-default port still gets tiles; this is cache-safe because every response carries `Vary: Origin` (see the comment in `worker.ts`). This Worker is **deployed manually** (see below), so an origin change here only takes effect on the next manual deploy — it does not ride the app's CI.
 
 ## Refreshing the planet archive
 
