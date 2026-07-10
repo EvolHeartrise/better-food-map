@@ -130,10 +130,12 @@ export async function findCoordinateDrift(
 		}
 		if (best.dist <= tolerance) continue; // aligned — not a mismatch
 
-		// Fingerprint the matched node: a dismissal says "our coordinate is right
-		// even though THIS node disagrees" — a different matching node is new evidence.
+		// Fingerprint the matched node AND our stored coordinate: a dismissal says
+		// "THIS stored coordinate is right even though THIS node disagrees" — a
+		// different matching node, or any later edit to our coordinate, is new
+		// evidence. (Coordinates are OSM-verbatim, so equality is exact.)
 		const url = osmUrl(best.poi.osm_type, best.poi.numeric_id);
-		const decision = filter.evaluate(loc.id, `drifted:${url}`);
+		const decision = filter.evaluate(loc.id, `drifted:${url}:${loc.latitude},${loc.longitude}`);
 		if (decision.drop) continue;
 		drifted.push({
 			id: loc.id,

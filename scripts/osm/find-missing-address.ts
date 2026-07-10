@@ -225,8 +225,10 @@ export async function findMissingAddress(
 			continue; // all required parts present — nothing to do
 		}
 		// A dismissal says the stored address is acceptable AS IS (e.g. the venue
-		// genuinely has no street line); losing more parts is new evidence.
-		const decision = filter.evaluate(loc.id, reason);
+		// genuinely has no street line), so the fingerprint carries exactly WHICH
+		// required parts were absent — losing any further part is new evidence.
+		// (missingRequiredParts emits a fixed street,city,region,country order.)
+		const decision = filter.evaluate(loc.id, `${reason}:${missingParts.join(',')}`);
 		if (decision.drop) continue;
 		if (reason === 'missing') missingCount++;
 		else incompleteCount++;

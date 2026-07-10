@@ -1237,7 +1237,10 @@ const auditLocationsArgs = v.object({
 				"`hint` ('drink' | 'dessert' | null) is a CHEAP KEYWORD HEURISTIC suggesting the likely tag — " +
 				'verify against the source before applying it, never trust it blindly. Ordered hint-first (drink, ' +
 				'then dessert, then no hint), then by menu. Fix by re-tagging with update_items, passing the full ' +
-				'corrected `tags` set (course tag plus any dietary tags the source supports). Reads only the live D1.\n' +
+				'corrected `tags` set (course tag plus any dietary tags the source supports). Dismissals for ' +
+				'this check should be ~NEVER used: the course-tag mandate makes every item taggable (tie-break ' +
+				'on the source menu section, or on what the item is served as) — re-tag instead. Reads only ' +
+				'the live D1.\n' +
 				'• "unlinked_chain_branch" — INDEPENDENT venues (brand_id IS NULL) whose name matches an existing ' +
 				'chain: a branch that was never linked to its chain, so it serves a stale private menu instead of ' +
 				'the shared chain menu every real branch shows (issue #242). import_chain excludes a pre-existing ' +
@@ -2770,7 +2773,9 @@ const osmTools = [
 		handler: async (input) => {
 			const parsed = splitDismissKey(input.dismiss_key);
 			if (!parsed) throw new Error('dismiss_key must be "<subject>#<fingerprint>".');
-			const subject = await validateDismissSubject(input.check, parsed.subject);
+			// Revoke skips the existence check: it can only DELETE a stored row, and
+			// the row for a since-deleted/closed subject must stay revocable.
+			const subject = await validateDismissSubject(input.check, parsed.subject, !input.revoke);
 			if (input.revoke) {
 				const revoked = await undismissAuditFinding(getDb(), input.check, subject);
 				return { revoked };
@@ -2790,17 +2795,23 @@ const osmTools = [
 ] as const;
 
 /**
- * Resolves a dismiss_key subject against the live rows it references, throwing
- * on anything that does not exist — a typo'd or hand-built subject would
- * otherwise store an inert dismissal that suppresses nothing, silently.
- * Returns the subject in canonical form (duplicate pairs ordered).
+ * Resolves a dismiss_key subject: strict shape validation always (a malformed
+ * or non-canonical subject would store an inert dismissal that suppresses
+ * nothing, silently), plus — when `requireExists` — an existence check against
+ * the rows it references. Existence is CLOSED-INCLUSIVE (existingIds, not the
+ * open-only getLocationById): the html_entities audit flags closed venues too,
+ * and their emitted keys must stay dismissable. Returns the subject in
+ * canonical form (duplicate pairs ordered).
  */
 async function validateDismissSubject(
 	check: v.InferOutput<typeof AUDIT_CHECKS_SCHEMA>,
-	subject: string
+	subject: string,
+	requireExists: boolean
 ): Promise<string> {
-	const requireLocation = async (id: string) => {
-		if (!(await getLocationById(getDb(), id))) throw new Error(`No location with id "${id}".`);
+	const requireRow = async (table: 'locations' | 'items' | 'menus' | 'brands', id: string) => {
+		if (!requireExists) return;
+		const found = await existingIds(getDb(), table, [id]);
+		if (!found.has(id)) throw new Error(`No ${table.replace(/s$/, '')} with id "${id}".`);
 	};
 	switch (check) {
 		case 'duplicate_locations': {
@@ -2810,29 +2821,29 @@ async function validateDismissSubject(
 					'A duplicate_locations subject is the flagged pair as "<location_id>|<location_id>".'
 				);
 			}
-			await Promise.all(ids.map(requireLocation));
+			await Promise.all(ids.map((id) => requireRow('locations', id)));
 			return orderedPair(ids[0], ids[1]).join('|');
 		}
 		case 'missing_course_tag': {
-			if (!(await getItemById(getDb(), subject))) throw new Error(`No item with id "${subject}".`);
+			await requireRow('items', subject);
 			return subject;
 		}
 		case 'html_entities': {
-			const [kind, id, field] = subject.split(':');
-			if (kind === 'item' && (field === 'item_name' || field === 'description') && id) {
-				if (!(await getItemById(getDb(), id))) throw new Error(`No item with id "${id}".`);
+			const parts = subject.split(':');
+			const [kind, id, field] = parts;
+			if (kind === 'item') {
+				if (parts.length !== 3 || !id || (field !== 'item_name' && field !== 'description')) {
+					throw new Error('An html_entities item subject is "item:<id>:item_name|description".');
+				}
+				await requireRow('items', id);
 				return subject;
 			}
-			if (kind === 'location' && id && field === undefined) {
-				await requireLocation(id);
-				return subject;
-			}
-			if (kind === 'menu' && id && field === undefined) {
-				if (!(await getMenuById(getDb(), id))) throw new Error(`No menu with id "${id}".`);
-				return subject;
-			}
-			if (kind === 'brand' && id && field === undefined) {
-				if (!(await getBrandById(getDb(), id))) throw new Error(`No brand with id "${id}".`);
+			if (
+				(kind === 'location' || kind === 'menu' || kind === 'brand') &&
+				parts.length === 2 &&
+				id
+			) {
+				await requireRow(`${kind}s`, id);
 				return subject;
 			}
 			throw new Error(
@@ -2841,7 +2852,7 @@ async function validateDismissSubject(
 		}
 		default: {
 			// The remaining checks all flag a single location.
-			await requireLocation(subject);
+			await requireRow('locations', subject);
 			return subject;
 		}
 	}

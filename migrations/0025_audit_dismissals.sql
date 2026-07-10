@@ -35,7 +35,9 @@ CREATE TABLE IF NOT EXISTS audit_dismissals (
 	PRIMARY KEY (check_name, subject_key)
 );
 
-INSERT INTO audit_dismissals (check_name, subject_key, fingerprint, reason, dismissed_at)
+-- OR IGNORE keeps the file re-runnable if a partial apply ever committed the
+-- copy without the DROP below.
+INSERT OR IGNORE INTO audit_dismissals (check_name, subject_key, fingerprint, reason, dismissed_at)
 	SELECT 'duplicate_locations', location_id_a || '|' || location_id_b, '', reason, reviewed_at
 	FROM location_pair_reviews;
 

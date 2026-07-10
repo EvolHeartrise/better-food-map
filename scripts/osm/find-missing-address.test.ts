@@ -273,3 +273,34 @@ test('limit caps the returned set and additional reports the remainder', async (
 	expect(res.locations.map((l) => l.id)).toEqual(['B']); // actionable first
 	store.close();
 });
+
+test('a dismissal pins WHICH parts were missing — losing another part re-flags', async () => {
+	const { splitDismissKey } = await import('./audit-dismiss');
+	const store = storeWith([]);
+	const partial = { id: 'P', name: 'No Street Cart', latitude: 49.28, longitude: -123.12 };
+	const db = fakeD1([
+		{ ...partial, street: null, city: 'Vancouver', region: 'BC', postcode: null, country: 'CA' }
+	]);
+	const first = await findMissingAddress(store, db, {});
+	expect(first.locations.length).toBe(1);
+	expect(first.locations[0].dismiss_key).toBe('P#missing:street');
+
+	const { subject, fingerprint } = splitDismissKey(first.locations[0].dismiss_key)!;
+	const dismissals = new Map([
+		[subject, { fingerprint, reason: 'venue has no street line', dismissed_at: '2026-07-09' }]
+	]);
+	const suppressed = await findMissingAddress(store, db, { dismissals });
+	expect(suppressed.locations.length).toBe(0);
+	expect(suppressed.suppressed_dismissed).toBe(1);
+	expect(suppressed.total_missing).toBe(0);
+
+	// The city later wiped too → different missing_parts → different fingerprint → re-flags.
+	const worse = fakeD1([
+		{ ...partial, street: null, city: null, region: 'BC', postcode: null, country: 'CA' }
+	]);
+	const reflagged = await findMissingAddress(store, worse, { dismissals });
+	expect(reflagged.locations.length).toBe(1);
+	expect(reflagged.locations[0].dismiss_key).toBe('P#missing:street,city');
+	expect(reflagged.suppressed_dismissed).toBe(0);
+	store.close();
+});

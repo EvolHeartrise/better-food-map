@@ -227,6 +227,11 @@ test('cosmetic renames (respelling / word order) fold into their own count, neve
 	const res = await findIdentityDrift(store, db, {});
 	expect(res.counts).toEqual({ renamed: 1, vanished: 0, cosmetic_renames: 2 });
 	expect(res.flagged.map((f) => f.id)).toEqual(['C']);
+	// Folds are surfaced for review, since a wrong fold has no dismissal to revoke.
+	expect(res.cosmetic_renames.map((c) => [c.id, c.current_osm_name]).toSorted()).toEqual([
+		['A', 'Cafe Artigiano'],
+		['B', 'Cafe Bel']
+	]);
 	store.close();
 });
 

@@ -71,7 +71,9 @@ export async function findUnlinkedChainBranches(
 	const filter = new DismissFilter(opts);
 
 	const [brandRows, locationRows] = await Promise.all([
-		db.prepare(`SELECT id, name FROM brands`).all<{ id: string; name: string }>(),
+		// ORDER BY makes the first-match rule (and so the dismissal fingerprint)
+		// stable across runs — unordered SELECTs may reorder after a vacuum/import.
+		db.prepare(`SELECT id, name FROM brands ORDER BY id`).all<{ id: string; name: string }>(),
 		db
 			.prepare(
 				`SELECT id, name, street, city, region, postcode, menu_id FROM locations
