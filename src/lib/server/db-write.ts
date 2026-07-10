@@ -497,6 +497,14 @@ export type LocationInsert = Omit<
 	brand_id?: string | null;
 	menu_id?: string | null;
 	/**
+	 * The OSM element this row was imported from (e.g. "node/42") — the durable
+	 * source identity (migration 0028), stamped when a create_locations /
+	 * import_chain candidate resolves via its staging-store `osm_id`. Null for a
+	 * venue with no OSM POI (manual coordinates). Identity only: it never
+	 * replaces the coordinate-verbatim invariant.
+	 */
+	osm_id?: string | null;
+	/**
 	 * RAW weekly hours in OSM `opening_hours` syntax; normalized on write and
 	 * stored alongside its derived `opening_hours_json` (see
 	 * src/lib/opening-hours.ts). The derived column is never taken from the
@@ -589,8 +597,8 @@ export async function insertLocations(db: D1Like, locs: LocationInsert[]): Promi
 		stmts.push(
 			db
 				.prepare(
-					`INSERT INTO locations (id, name, category, latitude, longitude, street, city, region, postcode, country, phone, website, opening_hours, opening_hours_json, brand_id, menu_id, closed_at, closed_reason)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+					`INSERT INTO locations (id, name, category, latitude, longitude, street, city, region, postcode, country, phone, website, opening_hours, opening_hours_json, osm_id, brand_id, menu_id, closed_at, closed_reason)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 				)
 				.bind(
 					id,
@@ -607,6 +615,7 @@ export async function insertLocations(db: D1Like, locs: LocationInsert[]): Promi
 					loc.website,
 					openingHours,
 					weeklyHoursJson(openingHours),
+					loc.osm_id ?? null,
 					loc.brand_id ?? null,
 					loc.menu_id ?? privateMenuId,
 					loc.closed_at ?? null,

@@ -202,6 +202,40 @@ test('an unknown osm_id is an invalid row, not a crash', async () => {
 	expect(res.skipped_invalid?.[0].reason).toMatch(/No OSM POI "node\/999" in the staging store/);
 });
 
+test('osm_id is persisted on the row (durable source identity); manual coords store NULL', async () => {
+	const db = freshDb();
+	// A chain-branch import (the import_chain path: osm_id + brand/menu link)
+	// stamps the same way as an independent osm_id import.
+	await insertBrand(db, { id: 'brand-o', name: 'Chain O', website: null, logo_url: null });
+	await insertMenu(db, { id: 'menu-o', name: 'Chain O CA', brand_id: 'brand-o', region: 'CA' });
+	const addrTags = JSON.stringify({
+		'addr:housenumber': '1',
+		'addr:street': 'Test St',
+		'addr:city': 'Vancouver',
+		'addr:state': 'BC'
+	});
+	const store = fakeStore({
+		'node/42': poi({ osm_id: 'node/42', latitude: 49.1, longitude: -123.1, tags_json: addrTags }),
+		'node/43': poi({ osm_id: 'node/43', latitude: 49.2, longitude: -123.2, tags_json: addrTags })
+	});
+
+	const res = await createLocationsBatch(db, store, [
+		{ name: 'Test POI', osm_id: 'node/42' },
+		{ name: 'Test POI', osm_id: 'node/43', brand_id: 'brand-o', menu_id: 'menu-o' },
+		loc('Manual Venue', 49.3, -123.3)
+	]);
+	expect(res.created).toBe(3);
+	// osm_id is identity metadata, not part of the app-facing Location shape —
+	// read the column directly.
+	const osmIdOf = (id: string) =>
+		db.prepare(`SELECT osm_id FROM locations WHERE id = ?`).bind(id).first<{
+			osm_id: string | null;
+		}>();
+	expect((await osmIdOf(res.location_ids[0]))?.osm_id).toBe('node/42');
+	expect((await osmIdOf(res.location_ids[1]))?.osm_id).toBe('node/43');
+	expect((await osmIdOf(res.location_ids[2]))?.osm_id).toBeNull();
+});
+
 test('inline menu_items require a source and build the private menu', async () => {
 	const db = freshDb();
 	// No sources → rejected (menu-level provenance rule).
