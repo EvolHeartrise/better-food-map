@@ -28,6 +28,7 @@ import {
 import type { TagId } from '../../src/lib/tags';
 import type { Category } from '../../src/lib/category';
 import { normalizePhone } from '../../src/lib/phone';
+import { normalizeOpeningHours, weeklyHoursJson } from '../../src/lib/opening-hours';
 import { normalizeName, namesMatch } from '../osm/search-poi';
 import { bboxAround, haversineMeters } from '../osm/geo';
 import { effectivePoiAddressParts } from '../osm/map-feature';
@@ -64,6 +65,13 @@ export interface CreateLocationInput {
 	country?: string | null;
 	phone?: string | null;
 	website?: string | null;
+	/**
+	 * Weekly hours in OSM `opening_hours` syntax. With `osm_id`, undefined means
+	 * "take the POI's hours" (the streamlined path); an explicit null imports
+	 * without hours; a string overrides the POI (e.g. fresher hours from the
+	 * venue's own site). Without `osm_id` it is simply stored (or absent).
+	 */
+	opening_hours?: string | null;
 	brand_id?: string | null;
 	menu_id?: string | null;
 	currency?: string;
@@ -92,7 +100,7 @@ export interface CreateLocationsResult {
 	warnings?: string[];
 }
 
-/** Coordinates + normalized address + category, ready for insertLocations. */
+/** Coordinates + normalized address + category + hours, ready for insertLocations. */
 export interface ResolvedLocationCore {
 	latitude: number;
 	longitude: number;
@@ -102,6 +110,8 @@ export interface ResolvedLocationCore {
 	region: string;
 	postcode: string | null;
 	country: string;
+	/** Raw OSM-syntax hours (caller's, else the POI's on an osm_id import), or null. */
+	opening_hours: string | null;
 }
 
 /** The OSM staging store surface this module needs — just a POI lookup by id. */
@@ -182,6 +192,35 @@ export async function nearDuplicateWarnings(
 }
 
 /**
+ * Resolves one create_locations item's raw hours: the caller's value when given
+ * (null = "import without hours"), else the staging POI's on an `osm_id` import
+ * — the streamlined path that carries OSM hours onto the map without the agent
+ * re-typing them. Non-fatal oddities surface through `warn`: a value the
+ * normalizer rejects is dropped; one beyond the parsed OSM subset is kept
+ * raw-only (displayed verbatim, no machine-readable table).
+ */
+export function resolveOpeningHoursInput(
+	callerHours: string | null | undefined,
+	poiHours: string | null,
+	warn: (message: string) => void
+): string | null {
+	const chosen = callerHours === undefined ? poiHours : callerHours;
+	if (chosen === null || chosen === undefined) return null;
+	const normalized = normalizeOpeningHours(chosen);
+	if (normalized === null) {
+		warn(`opening_hours ${JSON.stringify(chosen)} dropped — blank, oversized or malformed.`);
+		return null;
+	}
+	if (weeklyHoursJson(normalized) === null) {
+		warn(
+			`opening_hours "${normalized}" is beyond the parsed OSM subset — stored raw-only ` +
+				'(displayed verbatim, not machine-readable).'
+		);
+	}
+	return normalized;
+}
+
+/**
  * Resolves one create_locations item's coordinates + address, enforcing the
  * OSM-based coordinate policy. With `osm_id` the coordinates come VERBATIM from the
  * matching staging-store POI; the address defaults to the POI's best available
@@ -248,6 +287,7 @@ export function resolveLocationInsertCore(
 			latitude: poi.latitude,
 			longitude: poi.longitude,
 			category: it.category ?? poi.suggested_category ?? null,
+			opening_hours: resolveOpeningHoursInput(it.opening_hours, poi.opening_hours, warn),
 			...addr
 		};
 	}
@@ -265,6 +305,7 @@ export function resolveLocationInsertCore(
 		latitude: it.latitude,
 		longitude: it.longitude,
 		category: it.category ?? null,
+		opening_hours: resolveOpeningHoursInput(it.opening_hours, null, warn),
 		...normalizeAddressParts(
 			{
 				street: it.street,
@@ -429,6 +470,9 @@ export async function createLocationsBatch(
 			// `core.country` is the already-normalized ISO-2 (so bare NANP numbers infer +1).
 			phone: normalizePhone(it.phone, core.country),
 			website: it.website ?? null,
+			// Resolved above (caller's, else the POI's on an osm_id import); the
+			// write layer derives the machine-readable opening_hours_json from it.
+			opening_hours: core.opening_hours,
 			brand_id: it.brand_id ?? null,
 			menu_id: it.menu_id ?? null,
 			currency: it.currency,
