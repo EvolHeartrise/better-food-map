@@ -22,11 +22,12 @@
 // ---------------------------------------------------------------------------
 
 import { formatAddress } from '../../src/lib/address';
+import { DismissFilter, type DismissableFinding, type DismissalOpts } from './audit-dismiss';
 import { namesMatch, normalizeName } from './search-poi';
 import type { D1Like } from '../../src/lib/server/db';
 
 /** One independent venue that looks like an unlinked branch of `brand`. */
-export interface UnlinkedChainBranch {
+export interface UnlinkedChainBranch extends DismissableFinding {
 	/** The venue's id — pass to update_locations to adopt it onto the chain. */
 	id: string;
 	name: string;
@@ -49,6 +50,8 @@ export interface FindUnlinkedChainBranchesResult {
 	returned: number;
 	/** Flagged venues NOT returned because of `limit` (total - returned). */
 	additional: number;
+	/** Findings a stored dismissal matched (dropped, or annotated under include_dismissed). */
+	suppressed_dismissed: number;
 }
 
 const DEFAULT_LIMIT = 50;
@@ -62,12 +65,15 @@ const MAX_LIMIT = 200;
  */
 export async function findUnlinkedChainBranches(
 	db: D1Like,
-	opts: { limit?: number } = {}
+	opts: { limit?: number } & DismissalOpts = {}
 ): Promise<FindUnlinkedChainBranchesResult> {
 	const limit = Math.min(Math.max(1, Math.trunc(opts.limit ?? DEFAULT_LIMIT)), MAX_LIMIT);
+	const filter = new DismissFilter(opts);
 
 	const [brandRows, locationRows] = await Promise.all([
-		db.prepare(`SELECT id, name FROM brands`).all<{ id: string; name: string }>(),
+		// ORDER BY makes the first-match rule (and so the dismissal fingerprint)
+		// stable across runs — unordered SELECTs may reorder after a vacuum/import.
+		db.prepare(`SELECT id, name FROM brands ORDER BY id`).all<{ id: string; name: string }>(),
 		db
 			.prepare(
 				`SELECT id, name, street, city, region, postcode, menu_id FROM locations
@@ -98,6 +104,10 @@ export async function findUnlinkedChainBranches(
 		// oddity worth surfacing under either; deterministic order (brand id).
 		const brand = brands.find((b) => namesMatch(norm, b.norm));
 		if (!brand) continue;
+		// A dismissal says this venue is genuinely independent despite the name
+		// (e.g. an unaffiliated namesake); matching a DIFFERENT chain is new evidence.
+		const decision = filter.evaluate(loc.id, brand.id);
+		if (decision.drop) continue;
 		flagged.push({
 			id: loc.id,
 			name: loc.name,
@@ -108,7 +118,8 @@ export async function findUnlinkedChainBranches(
 				postcode: loc.postcode
 			}),
 			menu_id: loc.menu_id,
-			brand: { id: brand.id, name: brand.name }
+			brand: { id: brand.id, name: brand.name },
+			...decision.fields
 		});
 	}
 
@@ -139,6 +150,7 @@ export async function findUnlinkedChainBranches(
 		unlinked,
 		total: flagged.length,
 		returned: unlinked.length,
-		additional: flagged.length - unlinked.length
+		additional: flagged.length - unlinked.length,
+		suppressed_dismissed: filter.suppressed
 	};
 }
