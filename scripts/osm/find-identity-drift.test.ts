@@ -104,7 +104,7 @@ test('flags renamed and vanished locations, leaving matching ones alone', async 
 	const { store, db } = fixture();
 	const res = await findIdentityDrift(store, db, { search_radius_m: 1000 });
 	expect(res.scanned).toBe(3);
-	expect(res.counts).toEqual({ renamed: 1, vanished: 1 });
+	expect(res.counts).toEqual({ renamed: 1, vanished: 1, cosmetic_renames: 0 });
 	expect(res.flagged.map((f) => f.id)).toEqual(['B', 'C']); // renamed first, then vanished
 
 	const renamed = res.flagged[0];
@@ -144,7 +144,7 @@ test('a nameless POI at the coordinates is a rename signal with current_osm_name
 	const store = storeWith([row({ osm_id: 'n40', latitude: 49.28, longitude: -123.12 })]);
 	const db = fakeD1([{ id: 'A', name: 'Joe Coffee', latitude: 49.28, longitude: -123.12 }]);
 	const res = await findIdentityDrift(store, db, {});
-	expect(res.counts).toEqual({ renamed: 1, vanished: 0 });
+	expect(res.counts).toEqual({ renamed: 1, vanished: 0, cosmetic_renames: 0 });
 	expect(res.flagged[0].current_osm_name).toBeNull();
 	store.close();
 });
@@ -188,7 +188,7 @@ test('closed (soft-deleted) locations are excluded from the scan', async () => {
 	]);
 	const res = await findIdentityDrift(store, db, {});
 	expect(res.scanned).toBe(1);
-	expect(res.counts).toEqual({ renamed: 0, vanished: 0 });
+	expect(res.counts).toEqual({ renamed: 0, vanished: 0, cosmetic_renames: 0 });
 	store.close();
 });
 
@@ -207,5 +207,58 @@ test('a wider tolerance treats a near-coincident matching POI as healthy', async
 	expect(strict.counts.vanished).toBe(1); // 1 m default: nothing AT the point
 	const tolerant = await findIdentityDrift(store, db, { tolerance_m: 20 });
 	expect(tolerant.total_flagged).toBe(0);
+	store.close();
+});
+
+test('cosmetic renames (respelling / word order) fold into their own count, never flagged', async () => {
+	const store = storeWith([
+		// Diacritic + doubled-letter respelling, edit distance 1 on the collapsed names.
+		row({ osm_id: 'n60', latitude: 49.28, longitude: -123.12, name: 'Cafe Artigiano' }),
+		// Word-order flip of the same tokens.
+		row({ osm_id: 'n61', latitude: 49.3, longitude: -123.1, name: 'Cafe Bel' }),
+		// A genuinely different occupant must still flag.
+		row({ osm_id: 'n62', latitude: 49.31, longitude: -123.1, name: 'Starbucks' })
+	]);
+	const db = fakeD1([
+		{ id: 'A', name: 'Caffè Artigiano', latitude: 49.28, longitude: -123.12 },
+		{ id: 'B', name: 'Bel Café', latitude: 49.3, longitude: -123.1 },
+		{ id: 'C', name: 'Tim Hortons', latitude: 49.31, longitude: -123.1 }
+	]);
+	const res = await findIdentityDrift(store, db, {});
+	expect(res.counts).toEqual({ renamed: 1, vanished: 0, cosmetic_renames: 2 });
+	expect(res.flagged.map((f) => f.id)).toEqual(['C']);
+	store.close();
+});
+
+test('a dismissal suppresses a rename while its fingerprint holds, and re-flags on new evidence', async () => {
+	const store = storeWith([
+		row({ osm_id: 'n70', latitude: 49.2, longitude: -123.0, name: 'Delight Street Eats' })
+	]);
+	const db = fakeD1([{ id: 'B', name: 'Veerji Grill', latitude: 49.2, longitude: -123.0 }]);
+
+	const flagged = await findIdentityDrift(store, db, {});
+	expect(flagged.flagged.length).toBe(1);
+	expect(flagged.flagged[0].dismiss_key).toBe('B#renamed:delightstreeteats');
+
+	// Matching (subject, fingerprint) → suppressed and counted.
+	const record = { reason: 'venue verified still operating', dismissed_at: '2026-07-09' };
+	const dismissals = new Map([['B', { fingerprint: 'renamed:delightstreeteats', ...record }]]);
+	const suppressed = await findIdentityDrift(store, db, { dismissals });
+	expect(suppressed.flagged.length).toBe(0);
+	expect(suppressed.suppressed_dismissed).toBe(1);
+	expect(suppressed.counts.renamed).toBe(0);
+
+	// include_dismissed surfaces it, annotated.
+	const surfaced = await findIdentityDrift(store, db, { dismissals, include_dismissed: true });
+	expect(surfaced.flagged.length).toBe(1);
+	expect(surfaced.flagged[0].dismissed).toEqual(record);
+	expect(surfaced.suppressed_dismissed).toBe(1);
+
+	// A dismissal recorded against DIFFERENT evidence does not suppress.
+	const stale = new Map([['B', { fingerprint: 'renamed:someoldname', ...record }]]);
+	const reflagged = await findIdentityDrift(store, db, { dismissals: stale });
+	expect(reflagged.flagged.length).toBe(1);
+	expect(reflagged.flagged[0].dismissed).toBeUndefined();
+	expect(reflagged.suppressed_dismissed).toBe(0);
 	store.close();
 });

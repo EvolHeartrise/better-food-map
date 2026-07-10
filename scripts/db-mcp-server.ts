@@ -67,8 +67,10 @@ import {
 	findBrandIdsByName,
 	findMenuIdsByName,
 	itemNameCollisions,
-	markLocationsDistinct,
-	unmarkLocationsDistinct
+	auditDismissals,
+	dismissAuditFinding,
+	undismissAuditFinding,
+	orderedPair
 } from '../src/lib/server/db-write';
 import { createHttpD1 } from '../src/lib/server/d1-http';
 import { CATEGORIES } from '../src/lib/category';
@@ -92,6 +94,7 @@ import { normalizePhone } from '../src/lib/phone';
 import { hasNonHttpScheme } from '../src/lib/safe-url';
 import { searchPoi } from './osm/search-poi';
 import { selectChainCandidates, partitionImportable } from './osm/import-chain';
+import { splitDismissKey } from './osm/audit-dismiss';
 import { findCoordinateDrift } from './osm/find-coordinate-drift';
 import { findIdentityDrift } from './osm/find-identity-drift';
 import { findMissingAddress } from './osm/find-missing-address';
@@ -306,7 +309,8 @@ const SERVER_INSTRUCTIONS =
 	'audit_locations ' +
 	'(check: "duplicate_locations") finds same-name pairs a few metres apart — OSM sometimes maps one ' +
 	`venue twice; verify against the venue's own locator, then delete_locations the extra row, or ` +
-	'mark_not_duplicate a verified two-real-venues pair so it is never re-flagged.\n\n' +
+	'dismiss a verified two-real-venues pair (dismiss_audit_finding with its dismiss_key) so it is ' +
+	'never re-flagged.\n\n' +
 	`${MODEL_OVERVIEW}\n\nTag policy: ${TAG_POLICY}\n\n` +
 	'Field policies — the full rules the terse per-field descriptions point to:\n\n' +
 	`${NAME_POLICY}\n\n${OSM_IMPORT_POLICY}\n\n${ADDRESS_POLICY}\n\n${REFRESH_NOTES_POLICY}`;
@@ -1162,21 +1166,25 @@ const importChainArgs = v.pipe(
 	}, 'Provide EITHER `bbox` OR all of `latitude`, `longitude` and `radius_km` (not both, and centre coordinates must be complete).')
 );
 
+// The audit checks, shared between audit_locations' selector and
+// dismiss_audit_finding's scope (a dismissal is per-check).
+const AUDIT_CHECKS_SCHEMA = v.picklist([
+	'coordinate_drift',
+	'identity_drift',
+	'missing_address',
+	'duplicate_locations',
+	'empty_menu',
+	'html_entities',
+	'missing_course_tag',
+	'unlinked_chain_branch'
+]);
+
 // One tool, two audits against the local OSM staging store, selected by `check`.
 // `limit`/`search_radius_m` apply to both; the remaining options are mode-specific
 // (flagged in their descriptions) and simply ignored by the audit they don't apply to.
 const auditLocationsArgs = v.object({
 	check: v.pipe(
-		v.picklist([
-			'coordinate_drift',
-			'identity_drift',
-			'missing_address',
-			'duplicate_locations',
-			'empty_menu',
-			'html_entities',
-			'missing_course_tag',
-			'unlinked_chain_branch'
-		]),
+		AUDIT_CHECKS_SCHEMA,
 		v.description(
 			'Which audit to run:\n' +
 				'• "coordinate_drift" — locations whose stored coordinates do NOT coincide with their ' +
@@ -1348,27 +1356,40 @@ const auditLocationsArgs = v.object({
 					'drain it in pages via `limit`/`offset` rather than in one call.'
 			)
 		)
+	),
+	include_dismissed: v.optional(
+		v.pipe(
+			v.boolean(),
+			v.description(
+				'Also return findings a dismissal (dismiss_audit_finding) suppresses, each annotated with ' +
+					'`dismissed: { reason, dismissed_at }` — for reviewing past verdicts. Default false: ' +
+					'dismissed findings are dropped and only counted in `suppressed_dismissed`.'
+			)
+		)
 	)
 });
 
-const markNotDuplicateArgs = v.pipe(
+const dismissAuditFindingArgs = v.pipe(
 	v.object({
-		location_id_a: v.pipe(
-			v.string(),
-			v.minLength(1),
-			v.description('One half of the flagged pair (order does not matter).')
+		check: v.pipe(
+			AUDIT_CHECKS_SCHEMA,
+			v.description('The audit check that produced the finding being dismissed.')
 		),
-		location_id_b: v.pipe(
+		dismiss_key: v.pipe(
 			v.string(),
-			v.minLength(1),
-			v.description('The other half of the flagged pair.')
+			v.minLength(2),
+			v.description(
+				"The finding's `dismiss_key`, copied VERBATIM from the audit_locations entry " +
+					'("<subject>#<evidence fingerprint>"). Never compose one by hand — the fingerprint pins ' +
+					'the evidence that was verified, and a hand-built key that never matches suppresses nothing.'
+			)
 		),
 		reason: v.optional(
 			v.pipe(
 				v.string(),
 				v.minLength(1),
 				v.description(
-					'The verification evidence, stored on the verdict — e.g. "both branches listed separately ' +
+					'The verification evidence, stored on the dismissal — e.g. "both branches listed separately ' +
 						'on restaurants.subway.com with distinct phone numbers". Required unless `revoke` is true.'
 				)
 			)
@@ -1377,18 +1398,19 @@ const markNotDuplicateArgs = v.pipe(
 			v.pipe(
 				v.boolean(),
 				v.description(
-					'Set true to WITHDRAW a previous verdict — the pair shows up in duplicate audits again.'
+					'Set true to WITHDRAW the dismissal — the finding shows up in audits again. Matches on the ' +
+						'subject (the part before "#"), so the current fingerprint need not match.'
 				)
 			)
 		)
 	}),
 	v.check(
-		(input) => input.location_id_a !== input.location_id_b,
-		'location_id_a and location_id_b must be two different locations.'
+		(input) => input.dismiss_key.indexOf('#') > 0,
+		'dismiss_key must be "<subject>#<fingerprint>" as returned by audit_locations.'
 	),
 	v.check(
 		(input) => Boolean(input.revoke) || Boolean(input.reason?.trim()),
-		'A `reason` (the verification evidence) is required when recording a verdict.'
+		'A `reason` (the verification evidence) is required when recording a dismissal.'
 	)
 );
 
@@ -2633,13 +2655,14 @@ const osmTools = [
 			"(stored coordinates that do NOT coincide with the location's OSM POI — fix with " +
 			'update_locations), "identity_drift" (the staging POI at a location\'s exact coordinates was ' +
 			'RENAMED to a new occupant or is gone — the venue likely moved, closed or was replaced; verify, ' +
-			'then close_location / update_locations / import the new occupant), "missing_address" (empty or ' +
+			'then close_location / update_locations / import the new occupant; renames that are only a ' +
+			'spelling/word-order variant of our name are auto-folded into `counts.cosmetic_renames`, never ' +
+			'flagged), "missing_address" (empty or ' +
 			'streetless addresses, with the OSM address to ' +
 			'backfill where available), "duplicate_locations" (same-name/same-brand pairs within a small ' +
 			"radius — probably one venue stored twice; verify against the venue's own locator, then EITHER " +
-			'delete_locations the extra row OR record a confirmed two-real-venues pair with ' +
-			'mark_not_duplicate so it stops being re-flagged — such pairs are counted in ' +
-			'`suppressed_reviewed`, never re-listed), "empty_menu" (open venues whose effective menu is ' +
+			'delete_locations the extra row OR dismiss a confirmed two-real-venues pair), ' +
+			'"empty_menu" (open venues whose effective menu is ' +
 			'empty or thinner than `min_items` — they violate the EXHAUSTIVE-menu policy; backfill with ' +
 			'create_items), "html_entities" (text still carrying HTML-encoded references like "&amp;" — ' +
 			'ingestion decodes these, so any hit is legacy/anomalous data; fix with the matching update tool), ' +
@@ -2654,15 +2677,26 @@ const osmTools = [
 			'only the live D1. ' +
 			'Results are worst-first / actionable-first; `limit` caps how many are returned and `additional` ' +
 			"is how many more exist beyond it. See the `check` field for each mode's entry shape and which " +
-			'options apply.',
+			'options apply. Every entry carries a `dismiss_key`: when a finding is VERIFIED to be not a ' +
+			'problem, record that once with dismiss_audit_finding and every future run suppresses it ' +
+			'(counted in `suppressed_dismissed`) until its evidence materially changes; pass ' +
+			'`include_dismissed: true` to review suppressed findings. Findings that ARE problems need no ' +
+			'dismissal — fixing them unflags them.',
 		schema: auditLocationsArgs,
 		handler: async (input) => {
+			// Every check suppresses its recorded dismissals (audit_dismissals) the
+			// same way; load this check's map once and hand it to the finder.
+			const dismissal = {
+				dismissals: await auditDismissals(getDb(), input.check),
+				include_dismissed: input.include_dismissed
+			};
 			if (input.check === 'coordinate_drift') {
 				return findCoordinateDrift(getOsmStore(), getDb(), {
 					limit: input.limit,
 					tolerance_m: input.tolerance_m,
 					search_radius_m: input.search_radius_m,
-					include_unmatched: input.include_unmatched
+					include_unmatched: input.include_unmatched,
+					...dismissal
 				});
 			}
 			if (input.check === 'identity_drift') {
@@ -2670,7 +2704,8 @@ const osmTools = [
 					limit: input.limit,
 					tolerance_m: input.tolerance_m,
 					search_radius_m: input.search_radius_m,
-					include_vanished: input.include_vanished
+					include_vanished: input.include_vanished,
+					...dismissal
 				});
 			}
 			if (input.check === 'duplicate_locations') {
@@ -2678,76 +2713,139 @@ const osmTools = [
 				return findDuplicateLocations(getDb(), {
 					radius_m: input.radius_m,
 					limit: input.limit,
-					brand_id: input.brand_id
+					brand_id: input.brand_id,
+					...dismissal
 				});
 			}
 			if (input.check === 'empty_menu') {
 				// Reads only the live D1 — no staging store needed.
 				return findIncompleteMenus(getDb(), {
 					min_items: input.min_items,
-					limit: input.limit
+					limit: input.limit,
+					...dismissal
 				});
 			}
 			if (input.check === 'html_entities') {
 				// Reads only the live D1 — no staging store needed.
-				return findHtmlEntities(getDb(), { limit: input.limit });
+				return findHtmlEntities(getDb(), { limit: input.limit, ...dismissal });
 			}
 			if (input.check === 'missing_course_tag') {
 				// Reads only the live D1 — no staging store needed.
-				return findMissingCourseTags(getDb(), { limit: input.limit, offset: input.offset });
+				return findMissingCourseTags(getDb(), {
+					limit: input.limit,
+					offset: input.offset,
+					...dismissal
+				});
 			}
 			if (input.check === 'unlinked_chain_branch') {
 				// Reads only the live D1 — no staging store needed.
-				return findUnlinkedChainBranches(getDb(), { limit: input.limit });
+				return findUnlinkedChainBranches(getDb(), { limit: input.limit, ...dismissal });
 			}
 			return findMissingAddress(getOsmStore(), getDb(), {
 				limit: input.limit,
 				search_radius_m: input.search_radius_m,
 				include_incomplete: input.include_incomplete,
-				include_unfixable: input.include_unfixable
+				include_unfixable: input.include_unfixable,
+				...dismissal
 			});
 		}
 	}),
 	defineTool({
-		name: 'mark_not_duplicate',
+		name: 'dismiss_audit_finding',
 		annotations: CREATE,
 		description:
-			'Record the verdict that two locations flagged by audit_locations (check: "duplicate_locations") ' +
-			'are in fact two REAL venues — not one venue double-mapped — so the pair is suppressed from every ' +
-			'future duplicate audit (counted in its `suppressed_reviewed`) and the verification work is never ' +
-			"re-paid. Use ONLY after verifying against the chain's/venue's own store locator or equally strong " +
-			'evidence, and put that evidence in `reason`. The verdict is per-pair and survives until either ' +
-			'location is deleted (it cascades away with the row). Idempotent: re-marking replaces the ' +
-			'reason/date. Pass `revoke: true` to withdraw a verdict so the pair audits normally again. For the ' +
-			'opposite verdict — one venue stored twice — do NOT use this; delete_locations the redundant row.',
-		schema: markNotDuplicateArgs,
+			'Record the verdict that an audit_locations finding is NOT a problem — a flagged duplicate pair ' +
+			'verified as two REAL venues, a renamed/vanished staging POI whose venue is confirmed still ' +
+			'operating, a venue with genuinely no street address — so every future run of that check ' +
+			'suppresses it (counted in `suppressed_dismissed`) and the verification work is never re-paid. ' +
+			"Pass the finding's `dismiss_key` VERBATIM from the audit output: it embeds the evidence " +
+			'fingerprint, so the dismissal holds exactly while that evidence holds (e.g. the same occupant ' +
+			"name; a later re-tag to a different name re-flags). Use ONLY after verifying against the venue's " +
+			'own site/locator or equally strong evidence, and put that evidence in `reason`. One dismissal ' +
+			'per finding subject and check; re-dismissing replaces the fingerprint/reason (also how to ' +
+			'refresh one after its evidence changed). Pass `revoke: true` to withdraw it. A finding that IS ' +
+			'a problem needs no dismissal — fix it (delete_locations the duplicate row, backfill the ' +
+			'address, re-tag the item) and it unflags itself.',
+		schema: dismissAuditFindingArgs,
 		handler: async (input) => {
+			const parsed = splitDismissKey(input.dismiss_key);
+			if (!parsed) throw new Error('dismiss_key must be "<subject>#<fingerprint>".');
+			const subject = await validateDismissSubject(input.check, parsed.subject);
 			if (input.revoke) {
-				const revoked = await unmarkLocationsDistinct(
-					getDb(),
-					input.location_id_a,
-					input.location_id_b
-				);
+				const revoked = await undismissAuditFinding(getDb(), input.check, subject);
 				return { revoked };
 			}
 			const reason = input.reason?.trim();
 			if (!reason) throw new Error('A `reason` (the verification evidence) is required.');
-			const [locA, locB] = await Promise.all([
-				getLocationById(getDb(), input.location_id_a),
-				getLocationById(getDb(), input.location_id_b)
-			]);
-			if (!locA) throw new Error(`No location with id "${input.location_id_a}".`);
-			if (!locB) throw new Error(`No location with id "${input.location_id_b}".`);
-			const res = await markLocationsDistinct(
+			const res = await dismissAuditFinding(
 				getDb(),
-				input.location_id_a,
-				input.location_id_b,
+				input.check,
+				subject,
+				parsed.fingerprint,
 				reason
 			);
-			return { marked: true, already_reviewed: res.already_reviewed };
+			return { dismissed: true, already_dismissed: res.already_dismissed };
 		}
 	})
 ] as const;
+
+/**
+ * Resolves a dismiss_key subject against the live rows it references, throwing
+ * on anything that does not exist — a typo'd or hand-built subject would
+ * otherwise store an inert dismissal that suppresses nothing, silently.
+ * Returns the subject in canonical form (duplicate pairs ordered).
+ */
+async function validateDismissSubject(
+	check: v.InferOutput<typeof AUDIT_CHECKS_SCHEMA>,
+	subject: string
+): Promise<string> {
+	const requireLocation = async (id: string) => {
+		if (!(await getLocationById(getDb(), id))) throw new Error(`No location with id "${id}".`);
+	};
+	switch (check) {
+		case 'duplicate_locations': {
+			const ids = subject.split('|');
+			if (ids.length !== 2 || ids[0] === ids[1] || ids.some((id) => !id)) {
+				throw new Error(
+					'A duplicate_locations subject is the flagged pair as "<location_id>|<location_id>".'
+				);
+			}
+			await Promise.all(ids.map(requireLocation));
+			return orderedPair(ids[0], ids[1]).join('|');
+		}
+		case 'missing_course_tag': {
+			if (!(await getItemById(getDb(), subject))) throw new Error(`No item with id "${subject}".`);
+			return subject;
+		}
+		case 'html_entities': {
+			const [kind, id, field] = subject.split(':');
+			if (kind === 'item' && (field === 'item_name' || field === 'description') && id) {
+				if (!(await getItemById(getDb(), id))) throw new Error(`No item with id "${id}".`);
+				return subject;
+			}
+			if (kind === 'location' && id && field === undefined) {
+				await requireLocation(id);
+				return subject;
+			}
+			if (kind === 'menu' && id && field === undefined) {
+				if (!(await getMenuById(getDb(), id))) throw new Error(`No menu with id "${id}".`);
+				return subject;
+			}
+			if (kind === 'brand' && id && field === undefined) {
+				if (!(await getBrandById(getDb(), id))) throw new Error(`No brand with id "${id}".`);
+				return subject;
+			}
+			throw new Error(
+				'An html_entities subject is "item:<id>:<field>", "location:<id>", "menu:<id>" or "brand:<id>".'
+			);
+		}
+		default: {
+			// The remaining checks all flag a single location.
+			await requireLocation(subject);
+			return subject;
+		}
+	}
+}
 
 const allTools = [...tools, ...chainTools, ...osmTools];
 

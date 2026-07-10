@@ -1,5 +1,6 @@
 import { test, expect } from 'bun:test';
 import { findHtmlEntities } from './find-html-entities';
+import { fnv1a } from './audit-dismiss';
 import {
 	insertLocations,
 	insertBrand,
@@ -218,16 +219,31 @@ test('flags encoded location, menu and brand names; ignores plain ampersands', a
 	await db.prepare(`UPDATE brands SET name = 'A&amp;W' WHERE id = ?`).bind(brandId).run();
 
 	const res = await findHtmlEntities(db);
-	expect(res.locations).toEqual([
+	expect(res.locations).toMatchObject([
 		{
 			id: venue,
 			name: 'A&amp;W Legacy',
 			decoded: 'A&W Legacy',
-			address: '1 Test St, Vancouver, BC V6J 1M5'
+			address: '1 Test St, Vancouver, BC V6J 1M5',
+			dismiss_key: `location:${venue}#${fnv1a('A&amp;W Legacy')}`
 		}
 	]);
-	expect(res.menus).toEqual([{ id: menuId, name: 'A&amp;W CA', decoded: 'A&W CA' }]);
-	expect(res.brands).toEqual([{ id: brandId, name: 'A&amp;W', decoded: 'A&W' }]);
+	expect(res.menus).toMatchObject([
+		{
+			id: menuId,
+			name: 'A&amp;W CA',
+			decoded: 'A&W CA',
+			dismiss_key: `menu:${menuId}#${fnv1a('A&amp;W CA')}`
+		}
+	]);
+	expect(res.brands).toMatchObject([
+		{
+			id: brandId,
+			name: 'A&amp;W',
+			decoded: 'A&W',
+			dismiss_key: `brand:${brandId}#${fnv1a('A&amp;W')}`
+		}
+	]);
 	expect(res.total).toBe(3);
 	expect(res.items).toEqual([]);
 });

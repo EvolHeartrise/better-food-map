@@ -23,11 +23,12 @@
 
 import type { D1Like } from '../../src/lib/server/db';
 import { TAGS } from '../../src/lib/tags';
+import { DismissFilter, type DismissableFinding, type DismissalOpts } from './audit-dismiss';
 
 const courseTagIds = TAGS.filter((t) => t.tag_type === 'course').map((t) => t.id);
 
 /** One flagged item on the missing-course-tag work-list. */
-export interface MissingCourseTagItem {
+export interface MissingCourseTagItem extends DismissableFinding {
 	id: string;
 	item_name: string;
 	menu_id: string;
@@ -46,6 +47,8 @@ export interface FindMissingCourseTagsResult {
 	returned: number;
 	/** Flagged items NOT returned because of `limit`/`offset` (total - returned). */
 	additional: number;
+	/** Findings a stored dismissal matched (dropped, or annotated under include_dismissed). */
+	suppressed_dismissed: number;
 	limit: number;
 	offset: number;
 }
@@ -141,10 +144,11 @@ interface MissingCourseTagRow {
  */
 export async function findMissingCourseTags(
 	db: D1Like,
-	opts: { limit?: number; offset?: number } = {}
+	opts: { limit?: number; offset?: number } & DismissalOpts = {}
 ): Promise<FindMissingCourseTagsResult> {
 	const limit = Math.min(Math.max(1, Math.trunc(opts.limit ?? DEFAULT_LIMIT)), MAX_LIMIT);
 	const offset = Math.max(0, Math.trunc(opts.offset ?? 0));
+	const filter = new DismissFilter(opts);
 
 	const placeholders = courseTagIds.map(() => '?').join(', ');
 	const { results } = await db
@@ -163,14 +167,23 @@ export async function findMissingCourseTags(
 		.bind(...courseTagIds)
 		.all<MissingCourseTagRow>();
 
-	const flagged: MissingCourseTagItem[] = results.map((r) => ({
-		id: r.id,
-		item_name: r.item_name,
-		menu_id: r.menu_id,
-		menu_name: r.menu_name,
-		location_count: r.location_count,
-		hint: hintFor(r.item_name)
-	}));
+	// Dismissals here should be RARE (the course-tag mandate wants a tag on every
+	// item), but the generic mechanism still applies — e.g. an item whose course
+	// genuinely cannot be sourced yet.
+	const flagged: MissingCourseTagItem[] = [];
+	for (const r of results) {
+		const decision = filter.evaluate(r.id, '');
+		if (decision.drop) continue;
+		flagged.push({
+			id: r.id,
+			item_name: r.item_name,
+			menu_id: r.menu_id,
+			menu_name: r.menu_name,
+			location_count: r.location_count,
+			hint: hintFor(r.item_name),
+			...decision.fields
+		});
+	}
 
 	// Hint-first (drink, then dessert, then no hint), then by menu/item name — the
 	// SQL ORDER BY already sorted by menu/item name, so this sort is stable within
@@ -183,6 +196,7 @@ export async function findMissingCourseTags(
 		total: flagged.length,
 		returned: items.length,
 		additional: flagged.length - offset - items.length,
+		suppressed_dismissed: filter.suppressed,
 		limit,
 		offset
 	};

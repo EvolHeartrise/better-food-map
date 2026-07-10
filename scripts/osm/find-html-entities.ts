@@ -25,6 +25,7 @@
 import { formatAddress } from '../../src/lib/address';
 import { decodeHtmlEntities } from '../../src/lib/text';
 import type { D1Like } from '../../src/lib/server/db';
+import { DismissFilter, fnv1a, type DismissableFinding, type DismissalOpts } from './audit-dismiss';
 
 /** A location serving a menu that carries an encoded item (blast-radius context). */
 export interface EncodedItemLocation {
@@ -33,7 +34,7 @@ export interface EncodedItemLocation {
 }
 
 /** One flagged menu item (fix with update_items using `decoded`). */
-export interface EncodedItem {
+export interface EncodedItem extends DismissableFinding {
 	id: string;
 	menu_id: string;
 	/** Which text field carries the encoded entity. */
@@ -49,7 +50,7 @@ export interface EncodedItem {
 }
 
 /** One flagged location name (fix with update_locations using `decoded`). */
-export interface EncodedLocation {
+export interface EncodedLocation extends DismissableFinding {
 	id: string;
 	name: string;
 	decoded: string;
@@ -58,7 +59,7 @@ export interface EncodedLocation {
 }
 
 /** One flagged menu/brand name (fix with update_menu / update_brand). */
-export interface EncodedName {
+export interface EncodedName extends DismissableFinding {
 	id: string;
 	name: string;
 	decoded: string;
@@ -75,6 +76,8 @@ export interface FindHtmlEntitiesResult {
 	returned: number;
 	/** Flagged rows NOT returned because of `limit` (total - returned). */
 	additional: number;
+	/** Findings a stored dismissal matched (dropped, or annotated under include_dismissed). */
+	suppressed_dismissed: number;
 }
 
 const DEFAULT_LIMIT = 50;
@@ -94,9 +97,12 @@ function isEncoded(value: string | null): value is string {
  */
 export async function findHtmlEntities(
 	db: D1Like,
-	opts: { limit?: number } = {}
+	opts: { limit?: number } & DismissalOpts = {}
 ): Promise<FindHtmlEntitiesResult> {
 	const limit = Math.min(Math.max(1, Math.trunc(opts.limit ?? DEFAULT_LIMIT)), MAX_LIMIT);
+	// Subjects span four tables, so they carry a kind prefix; the fingerprint
+	// hashes the stored text — edited text is new evidence.
+	const filter = new DismissFilter(opts);
 
 	// Prefilter in SQL — an entity is always "&…;", so '%&%;%' catches every
 	// candidate while skipping the vast majority of plain "Fish & Chips" rows.
@@ -140,20 +146,26 @@ export async function findHtmlEntities(
 		for (const field of ['item_name', 'description'] as const) {
 			const value = row[field];
 			if (isEncoded(value)) {
+				const decision = filter.evaluate(`item:${row.id}:${field}`, fnv1a(value));
+				if (decision.drop) continue;
 				flaggedItems.push({
 					id: row.id,
 					menu_id: row.menu_id,
 					field,
 					value,
-					decoded: decodeHtmlEntities(value)
+					decoded: decodeHtmlEntities(value),
+					...decision.fields
 				});
 			}
 		}
 	}
 
-	const flaggedLocations: EncodedLocation[] = locationRows.results
-		.filter((r) => isEncoded(r.name))
-		.map((r) => ({
+	const flaggedLocations: EncodedLocation[] = [];
+	for (const r of locationRows.results) {
+		if (!isEncoded(r.name)) continue;
+		const decision = filter.evaluate(`location:${r.id}`, fnv1a(r.name));
+		if (decision.drop) continue;
+		flaggedLocations.push({
 			id: r.id,
 			name: r.name,
 			decoded: decodeHtmlEntities(r.name),
@@ -162,19 +174,31 @@ export async function findHtmlEntities(
 				city: r.city,
 				region: r.region,
 				postcode: r.postcode
-			})
-		}));
+			}),
+			...decision.fields
+		});
+	}
 
-	const flagNames = (rows: { id: string; name: string }[]): EncodedName[] =>
-		rows
-			.filter((r) => isEncoded(r.name))
-			.map((r) => ({
+	const flagNames = (
+		rows: { id: string; name: string }[],
+		kind: 'menu' | 'brand'
+	): EncodedName[] => {
+		const out: EncodedName[] = [];
+		for (const r of rows) {
+			if (!isEncoded(r.name)) continue;
+			const decision = filter.evaluate(`${kind}:${r.id}`, fnv1a(r.name));
+			if (decision.drop) continue;
+			out.push({
 				id: r.id,
 				name: r.name,
-				decoded: decodeHtmlEntities(r.name)
-			}));
-	const flaggedMenus = flagNames(menuRows.results);
-	const flaggedBrands = flagNames(brandRows.results);
+				decoded: decodeHtmlEntities(r.name),
+				...decision.fields
+			});
+		}
+		return out;
+	};
+	const flaggedMenus = flagNames(menuRows.results, 'menu');
+	const flaggedBrands = flagNames(brandRows.results, 'brand');
 
 	// Blast radius for the returned items: which locations serve each flagged menu.
 	const returnedItems = flaggedItems.slice(0, limit);
@@ -217,6 +241,7 @@ export async function findHtmlEntities(
 		brands,
 		total,
 		returned,
-		additional: total - returned
+		additional: total - returned,
+		suppressed_dismissed: filter.suppressed
 	};
 }
