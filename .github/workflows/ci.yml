@@ -60,3 +60,8 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Build
         run: bun run build
+      # The Capacitor app build shares the codebase with the web build; running it
+      # here keeps the dual-build config (adapter-static SPA + /api/v1 shims) from
+      # rotting. No native (gradle/xcode) step — that needs a Mac / Android SDK.
+      - name: Build (Capacitor app bundle)
+        run: bun run build:app

@@ -1,25 +1,54 @@
-import { defineCustomClientStrategy, isLocale } from '$lib/paraglide/runtime';
+import {
+	baseLocale,
+	defineCustomClientStrategy,
+	extractLocaleFromNavigator,
+	getTextDirection,
+	isLocale
+} from '$lib/paraglide/runtime';
+import { IS_APP } from '$lib/app/platform';
 
 // Client half of the `custom-appLocale` strategy (its server half lives in
-// hooks.server.ts). The server resolves the request locale and renders it into
-// `<html lang>`; the client reads that same attribute back, so client and server
-// always agree on the locale with zero extra state — no cookie, no
-// `navigator.languages` re-negotiation that could disagree with the server's
-// Accept-Language decision, and therefore no hydration flicker.
-//
-// In Phase 1 nothing renders a message on the client yet, so this is a rail for
-// later phases rather than something with a visible effect today.
-defineCustomClientStrategy('custom-appLocale', {
-	getLocale: () => {
-		const lang = document.documentElement.lang;
-		// Guard: fall through to the next strategy (baseLocale) rather than throw
-		// if the attribute is ever missing/unexpected.
-		return isLocale(lang) ? lang : undefined;
-	},
-	// No locale switcher exists in Phase 1, so this is never called. Phase 4 wires
-	// persistence here (write the LOCALE_COOKIE from hooks.server.ts, then reload).
-	// Keeping the DOM attribute in step is a harmless, correct minimum for now.
-	setLocale: (locale) => {
+// hooks.server.ts). Two shapes, by build target:
+if (IS_APP) {
+	// APP: there is no server to stamp <html lang> per request — the static shell
+	// carries a single build-time locale (baseLocale) — so we resolve the locale
+	// from the DEVICE. `extractLocaleFromNavigator` matches navigator.languages
+	// against the supported set (full tag first, then language-prefix), and we
+	// fall back to baseLocale. The result is applied to <html lang>/<dir> up front
+	// (fixing the shell's build-time value) and returned by the strategy so every
+	// message renders in it. There is no in-app locale switcher — the UI language
+	// tracks the device setting.
+	const resolveAppLocale = () => {
+		const detected = extractLocaleFromNavigator();
+		return detected && isLocale(detected) ? detected : baseLocale;
+	};
+	const applyLocale = (locale: string) => {
 		document.documentElement.lang = locale;
-	}
-});
+		document.documentElement.dir = getTextDirection(locale);
+	};
+
+	applyLocale(resolveAppLocale());
+
+	defineCustomClientStrategy('custom-appLocale', {
+		getLocale: () => resolveAppLocale(),
+		setLocale: (locale) => applyLocale(locale)
+	});
+} else {
+	// WEB: the server resolves the request locale and renders it into <html lang>;
+	// the client reads that same attribute back, so client and server always agree
+	// with zero extra state — no cookie, no navigator re-negotiation, no hydration
+	// flicker.
+	defineCustomClientStrategy('custom-appLocale', {
+		getLocale: () => {
+			const lang = document.documentElement.lang;
+			// Guard: fall through to the next strategy (baseLocale) rather than throw
+			// if the attribute is ever missing/unexpected.
+			return isLocale(lang) ? lang : undefined;
+		},
+		// Keeping the DOM attribute in step is a harmless, correct minimum: an
+		// explicit locale switch reloads the page, so the server re-renders it.
+		setLocale: (locale) => {
+			document.documentElement.lang = locale;
+		}
+	});
+}

@@ -11,6 +11,8 @@ The archive `{name}` is a **version token, not an R2 object key**: `PMTILES_PATH
 
 The app's map style (`TILE_ARCHIVE` in `src/lib/components/LocationMap.svelte` at the repo root) inlines the versioned tile URL template directly — it does not fetch the TileJSON, which would cost a serial round trip before the first tile on the map's LCP path.
 
+`ALLOWED_ORIGINS` (CORS) includes the mobile app's WebView origins — `capacitor://localhost` (iOS) and `https://localhost` (Android) — alongside the production site and `http://localhost:5050` (vite dev), so the Capacitor app's map fetches tiles too. This Worker is **deployed manually** (see below), so an origin change here only takes effect on the next manual deploy — it does not ride the app's CI.
+
 ## Refreshing the planet archive
 
 1. Upload the new Protomaps build over `planet.pmtiles` in the `better-food-map-tiles` bucket (multipart upload replaces the object atomically; see the aria2 + rclone notes from the original migration). In-flight range reads against the old object are protected by the PMTiles etag guard. **Never delete-then-upload**: a window with the key missing serves 404s (returned `no-store` and evicted by the guard, so it self-heals — but it's still an outage).

@@ -8,8 +8,11 @@ import {
 	GOOGLE_SCOPES,
 	STATE_COOKIE,
 	CODE_VERIFIER_COOKIE,
-	REDIRECT_COOKIE
+	REDIRECT_COOKIE,
+	APP_CLIENT_COOKIE,
+	APP_CLIENT_VALUE
 } from '$lib/server/oauth';
+import { isValidAppState } from '$lib/server/app-auth';
 import { safeInternalPath } from '$lib/redirect';
 import type { RequestHandler } from './$types';
 
@@ -37,6 +40,19 @@ export const GET: RequestHandler = (event) => {
 		safeInternalPath(event.url.searchParams.get('redirectTo')),
 		cookieOptions
 	);
+	// Mobile-app round trip (`?client=app`): mark it so the callback hands the app a
+	// one-time code via the custom-scheme redirect instead of a browser session
+	// cookie. The app also passes its own high-entropy `state`, which we store AS the
+	// cookie value (validated to a strict hex charset first) and the callback reflects
+	// on the custom-scheme redirect — so only the app instance that started sign-in
+	// can redeem the resulting code (login-CSRF / session-fixation defense). A missing
+	// or malformed state degrades to a plain browser sign-in (empty value → no app
+	// hand-off). Written UNCONDITIONALLY with the same lifetime as the others so a
+	// stale value from a prior sign-in can never linger and misroute this one.
+	const isApp = event.url.searchParams.get('client') === APP_CLIENT_VALUE;
+	const stateParam = event.url.searchParams.get('state');
+	const appState = isApp && isValidAppState(stateParam) ? stateParam : '';
+	event.cookies.set(APP_CLIENT_COOKIE, appState, cookieOptions);
 
 	return new Response(null, { status: 302, headers: { location: url.toString() } });
 };

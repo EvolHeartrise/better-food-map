@@ -1390,6 +1390,17 @@ function toUser(row: UserRow): User {
 	};
 }
 
+/** Looks up a user by id, or null. Used by the app auth-code exchange
+ *  ($lib/server/app-auth) to load the user a redeemed code points at, so the
+ *  `/api/v1/auth/token` response can echo the signed-in profile. */
+export async function getUserById(db: D1Like, id: string): Promise<User | null> {
+	const row = await db
+		.prepare(`SELECT id, email, email_verified, name, picture FROM users WHERE id = ?`)
+		.bind(id)
+		.first<UserRow>();
+	return row ? toUser(row) : null;
+}
+
 /** Looks up the user behind a provider identity (e.g. a Google `sub`), or null. */
 export async function getUserByOAuth(
 	db: D1Like,
@@ -1552,6 +1563,61 @@ export async function deleteSession(db: D1Like, sessionId: string): Promise<void
  */
 export async function deleteExpiredSessions(db: D1Like, now: number): Promise<void> {
 	await db.prepare(`DELETE FROM sessions WHERE expires_at <= ?`).bind(now).run();
+}
+
+// ---------------------------------------------------------------------------
+// App OAuth one-time codes (migration 0026) — the mobile-app sign-in hand-off.
+//
+// Google blocks OAuth inside a WebView, so the app opens the SYSTEM browser at
+// the normal /auth/login/google flow (marked ?client=app); the callback, instead
+// of setting a browser session cookie the app can't read, mints a short-lived
+// one-time CODE and redirects to a custom scheme the app intercepts. The app then
+// exchanges that code for a session token at POST /api/v1/auth/token. Like the
+// session token, only the code's SHA-256 is stored here — the raw code lives only
+// in the redirect URL — so a leak of this table can't be replayed. See
+// $lib/server/app-auth for the hashing + single-use redemption on top of these.
+// ---------------------------------------------------------------------------
+
+/** Stores a one-time app auth code (its SHA-256 hash only) for a user. */
+export async function insertAppAuthCode(
+	db: D1Like,
+	codeHash: string,
+	userId: string,
+	now: number,
+	expiresAt: number
+): Promise<void> {
+	await db
+		.prepare(
+			`INSERT INTO app_auth_codes (code_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)`
+		)
+		.bind(codeHash, userId, now, expiresAt)
+		.run();
+}
+
+/**
+ * Atomically consumes a one-time app auth code: deletes the row for `codeHash`
+ * and returns what it held (`user_id`, `expires_at`), or null when no such row
+ * exists. The DELETE … RETURNING is the single-use guard — a replay of the same
+ * code finds the row already gone and gets null, with no time-of-check/
+ * time-of-use window — so the caller need only reject an expired `expires_at`
+ * (the row is consumed either way, which is correct: an expired code is spent).
+ */
+export async function redeemAppAuthCode(
+	db: D1Like,
+	codeHash: string
+): Promise<{ userId: string; expiresAt: number } | null> {
+	const row = await db
+		.prepare(`DELETE FROM app_auth_codes WHERE code_hash = ? RETURNING user_id, expires_at`)
+		.bind(codeHash)
+		.first<{ user_id: string; expires_at: number }>();
+	return row ? { userId: row.user_id, expiresAt: row.expires_at } : null;
+}
+
+/** Deletes every app auth code whose expiry has passed (opportunistic cleanup,
+ *  fired from the token-exchange endpoint — the codes are short-lived and
+ *  single-use, so leftover expired rows are just unredeemed abandoned sign-ins). */
+export async function deleteExpiredAppAuthCodes(db: D1Like, now: number): Promise<void> {
+	await db.prepare(`DELETE FROM app_auth_codes WHERE expires_at <= ?`).bind(now).run();
 }
 
 /** Returns a user's liked location and item ids, newest first. */
