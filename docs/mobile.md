@@ -2,7 +2,8 @@
 
 BetterFoodMaps ships as a native iOS/Android app that wraps the same SvelteKit
 frontend as the website. This document covers how it is built, how auth and deep
-links work, the dev workflow, and what still blocks a store submission.
+links work, and the dev workflow; the remaining path to a store submission is
+tracked in the GitHub issues listed at the bottom.
 
 ## Architecture
 
@@ -140,21 +141,14 @@ supported locales, base-locale fallback) in `hooks.client.ts`. There is no
 in-app language override; the account menu's language picker only persists a
 signed-in user's choice to their **web** account (`PUT /api/v1/me/locale`).
 
-## Ship-blockers checklist
+## Remaining work
 
-Before a store submission, these must be resolved (none are done here):
-
-- [ ] **Sign in with Apple** — App Store review **requires** it for any app that
-      offers third-party sign-in (we offer Google). Not implemented.
-- [ ] **App icons & splash screens** — currently Capacitor defaults. Generate
-      and install real assets.
-- [ ] **`bun run d1:migrate`** — apply migration `0026_app_auth_codes.sql`
-      (the one-time app auth codes table) to the production D1. CI does not run
-      D1 migrations.
-- [ ] **Redeploy the tiles worker** — its `ALLOWED_ORIGINS` must include the app
-      origins (`capacitor://localhost`, `https://localhost`) so tile fetches
-      aren't CORS-blocked. Deploy is manual (`workers/tiles/`).
-- [ ] **Store metadata & signing** — bundle ids exist (`com.betterfoodmaps.app`)
-      but signing certs/keystores, provisioning, and store listings are not set
-      up.
-- [ ] **Universal Links / App Links** (optional) — see the deep-link section.
+The one-off deploy steps from the initial ship (production D1 migration
+`0026_app_auth_codes.sql`, tiles-worker redeploy with the app origins) are
+**done**. Everything still standing between this code and the app stores is
+tracked as GitHub issues under the
+[`mobile` label](https://github.com/EvolHeartrise/better-food-map/issues?q=is%3Aissue+is%3Aopen+label%3Amobile)
+— first on-device builds (#290), Sign in with Apple (#291), icons/splash
+(#292), signing & store listings (#293), native affordances for App Store 4.2
+(#294), Universal/App Links (#295), session-expiry UX (#296), in-app language
+override (#297).
