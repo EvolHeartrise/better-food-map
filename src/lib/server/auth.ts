@@ -9,10 +9,13 @@ import { hostCookieName } from './cookie-name';
 export {
 	SESSION_TTL_MS,
 	generateSessionToken,
+	parseBearerToken,
+	sessionSourceFor,
 	createUserSession,
 	createLazySessionResolver,
 	validateSessionToken,
 	invalidateSessionToken,
+	type SessionSource,
 	type ResolvedSession,
 	type SessionCookieSink,
 	type SessionValidation

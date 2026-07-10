@@ -44,9 +44,11 @@
 		}
 	],
 	"vars": {
-		// CORS allowlist: comma-separated exact Origin matches. The production
-		// app plus vite dev (port 5050, see the repo root vite.config.ts).
-		"ALLOWED_ORIGINS": "https://betterfoodmaps.com,http://localhost:5050",
+		// CORS allowlist: comma-separated exact Origin matches. The production app,
+		// vite dev (port 5050, see the repo root vite.config.ts), and the mobile
+		// app's WebView origins — capacitor://localhost (iOS) and https://localhost
+		// (Android) — so the app's map can fetch basemap tiles too.
+		"ALLOWED_ORIGINS": "https://betterfoodmaps.com,http://localhost:5050,capacitor://localhost,https://localhost",
 		// Hostname baked into the tile URLs the TileJSON hands out, so clients
 		// are always pointed at the public custom domain regardless of which
 		// host the TileJSON request itself arrived on.

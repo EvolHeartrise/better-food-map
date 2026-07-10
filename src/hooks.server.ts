@@ -14,8 +14,16 @@ import {
 	SESSION_COOKIE,
 	clearSessionCookie,
 	createLazySessionResolver,
+	parseBearerToken,
+	sessionSourceFor,
 	setSessionCookie
 } from '$lib/server/auth';
+import {
+	API_V1_PREFIX,
+	apiAllowedOrigins,
+	apiPreflightResponse,
+	applyApiResponseHeaders
+} from '$lib/server/api-cors';
 import { LOCALE_COOKIE } from '$lib/server/locale-cookie';
 import { deleteExpiredSessions } from '$lib/server/db';
 
@@ -62,17 +70,6 @@ const canonicalHost: Handle = async ({ event, resolve }) => {
 // collects cookies set any time before the response is constructed, so writes
 // from within SSR or a remote-endpoint request still reach Set-Cookie.
 const authenticate: Handle = async ({ event, resolve }) => {
-	// `__Host-` migration: sessions opened before the cookie rename still arrive
-	// under the legacy unprefixed name. Fall back to that token for this request;
-	// once it validates (lazily, below) the token is re-set under the prefixed
-	// name and the legacy cookie is deleted, so deployed users stay signed in.
-	// In dev the two names are identical and `legacyToken` is always undefined.
-	const prefixedToken = event.cookies.get(SESSION_COOKIE);
-	const legacyToken =
-		!prefixedToken && SESSION_COOKIE !== LEGACY_SESSION_COOKIE
-			? event.cookies.get(LEGACY_SESSION_COOKIE)
-			: undefined;
-	const token = prefixedToken ?? legacyToken;
 	const db = event.platform?.env?.DB;
 
 	// Opportunistically sweep expired session rows on ~1% of requests, in the
@@ -84,6 +81,39 @@ const authenticate: Handle = async ({ event, resolve }) => {
 	if (db && Math.random() < 0.01) {
 		event.platform?.ctx?.waitUntil(deleteExpiredSessions(db, Date.now()).catch(() => {}));
 	}
+
+	// BEARER path (the mobile app): the app can't use cookies, so it presents its
+	// session as `Authorization: Bearer <token>`. Resolve it through the SAME lazy,
+	// memoized machinery, but with a no-op cookie sink — a bearer request reads and
+	// writes NO cookies (a sliding-expiry refresh still updates the D1 row; it just
+	// can't re-set a cookie that doesn't exist). Taken before any cookie read so the
+	// browser cookie path below is byte-for-byte untouched. A request carrying both a
+	// bearer header and cookies (not a real client shape) resolves via the bearer
+	// token and leaves the cookies alone.
+	// Record HOW this request's session is resolved so mutating /api/v1 routes can
+	// require the bearer path (requireBearerUser in $lib/server/api) and reject a
+	// cookie-driven mutation. Set for EVERY request, before either branch.
+	const authHeader = event.request.headers.get('authorization');
+	event.locals.sessionSource = sessionSourceFor(authHeader);
+
+	const bearer = parseBearerToken(authHeader);
+	if (bearer) {
+		const noCookies = { setCookie: () => {}, clearCookie: () => {} };
+		event.locals.getSession = createLazySessionResolver(db, bearer, noCookies);
+		return resolve(event);
+	}
+
+	// `__Host-` migration: sessions opened before the cookie rename still arrive
+	// under the legacy unprefixed name. Fall back to that token for this request;
+	// once it validates (lazily, below) the token is re-set under the prefixed
+	// name and the legacy cookie is deleted, so deployed users stay signed in.
+	// In dev the two names are identical and `legacyToken` is always undefined.
+	const prefixedToken = event.cookies.get(SESSION_COOKIE);
+	const legacyToken =
+		!prefixedToken && SESSION_COOKIE !== LEGACY_SESSION_COOKIE
+			? event.cookies.get(LEGACY_SESSION_COOKIE)
+			: undefined;
+	const token = prefixedToken ?? legacyToken;
 
 	const getSession = createLazySessionResolver(db, token, {
 		setCookie: (t, expiresAt) => setSessionCookie(event.cookies, t, expiresAt),
@@ -294,6 +324,31 @@ const securityHeaders: Handle = async ({ event, resolve }) => {
 	return response;
 };
 
+// CORS + no-store for the mobile app's JSON API (`/api/v1/*`, see
+// src/routes/api/v1 and $lib/server/api). Applied as a hook rather than per route
+// so EVERY /api/v1 response is covered uniformly — successes, thrown errors, and
+// framework 404s for unknown /api/v1 paths alike — and no route can forget it:
+//   • OPTIONS is answered here as the CORS preflight, before any route logic;
+//   • every other /api/v1 response gets the exact-origin CORS headers (echoing an
+//     allow-listed Origin only) and `Cache-Control: no-store`.
+// no-store matters because these are per-user surfaces (bearer-auth likes/diet)
+// and even the public ones are keyed on user-suppliable input — none may be
+// shared/edge-cached, mirroring how remote functions are no-store today. These
+// paths are NOT the public English crawl surface (isPublicEnglishSurface), so the
+// locale pinning there doesn't touch them.
+// The effective CORS allowlist, built once from `dev` (from $app/environment):
+// the production WebView origins plus the local `vite dev` origin ONLY in dev, so
+// the dev origin never ships in the production allowlist.
+const API_ORIGINS = apiAllowedOrigins(dev);
+
+const apiCors: Handle = async ({ event, resolve }) => {
+	if (!event.url.pathname.startsWith(API_V1_PREFIX)) return resolve(event);
+	if (event.request.method === 'OPTIONS') return apiPreflightResponse(event.request, API_ORIGINS);
+	const response = await resolve(event);
+	applyApiResponseHeaders(event.request, response, API_ORIGINS);
+	return response;
+};
+
 // The map is public — there is no navigation gate. `authenticate` only installs
 // the lazy resolver; the optional signed-in user (account menu, likes, saved
 // diet) is resolved on demand, and the user-scoped remote functions guard
@@ -305,4 +360,9 @@ const securityHeaders: Handle = async ({ event, resolve }) => {
 // session cookie). `localize` then establishes the per-request Paraglide locale
 // context around the app resolve. Both sit after `canonicalHost`, so a 301'd host
 // skips the auth + locale work entirely.
-export const handle = sequence(securityHeaders, canonicalHost, authenticate, localize);
+// `apiCors` sits innermost (after authenticate, so `locals.getSession` — the
+// bearer resolver for app requests — is installed before an /api/v1 route reads
+// it, and after localize so a JSON error string still resolves in the caller's
+// locale). securityHeaders stays outermost so its browser headers also land on
+// the /api/v1 CORS/preflight responses.
+export const handle = sequence(securityHeaders, canonicalHost, authenticate, localize, apiCors);
