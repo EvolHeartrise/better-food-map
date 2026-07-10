@@ -25,9 +25,10 @@
 
 import { formatAddress } from '../../src/lib/address';
 import type { D1Like } from '../../src/lib/server/db';
+import { DismissFilter, type DismissableFinding, type DismissalOpts } from './audit-dismiss';
 
 /** One flagged location on the empty/thin-menu work-list. */
-export interface IncompleteMenuLocation {
+export interface IncompleteMenuLocation extends DismissableFinding {
 	id: string;
 	name: string;
 	/** Canonical single-line display address (derived, never stored). */
@@ -46,6 +47,8 @@ export interface FindIncompleteMenusResult {
 	returned: number;
 	/** Flagged locations NOT returned because of `limit` (total - returned). */
 	additional: number;
+	/** Findings a stored dismissal matched (dropped, or annotated under include_dismissed). */
+	suppressed_dismissed: number;
 	/** The threshold applied — a location is flagged when its effective count is below this. */
 	min_items: number;
 }
@@ -80,10 +83,11 @@ interface IncompleteRow {
  */
 export async function findIncompleteMenus(
 	db: D1Like,
-	opts: { min_items?: number; limit?: number } = {}
+	opts: { min_items?: number; limit?: number } & DismissalOpts = {}
 ): Promise<FindIncompleteMenusResult> {
 	const minItems = Math.max(0, Math.trunc(opts.min_items ?? DEFAULT_MIN_ITEMS));
 	const limit = Math.min(Math.max(0, Math.trunc(opts.limit ?? DEFAULT_LIMIT)), MAX_LIMIT);
+	const filter = new DismissFilter(opts);
 
 	const { results } = await db
 		.prepare(
@@ -106,19 +110,27 @@ export async function findIncompleteMenus(
 		.bind(minItems)
 		.all<IncompleteRow>();
 
-	const flagged = results.map((r) => ({
-		id: r.id,
-		name: r.name,
-		address: formatAddress({
-			street: r.street,
-			city: r.city,
-			region: r.region,
-			postcode: r.postcode
-		}),
-		item_count: r.item_count,
-		brand_id: r.brand_id,
-		menu_id: r.menu_id
-	}));
+	const flagged: IncompleteMenuLocation[] = [];
+	for (const r of results) {
+		// A dismissal says this venue's menu is legitimately this size (e.g. the
+		// source genuinely lists nothing); a changed count is new evidence.
+		const decision = filter.evaluate(r.id, String(r.item_count));
+		if (decision.drop) continue;
+		flagged.push({
+			id: r.id,
+			name: r.name,
+			address: formatAddress({
+				street: r.street,
+				city: r.city,
+				region: r.region,
+				postcode: r.postcode
+			}),
+			item_count: r.item_count,
+			brand_id: r.brand_id,
+			menu_id: r.menu_id,
+			...decision.fields
+		});
+	}
 
 	const locations = flagged.slice(0, limit);
 	return {
@@ -126,6 +138,7 @@ export async function findIncompleteMenus(
 		total: flagged.length,
 		returned: locations.length,
 		additional: flagged.length - locations.length,
+		suppressed_dismissed: filter.suppressed,
 		min_items: minItems
 	};
 }

@@ -14,11 +14,12 @@
 // ---------------------------------------------------------------------------
 
 import type { D1Like } from '../../src/lib/server/db';
+import { DismissFilter, type DismissableFinding, type DismissalOpts } from './audit-dismiss';
 import { osmUrl } from './map-feature';
 import type { OsmPoiStore } from './poi-store';
 import { LOCATION_AUDIT, nearestNameMatch } from './poi-match';
 
-export interface FindDriftParams {
+export interface FindDriftParams extends DismissalOpts {
 	/** Max mismatched locations to return (default 50, max 200). */
 	limit?: number;
 	/** A location is OSM-aligned when a name-matching POI sits within this many metres (default 1). */
@@ -34,7 +35,7 @@ export interface FindDriftParams {
 	include_unmatched?: boolean;
 }
 
-export interface DriftLocation {
+export interface DriftLocation extends DismissableFinding {
 	id: string;
 	name: string;
 	latitude: number;
@@ -60,6 +61,8 @@ export interface FindDriftResult {
 	returned: number;
 	/** Mismatches NOT returned because of `limit` (total_mismatches - returned). */
 	additional: number;
+	/** Findings a stored dismissal matched (dropped, or annotated under include_dismissed). */
+	suppressed_dismissed: number;
 	/** Full breakdown of what was found, regardless of include_unmatched. */
 	counts: { drifted: number; no_osm_match: number };
 }
@@ -105,22 +108,33 @@ export async function findCoordinateDrift(
 	const locations = await allLocations(db);
 	const drifted: DriftLocation[] = [];
 	const unmatched: DriftLocation[] = [];
+	const filter = new DismissFilter(params);
 
 	for (const loc of locations) {
 		const best = nearestNameMatch(store, loc, searchRadiusKm);
 
 		if (!best) {
+			// A "no staging POI carries our name" verdict holds as long as that stays
+			// true, so the fingerprint has no evidence dimension beyond the class.
+			const decision = filter.evaluate(loc.id, 'no_osm_match');
+			if (decision.drop) continue;
 			unmatched.push({
 				id: loc.id,
 				name: loc.name,
 				latitude: loc.latitude,
 				longitude: loc.longitude,
-				classification: 'no_osm_match'
+				classification: 'no_osm_match',
+				...decision.fields
 			});
 			continue;
 		}
 		if (best.dist <= tolerance) continue; // aligned — not a mismatch
 
+		// Fingerprint the matched node: a dismissal says "our coordinate is right
+		// even though THIS node disagrees" — a different matching node is new evidence.
+		const url = osmUrl(best.poi.osm_type, best.poi.numeric_id);
+		const decision = filter.evaluate(loc.id, `drifted:${url}`);
+		if (decision.drop) continue;
 		drifted.push({
 			id: loc.id,
 			name: loc.name,
@@ -128,10 +142,11 @@ export async function findCoordinateDrift(
 			longitude: loc.longitude,
 			classification: 'drifted',
 			distance_m: Math.round(best.dist),
-			osm_url: osmUrl(best.poi.osm_type, best.poi.numeric_id),
+			osm_url: url,
 			osm_latitude: best.poi.latitude,
 			osm_longitude: best.poi.longitude,
-			matched_osm_name: best.poi.name
+			matched_osm_name: best.poi.name,
+			...decision.fields
 		});
 	}
 
@@ -147,6 +162,7 @@ export async function findCoordinateDrift(
 		total_mismatches: total,
 		returned: mismatches.length,
 		additional: total - mismatches.length,
+		suppressed_dismissed: filter.suppressed,
 		counts: { drifted: drifted.length, no_osm_match: unmatched.length }
 	};
 }
