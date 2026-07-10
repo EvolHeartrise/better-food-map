@@ -29,6 +29,8 @@
 	"venue_unlike": "ਇਸ ਥਾਂ ਤੋਂ ਪਸੰਦ ਹਟਾਓ",
 	"venue_address_label": "ਪਤਾ",
 	"venue_phone_label": "ਫ਼ੋਨ",
+	"venue_hours_label": "ਖੁੱਲ੍ਹਣ ਦਾ ਸਮਾਂ",
+	"venue_hours_closed": "ਬੰਦ",
 	"venue_phone_extension": "ਐਕਸਟੈਂਸ਼ਨ {ext}",
 	"venue_website_label": "ਵੈੱਬਸਾਈਟ",
 	"venue_menu_label": "ਮੀਨੂ",

@@ -44,6 +44,7 @@ import {
 } from './db';
 import { impliedDietTagIds } from '../tags';
 import { formatAddress } from '../address';
+import { normalizeOpeningHours, weeklyHoursJson } from '../opening-hours';
 import { decodeHtmlEntities } from '../text';
 
 /**
@@ -488,10 +489,20 @@ function insertItemStmts(
 // ---------------------------------------------------------------------------
 
 /** Arguments accepted by {@link insertLocations} (one per location). */
-export type LocationInsert = Omit<Location, 'id' | 'brand_id' | 'menu_id' | 'address'> & {
+export type LocationInsert = Omit<
+	Location,
+	'id' | 'brand_id' | 'menu_id' | 'address' | 'opening_hours' | 'opening_hours_json'
+> & {
 	id?: string;
 	brand_id?: string | null;
 	menu_id?: string | null;
+	/**
+	 * RAW weekly hours in OSM `opening_hours` syntax; normalized on write and
+	 * stored alongside its derived `opening_hours_json` (see
+	 * src/lib/opening-hours.ts). The derived column is never taken from the
+	 * caller — this layer computes it, so the pair cannot drift.
+	 */
+	opening_hours?: string | null;
 	/**
 	 * Provenance for the PRIVATE menu created when `items` are given (sources are
 	 * menu-level). Ignored for a chain branch (which shares its menu) or a location
@@ -540,6 +551,9 @@ export async function insertLocations(db: D1Like, locs: LocationInsert[]): Promi
 		const id = loc.id ?? crypto.randomUUID();
 		ids.push(id);
 		const name = cleanText(loc.name);
+		// Raw hours normalize once; the machine-readable column is always derived
+		// from that same value (see LocationInsert.opening_hours).
+		const openingHours = normalizeOpeningHours(loc.opening_hours);
 		const hasItems = loc.items !== undefined && loc.items.length > 0;
 		if (hasItems && (loc.brand_id || loc.menu_id)) {
 			throw new Error(
@@ -575,8 +589,8 @@ export async function insertLocations(db: D1Like, locs: LocationInsert[]): Promi
 		stmts.push(
 			db
 				.prepare(
-					`INSERT INTO locations (id, name, category, latitude, longitude, street, city, region, postcode, country, phone, website, brand_id, menu_id, closed_at, closed_reason)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+					`INSERT INTO locations (id, name, category, latitude, longitude, street, city, region, postcode, country, phone, website, opening_hours, opening_hours_json, brand_id, menu_id, closed_at, closed_reason)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 				)
 				.bind(
 					id,
@@ -591,6 +605,8 @@ export async function insertLocations(db: D1Like, locs: LocationInsert[]): Promi
 					loc.country,
 					loc.phone,
 					loc.website,
+					openingHours,
+					weeklyHoursJson(openingHours),
 					loc.brand_id ?? null,
 					loc.menu_id ?? privateMenuId,
 					loc.closed_at ?? null,
@@ -676,12 +692,18 @@ const LOCATION_COLUMNS = [
 	'country',
 	'phone',
 	'website',
+	'opening_hours',
+	'opening_hours_json',
 	'brand_id',
 	'menu_id'
 ] as const;
 
-/** A partial update to one location, keyed by id (for {@link updateLocations}). */
-export type LocationPatch = Partial<Omit<Location, 'id' | 'address'>> & {
+/**
+ * A partial update to one location, keyed by id (for {@link updateLocations}).
+ * `opening_hours_json` is excluded: it is DERIVED from an `opening_hours` patch
+ * by this layer (see {@link locationUpdateStmts}), never set by a caller.
+ */
+export type LocationPatch = Partial<Omit<Location, 'id' | 'address' | 'opening_hours_json'>> & {
 	id: string;
 };
 
@@ -692,11 +714,20 @@ export type LocationPatch = Partial<Omit<Location, 'id' | 'address'>> & {
  * menu-level, so a location patch never touches sources (use update_menu).
  */
 function locationUpdateStmts(db: D1Like, patch: LocationPatch): D1PreparedLike[] {
+	// An hours patch writes BOTH columns — the normalized raw string and its
+	// derived weekly table — so the pair can never drift (`opening_hours: null`
+	// clears both).
+	const effective: LocationPatch & { opening_hours_json?: string | null } = { ...patch };
+	if (patch.opening_hours !== undefined) {
+		const raw = normalizeOpeningHours(patch.opening_hours);
+		effective.opening_hours = raw;
+		effective.opening_hours_json = weeklyHoursJson(raw);
+	}
 	const stmts: D1PreparedLike[] = [];
 	const assignments: string[] = [];
 	const values: (string | number | null)[] = [];
 	for (const col of LOCATION_COLUMNS) {
-		const value = patch[col];
+		const value = effective[col];
 		if (value !== undefined) {
 			assignments.push(`${col} = ?`);
 			values.push(col === 'name' && typeof value === 'string' ? cleanText(value) : value);

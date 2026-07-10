@@ -31,6 +31,8 @@
 	"venue_unlike": "Убрать лайк с заведения",
 	"venue_address_label": "Адрес",
 	"venue_phone_label": "Телефон",
+	"venue_hours_label": "Часы работы",
+	"venue_hours_closed": "Закрыто",
 	"venue_phone_extension": "доб. {ext}",
 	"venue_website_label": "Сайт",
 	"venue_menu_label": "Меню",

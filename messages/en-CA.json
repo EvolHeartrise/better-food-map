@@ -29,6 +29,8 @@
 	"venue_unlike": "Unlike this place",
 	"venue_address_label": "Address",
 	"venue_phone_label": "Phone",
+	"venue_hours_label": "Hours",
+	"venue_hours_closed": "Closed",
 	"venue_phone_extension": "ext. {ext}",
 	"venue_website_label": "Website",
 	"venue_menu_label": "Menu",

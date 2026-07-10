@@ -30,6 +30,8 @@
 	"venue_unlike": "Ya no me gusta este lugar",
 	"venue_address_label": "Dirección",
 	"venue_phone_label": "Teléfono",
+	"venue_hours_label": "Horario",
+	"venue_hours_closed": "Cerrado",
 	"venue_phone_extension": "ext. {ext}",
 	"venue_website_label": "Sitio web",
 	"venue_menu_label": "Menú",
