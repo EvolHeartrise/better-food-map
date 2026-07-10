@@ -342,8 +342,9 @@
 	// True while the landing should show (see the WORLD_ZOOM block): the map is zoomed out
 	// onto the globe with nothing open. An open location (including a `/locations/<id>`
 	// deep link, via `selectedId`) always takes precedence, and zooming back out brings the
-	// landing back. While it's up, the search controls are hidden so the globe and the two
-	// floating landing pieces are all that show.
+	// landing back. The search controls stay visible over it (they float alongside the
+	// two landing pieces); on narrow screens the landing lifts the bottom search row
+	// clear of its CTA block (see `app--landing`).
 	const landing = $derived(!selectedId && (zoomLevel === null || zoomLevel <= LANDING_MAX_ZOOM));
 
 	// The resolved record for the open location, always fetched by id: the
@@ -767,7 +768,12 @@
 	{/if}
 </svelte:head>
 
-<div class="app" class:app--detail={Boolean(selectedId)} style:--sheet-height="{sheetHeightPx}px">
+<div
+	class="app"
+	class:app--detail={Boolean(selectedId)}
+	class:app--landing={landing}
+	style:--sheet-height="{sheetHeightPx}px"
+>
 	<div class="app__map">
 		<LocationMap
 			locations={mapLocations}
@@ -823,85 +829,83 @@
 	<div class="searchbar" role="search" aria-label={m.search_bar_aria()}>
 		<AccountMenu {user} bind:open={accountMenuOpen} />
 
-		<!-- Search and filter controls are hidden while the landing overlay is up (the
-		     globe is just a backdrop then) AND while a location is open (its detail
-		     panel owns the page then); only the account control stays. They return the
-		     moment the visitor leaves the landing state or closes the location. -->
-		{#if !landing && !selectedId}
-			<div class="searchbar__items">
-				<!-- The combined search: one pill matching a venue by name OR by an item
+		<!-- Search and filter controls are always shown: over the landing globe, while
+		     browsing, and while a location's detail panel is open (the searchbar's
+		     max-width already clears the panel's 26rem edge on wide screens; on narrow
+		     ones the row rides above the bottom sheet — see the media query below). -->
+		<div class="searchbar__items">
+			<!-- The combined search: one pill matching a venue by name OR by an item
 			     name. A label so a click anywhere in the pill (the search icon included)
 			     focuses the input; the input is the only control inside it. -->
-				<label class="searchpill searchpill--search">
-					<input
-						class="searchpill__input"
-						type="search"
-						placeholder={m.search_placeholder()}
-						aria-label={m.search_input_aria()}
-						bind:value={query}
-						onkeydown={(event) => {
-							// Enter is a deliberate "search now": fire any pending debounce
-							// at once (no-op when nothing is pending — see flushSearch).
-							if (event.key === 'Enter') viewportStore.flushSearch?.();
-						}}
-						onpaste={() => {
-							// A paste lands whole, with no keystroke burst to coalesce: arm
-							// the one-shot bypass so the value change fires immediately.
-							viewportStore.searchImmediate = true;
-						}}
-					/>
-					{#if viewportStore.searching}
-						<!-- Replaces the search glyph while the global search round trip is
+			<label class="searchpill searchpill--search">
+				<input
+					class="searchpill__input"
+					type="search"
+					placeholder={m.search_placeholder()}
+					aria-label={m.search_input_aria()}
+					bind:value={query}
+					onkeydown={(event) => {
+						// Enter is a deliberate "search now": fire any pending debounce
+						// at once (no-op when nothing is pending — see flushSearch).
+						if (event.key === 'Enter') viewportStore.flushSearch?.();
+					}}
+					onpaste={() => {
+						// A paste lands whole, with no keystroke burst to coalesce: arm
+						// the one-shot bypass so the value change fires immediately.
+						viewportStore.searchImmediate = true;
+					}}
+				/>
+				{#if viewportStore.searching}
+					<!-- Replaces the search glyph while the global search round trip is
 						     in flight, so latency is visible right where the user typed. -->
-						<span class="searchpill__spinner" aria-hidden="true"></span>
-					{:else}
-						<Search class="searchpill__icon" size={16} aria-hidden="true" />
-					{/if}
-				</label>
+					<span class="searchpill__spinner" aria-hidden="true"></span>
+				{:else}
+					<Search class="searchpill__icon" size={16} aria-hidden="true" />
+				{/if}
+			</label>
 
-				<!-- The dietary selector: single-select. Filters items to the chosen diet,
+			<!-- The dietary selector: single-select. Filters items to the chosen diet,
 			     and persists the choice for the signed-in user (see selectDiet). -->
-				<DietSelector value={diet} onSelect={selectDiet} />
-			</div>
+			<DietSelector value={diet} onSelect={selectDiet} />
+		</div>
 
-			<!-- The keyboard/screen-reader path to the venues (the map pills are
+		<!-- The keyboard/screen-reader path to the venues (the map pills are
 			     aria-hidden and pointer-transparent): the same `results` the map plots,
 			     as real buttons. Visually hidden until focus enters it, then a compact
 			     panel below the search row (see .results). Capped — see listedResults. -->
-			{#if listedResults.length > 0}
-				<nav class="results" aria-label={m.results_nav_aria()}>
-					<ul class="results__list">
-						{#each listedResults as result (result.loc.id)}
-							<li>
-								<button
-									type="button"
-									class="results__item"
-									onclick={() => selectLocation(result.loc.id)}
-								>
-									<span class="results__name">{result.loc.name}</span>
-									{#if result.loc.address}
-										<span class="results__address">{result.loc.address}</span>
-									{/if}
-								</button>
-							</li>
-						{/each}
-					</ul>
-					{#if results.length > listedResults.length}
-						<p class="results__cap">
-							{m.results_cap({ max: RESULTS_LIST_MAX, total: results.length })}
-						</p>
-					{/if}
-				</nav>
-			{/if}
+		{#if listedResults.length > 0}
+			<nav class="results" aria-label={m.results_nav_aria()}>
+				<ul class="results__list">
+					{#each listedResults as result (result.loc.id)}
+						<li>
+							<button
+								type="button"
+								class="results__item"
+								onclick={() => selectLocation(result.loc.id)}
+							>
+								<span class="results__name">{result.loc.name}</span>
+								{#if result.loc.address}
+									<span class="results__address">{result.loc.address}</span>
+								{/if}
+							</button>
+						</li>
+					{/each}
+				</ul>
+				{#if results.length > listedResults.length}
+					<p class="results__cap">
+						{m.results_cap({ max: RESULTS_LIST_MAX, total: results.length })}
+					</p>
+				{/if}
+			</nav>
+		{/if}
 
-			<!-- A failed search/viewport fetch keeps the previous markers on screen (see
+		<!-- A failed search/viewport fetch keeps the previous markers on screen (see
 			     the fetch effects), so say so here rather than leaving the map looking
 			     silently stale or empty. Announced via the always-mounted live region
 			     below (regions added on the fly aren't reliably picked up), so this
 			     visible copy is hidden from assistive tech to avoid a double read. -->
-			{#if fetchStatus}
-				<p class="searchstatus" aria-hidden="true">{fetchStatus}</p>
-			{/if}
+		{#if fetchStatus}
+			<p class="searchstatus" aria-hidden="true">{fetchStatus}</p>
 		{/if}
 	</div>
 
@@ -1161,6 +1165,23 @@
 			flex-direction: column;
 			flex-wrap: nowrap;
 			align-items: center;
+		}
+
+		/* While the landing overlay is up its CTA + browse link are pinned to the same
+		   bottom-center spot, one z-layer above (15 vs 10) — lift the search row clear
+		   of that block (~6.2rem: CTA ~3rem + gap + link + the overlay's 1rem padding). */
+		.app--landing .searchbar {
+			bottom: calc(7.5rem + env(safe-area-inset-bottom));
+		}
+
+		/* While the detail sheet is open it covers the bottom of the screen (z-index 12,
+		   above the row's 10) — ride the row up above the sheet's live resting height,
+		   exactly like the MapLibre bottom controls below track it. */
+		.app--detail .searchbar {
+			bottom: calc(
+				0.75rem + var(--sheet-height, min(calc(320px + env(safe-area-inset-bottom)), 55dvh))
+			);
+			transition: bottom 0.3s ease;
 		}
 
 		/* The account/sign-in control stays anchored in the top-left corner, out of the
