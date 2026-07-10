@@ -98,13 +98,14 @@
 	}
 
 	// --- Menu course filter ------------------------------------------------------
-	// The segmented pill row above the menu list: All / Food / Dessert / Drinks.
+	// The horizontally-scrolling category row above the menu list: All / Food /
+	// Dessert / Drinks.
 	// Buckets come from the required course tags — Food is ABSENCE-based (neither
 	// dessert nor drink), so items from before the course-tag mandate (no course
 	// tag at all) still land somewhere sensible while the backlog drains. An item
 	// tagged both dessert and drink (a milkshake) appears under both. An OPTIONAL
 	// course tag never buckets (writes reject those now; pre-mandate data has none).
-	// Each course pill's label comes from the shared tagDisplayName ($lib/tags),
+	// Each course tab's label comes from the shared tagDisplayName ($lib/tags),
 	// keyed by the course id — one source of truth for course display names.
 	type CourseFilter = 'all' | 'food' | 'dessert' | 'drink';
 
@@ -117,14 +118,14 @@
 		dessert: loc.menu.filter((item) => hasCourse(item, 'dessert')),
 		drink: loc.menu.filter((item) => hasCourse(item, 'drink'))
 	});
-	// Only categories with items get a pill; the whole row disappears when the
+	// Only categories with items get a tab; the whole row disappears when the
 	// menu is single-category (an all-food diner, an all-drinks tea shop).
 	const courseOptions = $derived(
 		(['food', 'dessert', 'drink'] as const).filter((c) => courseBuckets[c].length > 0)
 	);
 
 	// The selection is remembered per venue id (no effect needed): switching to
-	// another venue reads as 'all' until a pill is clicked there.
+	// another venue reads as 'all' until a tab is clicked there.
 	let pickedCourse = $state<CourseFilter>('all');
 	let pickedForId = $state('');
 	const course = $derived.by((): CourseFilter => {
@@ -132,9 +133,13 @@
 		// Guard against a stale pick (menu changed under the same id).
 		return courseBuckets[pickedCourse].length > 0 ? pickedCourse : 'all';
 	});
-	function selectCourse(c: CourseFilter) {
+	function selectCourse(c: CourseFilter, tab?: HTMLElement) {
 		pickedForId = loc.id;
 		pickedCourse = c;
+		// A tab tapped while clipped at the row's edge slides fully into view
+		// (Google Maps-style); the pace comes from the row's CSS scroll-behavior,
+		// which prefers-reduced-motion resets to instant.
+		tab?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 	}
 
 	const visibleMenu = $derived(course === 'all' ? loc.menu : courseBuckets[course]);
@@ -425,7 +430,7 @@
 					type="button"
 					class="coursebar__btn"
 					aria-pressed={course === 'all'}
-					onclick={() => selectCourse('all')}
+					onclick={(e) => selectCourse('all', e.currentTarget)}
 				>
 					{m.course_all()}
 				</button>
@@ -434,7 +439,7 @@
 						type="button"
 						class="coursebar__btn"
 						aria-pressed={course === option}
-						onclick={() => selectCourse(option)}
+						onclick={(e) => selectCourse(option, e.currentTarget)}
 					>
 						{tagDisplayName(option)}
 					</button>
@@ -844,55 +849,68 @@
 		}
 	}
 
-	/* The course filter row above the menu list: quiet outlined pills matching the
-	   sources button's visual family; the active pill fills with the accent like
-	   the category badge. */
+	/* The course filter row above the menu list, styled after the Google Maps menu
+	   category strip: one non-wrapping row of quiet text tabs that scrolls
+	   horizontally, the active tab filled as a soft pill. The scrollbar is hidden —
+	   a tab clipped mid-word at the panel edge is the scroll affordance. Negative
+	   margins bleed the row through the placecard's horizontal padding (so tabs
+	   scroll off the panel edge, not to an inset stop), and matching padding
+	   restores the resting alignment with the sections above/below. */
 	.coursebar {
 		display: flex;
-		flex-wrap: wrap;
-		gap: 0.35rem;
+		flex-wrap: nowrap;
+		gap: 0.25rem;
+		overflow-x: auto;
+		scroll-behavior: smooth;
+		scrollbar-width: none;
+		margin: 0 calc(-0.95rem - env(safe-area-inset-right, 0px)) 0 -0.95rem;
+		padding: 0 calc(0.95rem + env(safe-area-inset-right, 0px)) 0 0.95rem;
+	}
+
+	.coursebar::-webkit-scrollbar {
+		display: none;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.coursebar {
+			scroll-behavior: auto;
+		}
 	}
 
 	.coursebar__btn {
-		position: relative;
-		padding: 0.2rem 0.65rem;
-		font-size: 0.72rem;
+		flex-shrink: 0;
+		padding: 0.35rem 0.75rem;
+		font-size: 0.8rem;
 		font-weight: 600;
-		color: var(--color-accent);
-		background: color-mix(in srgb, var(--color-accent) 8%, #fff);
-		border: 1px solid color-mix(in srgb, var(--color-accent) 30%, #fff);
+		white-space: nowrap;
+		color: var(--color-text-muted);
+		background: transparent;
+		border: none;
 		border-radius: 999px;
 		cursor: pointer;
 		transition:
 			background-color 0.12s,
-			border-color 0.12s,
 			color 0.12s;
 	}
 
 	.coursebar__btn:hover {
-		background: color-mix(in srgb, var(--color-accent) 16%, #fff);
-		border-color: color-mix(in srgb, var(--color-accent) 45%, #fff);
+		color: var(--color-text);
+		background: color-mix(in srgb, var(--color-text) 6%, transparent);
 	}
 
 	.coursebar__btn[aria-pressed='true'] {
-		color: #fff;
-		background: var(--color-accent);
-		border-color: var(--color-accent);
+		color: var(--color-accent-hover);
+		background: color-mix(in srgb, var(--color-accent) 14%, #fff);
 	}
 
-	/* Touch target: same trick as the sources pill — a 44px-tall transparent overlay
-	   on coarse pointers, so each course pill clears the floor without the row
-	   growing taller. Pills sit side by side in one row, so extending only the
-	   height keeps neighbours' hit areas from overlapping. */
+	/* Touch target: the row is a scroll container now, so the old transparent
+	   ::after overlay would be clipped by it (overflow-x: auto clips the cross
+	   axis too). Instead the tabs themselves grow to the 44px floor on coarse
+	   pointers — the whole strip gets taller, matching the roomy Google Maps
+	   strip rather than the compact desktop row. */
 	@media (pointer: coarse) {
-		.coursebar__btn::after {
-			content: '';
-			position: absolute;
-			top: 50%;
-			left: 0;
-			width: 100%;
-			height: 44px;
-			transform: translateY(-50%);
+		.coursebar__btn {
+			min-height: 44px;
 		}
 	}
 
@@ -927,6 +945,14 @@
 		.placecard__menu-meta,
 		.placecard__hint {
 			font-size: 0.85rem;
+		}
+
+		/* The bottom sheet pads both sides a plain 0.95rem (no right safe-area
+		   inset), so the coursebar's bleed must drop the inset too or it would
+		   overshoot the sheet edge on notched-landscape phones. */
+		.coursebar {
+			margin-right: -0.95rem;
+			padding-right: 0.95rem;
 		}
 	}
 
