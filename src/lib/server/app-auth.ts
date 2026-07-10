@@ -27,6 +27,23 @@ import { generateToken, sha256Hex } from './token';
 export const APP_CODE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
+ * The app-generated sign-in `state`: a lowercase-hex string of 128–512 bits
+ * (32–128 chars). The app mints it in `signIn()` (crypto.getRandomValues), the
+ * login route round-trips it through the app-client cookie, and the callback
+ * reflects it on the custom-scheme redirect — so the app can prove a redeemed code
+ * belongs to the sign-in IT started (login-CSRF / session-fixation defense). Both
+ * routes validate against this strict charset + length cap so a hostile `state`
+ * query param can never be reflected into a cookie or a redirect; a non-matching
+ * value degrades an app round trip to a plain browser sign-in (no app hand-off).
+ */
+const APP_STATE_PATTERN = /^[0-9a-f]{32,128}$/;
+
+/** Whether `value` is a well-formed app sign-in state (see {@link APP_STATE_PATTERN}). */
+export function isValidAppState(value: string | null | undefined): value is string {
+	return typeof value === 'string' && APP_STATE_PATTERN.test(value);
+}
+
+/**
  * Mints a one-time code for a just-signed-in user and stores ONLY its SHA-256
  * hash (with a ~5 minute expiry), returning the RAW code for the caller to put in
  * the custom-scheme redirect. Called by the OAuth callback when the app-client

@@ -3,9 +3,11 @@
 // schema + write ($lib/server/likes), including the FK-violation→400 mapping and
 // the 401-when-signed-out guard. CORS + no-store via the apiCors hook.
 import { LocationLikeSchema, likeLocation } from '$lib/server/likes';
-import { parseOr400, readJsonBody, withApi } from '$lib/server/api';
+import { parseOr400, readJsonBody, requireBearerUser, withApi } from '$lib/server/api';
 
 export const POST = withApi(async (event) => {
+	// Mutations must be driven by the app's bearer token, never an ambient cookie.
+	await requireBearerUser();
 	const { locationId, liked } = parseOr400(LocationLikeSchema, await readJsonBody(event.request));
 	await likeLocation(locationId, liked);
 	return { ok: true };

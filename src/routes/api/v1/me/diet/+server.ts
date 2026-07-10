@@ -7,13 +7,15 @@
 // CORS + no-store via the apiCors hook.
 import * as v from 'valibot';
 import { readDiet, writeDiet } from '$lib/server/diet';
-import { parseOr400, readJsonBody, withApi } from '$lib/server/api';
+import { parseOr400, readJsonBody, requireBearerUser, withApi } from '$lib/server/api';
 
 const DietBodySchema = v.object({ diet: v.nullable(v.string()) });
 
 export const GET = withApi(() => readDiet());
 
 export const PUT = withApi(async (event) => {
+	// Mutations must be driven by the app's bearer token, never an ambient cookie.
+	await requireBearerUser();
 	const { diet } = parseOr400(DietBodySchema, await readJsonBody(event.request));
 	await writeDiet(diet);
 	return readDiet();

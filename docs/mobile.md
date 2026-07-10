@@ -49,15 +49,24 @@ universal `/locations/*` reroute) is untouched and works in both builds.
 ## Auth + deep-link flow
 
 1. Signed-out, tapping **Sign in** calls `signIn()` (`src/lib/app/auth.ts`),
-   which opens the system browser at
-   `https://betterfoodmaps.com/auth/login/google?client=app`.
+   which generates a random 256-bit `state`, persists it with
+   `@capacitor/preferences` (so it survives an Android singleTask relaunch during
+   the browser round trip), and opens the system browser at
+   `https://betterfoodmaps.com/auth/login/google?client=app&state=<state>`.
 2. After Google consent, the server (marked `?client=app`) 303-redirects to
-   `betterfoodmaps://auth/callback?code=<one-time code>`.
+   `betterfoodmaps://auth/callback?code=<one-time code>&state=<state>`, reflecting
+   the same `state` back. The server carries the state through the round trip in
+   the app-client cookie (validated to a strict hex charset), never in D1 — it
+   only relays it back to the app for a client-side equality check.
 3. The OS routes that custom-scheme URL to the app. `@capacitor/app`'s
    `appUrlOpen` listener (registered once from the app layout via
-   `initApp()` in `src/lib/app/bootstrap.ts`) catches it, POSTs the code to
-   `/api/v1/auth/token`, stores the returned bearer token, closes the in-app
-   browser, and refreshes the user/likes/diet resources.
+   `initApp()` in `src/lib/app/bootstrap.ts`) catches it and — **only when the
+   reflected `state` strictly matches the persisted one**, so the code is bound to
+   the sign-in this app instance started (login-CSRF / session-fixation defense) —
+   POSTs the code to `/api/v1/auth/token`, stores the returned bearer token, closes
+   the in-app browser, and refreshes the user/likes/diet resources. The persisted
+   state is cleared on every callback (match or not), so a code can never be
+   redeemed twice or outside an in-flight, self-initiated sign-in.
 4. Sign-out POSTs `/api/v1/auth/signout`, clears the stored token, and refreshes
    the same resources.
 
@@ -109,9 +118,11 @@ bun run dev                                   # http://localhost:5050
 API_ORIGIN=http://localhost:5050 bun run build:app && cap sync
 ```
 
-The `/api/v1` CORS allowlist (`src/lib/server/api-cors.ts`) already covers the
-three app origins: `capacitor://localhost` (iOS), `https://localhost`
-(Android), and `http://localhost:5050` (local `vite dev`).
+The `/api/v1` CORS allowlist (`src/lib/server/api-cors.ts`) covers the two
+production app origins — `capacitor://localhost` (iOS) and `https://localhost`
+(Android) — plus `http://localhost:5050` (local `vite dev`) **only in dev** (the
+allowlist is built from `dev` at the hook call site, so the dev origin never ships
+in production).
 
 ### Map tiles & assets
 

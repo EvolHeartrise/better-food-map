@@ -22,12 +22,16 @@
 // ---------------------------------------------------------------------------
 import * as v from 'valibot';
 import { error, isHttpError, json, type RequestEvent } from '@sveltejs/kit';
+import { getRequestEvent } from '$app/server';
 import { m } from '$lib/paraglide/messages';
+import { requireUser } from './context';
+import { apiBodyTooLarge } from './api-cors';
+import type { User } from './db';
 
 // Re-exported so route handlers have one import site for the API helpers.
 export {
 	API_V1_PREFIX,
-	API_ALLOWED_ORIGINS,
+	apiAllowedOrigins,
 	applyApiResponseHeaders,
 	apiPreflightResponse
 } from './api-cors';
@@ -39,6 +43,13 @@ export {
  * messages and the other internal/dev errors CLAUDE.md keeps in English.
  */
 export const INVALID_REQUEST_MESSAGE = 'Invalid request.';
+
+/**
+ * A short, ENGLISH, dev-facing message for an over-sized request body (413). Like
+ * {@link INVALID_REQUEST_MESSAGE} a conforming app never hits it, so it stays out
+ * of the message catalog.
+ */
+export const PAYLOAD_TOO_LARGE_MESSAGE = 'Request body too large.';
 
 /** A handler that returns a JSON-serializable value (wrapped in a JSON Response by
  *  {@link withApi}) or an already-built Response (passed through); may be async. */
@@ -85,11 +96,44 @@ export function parseOr400<TSchema extends v.GenericSchema>(
 	return result.output;
 }
 
-/** Reads and JSON-parses a request body, throwing a 400 on invalid JSON. */
+/**
+ * Reads and JSON-parses a request body, throwing a 413 for an over-sized body
+ * (before parsing — Content-Length first, then a defensive check on the read text
+ * in case it is missing/under-reported) and a 400 on invalid JSON.
+ */
 export async function readJsonBody(request: Request): Promise<unknown> {
+	if (apiBodyTooLarge(request.headers.get('content-length'))) {
+		error(413, PAYLOAD_TOO_LARGE_MESSAGE);
+	}
+	let text: string;
 	try {
-		return await request.json();
+		text = await request.text();
 	} catch {
 		error(400, INVALID_REQUEST_MESSAGE);
 	}
+	if (apiBodyTooLarge(null, text)) error(413, PAYLOAD_TOO_LARGE_MESSAGE);
+	try {
+		return JSON.parse(text) as unknown;
+	} catch {
+		error(400, INVALID_REQUEST_MESSAGE);
+	}
+}
+
+/**
+ * Like {@link requireUser} (the shared 401-when-signed-out guard) but ALSO rejects
+ * a session resolved from a browser COOKIE: every MUTATING /api/v1 route must be
+ * driven by the app's `Authorization: Bearer` token, never an ambient same-site
+ * cookie. This is defense-in-depth against login-CSRF on top of SameSite=Lax + the
+ * CORS preflight — structural rather than incidental. A cookie-resolved session
+ * gets the SAME opaque 401 as a signed-out request. GET endpoints don't use this
+ * (a cookie-driven read is harmless and useful for debugging); auth/token is
+ * unauthenticated and auth/signout reads the bearer token from the header directly,
+ * so both are already cookie-immune.
+ */
+export async function requireBearerUser(): Promise<User> {
+	const user = await requireUser();
+	if (getRequestEvent().locals.sessionSource !== 'bearer') {
+		error(401, m.server_error_sign_in_required());
+	}
+	return user;
 }

@@ -2,7 +2,7 @@
 // for information about these interfaces
 /// <reference types="@cloudflare/workers-types" />
 import type { Locale } from '$lib/paraglide/runtime';
-import type { ResolvedSession } from '$lib/server/session';
+import type { ResolvedSession, SessionSource } from '$lib/server/session';
 
 declare global {
 	// Compile-time constants injected by Vite `define` (see vite.config.ts and
@@ -22,6 +22,13 @@ declare global {
 		 */
 		interface Locals {
 			getSession(): Promise<ResolvedSession | null>;
+			/**
+			 * How this request's session is resolved — `'bearer'` (the mobile app's
+			 * `Authorization: Bearer` token) or `'cookie'` (the browser cookie path).
+			 * Set by the `authenticate` hook on every request. Mutating /api/v1 routes
+			 * require `'bearer'` via requireBearerUser ($lib/server/api).
+			 */
+			sessionSource: SessionSource;
 			/**
 			 * The locale resolved for this request by the `localize` hook in
 			 * hooks.server.ts (cookie → saved-user → Accept-Language → 'en-US'). It is

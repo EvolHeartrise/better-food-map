@@ -10,6 +10,7 @@ import { test, expect } from 'bun:test';
 import {
 	createAppAuthCode,
 	exchangeAppAuthCode,
+	isValidAppState,
 	APP_CODE_TTL_MS
 } from '../src/lib/server/app-auth';
 import { sha256Hex } from '../src/lib/server/token';
@@ -92,6 +93,24 @@ test('exchangeAppAuthCode: an expired code is rejected and consumed', async () =
 	expect(await exchangeAppAuthCode(db, code, now)).toBeNull();
 	// The row is consumed even though it was expired (an expired code is spent).
 	expect(await codeCount(db)).toBe(0);
+});
+
+test('isValidAppState: accepts a lowercase-hex state within the length bounds', () => {
+	expect(isValidAppState('a'.repeat(32))).toBe(true); // 128-bit lower bound
+	expect(isValidAppState('f'.repeat(64))).toBe(true); // the app's 256-bit default
+	expect(isValidAppState('0'.repeat(128))).toBe(true); // 512-bit upper bound
+	expect(isValidAppState('0123456789abcdef'.repeat(4))).toBe(true);
+});
+
+test('isValidAppState: rejects wrong length, wrong charset, and non-strings', () => {
+	expect(isValidAppState('a'.repeat(31))).toBe(false); // too short
+	expect(isValidAppState('a'.repeat(129))).toBe(false); // too long
+	expect(isValidAppState('A'.repeat(32))).toBe(false); // uppercase not allowed
+	expect(isValidAppState('g'.repeat(32))).toBe(false); // non-hex char
+	expect(isValidAppState('a'.repeat(31) + '!')).toBe(false); // punctuation
+	expect(isValidAppState('')).toBe(false);
+	expect(isValidAppState(null)).toBe(false);
+	expect(isValidAppState(undefined)).toBe(false);
 });
 
 test('exchangeAppAuthCode: opportunistically sweeps OTHER expired codes', async () => {

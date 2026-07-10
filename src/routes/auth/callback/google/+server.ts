@@ -11,13 +11,12 @@ import {
 	CODE_VERIFIER_COOKIE,
 	REDIRECT_COOKIE,
 	APP_CLIENT_COOKIE,
-	APP_CLIENT_VALUE,
 	APP_CALLBACK_URL,
 	type GoogleIdTokenClaims
 } from '$lib/server/oauth';
 import { upsertOAuthUser } from '$lib/server/db';
 import { createUserSession, setSessionCookie } from '$lib/server/auth';
-import { createAppAuthCode } from '$lib/server/app-auth';
+import { createAppAuthCode, isValidAppState } from '$lib/server/app-auth';
 import { safeInternalPath } from '$lib/redirect';
 import { m } from '$lib/paraglide/messages';
 import type { RequestHandler } from './$types';
@@ -35,9 +34,11 @@ export const GET: RequestHandler = async (event) => {
 	// re-validated to a same-origin path; defaults to the map.
 	const redirectTo = safeInternalPath(event.cookies.get(REDIRECT_COOKIE));
 	// Was this round trip started by the mobile app (`?client=app` on the login
-	// route)? If so we hand back a one-time code via the custom scheme instead of a
-	// browser session cookie.
-	const isApp = event.cookies.get(APP_CLIENT_COOKIE) === APP_CLIENT_VALUE;
+	// route)? The login route stored the app's validated `state` AS this cookie's
+	// value; a well-formed value means "app round trip", and we reflect that exact
+	// state to the app so only the instance that started sign-in can redeem the code.
+	const appState = event.cookies.get(APP_CLIENT_COOKIE) ?? '';
+	const isApp = isValidAppState(appState);
 
 	// Clear the in-flight cookies regardless of outcome so a stale state can't linger.
 	event.cookies.delete(STATE_COOKIE, { path: '/' });
@@ -85,7 +86,10 @@ export const GET: RequestHandler = async (event) => {
 	// the URL for the seconds it lives.
 	if (isApp) {
 		const appCode = await createAppAuthCode(db, user.id, Date.now());
-		redirect(303, `${APP_CALLBACK_URL}?code=${encodeURIComponent(appCode)}`);
+		redirect(
+			303,
+			`${APP_CALLBACK_URL}?code=${encodeURIComponent(appCode)}&state=${encodeURIComponent(appState)}`
+		);
 	}
 
 	const { token, session } = await createUserSession(db, user.id);

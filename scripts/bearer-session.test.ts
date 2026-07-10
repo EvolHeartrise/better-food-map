@@ -10,6 +10,7 @@ import {
 	createLazySessionResolver,
 	createUserSession,
 	parseBearerToken,
+	sessionSourceFor,
 	type SessionCookieSink
 } from '../src/lib/server/session';
 import type { D1Like } from '../src/lib/server/db';
@@ -54,6 +55,21 @@ test('parseBearerToken: returns undefined for non-Bearer / absent headers', () =
 	expect(parseBearerToken('Basic abc123')).toBeUndefined();
 	expect(parseBearerToken('Bearer')).toBeUndefined(); // no credential
 	expect(parseBearerToken('Bearer ')).toBeUndefined();
+});
+
+test('sessionSourceFor: a Bearer header classifies as bearer, everything else as cookie', () => {
+	// This is the classification the auth hook records on event.locals.sessionSource,
+	// which requireBearerUser ($lib/server/api) uses to reject cookie-driven mutations.
+	expect(sessionSourceFor('Bearer abc123')).toBe('bearer');
+	expect(sessionSourceFor('bearer\tdeadBEEF')).toBe('bearer');
+	// No credential / not a bearer scheme / absent → the cookie path (whether or not
+	// a cookie is actually present), so a mutation with only a session cookie is
+	// classified 'cookie' and rejected by requireBearerUser.
+	expect(sessionSourceFor(null)).toBe('cookie');
+	expect(sessionSourceFor(undefined)).toBe('cookie');
+	expect(sessionSourceFor('')).toBe('cookie');
+	expect(sessionSourceFor('Basic abc123')).toBe('cookie');
+	expect(sessionSourceFor('Bearer')).toBe('cookie');
 });
 
 test('bearer resolution: a valid token resolves the user with no cookie writes', async () => {

@@ -51,6 +51,24 @@ export function parseBearerToken(header: string | null | undefined): string | un
 	return match ? match[1] : undefined;
 }
 
+/**
+ * How a request's session was resolved by the auth hook: the mobile app's
+ * `Authorization: Bearer` token, or a browser session cookie. Recorded on
+ * `event.locals.sessionSource` so mutating /api/v1 routes can require the bearer
+ * path (see requireBearerUser in $lib/server/api).
+ */
+export type SessionSource = 'bearer' | 'cookie';
+
+/**
+ * Classifies a request by its `Authorization` header: `'bearer'` when it carries a
+ * Bearer credential (the app), else `'cookie'` (the browser cookie path, whether
+ * or not a cookie is actually present). Pure and `$app`-free so the auth hook and
+ * bun test share ONE classifier.
+ */
+export function sessionSourceFor(authHeader: string | null | undefined): SessionSource {
+	return parseBearerToken(authHeader) ? 'bearer' : 'cookie';
+}
+
 /** Creates a new session for a user and returns the token to put in the cookie. */
 export async function createUserSession(
 	db: D1Like,

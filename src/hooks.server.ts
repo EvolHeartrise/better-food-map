@@ -15,9 +15,15 @@ import {
 	clearSessionCookie,
 	createLazySessionResolver,
 	parseBearerToken,
+	sessionSourceFor,
 	setSessionCookie
 } from '$lib/server/auth';
-import { API_V1_PREFIX, apiPreflightResponse, applyApiResponseHeaders } from '$lib/server/api-cors';
+import {
+	API_V1_PREFIX,
+	apiAllowedOrigins,
+	apiPreflightResponse,
+	applyApiResponseHeaders
+} from '$lib/server/api-cors';
 import { LOCALE_COOKIE } from '$lib/server/locale-cookie';
 import { deleteExpiredSessions } from '$lib/server/db';
 
@@ -84,7 +90,13 @@ const authenticate: Handle = async ({ event, resolve }) => {
 	// browser cookie path below is byte-for-byte untouched. A request carrying both a
 	// bearer header and cookies (not a real client shape) resolves via the bearer
 	// token and leaves the cookies alone.
-	const bearer = parseBearerToken(event.request.headers.get('authorization'));
+	// Record HOW this request's session is resolved so mutating /api/v1 routes can
+	// require the bearer path (requireBearerUser in $lib/server/api) and reject a
+	// cookie-driven mutation. Set for EVERY request, before either branch.
+	const authHeader = event.request.headers.get('authorization');
+	event.locals.sessionSource = sessionSourceFor(authHeader);
+
+	const bearer = parseBearerToken(authHeader);
 	if (bearer) {
 		const noCookies = { setCookie: () => {}, clearCookie: () => {} };
 		event.locals.getSession = createLazySessionResolver(db, bearer, noCookies);
@@ -324,11 +336,16 @@ const securityHeaders: Handle = async ({ event, resolve }) => {
 // shared/edge-cached, mirroring how remote functions are no-store today. These
 // paths are NOT the public English crawl surface (isPublicEnglishSurface), so the
 // locale pinning there doesn't touch them.
+// The effective CORS allowlist, built once from `dev` (from $app/environment):
+// the production WebView origins plus the local `vite dev` origin ONLY in dev, so
+// the dev origin never ships in the production allowlist.
+const API_ORIGINS = apiAllowedOrigins(dev);
+
 const apiCors: Handle = async ({ event, resolve }) => {
 	if (!event.url.pathname.startsWith(API_V1_PREFIX)) return resolve(event);
-	if (event.request.method === 'OPTIONS') return apiPreflightResponse(event.request);
+	if (event.request.method === 'OPTIONS') return apiPreflightResponse(event.request, API_ORIGINS);
 	const response = await resolve(event);
-	applyApiResponseHeaders(event.request, response);
+	applyApiResponseHeaders(event.request, response, API_ORIGINS);
 	return response;
 };
 
