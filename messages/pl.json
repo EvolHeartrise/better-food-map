@@ -31,6 +31,8 @@
 	"venue_unlike": "Cofnij polubienie tego miejsca",
 	"venue_address_label": "Adres",
 	"venue_phone_label": "Telefon",
+	"venue_hours_label": "Godziny otwarcia",
+	"venue_hours_closed": "Zamknięte",
 	"venue_phone_extension": "wew. {ext}",
 	"venue_website_label": "Strona internetowa",
 	"venue_menu_label": "Menu",

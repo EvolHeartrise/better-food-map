@@ -257,3 +257,89 @@ test('inline menu_items on a chain-linked branch are rejected', async () => {
 	expect(res.created).toBe(0);
 	expect(res.skipped_invalid?.[0].reason).toMatch(/has `menu_items` but is linked to a chain/);
 });
+
+// ---------------------------------------------------------------------------
+// Opening hours (migration 0027): raw string + derived weekly table
+// ---------------------------------------------------------------------------
+
+/** A POI at unique coords with full addr tags and the given opening_hours. */
+function hoursPoi(osmId: string, opening_hours: string | null, lat: number): StoredPoi {
+	return poi({
+		osm_id: osmId,
+		latitude: lat,
+		longitude: -123.5,
+		opening_hours,
+		tags_json: JSON.stringify({
+			'addr:housenumber': '1',
+			'addr:street': 'Main St',
+			'addr:city': 'Vancouver',
+			'addr:state': 'BC'
+		})
+	});
+}
+
+test('osm_id import carries the POI opening_hours and derives the weekly table', async () => {
+	const db = freshDb();
+	const store = fakeStore({
+		'node/50': hoursPoi('node/50', 'Mo-Fr 08:00-18:00; Sa 09:00-17:00', 49.01)
+	});
+
+	const res = await createLocationsBatch(db, store, [{ name: 'Hourly Cafe', osm_id: 'node/50' }]);
+	expect(res.created).toBe(1);
+	expect(res.warnings).toBeUndefined();
+	const stored = await getLocationById(db, res.location_ids[0]);
+	expect(stored?.opening_hours).toBe('Mo-Fr 08:00-18:00; Sa 09:00-17:00');
+	expect(JSON.parse(stored?.opening_hours_json ?? 'null')).toEqual([
+		[[480, 1080]],
+		[[480, 1080]],
+		[[480, 1080]],
+		[[480, 1080]],
+		[[480, 1080]],
+		[[540, 1020]],
+		[]
+	]);
+});
+
+test('opening_hours: null suppresses the POI hours; a caller string overrides them', async () => {
+	const db = freshDb();
+	const store = fakeStore({
+		'node/51': hoursPoi('node/51', 'Mo-Su 09:00-17:00', 49.02),
+		'node/52': hoursPoi('node/52', 'Mo-Su 09:00-17:00', 49.03)
+	});
+
+	const res = await createLocationsBatch(db, store, [
+		{ name: 'No Hours', osm_id: 'node/51', opening_hours: null },
+		{ name: 'Fresher Hours', osm_id: 'node/52', opening_hours: 'Mo-Su 10:00-22:00' }
+	]);
+	expect(res.created).toBe(2);
+	const suppressed = await getLocationById(db, res.location_ids[0]);
+	expect(suppressed?.opening_hours).toBeNull();
+	expect(suppressed?.opening_hours_json).toBeNull();
+	const overridden = await getLocationById(db, res.location_ids[1]);
+	expect(overridden?.opening_hours).toBe('Mo-Su 10:00-22:00');
+	expect(overridden?.opening_hours_json).toContain('600');
+});
+
+test('hours beyond the parsed OSM subset store raw-only, with a warning', async () => {
+	const db = freshDb();
+	const store = fakeStore({ 'node/53': hoursPoi('node/53', 'Mo-Su sunrise-sunset', 49.04) });
+
+	const res = await createLocationsBatch(db, store, [{ name: 'Sunrise Diner', osm_id: 'node/53' }]);
+	expect(res.created).toBe(1);
+	expect(res.warnings?.some((w) => w.includes('beyond the parsed OSM subset'))).toBe(true);
+	const stored = await getLocationById(db, res.location_ids[0]);
+	expect(stored?.opening_hours).toBe('Mo-Su sunrise-sunset');
+	expect(stored?.opening_hours_json).toBeNull();
+});
+
+test('a manual (non-osm) create normalizes and derives hours too', async () => {
+	const db = freshDb();
+	const res = await createLocationsBatch(db, noStore, [
+		{ ...loc('Manual Hours', 49.05, -123.6), opening_hours: 'Tu–Su 17:00–23:00' }
+	]);
+	expect(res.created).toBe(1);
+	const stored = await getLocationById(db, res.location_ids[0]);
+	// en-dashes normalized on write; derived table present
+	expect(stored?.opening_hours).toBe('Tu-Su 17:00-23:00');
+	expect(stored?.opening_hours_json).not.toBeNull();
+});

@@ -29,6 +29,8 @@
 	"venue_unlike": "اس جگہ سے پسند ہٹائیں",
 	"venue_address_label": "پتہ",
 	"venue_phone_label": "فون",
+	"venue_hours_label": "اوقات کار",
+	"venue_hours_closed": "بند",
 	"venue_phone_extension": "ایکسٹینشن {ext}",
 	"venue_website_label": "ویب سائٹ",
 	"venue_menu_label": "مینو",

@@ -29,6 +29,8 @@
 	"venue_unlike": "Alisin ang like sa lugar na ito",
 	"venue_address_label": "Address",
 	"venue_phone_label": "Telepono",
+	"venue_hours_label": "Oras ng bukas",
+	"venue_hours_closed": "Sarado",
 	"venue_phone_extension": "ext. {ext}",
 	"venue_website_label": "Website",
 	"venue_menu_label": "Menu",

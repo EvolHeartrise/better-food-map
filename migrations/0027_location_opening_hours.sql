@@ -1,0 +1,31 @@
+-- Migration 0027: opening hours on `locations`.
+-- Applied with: wrangler d1 migrations apply better-food-map --remote (or --local).
+--
+-- Two columns, one fact:
+--   • `opening_hours`      — the venue's weekly hours as the RAW source string in
+--     OSM `opening_hours` syntax (e.g. "Mo-Fr 08:00-18:00; Sa 09:00-17:00").
+--     This is the interchange/provenance form: it is what the OSM staging store
+--     carries verbatim, what agents read off a search_poi candidate or a venue's
+--     own site, and what a future hours-drift audit compares against.
+--   • `opening_hours_json` — the SAME hours as a canonical machine-readable
+--     structure, DERIVED at write time by the shared parser
+--     (src/lib/opening-hours.ts): a JSON array of 7 Monday-first day entries,
+--     each a list of [openMinute, closeMinute) spans (closeMinute > 1440 =
+--     overnight into the next day; empty array = closed that day). Integer
+--     minutes make it queryable server-side via SQLite JSON1 (json_each) and
+--     renderable client-side with zero parsing. NULL when the raw string uses
+--     grammar beyond the parsed subset (~6% of OSM values: public-holiday-only
+--     rules, month qualifiers, sunrise/sunset) — the UI then falls back to
+--     showing the raw string.
+--
+-- Only the write path (create_locations / update_locations / import_chain /
+-- backfill) sets `opening_hours_json`, always by deriving it from
+-- `opening_hours`, so the two columns cannot drift.
+--
+-- Additive + nullable (~75% of OSM food POIs carry no hours), so it is backward
+-- compatible: the live Worker keeps working until the reading code ships. No
+-- table rebuild — `locations` is a parent of ON DELETE CASCADE children (see
+-- 0015's note on why a rebuild would wipe likes).
+
+ALTER TABLE locations ADD COLUMN opening_hours TEXT;
+ALTER TABLE locations ADD COLUMN opening_hours_json TEXT;

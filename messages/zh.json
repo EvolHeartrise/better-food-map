@@ -28,6 +28,8 @@
 	"venue_unlike": "取消喜欢这个地点",
 	"venue_address_label": "地址",
 	"venue_phone_label": "电话",
+	"venue_hours_label": "营业时间",
+	"venue_hours_closed": "休息",
 	"venue_phone_extension": "转 {ext}",
 	"venue_website_label": "网站",
 	"venue_menu_label": "菜单",
