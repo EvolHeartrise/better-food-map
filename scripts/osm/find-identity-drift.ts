@@ -20,13 +20,15 @@
 // ---------------------------------------------------------------------------
 
 import type { D1Like } from '../../src/lib/server/db';
+import { stripDiacritics } from '../../src/lib/text';
+import { DismissFilter, fnv1a, type DismissableFinding, type DismissalOpts } from './audit-dismiss';
 import { bboxAround, haversineMeters } from './geo';
 import { osmUrl } from './map-feature';
 import type { OsmPoiStore, StoredPoi } from './poi-store';
 import { LOCATION_AUDIT, nearestNameMatch } from './poi-match';
 import { normalizeName, namesMatch } from './search-poi';
 
-export interface FindIdentityDriftParams {
+export interface FindIdentityDriftParams extends DismissalOpts {
 	/** Max flagged locations to return (default 50, max 200). */
 	limit?: number;
 	/** A POI counts as sitting AT the location within this many metres (default 1 — coordinate-exact). */
@@ -50,7 +52,7 @@ export interface RelocationLead {
 	distance_m: number;
 }
 
-export interface IdentityDriftLocation {
+export interface IdentityDriftLocation extends DismissableFinding {
 	id: string;
 	name: string;
 	latitude: number;
@@ -69,6 +71,14 @@ export interface IdentityDriftLocation {
 	relocation_lead?: RelocationLead;
 }
 
+/** One rename folded as cosmetic — surfaced so the heuristic's calls stay auditable. */
+export interface CosmeticRename {
+	id: string;
+	name: string;
+	current_osm_name: string;
+	osm_url: string;
+}
+
 export interface FindIdentityDriftResult {
 	flagged: IdentityDriftLocation[];
 	/** Total DB locations scanned. */
@@ -79,8 +89,89 @@ export interface FindIdentityDriftResult {
 	returned: number;
 	/** Flags NOT returned because of `limit` (total_flagged - returned). */
 	additional: number;
-	/** Full breakdown of what was found, regardless of include_vanished. */
-	counts: { renamed: number; vanished: number };
+	/** Findings a stored dismissal matched (dropped, or annotated under include_dismissed). */
+	suppressed_dismissed: number;
+	/**
+	 * Renames folded as cosmetic (capped at `limit`; the full count is in
+	 * `counts.cosmetic_renames`) — review these, since a wrong fold hides a real
+	 * occupant change with no dismissal to revoke.
+	 */
+	cosmetic_renames: CosmeticRename[];
+	/**
+	 * Full breakdown of what was found, regardless of include_vanished.
+	 * `cosmetic_renames` counts nodes whose new name is only a spelling/word-order
+	 * variant of ours (see namesMatchCosmetic) — treated as still-our-venue, never flagged.
+	 */
+	counts: { renamed: number; vanished: number; cosmetic_renames: number };
+}
+
+/**
+ * True when two RAW venue names differ only cosmetically — the same venue
+ * respelled, not a new occupant. Catches what the dedup-grade namesMatch
+ * (equality/containment on collapsed names) deliberately does not:
+ *   • word order + diacritics/punctuation: "Bel Café" ↔ "Cafe Bel";
+ *   • a tiny respelling: "Caffè Artigiano" ↔ "Cafe Artigiano" (edit distance 1).
+ * Used ONLY by this audit's healthy test, where the compared POI sits at the
+ * location's own coordinates and therefore IS its source node — at that anchor,
+ * a 1–2 letter "different venue" is vanishingly unlikely versus a mapper
+ * spelling fix. Never use it for dedup or name-anchored searching: across a
+ * radius it would conflate genuinely distinct venues.
+ *
+ * Residual risk, accepted and kept auditable via the result's `cosmetic_renames`
+ * list: a pure-letter distance-1 rename that IS a new occupant ("Mario's Pizza"
+ * → "Maria's Pizza") folds wrongly. Digit changes never fold — "Pho 99" → "Pho
+ * 88" is a renumbering, the classic ownership-change tell, so any edit budget
+ * requires the two names' digits to agree exactly.
+ */
+export function namesMatchCosmetic(a: string, b: string): boolean {
+	const na = normalizeName(a);
+	const nb = normalizeName(b);
+	if (!na || !nb) return false;
+	if (namesMatch(na, nb)) return true;
+	if (setsEqual(tokenSet(a), tokenSet(b))) return true;
+	// Tiny respellings only, and only on names long enough that the edit budget
+	// is a small fraction of the name — and never across a digit change.
+	if (digitsOf(na) !== digitsOf(nb)) return false;
+	const shorter = Math.min(na.length, nb.length);
+	if (shorter < 8) return false;
+	const budget = shorter >= 14 ? 2 : 1;
+	return levenshtein(na, nb) <= budget;
+}
+
+/** The name's digit subsequence ("pho99vietnamese" → "99"). */
+function digitsOf(normalized: string): string {
+	return normalized.replace(/[^0-9]/g, '');
+}
+
+/** The name's word tokens, individually folded like normalizeName. */
+function tokenSet(name: string): Set<string> {
+	return new Set(
+		stripDiacritics(name)
+			.toLowerCase()
+			.replace(/&/g, ' and ')
+			.split(/[^a-z0-9]+/)
+			.filter((t) => t !== '')
+	);
+}
+
+function setsEqual(a: Set<string>, b: Set<string>): boolean {
+	if (a.size === 0 || a.size !== b.size) return false;
+	for (const t of a) if (!b.has(t)) return false;
+	return true;
+}
+
+/** Plain two-row Levenshtein — names are short, so O(len²) is nothing. */
+function levenshtein(a: string, b: string): number {
+	if (a === b) return 0;
+	let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+	for (let i = 1; i <= a.length; i++) {
+		const cur = [i];
+		for (let j = 1; j <= b.length; j++) {
+			cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+		}
+		prev = cur;
+	}
+	return prev[b.length];
 }
 
 const { DEFAULT_LIMIT, MAX_LIMIT, DEFAULT_SEARCH_RADIUS_M, MAX_SEARCH_RADIUS_M } = LOCATION_AUDIT;
@@ -146,6 +237,8 @@ export async function findIdentityDrift(
 	const locations = await allLocations(db);
 	const renamed: IdentityDriftLocation[] = [];
 	const vanished: IdentityDriftLocation[] = [];
+	const cosmetic: CosmeticRename[] = [];
+	const filter = new DismissFilter(params);
 
 	for (const loc of locations) {
 		const occupant = nearestAt(store, loc.latitude, loc.longitude, tolerance);
@@ -155,6 +248,26 @@ export async function findIdentityDrift(
 		) {
 			continue; // the node at our coordinates still carries our name — healthy
 		}
+		if (occupant?.poi.name && namesMatchCosmetic(loc.name, occupant.poi.name)) {
+			// Respelled, not replaced — still our venue; listed for review, not flagged.
+			cosmetic.push({
+				id: loc.id,
+				name: loc.name,
+				current_osm_name: occupant.poi.name,
+				osm_url: osmUrl(occupant.poi.osm_type, occupant.poi.numeric_id)
+			});
+			continue;
+		}
+		// The occupant name pins the evidence. A nameless node and a name that
+		// normalizes to nothing (CJK-only, emoji) are different evidence, so the
+		// latter falls back to a content hash rather than colliding on "renamed:".
+		const fingerprint = occupant
+			? occupant.poi.name
+				? `renamed:${normalizeName(occupant.poi.name) || fnv1a(occupant.poi.name)}`
+				: 'renamed:unnamed'
+			: 'vanished';
+		const decision = filter.evaluate(loc.id, fingerprint);
+		if (decision.drop) continue;
 
 		// A name-matching POI elsewhere nearby is a lead that the venue moved
 		// (or that its node was re-created) rather than closed. Any match here is
@@ -182,7 +295,8 @@ export async function findIdentityDrift(
 				current_osm_name: occupant.poi.name,
 				osm_url: osmUrl(occupant.poi.osm_type, occupant.poi.numeric_id),
 				osm_distance_m: Math.round(occupant.dist),
-				...(relocation_lead ? { relocation_lead } : {})
+				...(relocation_lead ? { relocation_lead } : {}),
+				...decision.fields
 			});
 		} else {
 			vanished.push({
@@ -191,7 +305,8 @@ export async function findIdentityDrift(
 				latitude: loc.latitude,
 				longitude: loc.longitude,
 				classification: 'vanished',
-				...(relocation_lead ? { relocation_lead } : {})
+				...(relocation_lead ? { relocation_lead } : {}),
+				...decision.fields
 			});
 		}
 	}
@@ -205,6 +320,12 @@ export async function findIdentityDrift(
 		total_flagged: total,
 		returned: flagged.length,
 		additional: total - flagged.length,
-		counts: { renamed: renamed.length, vanished: vanished.length }
+		suppressed_dismissed: filter.suppressed,
+		cosmetic_renames: cosmetic.slice(0, limit),
+		counts: {
+			renamed: renamed.length,
+			vanished: vanished.length,
+			cosmetic_renames: cosmetic.length
+		}
 	};
 }

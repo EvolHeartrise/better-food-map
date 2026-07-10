@@ -164,3 +164,32 @@ test('limit/offset page the flagged set and report total/additional', async () =
 	expect(page2.returned).toBe(1);
 	expect(page2.additional).toBe(0);
 });
+
+test('dismissals suppress items; a stale offset clamps additional at 0', async () => {
+	const db = freshDb();
+	await insertLocations(db, [
+		loc({
+			name: 'Cafe',
+			items: [{ item_name: 'Mystery A' }, { item_name: 'Mystery B' }]
+		})
+	]);
+
+	const first = await findMissingCourseTags(db);
+	expect(first.total).toBe(2);
+	const [target] = first.items;
+	const dismissals = new Map([
+		[
+			target.id,
+			{ fingerprint: '', reason: 'course unsourceable for now', dismissed_at: '2026-07-09' }
+		]
+	]);
+	const suppressed = await findMissingCourseTags(db, { dismissals });
+	expect(suppressed.total).toBe(1);
+	expect(suppressed.suppressed_dismissed).toBe(1);
+	expect(suppressed.items.map((i) => i.id)).not.toContain(target.id);
+
+	// An offset past the (shrunken) end must not report negative remaining work.
+	const past = await findMissingCourseTags(db, { offset: 50, dismissals });
+	expect(past.returned).toBe(0);
+	expect(past.additional).toBe(0);
+});
