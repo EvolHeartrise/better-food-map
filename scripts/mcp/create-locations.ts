@@ -473,6 +473,9 @@ export async function createLocationsBatch(
 			// Resolved above (caller's, else the POI's on an osm_id import); the
 			// write layer derives the machine-readable opening_hours_json from it.
 			opening_hours: core.opening_hours,
+			// Durable source identity (migration 0028): an osm_id import stamps the
+			// POI's id on the row; a manual-coordinates venue stores NULL.
+			osm_id: it.osm_id ?? null,
 			brand_id: it.brand_id ?? null,
 			menu_id: it.menu_id ?? null,
 			currency: it.currency,
