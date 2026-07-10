@@ -10,10 +10,14 @@ import {
 	STATE_COOKIE,
 	CODE_VERIFIER_COOKIE,
 	REDIRECT_COOKIE,
+	APP_CLIENT_COOKIE,
+	APP_CLIENT_VALUE,
+	APP_CALLBACK_URL,
 	type GoogleIdTokenClaims
 } from '$lib/server/oauth';
 import { upsertOAuthUser } from '$lib/server/db';
 import { createUserSession, setSessionCookie } from '$lib/server/auth';
+import { createAppAuthCode } from '$lib/server/app-auth';
 import { safeInternalPath } from '$lib/redirect';
 import { m } from '$lib/paraglide/messages';
 import type { RequestHandler } from './$types';
@@ -30,11 +34,16 @@ export const GET: RequestHandler = async (event) => {
 	// Where to land after sign-in (set by the login route from `?redirectTo`),
 	// re-validated to a same-origin path; defaults to the map.
 	const redirectTo = safeInternalPath(event.cookies.get(REDIRECT_COOKIE));
+	// Was this round trip started by the mobile app (`?client=app` on the login
+	// route)? If so we hand back a one-time code via the custom scheme instead of a
+	// browser session cookie.
+	const isApp = event.cookies.get(APP_CLIENT_COOKIE) === APP_CLIENT_VALUE;
 
 	// Clear the in-flight cookies regardless of outcome so a stale state can't linger.
 	event.cookies.delete(STATE_COOKIE, { path: '/' });
 	event.cookies.delete(CODE_VERIFIER_COOKIE, { path: '/' });
 	event.cookies.delete(REDIRECT_COOKIE, { path: '/' });
+	event.cookies.delete(APP_CLIENT_COOKIE, { path: '/' });
 
 	// The user declined consent (or Google reported an error): Google sends back
 	// `?error=…` and no code. That's a normal cancellation, not a fault — send them
@@ -67,6 +76,17 @@ export const GET: RequestHandler = async (event) => {
 		},
 		Date.now()
 	);
+
+	// Mobile app: do NOT set the browser session cookie (the app can't read it).
+	// Mint a short-lived one-time code (only its hash is stored) and 303-redirect to
+	// the app's custom scheme, which hands the code to the app to exchange for a
+	// session token at POST /api/v1/auth/token. 303 so the browser issues a GET to
+	// the custom-scheme URL. The raw code is a high-entropy opaque token, safe in
+	// the URL for the seconds it lives.
+	if (isApp) {
+		const appCode = await createAppAuthCode(db, user.id, Date.now());
+		redirect(303, `${APP_CALLBACK_URL}?code=${encodeURIComponent(appCode)}`);
+	}
 
 	const { token, session } = await createUserSession(db, user.id);
 	setSessionCookie(event.cookies, token, session.expires_at);

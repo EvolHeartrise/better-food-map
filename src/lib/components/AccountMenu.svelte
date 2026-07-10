@@ -10,6 +10,7 @@
 	import { safeInternalPath } from '$lib/redirect';
 	import { m } from '$lib/paraglide/messages';
 	import { getLocale, locales, type Locale } from '$lib/paraglide/runtime';
+	import { IS_APP } from '$lib/app/platform';
 	import type { User } from '$lib/server/db';
 
 	// The account control: a popover that holds the per-user preferences (there is no
@@ -124,6 +125,19 @@
 		if (!(event.target as HTMLElement | null)?.closest('.account')) open = false;
 	}
 
+	// In the Capacitor app the `/auth/login/google` route doesn't exist in the
+	// bundle and OAuth must run in the SYSTEM browser, so sign-in calls the app's
+	// signIn() instead of navigating. The dynamic import is gated on the compile-
+	// time `__IS_APP__` literal (NOT the runtime `IS_APP`) so the web build tree-
+	// shakes the branch out and no `@capacitor/*` code reaches the web bundle.
+	async function handleAppSignIn(event: MouseEvent) {
+		event.preventDefault();
+		if (__IS_APP__) {
+			const { signIn } = await import('$lib/app/auth');
+			await signIn();
+		}
+	}
+
 	async function handleSignOut() {
 		// Reload even if signOut rejects: the page re-renders whatever the true session
 		// state is, so a failed sign-out visibly leaves the user signed in (the feedback).
@@ -219,11 +233,18 @@
 			<div class="account__popover">
 				{@render languagePicker()}
 
-				<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- resolved login path with the redirectTo query the login route reads -->
-				<a class="account__signin" href={loginHref}>
-					<LogIn size={16} aria-hidden="true" />
-					{m.account_sign_in()}
-				</a>
+				{#if IS_APP}
+					<button type="button" class="account__signin" onclick={handleAppSignIn}>
+						<LogIn size={16} aria-hidden="true" />
+						{m.account_sign_in()}
+					</button>
+				{:else}
+					<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- resolved login path with the redirectTo query the login route reads -->
+					<a class="account__signin" href={loginHref}>
+						<LogIn size={16} aria-hidden="true" />
+						{m.account_sign_in()}
+					</a>
+				{/if}
 			</div>
 		{/if}
 	{/if}

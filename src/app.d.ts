@@ -5,6 +5,12 @@ import type { Locale } from '$lib/paraglide/runtime';
 import type { ResolvedSession } from '$lib/server/session';
 
 declare global {
+	// Compile-time constants injected by Vite `define` (see vite.config.ts and
+	// src/lib/app/platform.ts). Declared here so both the web `svelte-check` pass
+	// and the app build see them typed; the VALUES are substituted at build time.
+	const __IS_APP__: boolean;
+	const __API_ORIGIN__: string;
+
 	namespace App {
 		// interface Error {}
 		/**

@@ -7,6 +7,8 @@ node_modules
 .wrangler
 /.svelte-kit
 /build
+# Capacitor app build (SPA bundle; copied into ios/ & android/ by `cap sync`)
+/build-app
 
 # OS
 .DS_Store

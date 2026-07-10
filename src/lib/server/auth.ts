@@ -9,6 +9,7 @@ import { hostCookieName } from './cookie-name';
 export {
 	SESSION_TTL_MS,
 	generateSessionToken,
+	parseBearerToken,
 	createUserSession,
 	createLazySessionResolver,
 	validateSessionToken,

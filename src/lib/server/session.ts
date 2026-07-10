@@ -14,6 +14,7 @@ import {
 	type Session,
 	type User
 } from './db';
+import { generateToken, sha256Hex } from './token';
 
 /** How long a session lives from its last use. */
 export const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
@@ -25,21 +26,29 @@ export const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
  */
 const SESSION_REFRESH_AFTER_MS = SESSION_TTL_MS / 2;
 
-function toHex(bytes: Uint8Array): string {
-	let out = '';
-	for (const b of bytes) out += b.toString(16).padStart(2, '0');
-	return out;
-}
-
-/** SHA-256 of a string, hex-encoded (Web Crypto — available in the Worker). */
-async function sha256Hex(input: string): Promise<string> {
-	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
-	return toHex(new Uint8Array(digest));
-}
-
-/** A fresh, high-entropy session token (256 bits, hex). Stored only in the cookie. */
+/**
+ * A fresh, high-entropy session token (256 bits, hex). Stored only in the cookie
+ * (browser) or handed to the app as a bearer token; its SHA-256 is the row key.
+ * Thin alias over the shared {@link generateToken} so token/hash minting has one
+ * home (see token.ts) — the app one-time code uses the same primitive.
+ */
 export function generateSessionToken(): string {
-	return toHex(crypto.getRandomValues(new Uint8Array(32)));
+	return generateToken();
+}
+
+/**
+ * Extracts the raw token from an `Authorization: Bearer <token>` header, or
+ * undefined when the header is absent or not a Bearer credential. The scheme is
+ * matched case-insensitively (per RFC 7235 the scheme is case-insensitive); the
+ * token itself is returned verbatim (it is an opaque hex string). Pure and
+ * `$app`-free so the auth hook and the sign-out endpoint share ONE parser and
+ * bun test can exercise it directly. The mobile app cannot use cookies, so this
+ * bearer path is how a native client presents its session (see hooks.server.ts).
+ */
+export function parseBearerToken(header: string | null | undefined): string | undefined {
+	if (!header) return undefined;
+	const match = /^Bearer[ \t]+(\S+)$/i.exec(header.trim());
+	return match ? match[1] : undefined;
 }
 
 /** Creates a new session for a user and returns the token to put in the cookie. */

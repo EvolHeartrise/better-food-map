@@ -30,6 +30,27 @@ export const CODE_VERIFIER_COOKIE = hostCookieName('google_code_verifier', dev);
  */
 export const REDIRECT_COOKIE = hostCookieName('oauth_redirect', dev);
 
+/**
+ * Short-lived marker cookie recording that this OAuth round trip was started by
+ * the MOBILE APP (login route hit with `?client=app`), so the callback hands the
+ * app a one-time code via a custom-scheme redirect instead of setting a browser
+ * session cookie the app can't read (see the callback and $lib/server/app-auth).
+ * Same `__Host-`-in-prod / round-trip-lifetime shape as REDIRECT_COOKIE. A stray
+ * value can only ever route a genuine sign-in to the app hand-off, and it's
+ * always cleared by the callback, so no legacy-name fallback is needed.
+ */
+export const APP_CLIENT_COOKIE = hostCookieName('oauth_app_client', dev);
+
+/** The `?client=` value on the login route that marks a mobile-app round trip. */
+export const APP_CLIENT_VALUE = 'app';
+
+/**
+ * The custom URL scheme the mobile app registers; the OAuth callback 303-redirects
+ * to `${APP_CALLBACK_URL}?code=<one-time code>` so the OS hands the code back to
+ * the app, which exchanges it at POST /api/v1/auth/token.
+ */
+export const APP_CALLBACK_URL = 'betterfoodmaps://auth/callback';
+
 /** The path Google redirects back to; must match a URI registered in the console. */
 export const CALLBACK_PATH = '/auth/callback/google';
 

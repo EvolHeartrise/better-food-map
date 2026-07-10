@@ -1,21 +1,15 @@
 import * as v from 'valibot';
 import { query, command } from '$app/server';
-import { requireDb, currentUser, requireUser } from '$lib/server/context';
-import { getUserDiet, setUserDiet } from '$lib/server/db';
-import { sanitizeDiet } from '$lib/diet-profile';
+import { readDiet, writeDiet } from '$lib/server/diet';
 
 /**
  * The signed-in user's saved diet — a single curated dietary tag id, or `null`
  * when none is set (or signed out). The dietary selector IS this profile: the map
  * pre-applies it as the active filter on load, and {@link setDiet} persists a
- * change. Sanitized on read so a stored id no longer in the catalog reads as "no
- * filter" rather than a broken selection.
+ * change. Read/write (incl. the sanitize guard) live in $lib/server/diet, shared
+ * with the /api/v1/me/diet endpoint.
  */
-export const getDiet = query(async (): Promise<string | null> => {
-	const user = await currentUser();
-	if (!user) return null;
-	return sanitizeDiet(await getUserDiet(requireDb(), user.id));
-});
+export const getDiet = query((): Promise<string | null> => readDiet());
 
 /**
  * Saves the signed-in user's selected diet (a curated dietary tag id, or `null` to
@@ -24,7 +18,6 @@ export const getDiet = query(async (): Promise<string | null> => {
  * storing — an unknown value is stored as `null` (no filter).
  */
 export const setDiet = command(v.nullable(v.string()), async (dietId) => {
-	const user = await requireUser();
-	await setUserDiet(requireDb(), user.id, sanitizeDiet(dietId), Date.now());
+	await writeDiet(dietId);
 	void getDiet().refresh();
 });
