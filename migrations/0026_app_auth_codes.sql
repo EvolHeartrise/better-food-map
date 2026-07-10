@@ -1,4 +1,4 @@
--- Migration 0025: one-time codes for the mobile-app OAuth hand-off.
+-- Migration 0026: one-time codes for the mobile-app OAuth hand-off.
 -- Applied with: wrangler d1 migrations apply better-food-map --remote (or --local).
 -- D1 migrations are MANUAL — CI deploys the Worker but never runs them, so this
 -- must be applied by hand at deploy time (bun run d1:migrate).

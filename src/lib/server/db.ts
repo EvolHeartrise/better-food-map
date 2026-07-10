@@ -1566,7 +1566,7 @@ export async function deleteExpiredSessions(db: D1Like, now: number): Promise<vo
 }
 
 // ---------------------------------------------------------------------------
-// App OAuth one-time codes (migration 0025) — the mobile-app sign-in hand-off.
+// App OAuth one-time codes (migration 0026) — the mobile-app sign-in hand-off.
 //
 // Google blocks OAuth inside a WebView, so the app opens the SYSTEM browser at
 // the normal /auth/login/google flow (marked ?client=app); the callback, instead

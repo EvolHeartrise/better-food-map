@@ -148,7 +148,7 @@ Before a store submission, these must be resolved (none are done here):
       offers third-party sign-in (we offer Google). Not implemented.
 - [ ] **App icons & splash screens** — currently Capacitor defaults. Generate
       and install real assets.
-- [ ] **`bun run d1:migrate`** — apply migration `0025_app_auth_codes.sql`
+- [ ] **`bun run d1:migrate`** — apply migration `0026_app_auth_codes.sql`
       (the one-time app auth codes table) to the production D1. CI does not run
       D1 migrations.
 - [ ] **Redeploy the tiles worker** — its `ALLOWED_ORIGINS` must include the app

@@ -1,7 +1,7 @@
 /// <reference types="bun-types" />
 // Exercises the mobile-app one-time auth code (src/lib/server/app-auth.ts,
 // `$app`-free precisely so this file can import it) against the real migration
-// schema (migration 0025's app_auth_codes). Covers the security-critical
+// schema (migration 0026's app_auth_codes). Covers the security-critical
 // boundaries: a code redeems exactly once (happy path), an expired code is
 // rejected, an unknown code is rejected, a REPLAY of a redeemed code loses the
 // race, and the raw code is NEVER stored — only its SHA-256.
