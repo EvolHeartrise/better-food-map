@@ -35,7 +35,23 @@ interface Env {
 	// /{name}/{z}/{x}/{y}.mvt — the current version token plus any
 	// transitional aliases (see wrangler.jsonc).
 	ARCHIVES?: string;
+	// Comma-separated exact-match CORS allowlist consumed by the vendored
+	// handler (see wrangler.jsonc). Declared here because the dev-origin
+	// reflection below appends to it per-request.
+	ALLOWED_ORIGINS?: string;
 }
+
+// Local dev servers run on arbitrary ports (vite picks 5050 by default here,
+// but --port anything must work), so instead of pinning one port in
+// ALLOWED_ORIGINS we reflect any plain-http loopback origin into the
+// allowlist for this request and let the vendored exact-match logic accept
+// it. Loopback-only and http-only, so no deployed site can match; production
+// origins never hit this branch, keeping their responses byte-identical.
+// Cache-safe: the vendored handler stamps `Vary: Origin` on every response
+// (the front Workers Cache keys variants per origin), and its internal
+// caches.default entries store no Access-Control-Allow-Origin at all — the
+// header is re-derived per request after the cache match.
+const DEV_ORIGIN = /^http:\/\/(localhost|127\.0\.0\.1):\d+$/;
 
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -49,6 +65,10 @@ export default {
 		if (url.search) {
 			url.search = "";
 			request = new Request(url.toString(), request);
+		}
+		const origin = request.headers.get("Origin");
+		if (origin && DEV_ORIGIN.test(origin) && !(env.ALLOWED_ORIGINS ?? "").split(",").includes(origin)) {
+			env = { ...env, ALLOWED_ORIGINS: [env.ALLOWED_ORIGINS, origin].filter(Boolean).join(",") };
 		}
 		const resp = await vendored.fetch(request, env as Parameters<typeof vendored.fetch>[1], ctx);
 		if (resp.status >= 400) {
