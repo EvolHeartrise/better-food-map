@@ -195,7 +195,9 @@ export async function findMissingCourseTags(
 		items,
 		total: flagged.length,
 		returned: items.length,
-		additional: flagged.length - offset - items.length,
+		// Clamped: an offset past the end (a stale page position — the flagged set
+		// shrinks as items are re-tagged or dismissed between calls) is not "-N left".
+		additional: Math.max(0, flagged.length - offset - items.length),
 		suppressed_dismissed: filter.suppressed,
 		limit,
 		offset

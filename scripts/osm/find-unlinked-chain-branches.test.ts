@@ -112,3 +112,30 @@ test('limit caps the returned list and counts the rest in additional', async () 
 	expect(res.returned).toBe(2);
 	expect(res.additional).toBe(1);
 });
+
+test('a dismissal pins the matched brand — matching a different chain re-flags', async () => {
+	const { splitDismissKey } = await import('./audit-dismiss');
+	const db = freshDb();
+	const brandId = await insertBrand(db, { name: 'A&W', website: null, logo_url: null });
+	const [venue] = await insertLocations(db, [loc({ name: 'A&W', brand_id: null })]);
+
+	const first = await findUnlinkedChainBranches(db);
+	expect(first.unlinked.length).toBe(1);
+	expect(first.unlinked[0].dismiss_key).toBe(`${venue}#${brandId}`);
+
+	const { subject, fingerprint } = splitDismissKey(first.unlinked[0].dismiss_key)!;
+	const dismissals = new Map([
+		[subject, { fingerprint, reason: 'unaffiliated namesake', dismissed_at: '2026-07-09' }]
+	]);
+	const suppressed = await findUnlinkedChainBranches(db, { dismissals });
+	expect(suppressed.unlinked.length).toBe(0);
+	expect(suppressed.suppressed_dismissed).toBe(1);
+
+	// A dismissal recorded against a DIFFERENT brand id does not suppress.
+	const stale = new Map([
+		[subject, { fingerprint: 'some-other-brand', reason: 'x', dismissed_at: '2026-07-09' }]
+	]);
+	const reflagged = await findUnlinkedChainBranches(db, { dismissals: stale });
+	expect(reflagged.unlinked.length).toBe(1);
+	expect(reflagged.suppressed_dismissed).toBe(0);
+});

@@ -76,4 +76,11 @@ test('namesMatchCosmetic folds respellings and word-order flips, not different v
 	// Short names never get an edit-distance budget.
 	expect(namesMatchCosmetic('Pho 99', 'Pho 88')).toBe(false);
 	expect(namesMatchCosmetic('', 'Starbucks')).toBe(false);
+
+	// Digit changes NEVER fold, whatever the length — a renumbering is the
+	// classic new-owner tell ("Pho 99" → "Pho 88" at the same address).
+	expect(namesMatchCosmetic('Pho 99 Vietnamese', 'Pho 88 Vietnamese')).toBe(false);
+	expect(namesMatchCosmetic('Restaurant 62 Bistro', 'Restaurant 63 Bistro')).toBe(false);
+	// Same digits + tiny respelling still folds.
+	expect(namesMatchCosmetic('Cafe 21 Espresso', 'Caffe 21 Espresso')).toBe(true);
 });
