@@ -78,6 +78,7 @@ function projectLocationOverview(loc: LocationWithTags) {
 		address: loc.address,
 		phone: loc.phone,
 		website: loc.website,
+		opening_hours: loc.opening_hours,
 		brand_id: loc.brand_id,
 		menu_id: loc.menu_id,
 		tags: loc.tags.map((t) => t.id)

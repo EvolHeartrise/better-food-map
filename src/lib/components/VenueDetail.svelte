@@ -8,6 +8,13 @@
 	import { tagDisplayName } from '$lib/tags';
 	import { safeHttpUrl } from '$lib/safe-url';
 	import { formatPhone } from '$lib/phone';
+	import {
+		weeklyHoursFromJson,
+		groupWeeklyHours,
+		weekdayName,
+		formatMinutes,
+		type HoursRow
+	} from '$lib/opening-hours';
 	import { tooltip } from '$lib/tooltip';
 	import { innerHeight } from 'svelte/reactivity/window';
 	import {
@@ -76,6 +83,31 @@
 	// Phone rendered on read: one consistent display + a fully-qualified tel: href,
 	// regardless of how the source spelled the stored number (issue #241).
 	const phone = $derived(formatPhone(loc.phone, loc.country));
+
+	// Weekly hours as grouped display rows (consecutive same-hours days collapse,
+	// e.g. Mo–Fr). Null when the venue's stored hours aren't machine-readable
+	// (opening_hours_json is derived-on-write from the raw OSM-syntax string; the
+	// ~3% beyond the parsed subset) — the row then shows the raw string verbatim.
+	const hoursRows = $derived.by(() => {
+		const week = weeklyHoursFromJson(loc.opening_hours_json);
+		return week ? groupWeeklyHours(week) : null;
+	});
+
+	// Day names and times render through Intl (no per-locale catalog keys):
+	// "Mon–Fri" / "lun.–ven.", "11:00 a.m.–2:00 p.m." per the active locale.
+	function hoursDayLabel(row: HoursRow): string {
+		const locale = getLocale();
+		const first = weekdayName(row.days[0], locale);
+		if (row.days.length === 1) return first;
+		return `${first}–${weekdayName(row.days[row.days.length - 1], locale)}`;
+	}
+
+	function hoursTimesLabel(row: HoursRow): string {
+		const locale = getLocale();
+		return row.spans
+			.map(([open, close]) => `${formatMinutes(open, locale)}–${formatMinutes(close, locale)}`)
+			.join(', ');
+	}
 
 	// Price formatters, one per (locale, ISO-4217 currency code): each item carries
 	// its menu's currency, and the number itself is grouped/positioned per the active
@@ -335,7 +367,7 @@
 	     long menu (or a tall info block on the bottom sheet) never overflows the
 	     panel. -->
 	<div class="placecard__body">
-		{#if loc.address || phone || loc.website}
+		{#if loc.address || phone || loc.website || loc.opening_hours}
 			<dl class="info">
 				{#if loc.address}
 					<!-- The address is the launch point for navigation (the #1 action after
@@ -382,6 +414,31 @@
 								</a>
 							{:else}
 								{loc.website}
+							{/if}
+						</dd>
+					</div>
+				{/if}
+				{#if loc.opening_hours}
+					<div class="info__row">
+						<dt>{m.venue_hours_label()}</dt>
+						<dd>
+							{#if hoursRows}
+								<!-- Grouped weekly table from the derived opening_hours_json;
+								     day/time forms come from Intl for the active locale. -->
+								<div class="hours">
+									{#each hoursRows as row (row.days[0])}
+										<div class="hours__row" class:hours__row--closed={row.spans.length === 0}>
+											<span class="hours__days">{hoursDayLabel(row)}</span>
+											<span class="hours__times">
+												{row.spans.length ? hoursTimesLabel(row) : m.venue_hours_closed()}
+											</span>
+										</div>
+									{/each}
+								</div>
+							{:else}
+								<!-- Hours beyond the parsed OSM subset (seasonal/holiday grammar):
+								     show the stored source string verbatim. -->
+								{loc.opening_hours}
 							{/if}
 						</dd>
 					</div>
@@ -764,6 +821,24 @@
 		margin: 0;
 		font-size: 0.85rem;
 		word-break: break-word;
+	}
+
+	/* Weekly hours: one line per grouped day-run ("Mon–Fri  11:00 a.m.–10:00 p.m."),
+	   day labels in a narrow lead column so the times align. Closed runs mute to
+	   read as absence, not information. */
+	.hours {
+		display: grid;
+		gap: 0.15rem;
+	}
+
+	.hours__row {
+		display: grid;
+		grid-template-columns: 4.5rem 1fr;
+		gap: 0 0.5rem;
+	}
+
+	.hours__row--closed .hours__times {
+		color: var(--color-text-muted);
 	}
 
 	/* The address renders as a link-styled button (opens the maps-app chooser). It

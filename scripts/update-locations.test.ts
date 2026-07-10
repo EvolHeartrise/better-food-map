@@ -141,3 +141,47 @@ test('update_locations patch schema advertises additionalProperties: false', () 
 	};
 	expect(json.additionalProperties).toBe(false);
 });
+
+test('an opening_hours patch writes both columns; null clears both (never drifts)', async () => {
+	const db = freshDb();
+	await insertLocations(db, [
+		{
+			id: 'hrs',
+			name: 'Hours Venue',
+			category: 'cafe',
+			latitude: 3,
+			longitude: 3,
+			...ADDR,
+			phone: null,
+			website: null
+		}
+	]);
+
+	// Patch in hours (en-dash source spelling): raw normalizes, table derives.
+	await updateLocations(db, [{ id: 'hrs', opening_hours: 'Mo–Fr 09:00–17:00' }]);
+	let stored = await getLocationById(db, 'hrs');
+	expect(stored?.opening_hours).toBe('Mo-Fr 09:00-17:00');
+	expect(JSON.parse(stored?.opening_hours_json ?? 'null')?.[0]).toEqual([[540, 1020]]);
+
+	// A raw-only value (beyond the subset) keeps the string but nulls the table.
+	await updateLocations(db, [{ id: 'hrs', opening_hours: 'Mo-Su sunrise-sunset' }]);
+	stored = await getLocationById(db, 'hrs');
+	expect(stored?.opening_hours).toBe('Mo-Su sunrise-sunset');
+	expect(stored?.opening_hours_json).toBeNull();
+
+	// null clears the pair together.
+	await updateLocations(db, [{ id: 'hrs', opening_hours: null }]);
+	stored = await getLocationById(db, 'hrs');
+	expect(stored?.opening_hours).toBeNull();
+	expect(stored?.opening_hours_json).toBeNull();
+});
+
+test('update_locations arg schema accepts opening_hours and rejects oversized values', () => {
+	expect(() =>
+		v.parse(updateLocationItemArgs, { id: 'x', opening_hours: 'Mo-Fr 09:00-17:00' })
+	).not.toThrow();
+	expect(() => v.parse(updateLocationItemArgs, { id: 'x', opening_hours: null })).not.toThrow();
+	expect(() =>
+		v.parse(updateLocationItemArgs, { id: 'x', opening_hours: 'x'.repeat(600) })
+	).toThrow();
+});

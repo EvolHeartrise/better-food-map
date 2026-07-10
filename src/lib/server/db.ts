@@ -115,6 +115,22 @@ export interface Location {
 	address: string;
 	phone: string | null;
 	website: string | null;
+	/**
+	 * Weekly hours as the RAW source string in OSM `opening_hours` syntax (e.g.
+	 * "Mo-Fr 08:00-18:00; Sa 09:00-17:00"), normalized via
+	 * {@link import('../opening-hours').normalizeOpeningHours} on write. The
+	 * provenance/interchange form; null when unknown (~75% of OSM food POIs).
+	 */
+	opening_hours: string | null;
+	/**
+	 * The SAME hours as a canonical weekly table, DERIVED on write from
+	 * {@link opening_hours} (see src/lib/opening-hours.ts weeklyHoursJson): JSON
+	 * of 7 Monday-first day entries of [openMinute, closeMinute) spans. Never
+	 * set directly — the write layer derives it, so the pair cannot drift. Null
+	 * when there are no hours OR the raw string is beyond the parsed subset
+	 * (the UI then shows the raw string verbatim).
+	 */
+	opening_hours_json: string | null;
 	/** Chain this location belongs to, or `null` for an independent venue. */
 	brand_id: string | null;
 	/**
@@ -384,7 +400,7 @@ function groupMapItemTags(rows: MapItemTagRow[]): Map<string, MapItemTag[]> {
 // SQL (D1 enforces foreign keys; schema lives in migrations/)
 // ---------------------------------------------------------------------------
 
-export const LOCATION_FIELDS = `id, name, category, latitude, longitude, street, city, region, postcode, country, phone, website, brand_id, menu_id`;
+export const LOCATION_FIELDS = `id, name, category, latitude, longitude, street, city, region, postcode, country, phone, website, opening_hours, opening_hours_json, brand_id, menu_id`;
 export const ITEM_FIELDS = `id, menu_id, item_name, description, price`;
 /** The lean {@link MapItem} projection the bulk viewport/search reads use (#83). */
 const MAP_ITEM_FIELDS = `id, menu_id, item_name`;

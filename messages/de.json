@@ -29,6 +29,8 @@
 	"venue_unlike": "Like für diesen Ort entfernen",
 	"venue_address_label": "Adresse",
 	"venue_phone_label": "Telefon",
+	"venue_hours_label": "Öffnungszeiten",
+	"venue_hours_closed": "Geschlossen",
 	"venue_phone_extension": "Durchwahl {ext}",
 	"venue_website_label": "Website",
 	"venue_menu_label": "Speisekarte",

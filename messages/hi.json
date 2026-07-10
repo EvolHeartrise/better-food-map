@@ -29,6 +29,8 @@
 	"venue_unlike": "इस जगह को पसंद से हटाएँ",
 	"venue_address_label": "पता",
 	"venue_phone_label": "फ़ोन",
+	"venue_hours_label": "खुलने का समय",
+	"venue_hours_closed": "बंद",
 	"venue_phone_extension": "एक्सटेंशन {ext}",
 	"venue_website_label": "वेबसाइट",
 	"venue_menu_label": "मेनू",

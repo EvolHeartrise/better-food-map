@@ -28,6 +28,8 @@
 	"venue_unlike": "取消鍾意呢間餐廳",
 	"venue_address_label": "地址",
 	"venue_phone_label": "電話",
+	"venue_hours_label": "營業時間",
+	"venue_hours_closed": "休息",
 	"venue_phone_extension": "內線 {ext}",
 	"venue_website_label": "網站",
 	"venue_menu_label": "餐牌",

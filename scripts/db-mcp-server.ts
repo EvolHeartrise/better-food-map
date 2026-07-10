@@ -91,6 +91,7 @@ import { normalizeAddressPatch } from './mcp/address-patch';
 import { assertItemMenuMoves, assertLocationRefPatches } from './mcp/ref-validation';
 import { normalizeCountry } from '../src/lib/address';
 import { normalizePhone } from '../src/lib/phone';
+import { OPENING_HOURS_MAX_LEN } from '../src/lib/opening-hours';
 import { hasNonHttpScheme } from '../src/lib/safe-url';
 import { searchPoi } from './osm/search-poi';
 import { selectChainCandidates, partitionImportable } from './osm/import-chain';
@@ -305,7 +306,7 @@ const SERVER_INSTRUCTIONS =
 	'menu and the menu items, then call import_chain once (dry_run first to vet the name allowlist; ' +
 	"pass `brand_wikidata` to catch name variants via OSM's brand tag, and `country` to keep " +
 	'neighbouring-country border POIs out) — it scans the whole area, filters by name, and imports ' +
-	'every branch with OSM-verbatim coordinates/addresses in one call. After bulk imports, ' +
+	'every branch with OSM-verbatim coordinates/addresses (and per-branch opening hours where tagged) in one call. After bulk imports, ' +
 	'audit_locations ' +
 	'(check: "duplicate_locations") finds same-name pairs a few metres apart — OSM sometimes maps one ' +
 	`venue twice; verify against the venue's own locator, then delete_locations the extra row, or ` +
@@ -376,6 +377,14 @@ const websiteSchema = v.pipe(
 		'website must be an http(s) URL (no javascript:/data:/other schemes)'
 	)
 );
+// Hours: length-bounded here; the write layer normalizes (dashes/whitespace)
+// and derives the machine-readable weekly table (src/lib/opening-hours.ts).
+const openingHoursSchema = v.pipe(
+	v.string(),
+	v.trim(),
+	v.minLength(1),
+	v.maxLength(OPENING_HOURS_MAX_LEN)
+);
 
 // Terse per-field pointers reused on create_locations and update_locations — the
 // full rules live in SERVER_INSTRUCTIONS (NAME_POLICY / OSM_IMPORT_POLICY /
@@ -389,6 +398,13 @@ const COUNTRY_DESC = 'Country name or ISO-2 code (stored as ISO-2; defaults to C
 const PHONE_DESC =
 	"The venue's phone (prefer its OSM contact:phone tag). Stored canonical (E.164, " +
 	'e.g. "+16045551234") regardless of the source spelling; the display form is derived on read.';
+const OPENING_HOURS_DESC =
+	"The venue's weekly hours in OSM `opening_hours` syntax, e.g. " +
+	'"Mo-Fr 08:00-18:00; Sa 09:00-17:00" ("PH off" tolerated; days omitted = closed). On an ' +
+	'`osm_id` import this is FILLED FROM THE POI automatically when omitted — pass a value only to ' +
+	"override with fresher hours from the venue's own site, or null to import without hours. The " +
+	'server derives a machine-readable weekly table from it (`opening_hours_json`); a string beyond ' +
+	'the OSM subset is stored raw-only (displayed verbatim, not machine-readable) with a warning.';
 const OSM_ID_DESC =
 	'PREFERRED way to add a venue: the `osm_id` of a search_poi candidate — the server then takes ' +
 	"this venue's coordinates VERBATIM from that OSM POI (never geocoded/copied) and fills its " +
@@ -588,6 +604,9 @@ const createLocationArgs = v.object({
 	country: v.optional(v.nullable(v.pipe(countryPartSchema, v.description(COUNTRY_DESC)))),
 	phone: v.optional(v.nullable(v.pipe(v.string(), v.description(PHONE_DESC)))),
 	website: v.optional(v.nullable(websiteSchema)),
+	opening_hours: v.optional(
+		v.nullable(v.pipe(openingHoursSchema, v.description(OPENING_HOURS_DESC)))
+	),
 	brand_id: v.optional(
 		v.nullable(
 			v.pipe(
@@ -717,6 +736,16 @@ export const updateLocationItemArgs = v.pipe(
 			v.nullable(v.pipe(v.string(), v.description(`Replace the phone. ${PHONE_DESC}`)))
 		),
 		website: v.optional(v.nullable(websiteSchema)),
+		opening_hours: v.optional(
+			v.nullable(
+				v.pipe(
+					openingHoursSchema,
+					v.description(
+						`Replace the weekly hours (null clears them, and the derived table with them). ${OPENING_HOURS_DESC}`
+					)
+				)
+			)
+		),
 		brand_id: v.optional(
 			v.nullable(
 				v.pipe(v.string(), v.minLength(1), v.description('Reassign to a chain; null detaches it.'))
@@ -1712,6 +1741,7 @@ function projectLocationOverview(loc: LocationWithTags) {
 		address: loc.address,
 		phone: loc.phone,
 		website: loc.website,
+		opening_hours: loc.opening_hours,
 		brand_id: loc.brand_id,
 		menu_id: loc.menu_id,
 		tags: loc.tags.map((t) => t.id)
@@ -1783,7 +1813,7 @@ const tools = [
 		outputSchema: listLocationsOutput,
 		description:
 			'List locations in the LIVE map database as a lightweight overview — id, name, category, ' +
-			'coordinates, address, phone, website, brand_id/menu_id (set for chain branches), and the distinct ' +
+			'coordinates, address, phone, website, opening_hours, brand_id/menu_id (set for chain branches), and the distinct ' +
 			'tag ids offered across the effective menu (no per-item detail, no source URLs). Pass `query` to ' +
 			'match by name (case-insensitive substring) — e.g. to check whether a venue is already on the map ' +
 			'(de-dup before adding) or to find one to edit; this reads the live D1, distinct from search_poi ' +
@@ -1858,8 +1888,11 @@ const tools = [
 			// currency/menu_id are identical across them: surface currency once at the top
 			// and drop the per-item copies (see itemWithinParent).
 			const currency = menu[0]?.currency;
+			// The derived weekly table (opening_hours_json) is an app/SQL concern;
+			// agents read and write only the raw `opening_hours` string.
+			const { opening_hours_json: _ohJson, ...locationOut } = location;
 			const base = {
-				...location,
+				...locationOut,
 				sources: menuRow?.sources ?? [],
 				...(currency ? { currency } : {})
 			};
@@ -1878,7 +1911,8 @@ const tools = [
 		description:
 			'Create one or more locations in a single batch — the only way to add ' +
 			"locations; pass a one-item `items` array for a single place. PREFERRED: set each item's " +
-			'`osm_id` from a search_poi candidate (see the `osm_id` field doc) so coordinates + address come ' +
+			'`osm_id` from a search_poi candidate (see the `osm_id` field doc) so coordinates + address — and ' +
+			'`opening_hours`, unless you pass your own (or null to suppress) — come ' +
 			'from OSM verbatim; otherwise pass latitude/longitude + a structured address (street/city/region/' +
 			'country required, postcode optional; region/postcode/country are normalized, e.g. "Ontario" → ' +
 			'"ON"). `name` is the venue\'s own name ONLY — never bake a branch\'s location (street/' +

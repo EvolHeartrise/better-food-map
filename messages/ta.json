@@ -29,6 +29,8 @@
 	"venue_unlike": "இந்த இடத்திற்கான விருப்பத்தை நீக்கு",
 	"venue_address_label": "முகவரி",
 	"venue_phone_label": "தொலைபேசி",
+	"venue_hours_label": "திறக்கும் நேரம்",
+	"venue_hours_closed": "மூடப்பட்டுள்ளது",
 	"venue_phone_extension": "நீட்டிப்பு {ext}",
 	"venue_website_label": "இணையதளம்",
 	"venue_menu_label": "மெனு",

@@ -58,6 +58,7 @@ const locationOverviewOut = v.object({
 	address: v.string(),
 	phone: v.nullable(v.string()),
 	website: v.nullable(v.string()),
+	opening_hours: v.nullable(v.string()),
 	brand_id: v.nullable(v.string()),
 	menu_id: v.nullable(v.string()),
 	tags: v.array(v.string())
@@ -103,6 +104,9 @@ export const getLocationOutput = v.object({
 	address: v.string(),
 	phone: v.nullable(v.string()),
 	website: v.nullable(v.string()),
+	// Raw OSM-syntax weekly hours; the derived table (opening_hours_json) is an
+	// app/SQL concern and is not surfaced to agents.
+	opening_hours: v.nullable(v.string()),
 	brand_id: v.nullable(v.string()),
 	menu_id: v.nullable(v.string()),
 	// The venue's provenance, resolved from the menu it serves (sources are menu-level).
