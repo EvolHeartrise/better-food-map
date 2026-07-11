@@ -15,6 +15,7 @@
 
 import type { D1Like } from '../../src/lib/server/db';
 import { bboxAround, haversineMeters, SpatialGrid, type Bounds } from '../osm/geo';
+import { DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT, clampLimit } from '../osm/paging';
 import { existingInBbox, type ExistingLocation } from '../osm/search-poi';
 import { leadNameTokens, nameTokens, tokensRelated, type OvertureLead } from './leads';
 import { LEADS_SCAN_CAP, type OvertureLeadsStore } from './leads-store';
@@ -102,18 +103,10 @@ export const INDEPENDENT_MIN_CONFIDENCE = 0.9;
  */
 export const LEAD_COVER_RADIUS_M = 500;
 
-const DEFAULT_LIMIT = 50;
-const MAX_LIMIT = 200;
 // Existing-venue grid cell ≈ 1.1 km, comfortably above the 500 m probe box.
 const COVER_CELL_DEG = 0.01;
 
 const WORLD: Bounds = { minLat: -90, maxLat: 90, minLng: -180, maxLng: 180 };
-
-/** Clamps a requested page size to [1, MAX] (default 50) — as list_locations does. */
-function resolveLimit(limit: number | undefined): number {
-	if (limit === undefined) return DEFAULT_LIMIT;
-	return Math.min(Math.max(1, Math.trunc(limit)), MAX_LIMIT);
-}
 
 /**
  * Resolves the query area: an explicit bbox, a centre+radius (kept for the
@@ -225,7 +218,7 @@ export async function searchOvertureLeads(
 ): Promise<SearchLeadsResult> {
 	const { bbox, centre } = resolveLeadArea(params);
 	const excludeExisting = params.exclude_existing ?? true;
-	const limit = resolveLimit(params.limit);
+	const limit = clampLimit(params.limit, { def: DEFAULT_PAGE_LIMIT, min: 1, max: MAX_PAGE_LIMIT });
 	const offset = Math.max(0, Math.trunc(params.offset ?? 0));
 
 	// The junk guard: an explicit min_confidence applies to everything; omitted,

@@ -31,6 +31,7 @@
 // ---------------------------------------------------------------------------
 
 import { existsSync } from 'node:fs';
+import { parseArgs as parseArgsUtil } from 'node:util';
 import { mkdir, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { FOOD_AMENITIES, FOOD_SHOPS, type PoiRow } from './osm/map-feature';
@@ -48,39 +49,40 @@ interface Args {
 }
 
 function parseArgs(argv: string[]): Args {
-	const args: Partial<Args> = { db: 'data/osm-poi.sqlite', keepTemp: false, enrich: true };
-	for (let i = 0; i < argv.length; i++) {
-		const a = argv[i];
-		switch (a) {
-			case '--region':
-				args.region = argv[++i];
-				break;
-			case '--input':
-				args.input = argv[++i];
-				break;
-			case '--db':
-				args.db = argv[++i];
-				break;
-			case '--keep-temp':
-				args.keepTemp = true;
-				break;
-			case '--no-enrich':
-				args.enrich = false;
-				break;
-			case '--help':
-			case '-h':
-				printUsageAndExit(0);
-				break;
-			default:
-				console.error(`Unknown argument: ${a}`);
-				printUsageAndExit(1);
-		}
+	let values;
+	try {
+		({ values } = parseArgsUtil({
+			args: argv,
+			options: {
+				region: { type: 'string' },
+				input: { type: 'string' },
+				db: { type: 'string', default: 'data/osm-poi.sqlite' },
+				'keep-temp': { type: 'boolean', default: false },
+				'no-enrich': { type: 'boolean', default: false },
+				help: { type: 'boolean', short: 'h', default: false }
+			},
+			allowPositionals: false
+		}));
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		const m = msg.match(/'([^']+)'/);
+		console.error(`Unknown argument: ${m ? m[1] : msg}`);
+		return printUsageAndExit(1);
 	}
+	if (values.help) printUsageAndExit(0);
+
+	const args: Args = {
+		region: values.region as string,
+		input: values.input as string,
+		db: values.db,
+		keepTemp: values['keep-temp'],
+		enrich: !values['no-enrich']
+	};
 	if (!args.region || !args.input) {
 		console.error('Error: --region and --input are required.\n');
 		printUsageAndExit(1);
 	}
-	return args as Args;
+	return args;
 }
 
 function printUsageAndExit(code: number): never {

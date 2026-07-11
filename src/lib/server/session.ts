@@ -27,16 +27,6 @@ export const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
 const SESSION_REFRESH_AFTER_MS = SESSION_TTL_MS / 2;
 
 /**
- * A fresh, high-entropy session token (256 bits, hex). Stored only in the cookie
- * (browser) or handed to the app as a bearer token; its SHA-256 is the row key.
- * Thin alias over the shared {@link generateToken} so token/hash minting has one
- * home (see token.ts) — the app one-time code uses the same primitive.
- */
-export function generateSessionToken(): string {
-	return generateToken();
-}
-
-/**
  * Extracts the raw token from an `Authorization: Bearer <token>` header, or
  * undefined when the header is absent or not a Bearer credential. The scheme is
  * matched case-insensitively (per RFC 7235 the scheme is case-insensitive); the
@@ -74,7 +64,7 @@ export async function createUserSession(
 	db: D1Like,
 	userId: string
 ): Promise<{ token: string; session: Session }> {
-	const token = generateSessionToken();
+	const token = generateToken();
 	const sessionId = await sha256Hex(token);
 	const now = Date.now();
 	const session = await createSession(db, sessionId, userId, now + SESSION_TTL_MS, now);

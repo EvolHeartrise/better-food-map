@@ -28,7 +28,7 @@ export interface DietIcon {
 }
 
 // Only the six dietary ids appear; course tags (dessert/drink) have no icon here.
-export const DIETARY_ICONS: Partial<Record<TagId, DietIcon>> = {
+const DIETARY_ICONS: Partial<Record<TagId, DietIcon>> = {
 	vegan: { icon: Vegan, tone: 'green' },
 	vegetarian: { icon: Leaf, tone: 'green' },
 	halal: { icon: FoodHalal, tone: 'green' },

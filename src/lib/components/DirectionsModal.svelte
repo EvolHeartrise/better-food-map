@@ -1,13 +1,13 @@
 <script lang="ts">
 	import { m } from '$lib/paraglide/messages';
+	import Modal from './Modal.svelte';
 
 	// A small chooser opened by tapping the venue address: it offers the maps apps
 	// a user might prefer (Apple Maps / Google Maps) rather than hard-coding one,
-	// each linking to the venue so the user can navigate to it. It owns nothing but
-	// its DOM: `open` is bindable so the page can layer its own Escape handling under
-	// this one (Escape closes only the topmost layer — see the page's
-	// onWindowKeydown). A native <dialog> in the top layer gives the backdrop, focus
-	// trap and Escape-to-close for free (mirrors SourcesModal).
+	// each linking to the venue so the user can navigate to it. The shared Modal owns
+	// the dialog shell (backdrop, focus trap, Escape-to-close, header/✕); this
+	// component supplies the provider list. `open` is bindable so the page can layer
+	// its own Escape handling under this one.
 	let {
 		latitude,
 		longitude,
@@ -21,8 +21,6 @@
 		address: string;
 		open?: boolean;
 	} = $props();
-
-	let dialog = $state<HTMLDialogElement | null>(null);
 
 	// The two apps want different inputs to land on the venue nicely:
 	//
@@ -47,159 +45,39 @@
 	const googleUrl = $derived(
 		`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(googleQuery)}`
 	);
-
-	// Drive the platform modal from `open`. showModal() puts the dialog in the top
-	// layer above the map and detail panel; close() (Escape, backdrop, ✕, or picking
-	// a provider) fires the `close` event below, which syncs `open` back to false.
-	$effect(() => {
-		const el = dialog;
-		if (!el) return;
-		if (open && !el.open) el.showModal();
-		else if (!open && el.open) el.close();
-	});
-
-	// A click outside the dialog box (on the backdrop) closes it. The dialog element
-	// fills only the box, so a pointer landing beyond its bounds is a backdrop click.
-	function onDialogClick(event: MouseEvent) {
-		const el = dialog;
-		if (!el) return;
-		const rect = el.getBoundingClientRect();
-		const outside =
-			event.clientX < rect.left ||
-			event.clientX > rect.right ||
-			event.clientY < rect.top ||
-			event.clientY > rect.bottom;
-		if (outside) open = false;
-	}
 </script>
 
-<dialog
-	bind:this={dialog}
-	class="directions-modal"
-	aria-label={m.directions_dialog_aria()}
-	onclose={() => (open = false)}
-	onclick={onDialogClick}
+<Modal
+	bind:open
+	title={m.directions_title()}
+	ariaLabel={m.directions_dialog_aria()}
+	closeLabel={m.directions_close_aria()}
+	width="min(22rem, calc(100vw - 2rem))"
 >
-	<div class="directions-modal__panel">
-		<header class="directions-modal__head">
-			<h2 class="directions-modal__title">{m.directions_title()}</h2>
-			<button
-				type="button"
-				class="directions-modal__close"
-				aria-label={m.directions_close_aria()}
-				onclick={() => (open = false)}
-			>
-				✕
-			</button>
-		</header>
-
-		<!-- Picking a provider dismisses the chooser as it hands off to the maps app. -->
-		<div class="directions-modal__list">
-			<a
-				class="directions-modal__option"
-				href={appleUrl}
-				target="_blank"
-				rel="external noopener noreferrer"
-				onclick={() => (open = false)}
-			>
-				{m.directions_apple_maps()}
-			</a>
-			<a
-				class="directions-modal__option"
-				href={googleUrl}
-				target="_blank"
-				rel="external noopener noreferrer"
-				onclick={() => (open = false)}
-			>
-				{m.directions_google_maps()}
-			</a>
-		</div>
+	<!-- Picking a provider dismisses the chooser as it hands off to the maps app. -->
+	<div class="directions-modal__list">
+		<a
+			class="directions-modal__option"
+			href={appleUrl}
+			target="_blank"
+			rel="external noopener noreferrer"
+			onclick={() => (open = false)}
+		>
+			{m.directions_apple_maps()}
+		</a>
+		<a
+			class="directions-modal__option"
+			href={googleUrl}
+			target="_blank"
+			rel="external noopener noreferrer"
+			onclick={() => (open = false)}
+		>
+			{m.directions_google_maps()}
+		</a>
 	</div>
-</dialog>
+</Modal>
 
 <style>
-	/* The dialog element IS the box (native modal, so it lives in the top layer over
-	   the map and detail panel regardless of z-index). Reset the UA centring margins
-	   and place it in the viewport centre ourselves. Mirrors SourcesModal. */
-	.directions-modal {
-		margin: auto;
-		width: min(22rem, calc(100vw - 2rem));
-		padding: 0;
-		border: 1px solid var(--color-border);
-		border-radius: 0.9rem;
-		background: rgba(255, 255, 255, 0.96);
-		backdrop-filter: blur(16px) saturate(180%);
-		-webkit-backdrop-filter: blur(16px) saturate(180%);
-		box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
-		color: var(--color-text);
-		overflow: hidden;
-	}
-
-	.directions-modal::backdrop {
-		background: rgba(0, 0, 0, 0.4);
-		backdrop-filter: blur(2px);
-		-webkit-backdrop-filter: blur(2px);
-	}
-
-	.directions-modal__panel {
-		display: flex;
-		flex-direction: column;
-		padding: 0.85rem 0.95rem 1rem;
-	}
-
-	.directions-modal__head {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 0.5rem;
-		margin-bottom: 0.6rem;
-	}
-
-	.directions-modal__title {
-		margin: 0;
-		font-size: 1rem;
-	}
-
-	.directions-modal__close {
-		position: relative;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 1.6rem;
-		height: 1.6rem;
-		padding: 0;
-		flex-shrink: 0;
-		font-size: 0.8rem;
-		line-height: 1;
-		color: var(--color-text-muted);
-		background: rgba(0, 0, 0, 0.04);
-		border: 1px solid rgba(0, 0, 0, 0.08);
-		border-radius: 999px;
-		cursor: pointer;
-		transition:
-			background-color 0.12s,
-			color 0.12s;
-	}
-
-	.directions-modal__close:hover {
-		color: var(--color-text);
-		background: rgba(0, 0, 0, 0.09);
-	}
-
-	/* Touch target: keep the 1.6rem ✕, but extend the tappable area to the 44px
-	   floor on coarse pointers with a transparent centred overlay. */
-	@media (pointer: coarse) {
-		.directions-modal__close::after {
-			content: '';
-			position: absolute;
-			top: 50%;
-			left: 50%;
-			width: 44px;
-			height: 44px;
-			transform: translate(-50%, -50%);
-		}
-	}
-
 	.directions-modal__list {
 		display: flex;
 		flex-direction: column;

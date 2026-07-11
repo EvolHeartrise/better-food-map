@@ -2,9 +2,9 @@
 // Pure build logic for the Overture leads pool (runner: build-leads.ts).
 //
 // A LEAD is a Canadian Overture eatery (confidence >= 0.85) with NO name-related
-// OSM staging POI within 500 m — the 2026-07-10 comparison experiment
-// (compare-osm-eateries.ts) sized this coverage gap at ~45k rows, heavily chain
-// units OSM rarely maps. The raw pool carries internal duplication (Overture
+// OSM staging POI within 500 m — the 2026-07-10 comparison experiment (issue
+// #302) sized this coverage gap at ~45k rows, heavily chain units OSM rarely
+// maps. The raw pool carries internal duplication (Overture
 // conflates the same venue from several source datasets): near-duplicate leads
 // (name-related within ~150 m, street lines not disagreeing) are collapsed to
 // their highest-confidence representative, with `dup_count` recording how many

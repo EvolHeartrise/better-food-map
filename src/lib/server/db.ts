@@ -34,7 +34,6 @@ import { TAGS, dietFilterTagIds } from '../tags';
 import { formatAddress } from '../address';
 import { longestLiteralRun, searchableQuery } from '../search';
 import { cellKey, cellsCoverBounds, levelCell } from '../grid';
-import { isLocale } from '../paraglide/runtime';
 
 // ---------------------------------------------------------------------------
 // Minimal D1 interface (the real `D1Database` binding and the HTTP shim in
@@ -1743,24 +1742,6 @@ export async function setUserDiet(
 // ---------------------------------------------------------------------------
 // Saved UI locale (migration 0024) — i18n phase 4
 // ---------------------------------------------------------------------------
-
-/**
- * A signed-in user's saved UI locale (e.g. 'en-US' or 'fr'), or `null` when none is
- * saved (no row). Validated on read via `isLocale`, so a stored value no longer in
- * the supported set reads as "no saved locale" and the caller falls back to
- * Accept-Language — mirroring how `getUserDiet`'s value is sanitized. Note the
- * request path does NOT call this: it reads the locale folded into
- * `getSessionWithUser` (one memoized lookup, no extra round trip). This is the
- * standalone accessor that mirrors `getUserDiet`.
- */
-export async function getUserLocale(db: D1Like, userId: string): Promise<Locale | null> {
-	const row = await db
-		.prepare(`SELECT locale FROM user_locale WHERE user_id = ?`)
-		.bind(userId)
-		.first<{ locale: string | null }>();
-	const locale = row?.locale;
-	return isLocale(locale) ? locale : null;
-}
 
 /**
  * Saves (upserts) a user's UI locale so it follows them across devices. One row

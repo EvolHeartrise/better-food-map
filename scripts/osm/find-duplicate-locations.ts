@@ -18,6 +18,7 @@
 import { type D1Like } from '../../src/lib/server/db';
 import { orderedPair } from '../../src/lib/server/db-write';
 import { DismissFilter, type DismissableFinding, type DismissalOpts } from './audit-dismiss';
+import { DEFAULT_PAGE_LIMIT, clampLimit } from './paging';
 import { SpatialGrid, haversineMeters } from './geo';
 import { namesMatch, normalizeName } from './search-poi';
 
@@ -95,7 +96,6 @@ export interface FindDuplicateLocationsResult {
 }
 
 const DEFAULT_RADIUS_M = 150;
-const DEFAULT_LIMIT = 50;
 // Pairs closer than this with matching names are near-certain double-mappings —
 // two real branches of one chain essentially never share a wall.
 const HIGH_CONFIDENCE_M = 30;
@@ -171,7 +171,9 @@ export async function findDuplicateLocations(
 	} & DismissalOpts = {}
 ): Promise<FindDuplicateLocationsResult> {
 	const radiusM = opts.radius_m ?? DEFAULT_RADIUS_M;
-	const limit = opts.limit ?? DEFAULT_LIMIT;
+	// No min/max/trunc: this audit deliberately imposes no MAX cap on `limit`
+	// (unlike the other finders) — preserved by opting out of both bounds.
+	const limit = clampLimit(opts.limit, { def: DEFAULT_PAGE_LIMIT, trunc: false });
 	const filter = new DismissFilter(opts);
 
 	const { results: locations } = await db

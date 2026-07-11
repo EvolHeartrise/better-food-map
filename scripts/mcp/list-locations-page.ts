@@ -11,10 +11,12 @@
 // than paying for a second COUNT query.
 // ---------------------------------------------------------------------------
 
+import { DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT, clampLimit } from '../osm/paging';
+
 /** Default page size when the caller passes no `limit`. */
-export const LIST_LOCATIONS_DEFAULT_LIMIT = 50;
+export const LIST_LOCATIONS_DEFAULT_LIMIT = DEFAULT_PAGE_LIMIT;
 /** Hard cap on a single page, mirroring search_poi / audit_locations. */
-export const LIST_LOCATIONS_MAX_LIMIT = 200;
+export const LIST_LOCATIONS_MAX_LIMIT = MAX_PAGE_LIMIT;
 
 /**
  * Clamps a requested `limit` to `[1, MAX]`, defaulting to
@@ -22,8 +24,11 @@ export const LIST_LOCATIONS_MAX_LIMIT = 200;
  * clamped (not rejected) so an over-eager caller still gets a valid page.
  */
 export function resolveListLimit(limit: number | undefined): number {
-	if (limit === undefined) return LIST_LOCATIONS_DEFAULT_LIMIT;
-	return Math.min(Math.max(1, Math.trunc(limit)), LIST_LOCATIONS_MAX_LIMIT);
+	return clampLimit(limit, {
+		def: LIST_LOCATIONS_DEFAULT_LIMIT,
+		min: 1,
+		max: LIST_LOCATIONS_MAX_LIMIT
+	});
 }
 
 /** Normalizes a requested `offset` to a non-negative integer (default 0). */
