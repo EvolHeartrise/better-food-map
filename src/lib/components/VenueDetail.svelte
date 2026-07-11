@@ -968,12 +968,15 @@
 	   the notch/status bar; the top corners round only while a drag has peeled the
 	   sheet off the top edge. */
 	@media (max-width: 48rem) {
+		/* No bottom padding on the panel itself: the menu list is the last thing
+		   in the column, and its scroll edge must BE the bottom of the screen so
+		   items scroll through the screen edge rather than stopping at an inset
+		   strip. The breathing room moves INSIDE the scroll container (below). */
 		.placecard {
 			left: 0;
 			right: 0;
 			width: auto;
-			padding: calc(0.35rem + env(safe-area-inset-top)) 0.95rem
-				calc(0.85rem + env(safe-area-inset-bottom));
+			padding: calc(0.35rem + env(safe-area-inset-top)) 0.95rem 0;
 			border-left: none;
 			border-top: 1px solid rgba(255, 255, 255, 0.6);
 			border-radius: 0;
@@ -983,6 +986,19 @@
 
 		.placecard--dragging {
 			border-radius: 0.9rem 0.9rem 0 0;
+		}
+
+		/* Interior bottom padding on the menu list (the scroll container), so the
+		   last item can scroll up clear of the home indicator / screen edge while
+		   mid-list content still passes through the very bottom of the screen. */
+		.placecard__menu {
+			padding-bottom: calc(0.85rem + env(safe-area-inset-bottom));
+		}
+
+		/* The no-menu footer replaces the list as the panel's last content — give
+		   it back the bottom inset the panel no longer carries. */
+		.placecard__foot {
+			padding-bottom: calc(0.85rem + env(safe-area-inset-bottom));
 		}
 
 		/* On a phone at arm's length the panel's smallest load-bearing text — item
