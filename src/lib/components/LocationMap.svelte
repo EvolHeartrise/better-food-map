@@ -44,9 +44,9 @@
 
 	let {
 		locations,
-		// The currently selected location, shown zoomed-in with its detail card
-		// open on the map. When set, the map flies to it once and keeps its label
-		// visible even if it isn't among the in-view `locations`.
+		// The currently selected location, highlighted with its detail card open
+		// beside the map. Selection never moves the camera — the map keeps its
+		// label visible even if it isn't among the in-view `locations`.
 		selected = null,
 		// Called with a location id when the user clicks a name label, so the parent
 		// can open that location (selecting it).
@@ -55,15 +55,9 @@
 		// parent can close an open location. Fires on every bare click; the parent
 		// decides whether anything is open to close.
 		ondeselect,
-		// The screen space the parent's detail panel covers while a location is open,
-		// as pixel insets from the right/bottom edges. Turned into the selection fly's
-		// destination offset (see selectionOffset): the fly centres the venue in the
-		// REMAINING (visible) map area, and clearing the selection glides it back to the
-		// full-viewport centre as the panel leaves. Null when nothing is open.
-		detailInset = null,
 		// Where the map opens, as `[lat, lng]`. Falls back to DEFAULT_CENTER when absent.
-		// The camera otherwise only moves when the user pans/zooms or selects a place —
-		// search/filter changes never move it.
+		// The camera otherwise only moves when the user pans/zooms or a `focus` fly
+		// fires — selection and search/filter changes never move it.
 		initialCenter = null,
 		// Zoom the map opens at. Defaults to a city view (DEFAULT_ZOOM); the landing
 		// passes a low value so the map opens on the fully zoomed-out globe.
@@ -93,7 +87,6 @@
 		selected?: Location | null;
 		onselect?: (id: string) => void;
 		ondeselect?: () => void;
-		detailInset?: { right: number; bottom: number } | null;
 		initialCenter?: [number, number] | null;
 		initialZoom?: number | null;
 		onzoom?: (zoom: number) => void;
@@ -111,13 +104,11 @@
 	const DEFAULT_CENTER = DEFAULT_MAP_CENTER;
 	// Opening zoom when no `initialZoom` is passed: a city view.
 	const DEFAULT_ZOOM = 12;
-	// Zoom level used when flying to a single selected location.
-	const SELECTED_ZOOM = 15;
 	// Minimum zoom when flying to a focus target: if the user is already zoomed
 	// further in we keep their zoom (just recenter), but from a zoomed-out globe
 	// we pull in to at least a city view so the area is legible on arrival.
 	const FOCUS_MIN_ZOOM = 12;
-	// Fly animation duration when centering on a selected location, in milliseconds.
+	// Fly animation duration for a focus fly (the landing's "Start using"), in ms.
 	const FLY_DURATION_MS = 600;
 	// Camera zoom ceiling. Purely an interaction cap: the vector tile data stops at
 	// z15, but unlike raster it overzooms crisply (the geometry just re-renders at the
@@ -263,8 +254,8 @@
 	// up and parks past SIM_MAX_SETTLE_FRAMES. Reset by `wake` (any move/data change).
 	let settleFrames = 0;
 	let lastDeclutter = 0;
-	// The overlay's CSS size, tracked from the map container so the layout knows which
-	// labels are on screen and the camera padding can be clamped to it.
+	// The overlay's CSS size, tracked from the map container so the layout knows
+	// which labels are on screen.
 	let overlayWidth = 0;
 	let overlayHeight = 0;
 
@@ -274,15 +265,6 @@
 	// throttle: shared by every report path so a settle report also opens a fresh
 	// throttle window.
 	let lastViewReport = 0;
-	// The last selected id we flew to, so re-renders (e.g. a viewport refetch) don't
-	// re-fly to an already-open location — only a genuine change of selection does.
-	let lastSelectedId: string | null = null;
-	// The screen offset (px) by which the last selection fly pushed the venue off the
-	// container centre to clear the detail panel. Kept so deselecting can glide the
-	// venue back to the true centre even though `detailInset` is already null by then
-	// (see the selection $effect). A pixel offset is zoom/pan-independent, so this
-	// stays correct even if the user panned while the panel was open.
-	let lastSelectionOffset: [number, number] = [0, 0];
 	// The last focus key we flew to, so the focus effect fires once per new target
 	// (a data re-sync or the parent re-passing the same focus won't re-fly).
 	let lastFocusKey: string | null = null;
@@ -573,37 +555,6 @@
 		}
 	}
 
-	// The screen offset (px) that pushes a selected venue off the container centre so
-	// it sits in the middle of the map area the detail panel leaves visible: half the
-	// right inset to the left, half the bottom inset up. Clamped so a panel covering
-	// most of a small screen can't push the venue off the usable viewport entirely.
-	// Used as the fly's destination `offset` (see flyToSelected).
-	function selectionOffset(): [number, number] {
-		const right = Math.min(detailInset?.right ?? 0, overlayWidth * 0.7);
-		const bottom = Math.min(detailInset?.bottom ?? 0, overlayHeight * 0.7);
-		return [-right / 2, -bottom / 2];
-	}
-
-	// Smoothly zoom in on the selected location, centred within the map area the
-	// detail panel leaves visible. The offset is baked into the flight's destination
-	// up front, so the camera flies straight to the final framing. (We deliberately do
-	// NOT pass `padding` here: MapLibre interpolates padding across a flight, so a
-	// padding that grows from 0 to the panel inset slides the optical centre sideways
-	// as the camera arrives — the venue appears to fly to one point and then drift to
-	// another. A destination `offset` lands cleanly in one motion instead.) The pill is
-	// force-kept visible (Infinity priority) and highlighted via the render flag.
-	function flyToSelected() {
-		if (!map || !selected) return;
-		const offset = selectionOffset();
-		lastSelectionOffset = offset;
-		map.flyTo({
-			center: [selected.longitude, selected.latitude],
-			zoom: SELECTED_ZOOM,
-			offset,
-			duration: FLY_DURATION_MS
-		});
-	}
-
 	// The current visible box, grown by BOUNDS_PADDING. Latitude is clamped to the
 	// valid range; longitude is left as-is (a box across the antimeridian isn't
 	// supported — the same planar assumption used elsewhere). Reported at every zoom
@@ -807,29 +758,13 @@
 		wake();
 	});
 
-	// Centre on a newly-selected location. Guarded by `lastSelectedId` so a data
-	// re-sync (e.g. data refetched after the fly's own move) doesn't re-trigger it —
-	// only an actual change of selection flies the camera. Clearing the selection
-	// glides the venue back from the panel-inset centre to the middle of the full
-	// viewport as the panel leaves: it pans by the same screen offset the selection
-	// fly applied (in reverse), computed against the CURRENT view so it stays right
-	// even if the user panned while the panel was open. Wakes the loop so the new
-	// pill's highlight repaints even if the camera doesn't move.
+	// Selection never moves the camera — the container just splits/unsplits around
+	// the map (MapLibre's resize handling keeps the centre point fixed through
+	// that). This only wakes the label loop so the newly (de)selected pill's
+	// highlight repaints even when nothing else changed.
 	$effect(() => {
+		void selected?.id;
 		if (!ready) return;
-		const id = selected?.id ?? null;
-		if (id && id !== lastSelectedId) {
-			flyToSelected();
-		} else if (!id && lastSelectedId) {
-			const [dx, dy] = lastSelectionOffset;
-			if (map && (dx || dy)) {
-				const c = map.project(map.getCenter());
-				const center = map.unproject([c.x + dx, c.y + dy]);
-				map.easeTo({ center, duration: FLY_DURATION_MS });
-			}
-			lastSelectionOffset = [0, 0];
-		}
-		lastSelectedId = id;
 		wake();
 	});
 

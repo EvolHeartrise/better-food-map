@@ -403,28 +403,137 @@
 	);
 
 	// --- Detail panel geometry ---------------------------------------------------
-	// While a location is open, its details live in a panel docked to an edge: a
-	// fixed-width column on the RIGHT on wide screens (the map insets its camera by
-	// the panel width so the venue centres in the area left visible), a FULL-SCREEN
-	// sheet on narrow ones (the 48rem breakpoint the rest of the page uses) — the
-	// map is fully covered there, so it takes no inset and the venue centres over
-	// the whole map, which is what a swipe-down dismiss reveals. The width px
-	// mirrors the CSS (26rem); the map clamps it against its own size, so the CSS
-	// cap (100vw) needs no echo.
-	const PANEL_WIDTH_PX = 416;
+	// While a location is open, its details live in a panel docked to an edge: the
+	// RIGHT HALF of the screen on wide screens — a true 50/50 split, the map
+	// container shrinks to the left half (see `.app--detail .app__map`) — and a
+	// FULL-SCREEN sheet on narrow ones (the 48rem breakpoint the rest of the page
+	// uses), where the map keeps its full size under the sheet. Selecting never
+	// moves the camera: the split just resizes the map around whatever view the
+	// user already had (MapLibre keeps the centre point fixed through a resize).
 	const narrowScreen = new MediaQuery('(max-width: 48rem)');
+	const reducedMotion = new MediaQuery('(prefers-reduced-motion: reduce)');
 
-	const detailInset = $derived(
-		selectedId && !narrowScreen.current ? { right: PANEL_WIDTH_PX, bottom: 0 } : null
-	);
-
-	// How the panel enters/leaves: sliding from the edge it docks to. `opacity: 1`
-	// keeps it fully opaque throughout — the motion alone is the transition.
+	// How the panel enters/leaves: sliding from the edge it docks to, in step with
+	// the map container's own width transition. `opacity: 1` keeps it fully opaque
+	// throughout — the motion alone is the transition. Instant when the user
+	// prefers reduced motion (the map-width transition is disabled in CSS too).
+	//
+	// Also instant while the mounting panel is the LANDING one: Svelte 5 plays
+	// intros on initial mount, so a fresh /locations/<id> load would otherwise
+	// yank the server-rendered panel off-screen at hydration and fly it back in.
+	// `landingId && !page.state.selected` is true exactly until the landing detail
+	// is closed (closeDetail nulls landingId) or a venue is selected in-app
+	// (pushState sets page.state.selected), so every later open still animates.
+	const panelIntroInstant = $derived(Boolean(landingId) && !page.state.selected);
+	const panelInstant = $derived(reducedMotion.current || panelIntroInstant);
 	const panelFly = $derived(
 		narrowScreen.current
-			? { y: '100%', duration: 300, opacity: 1 }
-			: { x: '100%', duration: 300, opacity: 1 }
+			? { y: '100%', duration: panelInstant ? 0 : 300, opacity: 1 }
+			: { x: '100%', duration: panelInstant ? 0 : 300, opacity: 1 }
 	);
+
+	// --- Map split animation ----------------------------------------------------
+	// The split must not animate the map container's WIDTH: MapLibre re-renders the
+	// whole canvas on every ResizeObserver tick, so a 300ms width transition is a
+	// stream of full GL re-renders — visible chop. Instead the container KEEPS its
+	// width through the transition and slides via a composited transform
+	// (translateX(-25vw) puts a full-width map's centre exactly where the settled
+	// half-width container's centre is), and the real width is swapped in/out only
+	// at moments when the swap is pixel-identical — MapLibre's resize preserves
+	// centre and zoom, so a full-width container at -25vw and a half-width one at
+	// transform: none paint the same view. One invisible resize per open/close
+	// instead of one per frame.
+	//
+	// splitPhase is plain (non-reactive) bookkeeping so the effect below can read
+	// it without retriggering itself; the three flags are the reactive class
+	// outputs (see the .app--map-* rules).
+	//   none     bare full-width map
+	//   opening  full width, sliding to translateX(-25vw)        [mapShifted]
+	//   settled  right: 50vw, no transform                       [mapSettled]
+	//   closing  full width again, transform gliding back to 0
+	// Closing from settled is a FLIP: snap to the equivalent full-width-shifted
+	// state with transitions off (one resize, identical pixels), then release the
+	// transform on the next frame so it glides back.
+	let splitPhase: 'none' | 'opening' | 'settled' | 'closing' = 'none';
+	let mapShifted = $state(false);
+	let mapSettled = $state(false);
+	let mapSnap = $state(false);
+	// Slightly past the 300ms transition: a timer can fire late but never early,
+	// and the transition starts within a frame of it, so by now the transform has
+	// genuinely reached -25vw and the settle swap lands on identical pixels.
+	const SPLIT_SETTLE_MS = 350;
+	// A fresh /locations/<id> load lands with the panel already server-rendered in
+	// its final place (hydration plays no fly intro) — the map must match by
+	// jumping straight to the settled split rather than replaying the opening
+	// slide. True only for the effect's very first run.
+	let splitFirstRun = true;
+
+	$effect(() => {
+		// Gated on the same condition that mounts the panel (selectedLocation can
+		// lag selectedId by a venue fetch), so the map shift and the panel fly
+		// start in the same flush — a shift that starts early would hit its settle
+		// swap while the panel edge is still in flight, flashing a background
+		// sliver at the seam.
+		const open = Boolean(selectedId && selectedLocation) && !narrowScreen.current;
+		const instant = reducedMotion.current || splitFirstRun;
+		splitFirstRun = false;
+		if (open) {
+			if (splitPhase === 'settled' || splitPhase === 'opening') return;
+			if (instant) {
+				splitPhase = 'settled';
+				mapSnap = false;
+				mapShifted = false;
+				mapSettled = true;
+				return;
+			}
+			// From 'none' or mid-'closing' (the transform then animates from
+			// wherever it currently is — the container is already full width).
+			splitPhase = 'opening';
+			mapSnap = false;
+			mapSettled = false;
+			mapShifted = true;
+			const timer = setTimeout(() => {
+				splitPhase = 'settled';
+				mapShifted = false;
+				mapSettled = true;
+			}, SPLIT_SETTLE_MS);
+			return () => clearTimeout(timer);
+		}
+		if (splitPhase === 'none' || splitPhase === 'closing') return;
+		if (instant || splitPhase === 'opening') {
+			// Mid-open interrupt: the container never resized, so just release the
+			// transform and let it glide back. The instant path drops everything.
+			const glide = splitPhase === 'opening' && !instant;
+			splitPhase = glide ? 'closing' : 'none';
+			mapSnap = false;
+			mapSettled = false;
+			mapShifted = false;
+			if (!glide) return;
+			const timer = setTimeout(() => (splitPhase = 'none'), SPLIT_SETTLE_MS);
+			return () => clearTimeout(timer);
+		}
+		// Settled → closing, the FLIP: back to full width pre-shifted with
+		// transitions off (pixel-identical), then release next frame. Double-rAF so
+		// the snapped state is committed and painted before the transform change
+		// that starts the glide.
+		splitPhase = 'closing';
+		mapSettled = false;
+		mapShifted = true;
+		mapSnap = true;
+		let raf2 = 0;
+		const raf1 = requestAnimationFrame(() => {
+			raf2 = requestAnimationFrame(() => {
+				mapSnap = false;
+				mapShifted = false;
+			});
+		});
+		const timer = setTimeout(() => (splitPhase = 'none'), SPLIT_SETTLE_MS + 32);
+		return () => {
+			cancelAnimationFrame(raf1);
+			cancelAnimationFrame(raf2);
+			clearTimeout(timer);
+		};
+	});
 
 	// --- Detail panel focus management -----------------------------------------
 	// The panel behaves like a dialog: opening it moves keyboard focus onto the
@@ -451,7 +560,11 @@
 			detailWasOpen = true;
 			const active = document.activeElement;
 			detailReturnFocus = active instanceof HTMLElement && active !== document.body ? active : null;
-			if (!panel.contains(active)) panel.focus();
+			// preventScroll: the panel is mid-fly (half off-screen right) when focus
+			// lands on it, and a plain focus() scroll-into-views it by skidding the
+			// whole .app container sideways — a huge visible lurch. The .app
+			// overflow: clip guards the same thing structurally.
+			if (!panel.contains(active)) panel.focus({ preventScroll: true });
 		} else if (!open && detailWasOpen) {
 			detailWasOpen = false;
 			const saved = detailReturnFocus;
@@ -614,14 +727,20 @@
      from `headVenue` inside VenueHead (null renders the default head). -->
 <VenueHead venue={headVenue} />
 
-<div class="app" class:app--detail={Boolean(selectedId)} class:app--landing={landing}>
+<div
+	class="app"
+	class:app--detail={Boolean(selectedId)}
+	class:app--landing={landing}
+	class:app--map-shifted={mapShifted}
+	class:app--map-settled={mapSettled}
+	class:app--map-snap={mapSnap}
+>
 	<div class="app__map">
 		<LocationMap
 			locations={mapLocations}
 			selected={mapSelected}
 			onselect={selectLocation}
 			ondeselect={deselectLocation}
-			{detailInset}
 			initialCenter={WORLD_CENTER}
 			initialZoom={WORLD_ZOOM}
 			onzoom={(z) => (zoomLevel = z)}
@@ -631,12 +750,11 @@
 		/>
 	</div>
 
-	<!-- The open location's page details: a panel docked to the right edge (a bottom
-	     sheet on narrow screens) beside the map, which keeps the venue centred in the
-	     space the panel leaves it (see detailInset). Slides in on select and away on
-	     close/deselect. Gated on `selectedId` so closing starts the slide-out at once;
-	     the content reads the retained `selectedLocation`, which stays valid through
-	     the outro. -->
+	<!-- The open location's page details: the right half of a 50/50 split beside the
+	     map (a full-screen bottom sheet on narrow screens). Slides in on select and
+	     away on close/deselect, in step with the map container's width transition.
+	     Gated on `selectedId` so closing starts the slide-out at once; the content
+	     reads the retained `selectedLocation`, which stays valid through the outro. -->
 	{#if selectedId && selectedLocation}
 		<VenueDetail
 			location={selectedLocation}
@@ -759,27 +877,79 @@
 </div>
 
 <style>
+	/* overflow: clip, not hidden — hidden still lets programmatic scrolling (a
+	   focus() on the mid-fly panel, half off-screen right) skid the whole app
+	   sideways; clip forbids scrolling the box entirely. */
 	.app {
 		position: fixed;
 		inset: 0;
-		overflow: hidden;
+		overflow: clip;
 	}
 
 	/* The map fills the whole viewport. A z-index here establishes a stacking
-	   context so the floating controls (z-index 10) sit above every MapLibre pane. */
+	   context so the floating controls (z-index 10) sit above every MapLibre pane.
+	   While a detail is open (wide screens) the container genuinely shrinks to the
+	   LEFT HALF of the screen — the panel is the other half, not an overlay. The
+	   open/close animation never animates this width, though: see the map-split
+	   comment in the script. The 0.3s/cubic-bezier pair below is cubicOut, the
+	   panel fly's default easing, so the sliding map and panel edges track. */
 	.app__map {
 		position: absolute;
 		inset: 0;
 		z-index: 0;
+		transition: transform 0.3s cubic-bezier(0.33, 1, 0.68, 1);
 	}
 
-	/* While the detail panel is open it covers the map's bottom-right corner, where
-	   MapLibre puts the OSM attribution — which must stay visible (OSM tile policy).
-	   Shift that control clear of the panel's footprint (the panel's own width
-	   expression), transitioned to track the panel's slide. */
-	.app--detail .app__map :global(.maplibregl-ctrl-bottom-right) {
-		margin-right: calc(min(26rem, 100vw) + env(safe-area-inset-right));
-		transition: margin 0.3s ease;
+	/* The animation frames of the split: the container keeps its full width (no
+	   MapLibre resize per frame — that's the chop) and slides composited. -25vw
+	   puts the full-width map's centre exactly where the half-width container's
+	   centre sits, so the settle swap below changes no visible pixel. */
+	.app--map-shifted .app__map {
+		transform: translateX(-25vw);
+	}
+
+	/* MapLibre's corner controls (zoom, attribution) would ride the container off
+	   to the left — counter-slide them by the same amount so they hold their
+	   screen position through the animation. */
+	.app__map :global(.maplibregl-ctrl-bottom-left),
+	.app__map :global(.maplibregl-ctrl-bottom-right) {
+		transition: transform 0.3s cubic-bezier(0.33, 1, 0.68, 1);
+	}
+
+	.app--map-shifted .app__map :global(.maplibregl-ctrl-bottom-left),
+	.app--map-shifted .app__map :global(.maplibregl-ctrl-bottom-right) {
+		transform: translateX(25vw);
+	}
+
+	/* The settled split: genuinely half the screen, no transform. Transitions off
+	   so the width change and transform removal land as one atomic (and, by the
+	   -25vw equivalence above, pixel-identical) frame. */
+	.app--map-settled .app__map {
+		right: 50vw;
+		transform: none;
+		transition: none;
+	}
+
+	.app--map-settled .app__map :global(.maplibregl-ctrl-bottom-left),
+	.app--map-settled .app__map :global(.maplibregl-ctrl-bottom-right) {
+		transform: none;
+		transition: none;
+	}
+
+	/* The FLIP snap frame of the close: full-width-shifted with no easing, so the
+	   next frame's transform release is what animates (see the close branch). */
+	.app--map-snap .app__map,
+	.app--map-snap .app__map :global(.maplibregl-ctrl-bottom-left),
+	.app--map-snap .app__map :global(.maplibregl-ctrl-bottom-right) {
+		transition: none;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.app__map,
+		.app__map :global(.maplibregl-ctrl-bottom-left),
+		.app__map :global(.maplibregl-ctrl-bottom-right) {
+			transition: none;
+		}
 	}
 
 	/* The search controls, free-floating over the map: a horizontal, wrapping row of
@@ -796,6 +966,12 @@
 		gap: 0.5rem;
 		/* Leave room on the right so the row doesn't run the full width of the map. */
 		max-width: calc(100vw - 26rem);
+	}
+
+	/* While the split is open the map is only the left half — keep the search row
+	   inside it rather than running under the detail panel. */
+	.app--detail .searchbar {
+		max-width: calc(50vw - 2rem);
 	}
 
 	/* On wide screens the items flow as direct children of the row (the wrapper is
@@ -1043,11 +1219,23 @@
 			font-size: 0.85rem;
 		}
 
-		/* The full-screen sheet covers the whole map (the OSM attribution needn't
-		   stay visible under it — a covered map isn't displayed), so the narrow
-		   layout only needs to undo the wide-screen sideways attribution shift. */
-		.app--detail .app__map :global(.maplibregl-ctrl-bottom-right) {
-			margin-right: env(safe-area-inset-right);
+		/* The full-screen sheet covers the whole map, so the map keeps its full
+		   size under it (no pointless resize) — what a swipe-down dismiss reveals.
+		   The split state machine is gated off narrow screens in JS; these guards
+		   cover a mid-animation breakpoint crossing. */
+		.app--map-settled .app__map {
+			right: 0;
+		}
+
+		.app--map-shifted .app__map,
+		.app--map-shifted .app__map :global(.maplibregl-ctrl-bottom-left),
+		.app--map-shifted .app__map :global(.maplibregl-ctrl-bottom-right) {
+			transform: none;
+		}
+
+		/* Undo the wide-screen split constraint — the sheet covers everything. */
+		.app--detail .searchbar {
+			max-width: none;
 		}
 	}
 </style>
