@@ -345,3 +345,52 @@ test('a venue-row phone match stays same_phone, not same_phone_staging', async (
 	expect(res.pairs[0].confidence).toBe('high'); // venue-row phones still promote
 	store.close();
 });
+
+test('staging phones donated by ONE Overture place are flagged same-donor (no corroboration)', async () => {
+	const db = freshDb();
+	const store = stagingStore([
+		poiRow({ osm_id: 'n1', latitude: 49.28, longitude: -123.12 }),
+		poiRow({ osm_id: 'n2', latitude: 49.281, longitude: -123.12 }),
+		poiRow({ osm_id: 'n3', latitude: 51.0, longitude: -114.0 }),
+		poiRow({ osm_id: 'n4', latitude: 51.001, longitude: -114.0 })
+	]);
+	const bank = (osm_id: string, donor: string) => ({
+		osm_id,
+		overture_id: donor,
+		overture_distance_m: 12,
+		website: null,
+		website_source: null,
+		phone: '+1 604 555 0100',
+		phone_source: `overture:${donor} (2026-06-17.0)`,
+		cuisine: null,
+		cuisine_source: null
+	});
+	// Pair A: both phones filled from the SAME Overture place — one datum, echoed.
+	// Pair B: same number but from two DIFFERENT Overture places — real agreement.
+	store.bankOvertureMatches([
+		bank('n1', 'ov-shared'),
+		bank('n2', 'ov-shared'),
+		bank('n3', 'ov-x'),
+		bank('n4', 'ov-y')
+	]);
+	await seed(db, [
+		{ name: 'Twin A', latitude: 49.28, longitude: -123.12, osm_id: 'n1' },
+		{ name: 'Twin A', latitude: 49.281, longitude: -123.12, osm_id: 'n2' },
+		{ name: 'Twin B', latitude: 51.0, longitude: -114.0, osm_id: 'n3' },
+		{ name: 'Twin B', latitude: 51.001, longitude: -114.0, osm_id: 'n4' }
+	]);
+	const res = await findDuplicateLocations(db, { store });
+	expect(res.pairs.length).toBe(2);
+	const pairA = res.pairs.find((p) => p.a.name === 'Twin A');
+	const pairB = res.pairs.find((p) => p.a.name === 'Twin B');
+	expect(pairA?.same_phone_staging).toBe(true);
+	expect(pairA?.same_phone_staging_same_donor).toBe(true);
+	expect(pairB?.same_phone_staging).toBe(true);
+	expect(pairB?.same_phone_staging_same_donor).toBe(false);
+	// The annotation never touches confidence either way.
+	expect(res.pairs.every((p) => p.confidence === 'review')).toBe(true);
+	// And it is absent entirely when there is no staging hit to qualify.
+	const bare = await findDuplicateLocations(db);
+	expect(bare.pairs.every((p) => !('same_phone_staging_same_donor' in p))).toBe(true);
+	store.close();
+});

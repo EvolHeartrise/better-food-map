@@ -24,6 +24,14 @@
 //   • status_closed — --new says operating_status = "permanently_closed" (rare
 //     in Canada, but definitive when present).
 //
+// Two sanity guards protect against a pathological pair: a DIRECTION check
+// (banked-id coverage of --new materially below --old means the arguments are
+// swapped and every signal would be inverted; abort, --allow-swapped to
+// override) and a MASS-FIRE check (any one signal flagging >10% of banked POIs
+// is a recalibration/churn event, not real closures; abort before writing,
+// --allow-mass-signals to override — the enrich pass's --allow-mass-clear
+// precedent).
+//
 // Flagged POIs are mapped to live venues via locations.osm_id (migration 0028)
 // with the same read-only HTTP-D1 access as scripts/backfill-osm-id.ts — one
 // SELECT, no writes, EVER: the output is a worklist for the existing
@@ -118,6 +126,49 @@ export const DEFAULT_CONFIDENCE_DROP = 0.2;
 export const DEFAULT_CHURN_RADIUS_M = 100;
 
 /**
+ * Mass-fire sanity threshold, PER SIGNAL TYPE: when any one signal flags more
+ * than this fraction of the banked POIs, the release pair is almost certainly
+ * pathological — a global confidence recalibration (Overture's 2026-03
+ * incident) inflates confidence_collapse alone, a GERS churn event inflates
+ * gone/id_churn alone — not tens of thousands of real closures. Per-signal so
+ * one runaway signal can't hide inside an otherwise-quiet total. A real run
+ * must abort before writing the worklist (overridable with
+ * --allow-mass-signals), mirroring overture:enrich's --allow-mass-clear.
+ */
+export const MASS_SIGNAL_FRACTION = 0.1;
+
+const SIGNAL_TYPES: ClosureSignalType[] = [
+	'gone',
+	'id_churn',
+	'confidence_collapse',
+	'status_closed'
+];
+
+/** The first signal type whose count trips {@link MASS_SIGNAL_FRACTION}, or null. */
+export function massSignalsExceeded(counts: ClosurePlan['counts']): ClosureSignalType | null {
+	if (counts.banked === 0) return null;
+	return SIGNAL_TYPES.find((t) => counts[t] / counts.banked > MASS_SIGNAL_FRACTION) ?? null;
+}
+
+/**
+ * Direction sanity margin: the bank is (re)built against the CURRENT release
+ * (the operational flow runs overture:enrich on --new first), so banked ids
+ * must cover --new at least as well as --old — real churn + closures only
+ * shave a few percent off. Coverage of --new falling more than this fraction
+ * BELOW --old is the signature of swapped arguments, whose whole output would
+ * be silently inverted (openings read as closures). 5%: comfortably above one
+ * release's genuine attrition, far below the asymmetry a real swap shows.
+ */
+export const SWAP_COVERAGE_MARGIN = 0.05;
+
+/** True when banked-id coverage says --old/--new look swapped (see {@link SWAP_COVERAGE_MARGIN}). */
+export function snapshotsLookSwapped(
+	counts: Pick<ClosurePlan['counts'], 'in_old' | 'in_new'>
+): boolean {
+	return counts.in_new < counts.in_old * (1 - SWAP_COVERAGE_MARGIN);
+}
+
+/**
  * The pure planning core: diffs the two snapshots for every banked POI and
  * returns each triggered signal with its evidence. Absent-from-new ids go
  * through the churn check (nearest name-related --new place within
@@ -207,13 +258,27 @@ export async function planClosureSignals(
 	// Churn check: probe --new around each vanished place's OLD spot/name (the
 	// same nearest-name-related matching the enrichment pass uses). A hit means
 	// the venue is still in the feed under a re-minted id — id_churn, not gone.
+	//
+	// The donor pool is FRESH ids only — new-snapshot places absent from --old.
+	// A re-mint is by definition a fresh id; a candidate present in BOTH
+	// snapshots is a stable NEIGHBOUR, and letting it "replace" the vanished id
+	// suppresses real closures (a branch closing near a same-brand sibling —
+	// mall + street pairs, a "Wendy's / Tim Hortons" co-brand 78 m away — or a
+	// short-brand substring relation like "Pizza and Wings" ⊃ "A&W"). A fresh id
+	// that --new itself marks permanently_closed can't stand in for a live venue
+	// either. Residual ambiguity, accepted: a chain closing one unit while a NEW
+	// nearby unit opens under a fresh id in the same release still reads as
+	// churn — the verify-then-close_location workflow catches that case.
 	const probes = goneCandidates.map(({ poi, oldP }) => ({
 		osm_id: poi.osm_id,
 		name: oldP.name,
 		latitude: oldP.latitude,
 		longitude: oldP.longitude
 	}));
-	const churnMatches = await matchNearestPlaces(probes, newPlaces, churnRadiusM);
+	const freshPlaces = newPlaces.filter(
+		(p) => !oldById.has(p.id) && p.operating_status !== 'permanently_closed'
+	);
+	const churnMatches = await matchNearestPlaces(probes, freshPlaces, churnRadiusM);
 	const churnByOsmId = new Map(churnMatches.map((m) => [m.osm_id, m]));
 	for (const { poi, oldP } of goneCandidates) {
 		const m = churnByOsmId.get(poi.osm_id);
@@ -391,6 +456,8 @@ interface Args {
 	out: string;
 	confidenceDrop: number;
 	churnRadiusM: number;
+	allowMassSignals: boolean;
+	allowSwapped: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -398,7 +465,9 @@ function parseArgs(argv: string[]): Args {
 		db: process.env.OSM_POI_DB ?? 'data/osm-poi.sqlite',
 		out: 'data/closure-signals.worklist.json',
 		confidenceDrop: DEFAULT_CONFIDENCE_DROP,
-		churnRadiusM: DEFAULT_CHURN_RADIUS_M
+		churnRadiusM: DEFAULT_CHURN_RADIUS_M,
+		allowMassSignals: false,
+		allowSwapped: false
 	};
 	for (let i = 0; i < argv.length; i++) {
 		switch (argv[i]) {
@@ -419,6 +488,12 @@ function parseArgs(argv: string[]): Args {
 				break;
 			case '--churn-radius-m':
 				args.churnRadiusM = Number(argv[++i]);
+				break;
+			case '--allow-mass-signals':
+				args.allowMassSignals = true;
+				break;
+			case '--allow-swapped':
+				args.allowSwapped = true;
 				break;
 			case '--help':
 			case '-h':
@@ -457,6 +532,12 @@ function printUsageAndExit(code: number): never {
 			'  --out               Worklist JSON path (default: data/closure-signals.worklist.json).\n' +
 			`  --confidence-drop   Confidence-collapse threshold (default ${DEFAULT_CONFIDENCE_DROP}).\n` +
 			`  --churn-radius-m    Same-spot radius for the id-churn downgrade (default ${DEFAULT_CHURN_RADIUS_M}).\n` +
+			`  --allow-mass-signals  Proceed although one signal type flags more than ` +
+			`${Math.round(MASS_SIGNAL_FRACTION * 100)}% of banked POIs\n` +
+			'                      (normally the tell of a pathological release pair — a global\n' +
+			'                      confidence recalibration or a GERS churn event).\n' +
+			'  --allow-swapped     Proceed although banked-id coverage says --old/--new look swapped\n' +
+			'                      (coverage of --new materially below --old).\n' +
 			'\n' +
 			'Read-only everywhere: reads the staging store and the live D1, writes ONLY the\n' +
 			'worklist file. Closures happen later, via verify-then-close_location.\n'
@@ -492,6 +573,14 @@ async function main(): Promise<void> {
 		readSnapshot(args.new)
 	]);
 	console.error(`Snapshot places: ${oldPlaces.length} old, ${newPlaces.length} new`);
+	if (newPlaces.length < oldPlaces.length * 0.9) {
+		// Advisory only — the authoritative direction check is the banked-id
+		// coverage comparison below (feeds legitimately shrink a little).
+		console.error(
+			`Warning: --new carries ${oldPlaces.length - newPlaces.length} fewer places than --old ` +
+				`(>10% drop) — double-check the snapshot order and the fetch bbox.`
+		);
+	}
 
 	// The one D1 touch: the osm_id → venue identity join, read-only (the same
 	// HTTP-D1 access pattern as scripts/backfill-osm-id.ts). Closed rows ride
@@ -509,6 +598,40 @@ async function main(): Promise<void> {
 		confidenceDrop: args.confidenceDrop,
 		churnRadiusM: args.churnRadiusM
 	});
+
+	// Direction sanity FIRST: on a swapped pair every downstream number is
+	// inverted (openings read as closures), so nothing else is worth printing.
+	if (snapshotsLookSwapped(plan.counts)) {
+		const detail =
+			`banked-id coverage of --new (${plan.counts.in_new}/${plan.counts.banked}) is materially ` +
+			`below --old (${plan.counts.in_old}/${plan.counts.banked}) — the bank tracks the current ` +
+			`release, so the snapshots look SWAPPED (--old should be the earlier release).`;
+		if (!args.allowSwapped) {
+			console.error(
+				`Error: ${detail} Re-run with the arguments the right way round, or pass ` +
+					`--allow-swapped if this pair is genuinely this asymmetric.`
+			);
+			process.exit(1);
+		}
+		console.error(`Warning: ${detail} Proceeding (--allow-swapped).`);
+	}
+
+	// Mass-fire sanity: a pathological pair (global confidence recalibration,
+	// GERS churn event) floods one signal type with tens of thousands of
+	// "candidates" no one can work — abort before writing that worklist.
+	const massSignal = massSignalsExceeded(plan.counts);
+	if (massSignal !== null) {
+		const detail =
+			`signal "${massSignal}" flagged ${plan.counts[massSignal]} of ${plan.counts.banked} banked ` +
+			`POIs (>${Math.round(MASS_SIGNAL_FRACTION * 100)}%) — a release-pair pathology (confidence ` +
+			`recalibration / GERS churn event), not that many real closures.`;
+		if (!args.allowMassSignals) {
+			console.error(`Error: ${detail} Pass --allow-mass-signals to write the worklist anyway.`);
+			process.exit(1);
+		}
+		console.error(`Warning: ${detail} Proceeding (--allow-mass-signals).`);
+	}
+
 	const worklist = buildWorklist(plan, locationsByOsmId, {
 		oldSnapshot: args.old,
 		newSnapshot: args.new,

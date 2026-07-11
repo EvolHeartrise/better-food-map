@@ -39,7 +39,7 @@ export interface DuplicateHalf {
 
 /** The staging-store surface the phone fallback reads (OsmPoiStore satisfies it). */
 export interface StagingPhoneStoreLike {
-	getByOsmId(osmId: string): { phone: string | null } | null;
+	getByOsmId(osmId: string): { phone: string | null; phone_source: string | null } | null;
 }
 
 export interface DuplicatePair extends DismissableFinding {
@@ -61,6 +61,13 @@ export interface DuplicatePair extends DismissableFinding {
 	 * confidence upgrade on its own.
 	 */
 	same_phone_staging: boolean;
+	/**
+	 * Present only when `same_phone_staging` is true: BOTH sides' staging phones
+	 * were donated by the SAME Overture place (their `phone_source` labels carry
+	 * one overture id) — the "match" is one upstream datum echoed twice, not two
+	 * independent records agreeing. Read a true value as no extra corroboration.
+	 */
+	same_phone_staging_same_donor?: boolean;
 	/**
 	 * "high" = almost certainly one venue stored twice (matching names within
 	 * ~30 m, or a shared phone number) — verify against the venue's own locator,
@@ -106,27 +113,42 @@ function phoneKey(phone: string | null): string {
 	return digits.length >= 10 ? digits.slice(-10) : digits;
 }
 
+/** The Overture place id inside an "overture:<id> (<release>)" provenance label, or null. */
+function overtureDonor(source: string | null): string | null {
+	const match = source?.match(/^overture:(\S+)/);
+	return match ? match[1] : null;
+}
+
 /**
  * The staging-phone fallback for one flagged pair: each half's effective phone
  * is its own when it has one, otherwise its staging POI's (via `osm_id`).
  * A hit requires that at least one half actually used the staging value —
  * two venue-row phones comparing equal is `same_phone`'s job, and comparing
- * unequal is already a verdict the store must not overrule.
+ * unequal is already a verdict the store must not overrule. `sameDonor` marks
+ * the circular case: both staging phones trace (via `phone_source`) to ONE
+ * Overture place, so the agreement is a single upstream datum, not two.
  */
 function stagingPhoneHit(
 	a: DuplicateHalf,
 	b: DuplicateHalf,
 	store: StagingPhoneStoreLike
-): boolean {
-	const effective = (half: DuplicateHalf): { key: string; staging: boolean } => {
+): { hit: boolean; sameDonor: boolean } {
+	const effective = (
+		half: DuplicateHalf
+	): { key: string; staging: boolean; donor: string | null } => {
 		const own = phoneKey(half.phone);
-		if (own.length > 0) return { key: own, staging: false };
+		if (own.length > 0) return { key: own, staging: false, donor: null };
 		const poi = half.osm_id ? store.getByOsmId(half.osm_id) : null;
-		return { key: phoneKey(poi?.phone ?? null), staging: true };
+		return {
+			key: phoneKey(poi?.phone ?? null),
+			staging: true,
+			donor: overtureDonor(poi?.phone_source ?? null)
+		};
 	};
 	const ea = effective(a);
 	const eb = effective(b);
-	return (ea.staging || eb.staging) && ea.key.length > 0 && ea.key === eb.key;
+	const hit = (ea.staging || eb.staging) && ea.key.length > 0 && ea.key === eb.key;
+	return { hit, sameDonor: hit && ea.donor !== null && ea.donor === eb.donor };
 }
 
 /**
@@ -193,13 +215,17 @@ export async function findDuplicateLocations(
 			// with no phone of its own stands in its staging POI's (often
 			// Overture-enriched) phone. Both halves carrying their OWN, differing
 			// phones is already an answer — the store is not consulted then.
-			const stagingHit = !phoneHit && opts.store ? stagingPhoneHit(a, b, opts.store) : false;
+			const staging =
+				!phoneHit && opts.store
+					? stagingPhoneHit(a, b, opts.store)
+					: { hit: false, sameDonor: false };
 			pairs.push({
 				distance_m: Math.round(distance),
 				names_match: nameHit,
 				same_brand: brandHit,
 				same_phone: phoneHit,
-				same_phone_staging: stagingHit,
+				same_phone_staging: staging.hit,
+				...(staging.hit ? { same_phone_staging_same_donor: staging.sameDonor } : {}),
 				// Deliberately unchanged by stagingHit — staging evidence is weaker
 				// (see the field doc) and must not promote a pair to "high" alone.
 				confidence: (nameHit && distance <= HIGH_CONFIDENCE_M) || phoneHit ? 'high' : 'review',

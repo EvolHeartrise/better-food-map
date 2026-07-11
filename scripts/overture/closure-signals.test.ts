@@ -10,8 +10,11 @@
 import { test, expect } from 'bun:test';
 import {
 	DEFAULT_CONFIDENCE_DROP,
+	MASS_SIGNAL_FRACTION,
 	buildWorklist,
+	massSignalsExceeded,
 	planClosureSignals,
+	snapshotsLookSwapped,
 	toSnapshotPlace,
 	type BankedPoi,
 	type LocationRef,
@@ -259,4 +262,119 @@ test('toSnapshotPlace parses the eateries NDJSON line shape and rejects junk', (
 	expect(toSnapshotPlace({ id: 'ov-3', lon: 'x', lat: 0 })).toBeNull();
 	expect(toSnapshotPlace('not an object')).toBeNull();
 	expect(toSnapshotPlace(null)).toBeNull();
+});
+
+// --- review-fix regressions: churn donor pool, mass-fire guard, swap check ---
+
+test('a STABLE same-brand neighbour never downgrades a real closure to id_churn', async () => {
+	// Reviewer repro: a standalone Tim Hortons closes; a stable
+	// "Wendy's / Tim Hortons" co-brand ~78 m away exists in BOTH snapshots.
+	// Its name is related and it is within the churn radius — but it is not a
+	// re-mint (its id is in --old), so the closure must stay `gone`.
+	const stable = (lat: number) =>
+		place({ id: 'ov-cobrand', name: "Wendy's / Tim Hortons", latitude: lat });
+	const plan = await planClosureSignals(
+		[poi({ osm_id: 'n1', overture_id: 'ov-th', name: 'Tim Hortons' })],
+		[place({ id: 'ov-th', name: 'Tim Hortons' }), stable(49.2807)],
+		[stable(49.2807)] // ov-th vanished; only the stable neighbour remains
+	);
+	expect(plan.signals.map((s) => s.signal)).toEqual(['gone']);
+	expect(plan.signals[0].evidence.churn_candidate).toBeUndefined();
+});
+
+test('a STABLE substring-related neighbour never downgrades a real closure ("Pizza and Wings" vs "A&W")', async () => {
+	// Reviewer repro: normalizeName("Pizza and Wings") = "pizzaandwings" CONTAINS
+	// normalizeName("A&W") = "aandw", so a stable A&W ~56 m away is name-related.
+	// Present in both snapshots → not a re-mint → the closure stays `gone`.
+	const stableAw = (lat: number) => place({ id: 'ov-aw', name: 'A&W', latitude: lat });
+	const plan = await planClosureSignals(
+		[poi({ osm_id: 'n1', overture_id: 'ov-pw', name: 'Pizza and Wings' })],
+		[place({ id: 'ov-pw', name: 'Pizza and Wings' }), stableAw(49.2805)],
+		[stableAw(49.2805)]
+	);
+	expect(plan.signals.map((s) => s.signal)).toEqual(['gone']);
+});
+
+test('a fresh-id replacement that --new marks permanently_closed cannot stand in for the venue', async () => {
+	const plan = await planClosureSignals(
+		[poi({ osm_id: 'n1', overture_id: 'ov-old' })],
+		[place({ id: 'ov-old' })],
+		[
+			place({
+				id: 'ov-new',
+				name: 'The Test Venue',
+				latitude: 49.28005,
+				operating_status: 'permanently_closed'
+			})
+		]
+	);
+	expect(plan.signals.map((s) => s.signal)).toEqual(['gone']);
+});
+
+test('a genuine fresh-id re-mint still downgrades to id_churn beside a stable neighbour', async () => {
+	// Both a stable same-name neighbour AND a fresh re-mint sit near the old
+	// spot; only the fresh id is an eligible donor, and it is the one reported.
+	const stable = (lat: number) => place({ id: 'ov-stable', name: 'Test Venue', latitude: lat });
+	const plan = await planClosureSignals(
+		[poi({ osm_id: 'n1', overture_id: 'ov-old' })],
+		[place({ id: 'ov-old' }), stable(49.28008)],
+		[stable(49.28008), place({ id: 'ov-fresh', name: 'Test Venue', latitude: 49.28004 })]
+	);
+	expect(plan.signals.map((s) => s.signal)).toEqual(['id_churn']);
+	expect(plan.signals[0].evidence.churn_candidate?.overture_id).toBe('ov-fresh');
+});
+
+test('massSignalsExceeded trips per signal type at >10% of banked, both ways', () => {
+	const base = {
+		banked: 100,
+		in_old: 100,
+		in_new: 95,
+		in_neither: 0,
+		gone: 0,
+		id_churn: 0,
+		confidence_collapse: 0,
+		status_closed: 0
+	};
+	expect(massSignalsExceeded(base)).toBeNull();
+	expect(massSignalsExceeded({ ...base, gone: 10 })).toBeNull(); // exactly 10% — allowed
+	expect(massSignalsExceeded({ ...base, gone: 11 })).toBe('gone');
+	expect(massSignalsExceeded({ ...base, confidence_collapse: 40 })).toBe('confidence_collapse');
+	expect(massSignalsExceeded({ ...base, id_churn: 25 })).toBe('id_churn');
+	// A quiet total cannot hide one runaway signal, and vice versa: several
+	// signals below threshold do not trip it in aggregate.
+	expect(
+		massSignalsExceeded({ ...base, gone: 9, confidence_collapse: 9, status_closed: 9 })
+	).toBeNull();
+	expect(massSignalsExceeded({ ...base, banked: 0 })).toBeNull();
+	expect(MASS_SIGNAL_FRACTION).toBe(0.1);
+});
+
+test('snapshotsLookSwapped refuses a pair whose --new coverage is materially below --old', async () => {
+	// Three banked ids, all in release B, one also in release A: passing the
+	// releases the right way round (old=A, new=B) is fine; swapping them
+	// inverts the coverage asymmetry and must be refused.
+	const pois = [
+		poi({ osm_id: 'n1', overture_id: 'ov-1' }),
+		poi({ osm_id: 'n2', overture_id: 'ov-2', latitude: 50.0 }),
+		poi({ osm_id: 'n3', overture_id: 'ov-3', latitude: 51.0 })
+	];
+	const releaseA = [place({ id: 'ov-1' })];
+	const releaseB = [
+		place({ id: 'ov-1' }),
+		place({ id: 'ov-2', latitude: 50.0 }),
+		place({ id: 'ov-3', latitude: 51.0 })
+	];
+	const correct = await planClosureSignals(pois, releaseA, releaseB);
+	expect(correct.counts).toMatchObject({ in_old: 1, in_new: 3 });
+	expect(snapshotsLookSwapped(correct.counts)).toBe(false);
+
+	const swapped = await planClosureSignals(pois, releaseB, releaseA);
+	expect(swapped.counts).toMatchObject({ in_old: 3, in_new: 1 });
+	expect(snapshotsLookSwapped(swapped.counts)).toBe(true);
+
+	// The margin tolerates one release's genuine attrition (churn + closures).
+	expect(snapshotsLookSwapped({ in_old: 100, in_new: 96 })).toBe(false);
+	expect(snapshotsLookSwapped({ in_old: 100, in_new: 94 })).toBe(true);
+	expect(snapshotsLookSwapped({ in_old: 100, in_new: 100 })).toBe(false);
+	expect(snapshotsLookSwapped({ in_old: 0, in_new: 0 })).toBe(false);
 });
