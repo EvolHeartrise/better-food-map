@@ -586,6 +586,11 @@
 		flex: 1;
 		min-height: 0;
 		overflow-y: auto;
+		/* Never a horizontal scrollbar: `overflow-y: auto` alone computes
+		   overflow-x to auto too, so any child poking out (a long unbreakable
+		   name, a nowrap row) would summon one. Wide content must wrap or scroll
+		   inside its own container (the coursebar does). */
+		overflow-x: hidden;
 		/* On the bottom sheet a scroll that hits the content's top hands the gesture
 		   to the sheet drag (see the content-drag handlers) — never to the page or
 		   to a rubber-band bounce behind it. */
@@ -712,6 +717,8 @@
 	.placecard__item-name {
 		font-size: 0.85rem;
 		font-weight: 600;
+		/* A pathological unbroken name breaks mid-word rather than overflowing. */
+		overflow-wrap: anywhere;
 	}
 
 	/* The per-item like heart on a menu row. Centred on the row's height (the line
@@ -732,6 +739,7 @@
 		margin: 0;
 		font-size: 0.78rem;
 		color: var(--color-text-muted);
+		overflow-wrap: anywhere;
 	}
 
 	.badge {
@@ -827,11 +835,11 @@
 		font-size: 0.95rem;
 	}
 
-	/* The subtle note beside the Menu header: "12 items · Scanned 3 days ago". */
+	/* The subtle note beside the Menu header: "12 items · Scanned 3 days ago".
+	   Allowed to wrap — nowrap here could push the row past a narrow panel. */
 	.placecard__menu-meta {
 		font-size: 0.72rem;
 		color: var(--color-text-muted);
-		white-space: nowrap;
 	}
 
 	/* The "N Sources" button opening the sources modal: a quiet outlined pill that
@@ -887,13 +895,13 @@
 		/* The row is a flex item of the scrolling .placecard__body column, and its
 		   overflow-x drops its automatic minimum size to 0 — without this it is
 		   the one child squashed to zero height whenever the menu overflows the
-		   panel (i.e. on virtually every real venue). */
+		   panel (i.e. on virtually every real venue). No negative-margin bleed
+		   through the panel padding: inside the body's scroll clip it can't paint
+		   wider anyway — it only manufactured phantom horizontal scroll. */
 		flex-shrink: 0;
 		overflow-x: auto;
 		scroll-behavior: smooth;
 		scrollbar-width: none;
-		margin: 0 calc(-0.95rem - env(safe-area-inset-right, 0px)) 0 -0.95rem;
-		padding: 0 calc(0.95rem + env(safe-area-inset-right, 0px)) 0 0.95rem;
 	}
 
 	.coursebar::-webkit-scrollbar {
@@ -980,14 +988,6 @@
 		.placecard__menu-meta,
 		.placecard__hint {
 			font-size: 0.85rem;
-		}
-
-		/* The bottom sheet pads both sides a plain 0.95rem (no right safe-area
-		   inset), so the coursebar's bleed must drop the inset too or it would
-		   overshoot the sheet edge on notched-landscape phones. */
-		.coursebar {
-			margin-right: -0.95rem;
-			padding-right: 0.95rem;
 		}
 	}
 
