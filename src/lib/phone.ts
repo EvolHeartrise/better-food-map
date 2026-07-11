@@ -14,8 +14,9 @@
 //   • the MCP server — create/update_locations store normalizePhone(...) canonical
 //
 // Coverage is North America first, so NANP (+1, ten national digits) is rendered
-// precisely as `(604) 555-1234`; any other country code is kept in E.164 and
-// shown verbatim (we hold no per-country grouping rules). The `tel:` href always
+// precisely as `+1 (604) 555-1234`; any other country code is kept in E.164 and
+// shown verbatim (we hold no per-country grouping rules). The country code is
+// always part of the display whenever it is known. The `tel:` href always
 // carries the fully-qualified E.164 so dialing works regardless of the display.
 // ---------------------------------------------------------------------------
 
@@ -24,9 +25,10 @@ import { blankToNull } from './text';
 /** A phone number rendered for display and for a `tel:` link. */
 export interface FormattedPhone {
 	/**
-	 * Human-facing NUMBER, NO extension: NANP → `(604) 555-1234`; else the E.164
-	 * (or cleaned raw). The extension is returned separately so its label can be
-	 * localized by the caller (this module stays framework/locale-free).
+	 * Human-facing NUMBER, NO extension: NANP → `+1 (604) 555-1234`; else the
+	 * E.164 (or cleaned raw). The country code is shown whenever it is known.
+	 * The extension is returned separately so its label can be localized by the
+	 * caller (this module stays framework/locale-free).
 	 */
 	display: string;
 	/** Extension digits, or null — the caller renders the localized "ext." label. */
@@ -131,7 +133,7 @@ function parse(raw: string | null | undefined, country?: string | null): Parsed 
 function displayBody(p: Parsed): string {
 	if (p.nanpNational) {
 		const n = p.nanpNational;
-		return `(${n.slice(0, 3)}) ${n.slice(3, 6)}-${n.slice(6)}`;
+		return `+1 (${n.slice(0, 3)}) ${n.slice(3, 6)}-${n.slice(6)}`;
 	}
 	// A recognized international number shows as its E.164; an unresolvable one
 	// falls back to the cleaned raw so we never render blank.
@@ -140,7 +142,7 @@ function displayBody(p: Parsed): string {
 
 /**
  * Renders a stored/raw phone for display and dialing, or null when there is no
- * number at all. `display` is the human number (NANP → `(604) 555-1234`, no
+ * number at all. `display` is the human number (NANP → `+1 (604) 555-1234`, no
  * extension), `extension` the extension digits (caller adds the localized label),
  * `tel` the `tel:` dial target, `e164` the international number for schema.org.
  * Applied on READ so every venue shows a consistent number regardless of how the
