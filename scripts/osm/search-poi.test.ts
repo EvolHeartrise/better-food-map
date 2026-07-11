@@ -447,3 +447,35 @@ test('exclude_existing catches a same-name venue stored just OUTSIDE the query b
 	expect(res.excluded_existing).toBe(1);
 	store.close();
 });
+
+test('candidates carry Overture-enriched contacts with their provenance', async () => {
+	const store = storeWith([
+		row({ osm_id: 'n1', latitude: 49.2827, longitude: -123.1207, name: 'Pho Real' })
+	]);
+	store.bankOvertureMatches([
+		{
+			osm_id: 'n1',
+			overture_id: 'ov-1',
+			overture_distance_m: 9.9,
+			website: 'https://pho-real.ca',
+			website_source: 'overture:ov-1 (2026-06-17.0)',
+			phone: '+16045550123',
+			phone_source: 'overture:ov-1 (2026-06-17.0)',
+			cuisine: 'vietnamese',
+			cuisine_source: 'overture:ov-1 (2026-06-17.0)'
+		}
+	]);
+	const res = await searchPoi(store, null, {
+		latitude: CENTRE.lat,
+		longitude: CENTRE.lon,
+		radius_km: 1,
+		exclude_existing: false
+	});
+	const [c] = res.candidates;
+	expect(c.website).toBe('https://pho-real.ca');
+	expect(c.website_source).toBe('overture:ov-1 (2026-06-17.0)');
+	expect(c.phone).toBe('+16045550123');
+	expect(c.phone_source).toBe('overture:ov-1 (2026-06-17.0)');
+	expect(c.cuisine).toBe('vietnamese');
+	store.close();
+});
