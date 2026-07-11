@@ -1,20 +1,23 @@
 // ---------------------------------------------------------------------------
 // search_overture_leads: query the Overture leads pool (built by build-leads.ts
 // into the staging store) for coverage-gap candidates, and — like search_poi —
-// drop at query time any lead already covered by a live D1 venue, since a venue
-// may have been imported after the leads table was built.
+// drop at query time any lead already covered by a name-related D1 record
+// within 500 m. That includes CLOSED tombstones on purpose: per CLAUDE.md a
+// closed record blocks re-suggestion forever, and a venue may have been
+// imported (or recorded closed) after the leads table was built.
 //
 // A lead is a RESEARCH CANDIDATE only: verify the venue, find/add its OSM node,
 // then import via osm_id (search_poi/create_locations or import_chain). Lead
-// coordinates are NEVER written to the map (CLAUDE.md coordinate policy).
+// coordinates are NEVER written to the map (CLAUDE.md coordinate policy) —
+// which is why candidates carry `approx_latitude`/`approx_longitude`, never
+// fields a create_locations spread would accept.
 // ---------------------------------------------------------------------------
 
 import type { D1Like } from '../../src/lib/server/db';
 import { bboxAround, haversineMeters, SpatialGrid, type Bounds } from '../osm/geo';
-import { existingInBbox, normalizeName, type ExistingLocation } from '../osm/search-poi';
-import { leadNormalizedName, type OvertureLead } from './leads';
+import { existingInBbox, type ExistingLocation } from '../osm/search-poi';
+import { leadNameTokens, nameTokens, tokensRelated, type OvertureLead } from './leads';
 import { LEADS_SCAN_CAP, type OvertureLeadsStore } from './leads-store';
-import { nameRelated } from './match-overture';
 
 export interface SearchLeadsParams {
 	/** Explicit bounding box. Provide this OR latitude+longitude+radius_km (or neither). */
@@ -36,7 +39,7 @@ export interface SearchLeadsParams {
 	min_confidence?: number;
 	/** Only leads carrying a brand signal (brand_wikidata or brand_name). */
 	brands_only?: boolean;
-	/** Drop leads already covered by a live venue (default true). */
+	/** Drop leads already covered by a D1 record — open OR closed (default true). */
 	exclude_existing?: boolean;
 	limit?: number;
 	offset?: number;
@@ -44,8 +47,19 @@ export interface SearchLeadsParams {
 	scanCap?: number;
 }
 
-/** One lead returned to the caller (distance only for centre+radius queries). */
-export interface LeadCandidate extends OvertureLead {
+/**
+ * One lead returned to the caller. Its position is deliberately renamed to
+ * `approx_latitude`/`approx_longitude`: a lead is field-for-field close to a
+ * create_locations row (name/street/city/region/postcode/phone/website), so a
+ * naive `{...lead}` spread must never validate as one — without `latitude`/
+ * `longitude` (and without an `osm_id`) create_locations rejects it. The
+ * "approx" is also literal: Overture positions are conflated from commercial
+ * feeds and are NOT the OSM-exact coordinates locations require.
+ */
+export interface LeadCandidate extends Omit<OvertureLead, 'latitude' | 'longitude'> {
+	approx_latitude: number;
+	approx_longitude: number;
+	/** Distance from the query centre in metres (only for centre+radius queries). */
 	distance_m?: number;
 }
 
@@ -59,7 +73,10 @@ export interface SearchLeadsResult {
 	offset: number;
 	/** Matching leads after exclusion, across all pages. */
 	total_matching: number;
-	/** Leads dropped as already covered by a live venue (0 when exclude_existing is false). */
+	/**
+	 * Leads dropped as covered by an existing D1 record — open or closed (0 when
+	 * exclude_existing is false).
+	 */
 	excluded_existing: number;
 	/**
 	 * Whether the store scan hit its row cap before filtering finished — the area
@@ -78,9 +95,10 @@ export const DEFAULT_MIN_CONFIDENCE = 0.85;
  */
 export const INDEPENDENT_MIN_CONFIDENCE = 0.9;
 /**
- * A lead within this distance of a name-related live venue counts as covered —
- * the same radius the builder uses against staging POIs, sized for the offset
- * between Overture's conflated coordinates and our OSM-verbatim ones.
+ * A lead within this distance of a name-related D1 record (open or closed)
+ * counts as covered — the same radius the builder uses against staging POIs,
+ * sized for the offset between Overture's conflated coordinates and our
+ * OSM-verbatim ones.
  */
 export const LEAD_COVER_RADIUS_M = 500;
 
@@ -155,22 +173,25 @@ function boundsOfLeads(leads: OvertureLead[]): Bounds | null {
 }
 
 /**
- * True when a live venue name-related to the lead sits within
- * {@link LEAD_COVER_RADIUS_M} — the venue the lead points at is (now) on the
- * map. `grid` indexes `existing` (see {@link searchOvertureLeads}). A lead with
- * no usable name can never be proven covered and is kept.
+ * True when a D1 record name-related to the lead sits within
+ * {@link LEAD_COVER_RADIUS_M} — the venue the lead points at is already
+ * recorded, OPEN OR CLOSED (a closed tombstone deliberately keeps blocking
+ * re-suggestion, per CLAUDE.md). Uses the strict {@link tokensRelated}
+ * relation, like the build gate and dedup. `grid`/`locationTokens` index
+ * `existing` (see {@link searchOvertureLeads}). A lead with no usable name can
+ * never be proven covered and is kept.
  */
 export function isLeadCovered(
 	lead: OvertureLead,
 	existing: ExistingLocation[],
 	grid: SpatialGrid,
-	names: string[]
+	locationTokens: string[][]
 ): boolean {
-	const leadName = leadNormalizedName(lead);
-	if (!leadName) return false;
+	const leadTokens = leadNameTokens(lead);
+	if (leadTokens.length === 0) return false;
 	const box = bboxAround(lead.latitude, lead.longitude, LEAD_COVER_RADIUS_M / 1000);
 	for (const idx of grid.candidatesInBbox(box)) {
-		if (!nameRelated(names[idx], leadName)) continue;
+		if (!tokensRelated(locationTokens[idx], leadTokens)) continue;
 		const loc = existing[idx];
 		const d = haversineMeters(loc.latitude, loc.longitude, lead.latitude, lead.longitude);
 		if (d <= LEAD_COVER_RADIUS_M) return true;
@@ -178,11 +199,22 @@ export function isLeadCovered(
 	return false;
 }
 
+/** Projects a lead onto the wire shape — position renamed (see {@link LeadCandidate}). */
+function toCandidate(lead: OvertureLead, distance_m?: number): LeadCandidate {
+	const { latitude, longitude, ...rest } = lead;
+	return {
+		...rest,
+		approx_latitude: latitude,
+		approx_longitude: longitude,
+		...(distance_m === undefined ? {} : { distance_m: Math.round(distance_m) })
+	};
+}
+
 /**
  * Queries the leads pool: area/name/city/province filters and the confidence
  * junk guard push into SQL; centre queries refine to the exact circle
- * (nearest-first); live-venue coverage is dropped; the survivor list pages via
- * limit/offset like list_locations.
+ * (nearest-first); leads covered by an existing D1 record (open or closed) are
+ * dropped; the survivor list pages via limit/offset like list_locations.
  *
  * `db` may be null only when `exclude_existing` is false (offline/testing).
  */
@@ -203,62 +235,63 @@ export async function searchOvertureLeads(
 		params.min_confidence ?? Math.max(DEFAULT_MIN_CONFIDENCE, INDEPENDENT_MIN_CONFIDENCE);
 
 	const scanCap = params.scanCap ?? LEADS_SCAN_CAP;
-	const rows = store.searchBbox(bbox, {
+	// Over-fetch one row as the truncation probe: an area holding EXACTLY scanCap
+	// rows must not read as truncated. Captured before exclusion shrinks the rows
+	// — truncation is a property of the raw scan (mirrors search_poi).
+	let rows = store.searchBbox(bbox, {
 		name: params.name,
 		city: params.city,
 		province: params.province,
 		brandedMinConfidence: branded,
 		independentMinConfidence: independent,
 		brandsOnly: params.brands_only,
-		cap: scanCap
+		cap: scanCap + 1
 	});
-	// Captured before exclusion shrinks `rows` — truncation is a property of the
-	// raw scan (mirrors search_poi).
-	const scanTruncated = rows.length >= scanCap;
+	const scanTruncated = rows.length > scanCap;
+	if (scanTruncated) rows = rows.slice(0, scanCap);
 
 	// Refine centre queries to the exact circle and re-order nearest-first
 	// (bbox / filter-only queries keep the store's best-first order).
-	let withDistance: LeadCandidate[];
+	let survivors: { lead: OvertureLead; distance_m?: number }[];
 	if (centre) {
 		const radiusM = centre.radiusKm * 1000;
-		withDistance = rows
+		survivors = rows
 			.map((lead) => ({
-				...lead,
+				lead,
 				distance_m: haversineMeters(centre.lat, centre.lon, lead.latitude, lead.longitude)
 			}))
 			.filter((x) => x.distance_m <= radiusM)
-			.toSorted((a, b) => a.distance_m - b.distance_m)
-			.map((x) => ({ ...x, distance_m: Math.round(x.distance_m) }));
+			.toSorted((a, b) => a.distance_m - b.distance_m);
 	} else {
-		withDistance = rows;
+		survivors = rows.map((lead) => ({ lead }));
 	}
 
 	let excluded = 0;
-	if (excludeExisting && withDistance.length > 0) {
+	if (excludeExisting && survivors.length > 0) {
 		if (!db) throw new Error('exclude_existing requires a database handle.');
-		// Fetch live venues over the leads' own extent (an area-less query has no
-		// bbox of its own), padded so a venue just outside can still cover a lead.
-		const fetchBox = (bbox === WORLD ? boundsOfLeads(withDistance) : null) ?? bbox;
+		// Fetch existing records over the leads' own extent (an area-less query has
+		// no bbox of its own), padded so a venue just outside can still cover a lead.
+		const fetchBox = (bbox === WORLD ? boundsOfLeads(rows) : null) ?? bbox;
 		const existing = await existingInBbox(db, padBounds(fetchBox, LEAD_COVER_RADIUS_M));
 		const grid = new SpatialGrid(COVER_CELL_DEG);
 		existing.forEach((loc, i) => grid.insert(i, loc.latitude, loc.longitude));
-		const names = existing.map((loc) => normalizeName(loc.name));
-		const kept: LeadCandidate[] = [];
-		for (const lead of withDistance) {
-			if (isLeadCovered(lead, existing, grid, names)) excluded++;
-			else kept.push(lead);
+		const locationTokens = existing.map((loc) => nameTokens(loc.name));
+		const kept: typeof survivors = [];
+		for (const x of survivors) {
+			if (isLeadCovered(x.lead, existing, grid, locationTokens)) excluded++;
+			else kept.push(x);
 		}
-		withDistance = kept;
+		survivors = kept;
 	}
 
-	const page = withDistance.slice(offset, offset + limit);
+	const page = survivors.slice(offset, offset + limit);
 	return {
-		leads: page,
+		leads: page.map((x) => toCandidate(x.lead, x.distance_m)),
 		returned: page.length,
-		has_more: offset + limit < withDistance.length,
+		has_more: offset + limit < survivors.length,
 		limit,
 		offset,
-		total_matching: withDistance.length,
+		total_matching: survivors.length,
 		excluded_existing: excluded,
 		scan_truncated: scanTruncated
 	};

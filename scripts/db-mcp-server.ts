@@ -2643,17 +2643,21 @@ const osmTools = [
 			'OSM and the map, heavy in chain units OSM rarely maps (Subway, Bento Sushi, Pizza Hut…). Reads ' +
 			'the `overture_leads` table inside the local staging store, built by ' +
 			'`bun scripts/overture/build-leads.ts` (rebuild + restart this server to refresh); near-duplicate ' +
-			'Overture rows are pre-collapsed and `dup_count` says how many one lead represents. Leads near a ' +
-			'name-related LIVE venue (within 500 m) are dropped at query time — the venue may have been ' +
-			'imported after the table was built (set exclude_existing=false to see all). Filters: an optional ' +
+			'Overture rows are pre-collapsed and `dup_count` says how many one lead represents. Leads within ' +
+			'500 m of a name-related venue already RECORDED in D1 are dropped at query time — open venues ' +
+			'AND closed tombstones alike (a closed record deliberately blocks re-suggestion per the closed-' +
+			'venue policy; the record may postdate the table build). Set exclude_existing=false to see all. ' +
+			'Filters: an optional ' +
 			'area (`bbox`, or latitude+longitude+radius_km — nearest-first with `distance_m`; no area = whole ' +
 			'pool, best-confidence-first), `city`/`province`, `name` (matches brand_name too) and ' +
 			'`brands_only`. JUNK GUARD: independents (no brand_wikidata/brand_name) default to confidence ' +
 			'>= 0.9 instead of 0.85, because miscategorized non-eateries concentrate in the unbranded ' +
 			'0.85–0.9 band (e.g. most "Wine Rack" wine-retail units) — pass `min_confidence` explicitly to ' +
 			'override for every row. Paged via limit/offset like list_locations. POLICY: a lead is a ' +
-			'RESEARCH CANDIDATE, not an importable venue — its coordinates/address are Overture-sourced and ' +
-			'must NEVER be passed to create_locations (locations are OSM-coordinate-exact). Workflow per ' +
+			'RESEARCH CANDIDATE, not an importable venue — its position/address are Overture-sourced and ' +
+			'must NEVER be passed to create_locations (locations are OSM-coordinate-exact). The position is ' +
+			'therefore returned as `approx_latitude`/`approx_longitude`, field names create_locations will ' +
+			'never accept. Workflow per ' +
 			'lead: verify the venue is real and open, find its OSM node (or add one to OSM), get it into the ' +
 			'staging store, then import via the `osm_id` (search_poi + create_locations, or import_chain for ' +
 			'chains).',
