@@ -150,6 +150,8 @@ export interface ContactPoi {
 	website_source: string | null;
 	phone_source: string | null;
 	cuisine_source: string | null;
+	/** The previously banked match (null = never matched) — how the pass finds LOST matches. */
+	overture_id: string | null;
 }
 
 /** One banked Overture match + planned fills, applied verbatim by bankOvertureMatches. */
@@ -157,6 +159,22 @@ export interface OvertureBankUpdate {
 	osm_id: string;
 	overture_id: string;
 	overture_distance_m: number;
+	website: string | null;
+	website_source: string | null;
+	phone: string | null;
+	phone_source: string | null;
+	cuisine: string | null;
+	cuisine_source: string | null;
+}
+
+/**
+ * The un-bank of a LOST match (a previously banked POI no current run matched):
+ * overture_id/distance go to NULL; the contact fields are the planned retained
+ * values — planOvertureClear keeps OSM-owned ones and nulls Overture-sourced
+ * ones, so a vanished place's fills never linger as ghosts.
+ */
+export interface OvertureClearUpdate {
+	osm_id: string;
 	website: string | null;
 	website_source: string | null;
 	phone: string | null;
@@ -180,8 +198,11 @@ export class OsmPoiStore {
 		db.run(SCHEMA);
 		// Additive migrations for stores created before a column existed: the
 		// CREATE TABLE IF NOT EXISTS above won't add columns to an existing table.
-		// `ALTER TABLE ADD COLUMN` throws "duplicate column name" once applied, which
-		// we ignore — making this idempotent across re-opens.
+		// `ALTER TABLE ADD COLUMN` throws "duplicate column name" once applied,
+		// which we swallow — making this idempotent across re-opens. Any OTHER
+		// error (SQLITE_BUSY racing another opener, a corrupt file) rethrows:
+		// silently continuing would leave a half-migrated store whose SELECTs fail
+		// confusingly far from the cause.
 		for (const ddl of [
 			'ALTER TABLE osm_poi ADD COLUMN address_source TEXT',
 			'ALTER TABLE osm_poi ADD COLUMN admin_city TEXT',
@@ -195,8 +216,9 @@ export class OsmPoiStore {
 		]) {
 			try {
 				db.run(ddl);
-			} catch {
-				// column already present
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				if (!msg.includes('duplicate column name')) throw err;
 			}
 		}
 		db.run(NORMALIZED_NAME_INDEX);
@@ -343,7 +365,7 @@ export class OsmPoiStore {
 		return this.db
 			.query(
 				`SELECT osm_id, name, latitude, longitude, website, phone, cuisine,
-					website_source, phone_source, cuisine_source
+					website_source, phone_source, cuisine_source, overture_id
 				 FROM osm_poi`
 			)
 			.all() as ContactPoi[];
@@ -371,6 +393,39 @@ export class OsmPoiStore {
 				n += stmt.run({
 					$overture_id: u.overture_id,
 					$overture_distance_m: u.overture_distance_m,
+					$website: u.website,
+					$website_source: u.website_source,
+					$phone: u.phone,
+					$phone_source: u.phone_source,
+					$cuisine: u.cuisine,
+					$cuisine_source: u.cuisine_source,
+					$osm_id: u.osm_id
+				}).changes;
+			}
+			return n;
+		});
+		return run(updates);
+	}
+
+	/**
+	 * Un-banks LOST matches in one transaction: overture_id + distance go to
+	 * NULL and the contact fields are written verbatim from the planned clear
+	 * (see planOvertureClear — OSM-owned values ride through unchanged,
+	 * Overture-sourced ones are nulled). Returns rows actually updated.
+	 */
+	clearOvertureMatches(updates: Iterable<OvertureClearUpdate>): number {
+		const stmt = this.db.prepare(
+			`UPDATE osm_poi SET
+				overture_id = NULL, overture_distance_m = NULL,
+				website = $website, website_source = $website_source,
+				phone = $phone, phone_source = $phone_source,
+				cuisine = $cuisine, cuisine_source = $cuisine_source
+			 WHERE osm_id = $osm_id`
+		);
+		const run = this.db.transaction((items: Iterable<OvertureClearUpdate>) => {
+			let n = 0;
+			for (const u of items) {
+				n += stmt.run({
 					$website: u.website,
 					$website_source: u.website_source,
 					$phone: u.phone,

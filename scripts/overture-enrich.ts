@@ -26,10 +26,16 @@
 // gaps with per-field provenance (website_source / phone_source /
 // cuisine_source, same "overture:<id> (<release>)" format as address_source).
 // OSM-sourced values are never overwritten; overture-sourced ones are
-// recomputed on every run, so re-runs are idempotent (see
-// scripts/overture/enrich-contacts.ts). US-spillover NDJSON rows need no
-// pre-filter: a match requires a name-related staging POI within the radius,
-// which is anchor enough. Coordinates are, as always, untouched.
+// recomputed on every run — a LOST match (a previously banked POI nothing
+// matched this run) has its overture_id and Overture-sourced fills cleared,
+// so re-runs are idempotent and self-correcting (see
+// scripts/overture/enrich-contacts.ts). A mass-clear guard aborts a real run
+// that would clear >20% of previously banked rows (the tell of a
+// partial/regional NDJSON) unless --allow-mass-clear is passed. A
+// permanently_closed Overture place is banked as identity (signal for the
+// closure-signals pass) but never donates fills. US-spillover NDJSON rows need
+// no pre-filter: a match requires a name-related staging POI within the
+// radius, which is anchor enough. Coordinates are, as always, untouched.
 //
 // After running this, find_missing_address surfaces the filled addresses (with
 // `address_source` set) so existing locations can be backfilled, and search_poi
@@ -69,6 +75,9 @@ import {
 } from './overture/match-overture';
 import {
 	planOvertureBank,
+	planOvertureClear,
+	massClearExceeded,
+	MASS_CLEAR_FRACTION,
 	isOvertureSourced,
 	type OvertureEatery
 } from './overture/enrich-contacts';
@@ -80,10 +89,16 @@ interface Args {
 	radiusM: number;
 	release: string;
 	dryRun: boolean;
+	allowMassClear: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
-	const args: Partial<Args> = { db: 'data/osm-poi.sqlite', radiusM: 100, dryRun: false };
+	const args: Partial<Args> = {
+		db: 'data/osm-poi.sqlite',
+		radiusM: 100,
+		dryRun: false,
+		allowMassClear: false
+	};
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i];
 		switch (a) {
@@ -104,6 +119,9 @@ function parseArgs(argv: string[]): Args {
 				break;
 			case '--dry-run':
 				args.dryRun = true;
+				break;
+			case '--allow-mass-clear':
+				args.allowMassClear = true;
 				break;
 			case '--help':
 			case '-h':
@@ -135,7 +153,10 @@ function printUsageAndExit(code: number): never {
 			'  --release   Overture release id, recorded in each provenance citation (e.g. 2026-06-17.0).\n' +
 			'  --db        Staging SQLite path (default: data/osm-poi.sqlite).\n' +
 			'  --radius-m  Max distance for a POI↔place match (default 100, both passes).\n' +
-			'  --dry-run   Report what would be filled without writing.\n'
+			'  --dry-run   Report what would be filled without writing.\n' +
+			'  --allow-mass-clear  Let the contacts pass clear more than ' +
+			`${Math.round(MASS_CLEAR_FRACTION * 100)}% of previously banked\n` +
+			'              matches (normally the tell of a partial/regional --eateries file; a real run aborts).\n'
 	);
 	process.exit(code);
 }
@@ -227,6 +248,7 @@ interface RawEatery {
 	phone?: string | null;
 	social?: string | null;
 	category?: string | null;
+	operating_status?: string | null;
 }
 
 /** Maps a raw eateries record to an {@link OvertureEatery}, or null if unusable. */
@@ -240,7 +262,8 @@ function toEatery(raw: RawEatery): OvertureEatery | null {
 		website: raw.website ?? null,
 		phone: raw.phone ?? null,
 		social: raw.social ?? null,
-		category: raw.category ?? null
+		category: raw.category ?? null,
+		operating_status: raw.operating_status ?? null
 	};
 }
 
@@ -290,8 +313,9 @@ async function runAddressPass(store: OsmPoiStore, args: Args, input: string): Pr
 
 /**
  * The contacts + identity pass: match EVERY staging POI against the eateries
- * cache, bank each match (overture_id + distance), and fill website / phone /
- * cuisine gaps with per-field provenance. Idempotent — see enrich-contacts.ts.
+ * cache, bank each match (overture_id + distance), fill website / phone /
+ * cuisine gaps with per-field provenance, and clear LOST matches (previously
+ * banked POIs nothing matched this run). Idempotent — see enrich-contacts.ts.
  */
 async function runContactsPass(store: OsmPoiStore, args: Args, eateries: string): Promise<void> {
 	const pois = store.contactEnrichmentPois();
@@ -300,6 +324,29 @@ async function runContactsPass(store: OsmPoiStore, args: Args, eateries: string)
 	const stats = { seen: 0 };
 	const matches = await matchNearestPlaces(pois, loadEateries(eateries, stats), args.radiusM);
 	console.error(`Overture eateries streamed from cache: ${stats.seen}`);
+
+	// LOST matches: banked on a previous run, unmatched now (place gone from the
+	// feed, or renamed/moved out of relation). Their overture-sourced data would
+	// otherwise linger as ghosts of a dead place. A high lost fraction instead
+	// signals a partial --eateries file — clearing then would wipe valid
+	// enrichment, so a real run aborts unless explicitly allowed.
+	const matchedIds = new Set(matches.map((m) => m.osm_id));
+	const previouslyBanked = pois.filter((p) => p.overture_id !== null);
+	const lost = previouslyBanked.filter((p) => !matchedIds.has(p.osm_id));
+	if (massClearExceeded(lost.length, previouslyBanked.length)) {
+		const detail =
+			`the contacts pass would clear ${lost.length} of ${previouslyBanked.length} previously ` +
+			`banked matches (>${Math.round(MASS_CLEAR_FRACTION * 100)}%) — is --eateries a ` +
+			`partial/regional file?`;
+		if (!args.dryRun && !args.allowMassClear) {
+			console.error(`Error: ${detail} Pass --allow-mass-clear to proceed anyway.`);
+			process.exit(1);
+		}
+		console.error(
+			`Warning: ${detail}${args.dryRun ? ' A real run would abort without --allow-mass-clear.' : ' Proceeding (--allow-mass-clear).'}`
+		);
+	}
+	const clears = lost.map(planOvertureClear);
 
 	const poiById = new Map(pois.map((p) => [p.osm_id, p]));
 	const hadValue = (v: string | null): boolean => v !== null && v.trim() !== '';
@@ -320,7 +367,8 @@ async function runContactsPass(store: OsmPoiStore, args: Args, eateries: string)
 	}
 
 	let written = 0;
-	if (!args.dryRun) written = store.bankOvertureMatches(updates);
+	if (!args.dryRun)
+		written = store.bankOvertureMatches(updates) + store.clearOvertureMatches(clears);
 
 	console.error(
 		`\n${args.dryRun ? '[dry-run] would bank' : 'Banked'} ${updates.length} Overture matches ` +
@@ -329,6 +377,7 @@ async function runContactsPass(store: OsmPoiStore, args: Args, eateries: string)
 			`Newly filled: ${filled.website} websites, ${filled.phone} phones, ${filled.cuisine} cuisines. ` +
 			`Overture-sourced totals: ${overtureSourced.website} websites, ${overtureSourced.phone} phones, ` +
 			`${overtureSourced.cuisine} cuisines. ` +
+			`Lost matches cleared: ${clears.length}. ` +
 			(args.dryRun ? '' : `${written} rows updated. `) +
 			`Release: ${args.release}, radius: ${args.radiusM} m.`
 	);

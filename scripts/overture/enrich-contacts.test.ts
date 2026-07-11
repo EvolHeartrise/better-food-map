@@ -2,9 +2,11 @@ import { test, expect } from 'bun:test';
 import {
 	cuisineForCategory,
 	isOvertureSourced,
+	massClearExceeded,
 	overtureSource,
 	pickWebsite,
 	planOvertureBank,
+	planOvertureClear,
 	type OvertureEatery
 } from './enrich-contacts';
 import type { ContactPoi } from '../osm/poi-store';
@@ -22,6 +24,7 @@ function contactPoi(over: Partial<ContactPoi> & Pick<ContactPoi, 'osm_id'>): Con
 		website_source: null,
 		phone_source: null,
 		cuisine_source: null,
+		overture_id: null,
 		...over
 	};
 }
@@ -35,6 +38,7 @@ function eatery(over: Partial<OvertureEatery> & Pick<OvertureEatery, 'id'>): Ove
 		phone: null,
 		social: null,
 		category: null,
+		operating_status: 'open',
 		...over
 	};
 }
@@ -159,4 +163,84 @@ test('planOvertureBank treats a blank OSM value as a gap', () => {
 	const u = planOvertureBank(poi, eatery({ id: 'ov-1', website: 'https://x.ca' }), 3, RELEASE);
 	expect(u.website).toBe('https://x.ca');
 	expect(u.website_source).toBe('overture:ov-1 (2026-06-17.0)');
+});
+
+test('a permanently_closed place is banked as identity but never donates fills', () => {
+	const poi = contactPoi({ osm_id: 'n1' });
+	const e = eatery({
+		id: 'ov-dead',
+		website: 'https://gone.ca',
+		phone: '+16040000001',
+		category: 'pizza_restaurant',
+		operating_status: 'permanently_closed'
+	});
+	const u = planOvertureBank(poi, e, 4, RELEASE);
+	// Identity banked — this is the closure signal the later pass reads.
+	expect(u.overture_id).toBe('ov-dead');
+	expect(u.overture_distance_m).toBe(4);
+	// No fills from a venue that no longer operates.
+	expect(u.website).toBeNull();
+	expect(u.website_source).toBeNull();
+	expect(u.phone).toBeNull();
+	expect(u.cuisine).toBeNull();
+});
+
+test('a previous fill is cleared when its place is now permanently_closed; OSM values stay', () => {
+	const poi = contactPoi({
+		osm_id: 'n1',
+		website: 'https://from-overture.ca',
+		website_source: overtureSource('ov-dead', RELEASE),
+		phone: '+16040000000' // OSM's own (phone_source null)
+	});
+	const e = eatery({
+		id: 'ov-dead',
+		website: 'https://from-overture.ca',
+		operating_status: 'permanently_closed'
+	});
+	const u = planOvertureBank(poi, e, 4, RELEASE);
+	expect(u.website).toBeNull(); // overture-sourced fill recomputed → gone
+	expect(u.website_source).toBeNull();
+	expect(u.phone).toBe('+16040000000'); // OSM-owned, untouched
+	expect(u.phone_source).toBeNull();
+});
+
+test('a temporarily_closed place still donates fills (the business exists)', () => {
+	const poi = contactPoi({ osm_id: 'n1' });
+	const e = eatery({
+		id: 'ov-seasonal',
+		website: 'https://seasonal.ca',
+		operating_status: 'temporarily_closed'
+	});
+	const u = planOvertureBank(poi, e, 4, RELEASE);
+	expect(u.website).toBe('https://seasonal.ca');
+	expect(u.website_source).toBe(overtureSource('ov-seasonal', RELEASE));
+});
+
+test('planOvertureClear nulls overture-sourced fields and keeps OSM-owned ones', () => {
+	const poi = contactPoi({
+		osm_id: 'n1',
+		overture_id: 'ov-gone',
+		website: 'https://from-overture.ca',
+		website_source: overtureSource('ov-gone', RELEASE),
+		phone: '+16040000000', // OSM's own
+		cuisine: 'pizza',
+		cuisine_source: overtureSource('ov-gone', RELEASE)
+	});
+	expect(planOvertureClear(poi)).toEqual({
+		osm_id: 'n1',
+		website: null,
+		website_source: null,
+		phone: '+16040000000',
+		phone_source: null,
+		cuisine: null,
+		cuisine_source: null
+	});
+});
+
+test('massClearExceeded trips above the threshold and never on a first run', () => {
+	expect(massClearExceeded(0, 0)).toBe(false); // first run: nothing banked yet
+	expect(massClearExceeded(0, 100)).toBe(false);
+	expect(massClearExceeded(20, 100)).toBe(false); // exactly the threshold: allowed
+	expect(massClearExceeded(21, 100)).toBe(true); // a partial/regional file's tell
+	expect(massClearExceeded(100, 100)).toBe(true);
 });
