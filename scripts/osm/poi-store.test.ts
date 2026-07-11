@@ -312,3 +312,46 @@ test('open migrates a pre-overture store: contact columns appear as NULL', () =>
 		for (const suffix of ['', '-wal', '-shm']) rmSync(path + suffix, { force: true });
 	}
 });
+
+test('clearOvertureMatches un-banks a lost match, keeping only what the plan retains', () => {
+	const store = freshStore();
+	store.insertMany('test', [
+		row({ osm_id: 'n1', latitude: 49.28, longitude: -123.12, name: 'Gone Cafe' })
+	]);
+	store.bankOvertureMatches([
+		{
+			osm_id: 'n1',
+			overture_id: 'ov-gone',
+			overture_distance_m: 7,
+			website: 'https://from-overture.ca',
+			website_source: 'overture:ov-gone (2026-06-17.0)',
+			phone: '+16040000000',
+			phone_source: null, // OSM-owned phone carried through by the bank plan
+			cuisine: null,
+			cuisine_source: null
+		}
+	]);
+	// contactEnrichmentPois surfaces the banked id, so the pass can find lost matches.
+	expect(store.contactEnrichmentPois()[0].overture_id).toBe('ov-gone');
+
+	const written = store.clearOvertureMatches([
+		{
+			osm_id: 'n1',
+			website: null, // overture-sourced → cleared by planOvertureClear
+			website_source: null,
+			phone: '+16040000000', // OSM-owned → retained
+			phone_source: null,
+			cuisine: null,
+			cuisine_source: null
+		}
+	]);
+	expect(written).toBe(1);
+
+	const cleared = store.getByOsmId('n1');
+	expect(cleared?.overture_id).toBeNull();
+	expect(cleared?.overture_distance_m).toBeNull();
+	expect(cleared?.website).toBeNull();
+	expect(cleared?.website_source).toBeNull();
+	expect(cleared?.phone).toBe('+16040000000');
+	store.close();
+});

@@ -9,15 +9,20 @@
 //   • gap fills for website / phone / cuisine, with per-field provenance in the
 //     same "overture:<id> (<release>)" format as address_source.
 //
-// The invariant is planOvertureBank's alone: an OSM-sourced value (non-null
-// value, null *_source) is NEVER overwritten. Overture-sourced values (their
-// *_source says so) are recomputed from the current match on every run, so the
-// pass is idempotent and self-correcting. Coordinates are never touched — OSM
-// stays the coordinate source (see CLAUDE.md). Pure/deterministic — tested in
+// The invariant is this module's alone: an OSM-sourced value (non-null value,
+// null *_source) is NEVER overwritten. Overture-sourced values (their *_source
+// says so) are recomputed from the current match on every run — including the
+// LOST-match case: a POI banked on a previous run that no place matched this
+// run gets its Overture-sourced fills and its overture_id cleared
+// (planOvertureClear), so a vanished place's data never lingers as a ghost.
+// A permanently_closed match is still banked as identity (a deliberate signal
+// for the upcoming closure-signals pass) but never donates fills. So the pass
+// is idempotent and self-correcting. Coordinates are never touched — OSM stays
+// the coordinate source (see CLAUDE.md). Pure/deterministic — tested in
 // enrich-contacts.test.ts.
 // ---------------------------------------------------------------------------
 
-import type { ContactPoi, OvertureBankUpdate } from '../osm/poi-store';
+import type { ContactPoi, OvertureBankUpdate, OvertureClearUpdate } from '../osm/poi-store';
 
 /** One Overture eatery as the contacts pass sees it (from the eateries NDJSON). */
 export interface OvertureEatery {
@@ -31,6 +36,8 @@ export interface OvertureEatery {
 	social: string | null;
 	/** Overture primary category, e.g. "pizza_restaurant". */
 	category: string | null;
+	/** Overture operating_status: "open" / "permanently_closed" / "temporarily_closed" / null. */
+	operating_status: string | null;
 }
 
 /** The provenance label banked in *_source columns, matching address_source's format. */
@@ -162,10 +169,18 @@ function osmOwned(value: string | null, source: string | null): boolean {
 
 /**
  * Plans the bank row for one matched POI. The overture_id + distance are always
- * (re)banked; each of website/phone/cuisine is filled only when missing or
- * previously Overture-sourced — in the latter case it is recomputed from the
- * CURRENT match (and cleared when the match no longer carries a value), which
- * is what makes re-runs idempotent. OSM-sourced values pass through verbatim.
+ * (re)banked — even for a permanently_closed match, which is exactly the signal
+ * the upcoming closure-signals pass wants on the row. Each of
+ * website/phone/cuisine is filled only when missing or previously
+ * Overture-sourced — in the latter case it is recomputed from the CURRENT match
+ * (and cleared when the match no longer carries a value), which is what makes
+ * re-runs idempotent. OSM-sourced values pass through verbatim.
+ *
+ * A permanently_closed place never donates fills (its data describes a venue
+ * that no longer operates; a previously banked fill from it is cleared here
+ * too). A temporarily_closed place still does: the business exists and its
+ * website/phone/cuisine remain its own — excluding it would drop valid
+ * enrichment for every seasonal closure.
  */
 export function planOvertureBank(
 	poi: ContactPoi,
@@ -183,9 +198,14 @@ export function planOvertureBank(
 		return { value: fromMatch, source: fromMatch === null ? null : source };
 	};
 
-	const website = fill(poi.website, poi.website_source, pickWebsite(eatery));
-	const phone = fill(poi.phone, poi.phone_source, eatery.phone?.trim() || null);
-	const cuisine = fill(poi.cuisine, poi.cuisine_source, cuisineForCategory(eatery.category));
+	const isFillDonor = eatery.operating_status !== 'permanently_closed';
+	const website = fill(poi.website, poi.website_source, isFillDonor ? pickWebsite(eatery) : null);
+	const phone = fill(poi.phone, poi.phone_source, (isFillDonor && eatery.phone?.trim()) || null);
+	const cuisine = fill(
+		poi.cuisine,
+		poi.cuisine_source,
+		isFillDonor ? cuisineForCategory(eatery.category) : null
+	);
 
 	return {
 		osm_id: poi.osm_id,
@@ -198,4 +218,48 @@ export function planOvertureBank(
 		cuisine: cuisine.value,
 		cuisine_source: cuisine.source
 	};
+}
+
+/**
+ * Plans the un-bank for a LOST match: a POI whose banked overture_id found no
+ * match this run (the place vanished from the feed, or the radius/name no
+ * longer relate them). Overture-sourced fills are nulled; OSM-owned values ride
+ * through verbatim, exactly like planOvertureBank's shield. The caller pairs
+ * this with clearOvertureMatches, which also NULLs overture_id + distance.
+ */
+export function planOvertureClear(poi: ContactPoi): OvertureClearUpdate {
+	const retain = (
+		current: string | null,
+		currentSource: string | null
+	): { value: string | null; source: string | null } =>
+		osmOwned(current, currentSource)
+			? { value: current, source: currentSource }
+			: { value: null, source: null };
+
+	const website = retain(poi.website, poi.website_source);
+	const phone = retain(poi.phone, poi.phone_source);
+	const cuisine = retain(poi.cuisine, poi.cuisine_source);
+	return {
+		osm_id: poi.osm_id,
+		website: website.value,
+		website_source: website.source,
+		phone: phone.value,
+		phone_source: phone.source,
+		cuisine: cuisine.value,
+		cuisine_source: cuisine.source
+	};
+}
+
+/**
+ * Lost-match sanity threshold: when more than this fraction of the previously
+ * banked rows would be cleared in one run, the input is almost certainly a
+ * partial/regional NDJSON (or the wrong file), not tens of thousands of real
+ * delistings — a real run must abort rather than mass-clear valid enrichment
+ * (overridable with --allow-mass-clear).
+ */
+export const MASS_CLEAR_FRACTION = 0.2;
+
+/** True when clearing `lost` of `previouslyBanked` rows trips the sanity threshold. */
+export function massClearExceeded(lost: number, previouslyBanked: number): boolean {
+	return previouslyBanked > 0 && lost / previouslyBanked > MASS_CLEAR_FRACTION;
 }
