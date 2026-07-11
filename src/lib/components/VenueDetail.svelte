@@ -551,17 +551,18 @@
 
 <style>
 	/* --- Location detail panel (docked to the right of the map) --------------- */
-	/* The open location's page details: a full-height glass column pinned to the
-	   right edge, over the map (which insets its camera by the same width, so the
-	   venue centres in the visible area to its left). Slides in/out via the fly
-	   transition on the element. The 26rem width is mirrored by PANEL_WIDTH_PX. */
+	/* The open location's page details: the right half of a 50/50 split — the map
+	   container shrinks to the left half in step (see `.app--detail .app__map` in
+	   the map page), so this is a real layout column beside the map, not an
+	   overlay. Slides in/out via the fly transition on the element, matching the
+	   map's width transition. */
 	.placecard {
 		position: absolute;
 		z-index: 12;
 		top: 0;
 		right: 0;
 		bottom: 0;
-		width: min(26rem, 100vw);
+		width: 50vw;
 		display: flex;
 		flex-direction: column;
 		gap: 0.6rem;
