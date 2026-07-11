@@ -236,6 +236,37 @@ test('osm_id is persisted on the row (durable source identity); manual coords st
 	expect((await osmIdOf(res.location_ids[2]))?.osm_id).toBeNull();
 });
 
+test('moved-node re-import: an already-stamped osm_id is skipped with a warning, never a second row', async () => {
+	const db = freshDb();
+	const addrTags = JSON.stringify({
+		'addr:street': 'Test St',
+		'addr:city': 'Vancouver',
+		'addr:state': 'BC'
+	});
+	const first = await createLocationsBatch(
+		db,
+		fakeStore({
+			'node/42': poi({ osm_id: 'node/42', latitude: 49.1, longitude: -123.1, tags_json: addrTags })
+		}),
+		[{ name: 'Test POI', osm_id: 'node/42' }]
+	);
+	expect(first.created).toBe(1);
+
+	// A fresh extract in which the node moved far beyond the near-duplicate radius:
+	// coordinate-exact dedup can no longer see the stored row, so only the osm_id
+	// identity check stands between this re-import and a silent duplicate stamp.
+	const moved = fakeStore({
+		'node/42': poi({ osm_id: 'node/42', latitude: 49.5, longitude: -123.5, tags_json: addrTags })
+	});
+	const retry = await createLocationsBatch(db, moved, [{ name: 'Test POI', osm_id: 'node/42' }]);
+	expect(retry.created).toBe(0);
+	expect(retry.skipped_duplicate_locations).toEqual([
+		{ name: 'Test POI', existing_id: first.location_ids[0] }
+	]);
+	expect(retry.warnings?.join('\n')).toMatch(/OSM node moved since that row was imported/);
+	expect(await countLocations(db)).toBe(1);
+});
+
 test('inline menu_items require a source and build the private menu', async () => {
 	const db = freshDb();
 	// No sources → rejected (menu-level provenance rule).

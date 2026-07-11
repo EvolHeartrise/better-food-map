@@ -294,6 +294,36 @@ export async function existingLocationsAtCoords(
 }
 
 /**
+ * Maps each given osm_id that ALREADY identifies a location to that location
+ * (osm_id → id/name). The identity companion to {@link existingLocationsAtCoords}:
+ * coordinate-exact dedup cannot catch a re-import of a node that MOVED in a
+ * fresh extract — same source node, new coordinates — which would silently
+ * stamp one osm_id on two rows (migration 0028). Closed rows are included on
+ * purpose: a tombstone blocks re-creation by identity just as it does by
+ * coordinates.
+ */
+export async function existingLocationsByOsmId(
+	db: D1Like,
+	osmIds: string[]
+): Promise<Map<string, { id: string; name: string }>> {
+	const distinct = [...new Set(osmIds)];
+	if (distinct.length === 0) return new Map();
+	// One JSON-array bind expanded with json_each, matching the coordinate read's
+	// guard against D1's ~100 per-query bound-parameter cap on a 100-item batch.
+	const { results } = await db
+		.prepare(
+			`SELECT id, name, osm_id FROM locations WHERE osm_id IN (SELECT value FROM json_each(?))`
+		)
+		.bind(JSON.stringify(distinct))
+		.all<{ id: string; name: string; osm_id: string }>();
+	const out = new Map<string, { id: string; name: string }>();
+	for (const r of results) {
+		if (!out.has(r.osm_id)) out.set(r.osm_id, { id: r.id, name: r.name });
+	}
+	return out;
+}
+
+/**
  * Every OPEN location whose point falls inside `bbox`, as the minimal shape the
  * proximity checks need (near-duplicate warnings on create, the duplicate audit).
  * Callers refine by exact distance/name — this is just the indexed box read.
