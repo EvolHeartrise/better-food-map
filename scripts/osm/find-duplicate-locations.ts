@@ -33,6 +33,13 @@ export interface DuplicateHalf {
 	postcode: string | null;
 	phone: string | null;
 	website: string | null;
+	/** Source identity (migration 0028) — how the staging phone fallback resolves. */
+	osm_id: string | null;
+}
+
+/** The staging-store surface the phone fallback reads (OsmPoiStore satisfies it). */
+export interface StagingPhoneStoreLike {
+	getByOsmId(osmId: string): { phone: string | null } | null;
 }
 
 export interface DuplicatePair extends DismissableFinding {
@@ -42,8 +49,18 @@ export interface DuplicatePair extends DismissableFinding {
 	names_match: boolean;
 	/** True when both carry the same non-null brand_id. */
 	same_brand: boolean;
-	/** True when both carry the same non-null phone (digits compared) — strong same-store evidence. */
+	/** True when both VENUE ROWS carry the same non-null phone (digits compared) — strong same-store evidence. */
 	same_phone: boolean;
+	/**
+	 * True when the phones match only via the STAGING-STORE fallback: a half
+	 * with no phone of its own resolved through its `osm_id` to its staging
+	 * POI's phone (often Overture-enriched). WEAKER than `same_phone` — a
+	 * staging phone comes from a ~100 m name-related feed match, not from the
+	 * venue row itself, so two nearby related-name venues CAN inherit one
+	 * Overture place's number. Corroborating evidence for verification, never a
+	 * confidence upgrade on its own.
+	 */
+	same_phone_staging: boolean;
 	/**
 	 * "high" = almost certainly one venue stored twice (matching names within
 	 * ~30 m, or a shared phone number) — verify against the venue's own locator,
@@ -90,15 +107,46 @@ function phoneKey(phone: string | null): string {
 }
 
 /**
+ * The staging-phone fallback for one flagged pair: each half's effective phone
+ * is its own when it has one, otherwise its staging POI's (via `osm_id`).
+ * A hit requires that at least one half actually used the staging value —
+ * two venue-row phones comparing equal is `same_phone`'s job, and comparing
+ * unequal is already a verdict the store must not overrule.
+ */
+function stagingPhoneHit(
+	a: DuplicateHalf,
+	b: DuplicateHalf,
+	store: StagingPhoneStoreLike
+): boolean {
+	const effective = (half: DuplicateHalf): { key: string; staging: boolean } => {
+		const own = phoneKey(half.phone);
+		if (own.length > 0) return { key: own, staging: false };
+		const poi = half.osm_id ? store.getByOsmId(half.osm_id) : null;
+		return { key: phoneKey(poi?.phone ?? null), staging: true };
+	};
+	const ea = effective(a);
+	const eb = effective(b);
+	return (ea.staging || eb.staging) && ea.key.length > 0 && ea.key === eb.key;
+}
+
+/**
  * Flags every pair of OPEN locations within `radius_m` of each other whose
  * names match (normalized) or that share a brand. Nearest pairs first;
  * `limit` caps the returned list with the remainder counted in `additional`.
  * `brand_id` scopes the audit to pairs where at least one half belongs to that
- * chain (e.g. a post-import sweep).
+ * chain (e.g. a post-import sweep). `store` (the local staging store, optional)
+ * only ENRICHES evidence: a flagged half with no phone of its own borrows its
+ * staging POI's phone via `osm_id`, reported as `same_phone_staging` — pair
+ * discovery itself never touches the store.
  */
 export async function findDuplicateLocations(
 	db: D1Like,
-	opts: { radius_m?: number; limit?: number; brand_id?: string } & DismissalOpts = {}
+	opts: {
+		radius_m?: number;
+		limit?: number;
+		brand_id?: string;
+		store?: StagingPhoneStoreLike;
+	} & DismissalOpts = {}
 ): Promise<FindDuplicateLocationsResult> {
 	const radiusM = opts.radius_m ?? DEFAULT_RADIUS_M;
 	const limit = opts.limit ?? DEFAULT_LIMIT;
@@ -106,7 +154,7 @@ export async function findDuplicateLocations(
 
 	const { results: locations } = await db
 		.prepare(
-			`SELECT id, name, brand_id, latitude, longitude, street, city, postcode, phone, website
+			`SELECT id, name, brand_id, latitude, longitude, street, city, postcode, phone, website, osm_id
 			 FROM locations WHERE closed_at IS NULL`
 		)
 		.all<DuplicateHalf>();
@@ -141,11 +189,19 @@ export async function findDuplicateLocations(
 			const decision = filter.evaluate(orderedPair(a.id, b.id).join('|'), '');
 			if (decision.drop) continue;
 			const phoneHit = phoneKey(a.phone).length > 0 && phoneKey(a.phone) === phoneKey(b.phone);
+			// Staging fallback, flagged pairs only (never part of discovery): a half
+			// with no phone of its own stands in its staging POI's (often
+			// Overture-enriched) phone. Both halves carrying their OWN, differing
+			// phones is already an answer — the store is not consulted then.
+			const stagingHit = !phoneHit && opts.store ? stagingPhoneHit(a, b, opts.store) : false;
 			pairs.push({
 				distance_m: Math.round(distance),
 				names_match: nameHit,
 				same_brand: brandHit,
 				same_phone: phoneHit,
+				same_phone_staging: stagingHit,
+				// Deliberately unchanged by stagingHit — staging evidence is weaker
+				// (see the field doc) and must not promote a pair to "high" alone.
 				confidence: (nameHit && distance <= HIGH_CONFIDENCE_M) || phoneHit ? 'high' : 'review',
 				a,
 				b,
