@@ -1,6 +1,8 @@
 // ---------------------------------------------------------------------------
-// Matches address-less OSM staging POIs to Overture Maps "places" so their
-// missing addresses can be filled from Overture's (permissively-licensed) feed.
+// Matches OSM staging POIs to Overture Maps "places" so gaps can be filled
+// from Overture's (permissively-licensed) feed: matchNearestPlaces is the
+// generic core (used by the contacts/identity pass in enrich-contacts.ts);
+// matchOverturePlaces is the address pass's wrapper over it.
 //
 // OSM stays the canonical/coordinate source — we take ONLY the address from
 // Overture and never its coordinates (which come from conflated commercial
@@ -26,12 +28,30 @@ export interface OverturePlace {
 	address: string;
 }
 
-/** An OSM staging POI that lacks a usable address. */
-export interface AddresslessPoi {
+/** The minimum a streamed place needs for the generic nearest-name-related match. */
+export interface MatchablePlace {
+	name: string | null;
+	latitude: number;
+	longitude: number;
+}
+
+/** An OSM staging POI as the matcher sees it (name + coordinates + identity). */
+export interface MatchablePoi {
 	osm_id: string;
 	name: string | null;
 	latitude: number;
 	longitude: number;
+}
+
+/** An OSM staging POI that lacks a usable address (the address pass's work set). */
+export type AddresslessPoi = MatchablePoi;
+
+/** One POI's best (nearest name-related) place, with the full place attached. */
+export interface NearestPlaceMatch<P extends MatchablePlace> {
+	osm_id: string;
+	place: P;
+	/** Exact haversine metres — callers round as they store. */
+	distance_m: number;
 }
 
 /** A proposed address fill for one POI, with provenance for citation. */
@@ -81,18 +101,18 @@ export function composeOvertureAddress(parts: {
 }
 
 /**
- * For each address-less POI, finds the nearest name-related Overture place within
- * `radiusM` and returns the address to fill (with provenance). POIs with no match
- * are simply absent from the result. `releaseLabel` (the Overture release id) is
- * baked into each `address_source` so the citation records which snapshot it came
- * from.
+ * The generic matching core: for each POI, finds the nearest name-related place
+ * within `radiusM` and returns it with the FULL place attached, so a caller can
+ * take whatever fields it needs (address, contacts, category, …). POIs with no
+ * match are simply absent from the result. Matching semantics are exactly the
+ * original address pass's: nearest name-related within radius.
  */
-export async function matchOverturePlaces(
-	pois: AddresslessPoi[],
-	places: Iterable<OverturePlace> | AsyncIterable<OverturePlace>,
-	opts: { radiusM: number; releaseLabel: string }
-): Promise<OvertureMatch[]> {
-	const radiusKm = opts.radiusM / 1000;
+export async function matchNearestPlaces<P extends MatchablePlace>(
+	pois: MatchablePoi[],
+	places: Iterable<P> | AsyncIterable<P>,
+	radiusM: number
+): Promise<NearestPlaceMatch<P>[]> {
+	const radiusKm = radiusM / 1000;
 
 	// Index the POIs (the smaller, fixed set) once; stream places past them —
 	// async so a country-scale cache (millions of lines, ~1 GB) can be streamed
@@ -100,29 +120,47 @@ export async function matchOverturePlaces(
 	const grid = new SpatialGrid(CELL_DEG);
 	pois.forEach((poi, i) => grid.insert(i, poi.latitude, poi.longitude));
 
-	const best = new Map<number, { place: OverturePlace; dist: number }>();
+	const best = new Map<number, { place: P; dist: number }>();
 	for await (const place of places) {
-		if (!place.address) continue;
 		const placeName = normalizeName(place.name);
 		const box = bboxAround(place.latitude, place.longitude, radiusKm);
 		for (const idx of grid.candidatesInBbox(box)) {
 			const poi = pois[idx];
 			if (!nameRelated(normalizeName(poi.name), placeName)) continue;
 			const dist = haversineMeters(poi.latitude, poi.longitude, place.latitude, place.longitude);
-			if (dist > opts.radiusM) continue;
+			if (dist > radiusM) continue;
 			const prev = best.get(idx);
 			if (!prev || dist < prev.dist) best.set(idx, { place, dist });
 		}
 	}
 
-	const matches: OvertureMatch[] = [];
+	const matches: NearestPlaceMatch<P>[] = [];
 	for (const [idx, m] of best) {
-		matches.push({
-			osm_id: pois[idx].osm_id,
-			address: m.place.address,
-			address_source: `overture:${m.place.id} (${opts.releaseLabel})`,
-			distance_m: Math.round(m.dist)
-		});
+		matches.push({ osm_id: pois[idx].osm_id, place: m.place, distance_m: m.dist });
 	}
 	return matches;
+}
+
+/**
+ * For each address-less POI, finds the nearest name-related Overture place within
+ * `radiusM` and returns the address to fill (with provenance). POIs with no match
+ * are simply absent from the result. `releaseLabel` (the Overture release id) is
+ * baked into each `address_source` so the citation records which snapshot it came
+ * from. A thin address-shaped wrapper over {@link matchNearestPlaces}.
+ */
+export async function matchOverturePlaces(
+	pois: AddresslessPoi[],
+	places: Iterable<OverturePlace> | AsyncIterable<OverturePlace>,
+	opts: { radiusM: number; releaseLabel: string }
+): Promise<OvertureMatch[]> {
+	async function* addressed(): AsyncGenerator<OverturePlace> {
+		for await (const place of places) if (place.address) yield place;
+	}
+	const matches = await matchNearestPlaces(pois, addressed(), opts.radiusM);
+	return matches.map((m) => ({
+		osm_id: m.osm_id,
+		address: m.place.address,
+		address_source: `overture:${m.place.id} (${opts.releaseLabel})`,
+		distance_m: Math.round(m.distance_m)
+	}));
 }
