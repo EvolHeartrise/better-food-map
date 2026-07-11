@@ -214,11 +214,23 @@ test('centre+radius returns nearest-first with distance_m, excludes leads outsid
 	store.close();
 });
 
-test('exclude_existing drops leads covered by a name-related live venue within 500 m', async () => {
+test('a lead position is exposed only as approx_* — a spread can never be a location', async () => {
+	const store = storeWith([lead({ overture_id: 'a' })]);
+	const res = await searchOvertureLeads(store, null, { exclude_existing: false });
+	const candidate = res.leads[0] as Record<string, unknown>;
+	expect(candidate.approx_latitude).toBe(CENTRE.lat);
+	expect(candidate.approx_longitude).toBe(CENTRE.lon);
+	// The create_locations field names must be absent (the anti-footgun shape).
+	expect('latitude' in candidate).toBe(false);
+	expect('longitude' in candidate).toBe(false);
+	store.close();
+});
+
+test('exclude_existing drops leads covered by a name-related D1 record within 500 m', async () => {
 	const store = storeWith([
-		// "TH #1234" relates to live "Tim Hortons" ~300 m away → covered.
+		// "TH #1234" relates to recorded "Tim Hortons" ~300 m away → covered.
 		lead({ overture_id: 'covered', name: 'Tim Hortons #1234' }),
-		// Same spot as a live venue with an unrelated name → kept.
+		// Same spot as a recorded venue with an unrelated name → kept.
 		lead({
 			overture_id: 'neighbour',
 			name: 'Subway',
@@ -245,14 +257,42 @@ test('exclude_existing drops leads covered by a name-related live venue within 5
 	store.close();
 });
 
-test('scan cap reports scan_truncated', async () => {
+test('suppression uses the strict relation — no boundary-less substring matches', async () => {
+	// Old-rule regression: "aandw" ⊂ "pizzaandwings" would suppress this lead
+	// near any imported A&W, forever.
+	const store = storeWith([
+		lead({
+			overture_id: 'pizza',
+			name: 'Fiamo Pizza and Wine Bar',
+			brand_name: null,
+			brand_wikidata: null,
+			confidence: 0.95
+		})
+	]);
+	const db = fakeD1([
+		{ id: 'aw', name: 'A&W', latitude: CENTRE.lat + LAT_300M, longitude: CENTRE.lon }
+	]);
+	const res = await searchOvertureLeads(store, db, {});
+	expect(res.leads.map((l) => l.overture_id)).toEqual(['pizza']);
+	expect(res.excluded_existing).toBe(0);
+	store.close();
+});
+
+test('scan cap reports scan_truncated only when rows actually overflow it', async () => {
 	const store = storeWith([
 		lead({ overture_id: 'a' }),
 		lead({ overture_id: 'b' }),
 		lead({ overture_id: 'c' })
 	]);
-	const res = await searchOvertureLeads(store, null, { exclude_existing: false, scanCap: 2 });
-	expect(res.scan_truncated).toBe(true);
-	expect(res.total_matching).toBe(2);
+	const truncated = await searchOvertureLeads(store, null, {
+		exclude_existing: false,
+		scanCap: 2
+	});
+	expect(truncated.scan_truncated).toBe(true);
+	expect(truncated.total_matching).toBe(2);
+	// Exactly scanCap rows in the area is NOT truncation (the +1 probe proves it).
+	const exact = await searchOvertureLeads(store, null, { exclude_existing: false, scanCap: 3 });
+	expect(exact.scan_truncated).toBe(false);
+	expect(exact.total_matching).toBe(3);
 	store.close();
 });

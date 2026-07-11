@@ -11,7 +11,6 @@
 // ---------------------------------------------------------------------------
 
 import { Database } from 'bun:sqlite';
-import { normalizeName } from '../osm/search-poi';
 import {
 	OVERTURE_RELEASE,
 	resolveProvince,
@@ -23,6 +22,7 @@ import {
 	dedupLeads,
 	LEAD_MIN_CONFIDENCE,
 	leadFromRow,
+	leadNameTokens,
 	type NamedPoint,
 	type OvertureLead
 } from './leads';
@@ -34,20 +34,8 @@ const NDJSON = `${ROOT}/data/overture-canada-eateries.ndjson`;
 
 // ---- index the staging POIs (read-only pass; the store reopens writable below) ----
 const poiDb = new Database(DB_PATH, { readonly: true });
-const pois = poiDb
-	.query('SELECT name, normalized_name, latitude, longitude FROM osm_poi')
-	.all() as {
-	name: string | null;
-	normalized_name: string | null;
-	latitude: number;
-	longitude: number;
-}[];
+const points = poiDb.query('SELECT name, latitude, longitude FROM osm_poi').all() as NamedPoint[];
 poiDb.close();
-const points: NamedPoint[] = pois.map((p) => ({
-	normalized_name: p.normalized_name ?? normalizeName(p.name),
-	latitude: p.latitude,
-	longitude: p.longitude
-}));
 const hasOsmMatch = buildOsmNameMatcher(points);
 console.log(`indexed ${points.length} staging POIs from ${DB_PATH}`);
 
@@ -75,11 +63,15 @@ for await (const row of streamNdjson<OvertureEateryRow>(NDJSON)) {
 		closed++;
 		continue;
 	}
-	if (hasOsmMatch(normalizeName(row.name), row.lat, row.lon)) {
+	// Gate on the SAME tokens dedup/suppression use (leadNameTokens: name, else
+	// brand_name) — gating on the raw name alone would let a brand-only row
+	// (name: null, brand_name: "Yu Seafood") sail past its own staging POI.
+	const lead = leadFromRow(row, resolved.code, OVERTURE_RELEASE);
+	if (hasOsmMatch(leadNameTokens(lead), row.lat, row.lon)) {
 		matched++;
 		continue;
 	}
-	raw.push(leadFromRow(row, resolved.code, OVERTURE_RELEASE));
+	raw.push(lead);
 }
 console.log(
 	`kept ${raw.length} pre-dedup leads of ${total} rows ` +
