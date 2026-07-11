@@ -440,6 +440,19 @@ export class OsmPoiStore {
 		return run(updates);
 	}
 
+	/**
+	 * True when the Overture identity pass (bun run overture:enrich --eateries)
+	 * has banked at least one match in this store. The `overture_id IS NULL`
+	 * reverse-staleness signal is only meaningful on an enriched store — on an
+	 * un-enriched one EVERY row is null, which means "enrichment never ran",
+	 * not "Overture has never heard of any of these venues".
+	 */
+	hasOvertureBank(): boolean {
+		return (
+			this.db.query('SELECT 1 FROM osm_poi WHERE overture_id IS NOT NULL LIMIT 1').get() !== null
+		);
+	}
+
 	/** Distinct region labels currently loaded. */
 	regions(): string[] {
 		const rows = this.db.query('SELECT DISTINCT region FROM osm_poi ORDER BY region').all() as {

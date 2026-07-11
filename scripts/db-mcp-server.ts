@@ -145,6 +145,17 @@ function getOsmStore(): OsmPoiStore {
 	return (_osmStore ??= OsmPoiStore.openReadonly(process.env.OSM_POI_DB ?? 'data/osm-poi.sqlite'));
 }
 
+// getOsmStore, but absence-tolerant: for checks that only ENRICH their evidence
+// from the staging store (duplicate_locations' phone fallback) — a missing
+// store must not fail an audit documented as reading the live D1.
+function tryGetOsmStore(): OsmPoiStore | undefined {
+	try {
+		return getOsmStore();
+	} catch {
+		return undefined;
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Shared field schemas (valibot — single source of truth for both validation
 // and the JSON Schema advertised to the client)
@@ -1240,7 +1251,10 @@ const auditLocationsArgs = v.object({
 				'• "duplicate_locations" — pairs of live locations within `radius_m` (default 150) whose names ' +
 				'match or that share a brand: probably ONE venue stored twice (OSM sometimes carries two stale ' +
 				"nodes for one place — coordinate-exact dedup cannot catch that). Each pair carries both halves' " +
-				'phone/website/postcode, a `same_phone` flag (a shared phone ≈ the same store) and a `confidence` ' +
+				'phone/website/postcode, a `same_phone` flag (a shared phone ≈ the same store), a ' +
+				'`same_phone_staging` flag (phones matched only after a phone-less half borrowed its staging ' +
+				"POI's — often Overture-enriched — phone via its osm_id: weaker, corroborating evidence, never " +
+				'a confidence upgrade) and a `confidence` ' +
 				'classification: "high" (name match within ~30 m, or shared phone) vs "review". Nearest pairs ' +
 				"first; scope a post-import sweep with `brand_id`. Verify each against the venue's own store " +
 				'locator before delete_locations — two real branches CAN sit close together.\n' +
@@ -2474,7 +2488,12 @@ const osmTools = [
 			'phone/website/cuisine/opening_hours where known (from OSM tags, or Overture-filled — ' +
 			'then `phone_source`/`website_source` is non-null), and structured `address_parts` ' +
 			"(the POI's own OSM tags, enrichment feeds, and admin-boundary city/region merged — exactly " +
-			'what an import stores). Pass `compact: true` for large sweeps (minimal shape, fits 200 ' +
+			'what an import stores). A candidate flagged `no_overture_match: true` has NO banked Overture ' +
+			'counterpart: Meta/Foursquare/Microsoft collectively carry no record of a name-related venue ' +
+			'within ~100 m (~29% of Canadian staging POIs) — an elevated-staleness hint that RAISES the ' +
+			'priority of the check-open/closed-before-researching step, NOT proof of closure (match-radius ' +
+			'artifacts exist); the flag only appears when the store has been Overture-enriched. ' +
+			'Pass `compact: true` for large sweeps (minimal shape, fits 200 ' +
 			'candidates well under output caps) and `exclude_osm_ids` to silence known false matches. ' +
 			'If `scan_truncated` is true the box exceeded the internal scan cap: `total_in_area` is only a ' +
 			'lower bound and re-sweeping the same box will NOT surface the uncounted POIs — narrow the bbox ' +
@@ -2515,6 +2534,8 @@ const osmTools = [
 						latitude: c.latitude,
 						longitude: c.longitude,
 						has_address,
+						// The staleness hint matters MOST on the large sweeps compact serves.
+						...(c.no_overture_match ? { no_overture_match: true } : {}),
 						...(c.distance_m === undefined ? {} : { distance_m: c.distance_m })
 					};
 				})
@@ -2747,11 +2768,14 @@ const osmTools = [
 				});
 			}
 			if (input.check === 'duplicate_locations') {
-				// Reads only the live D1 — no staging store needed.
+				// Discovery reads only the live D1; the staging store — when present —
+				// only enriches evidence (the same_phone_staging fallback), so its
+				// absence degrades gracefully instead of failing the check.
 				return findDuplicateLocations(getDb(), {
 					radius_m: input.radius_m,
 					limit: input.limit,
 					brand_id: input.brand_id,
+					store: tryGetOsmStore(),
 					...dismissal
 				});
 			}

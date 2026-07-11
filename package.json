@@ -24,6 +24,7 @@
 		"db:pull": "bun run scripts/db-pull.ts",
 		"osm:extract": "bun run scripts/osm-extract.ts",
 		"overture:enrich": "bun run scripts/overture-enrich.ts",
+		"overture:closure-signals": "bun run scripts/overture/closure-signals.ts",
 		"test": "bun run paraglide:compile && bun test scripts",
 		"d1:migrate": "wrangler d1 migrations apply better-food-map --remote",
 		"d1:migrate:local": "wrangler d1 migrations apply better-food-map --local"
