@@ -16,8 +16,7 @@
 		type HoursRow
 	} from '$lib/opening-hours';
 	import { tooltip } from '$lib/tooltip';
-	import { innerHeight } from 'svelte/reactivity/window';
-	import { shouldDismissSheet, FALLBACK_VIEWPORT_H } from '$lib/bottom-sheet';
+	import { shouldDismissSheet } from '$lib/bottom-sheet';
 	import { m } from '$lib/paraglide/messages';
 	import { getLocale } from '$lib/paraglide/runtime';
 	import type { ResolvedLocation } from '$lib/resolve-location';
@@ -206,23 +205,24 @@
 
 	// --- Swipe-down dismiss (narrow screens) --------------------------------------
 	// On a phone the panel is a FULL-SCREEN sheet with no intermediate resting
-	// heights: it renders at the whole viewport height unless a dismiss drag is in
-	// progress, in which case it tracks the finger. Releasing either dismisses the
-	// panel (firm downward flick, or released with less than half the screen
-	// covered — see shouldDismissSheet) or springs back to full. The shared
-	// FALLBACK_VIEWPORT_H keeps the SSR / pre-measure render a plausible phone
-	// height.
-	const vh = $derived(innerHeight.current ?? FALLBACK_VIEWPORT_H);
-	let dragHeight = $state<number | null>(null);
+	// heights. At rest it simply FILLS its container (CSS `inset: 0` — the same
+	// box as the map, so it always fits the screen exactly; no JS viewport
+	// measurement, which desyncs from the layout viewport around mobile browser
+	// URL bars). A dismiss drag slides it down with a translateY offset — never a
+	// resize — and releasing either dismisses the panel (see shouldDismissSheet)
+	// or springs the offset back to zero.
+	let dragOffset = $state<number | null>(null);
 	let dragging = $state(false);
-	const sheetHeight = $derived(dragHeight ?? vh);
 
 	// Drag bookkeeping — plain locals, read only inside the handlers.
 	let dragStartY = 0;
+	// The panel's rendered height, measured when a drag captures — the offset
+	// clamp and the halfway dismiss threshold both compare against it.
+	let dragPanelHeight = 0;
 	let lastTouchY = 0;
 	let lastTouchT = 0;
-	// Height-change velocity near release (px/ms, − = shrinking), for the flick
-	// that dismisses regardless of distance (shouldDismissSheet).
+	// Offset velocity near release (px/ms, + = moving down), for the flick that
+	// dismisses regardless of distance (shouldDismissSheet).
 	let dragVelocity = 0;
 
 	// The gesture is recognised on the whole panel (attached to the aside in the
@@ -275,12 +275,13 @@
 			touchMode = 'sheet';
 			dragging = true;
 			dragStartY = y;
+			dragPanelHeight = el?.getBoundingClientRect().height ?? 0;
 		}
 		// Steal the gesture from native scrolling and track the finger 1:1.
 		event.preventDefault();
-		dragHeight = Math.min(vh, Math.max(0, vh - (y - dragStartY)));
+		dragOffset = Math.min(dragPanelHeight, Math.max(0, y - dragStartY));
 		const dt = event.timeStamp - lastTouchT;
-		if (dt > 0) dragVelocity = (lastTouchY - y) / dt;
+		if (dt > 0) dragVelocity = (y - lastTouchY) / dt;
 		lastTouchY = y;
 		lastTouchT = event.timeStamp;
 	}
@@ -290,14 +291,17 @@
 		touchMode = 'idle';
 		if (!wasSheet) return;
 		dragging = false;
-		if (shouldDismissSheet(dragHeight ?? vh, dragVelocity, vh)) {
-			// The drag height is deliberately KEPT so the outro fly starts from
-			// where the finger left the sheet, not from a snapped-back full height.
+		if (shouldDismissSheet(dragOffset ?? 0, dragVelocity, dragPanelHeight)) {
+			// The drag offset is deliberately KEPT so the outro fly starts from
+			// where the finger left the sheet, not from a snapped-back position
+			// (the fly transition bakes the element's current transform into its
+			// animation base).
 			onClose();
 			return;
 		}
-		// Spring back: hand rendering to the resting height, which animates to full.
-		dragHeight = null;
+		// Spring back: drop the offset; the CSS transform transition eases the
+		// sheet back up to resting.
+		dragOffset = null;
 	}
 
 	$effect(() => {
@@ -322,7 +326,7 @@
 	aria-label={m.venue_details_aria()}
 	tabindex="-1"
 	bind:this={el}
-	style:--sheet-height="{sheetHeight}px"
+	style:transform={dragOffset !== null ? `translateY(${dragOffset}px)` : undefined}
 	transition:fly={flyParams}
 >
 	<button
@@ -941,26 +945,26 @@
 
 	/* On narrow screens the detail panel is a FULL-SCREEN sheet: it slides up over
 	   the whole viewport when a venue opens, with no intermediate resting heights.
-	   `--sheet-height` (set inline) is the viewport height at rest and the live
-	   finger-tracked height during a dismiss drag; the transition animates the
-	   spring-back after a released drag and is suppressed while the finger is down
+	   At rest it fills the .app container edge to edge (inset 0 — the exact box
+	   the map occupies, so the fit can never drift from the real viewport the way
+	   a JS-measured height does around mobile URL bars). A dismiss drag offsets it
+	   with an inline translateY; the transform transition animates the spring-back
+	   after a released drag and is suppressed while the finger is down
 	   (.placecard--dragging). The safe-area top padding keeps the content clear of
 	   the notch/status bar; the top corners round only while a drag has peeled the
 	   sheet off the top edge. */
 	@media (max-width: 48rem) {
 		.placecard {
-			top: auto;
 			left: 0;
 			right: 0;
 			width: auto;
-			height: var(--sheet-height, 100dvh);
 			padding: calc(0.35rem + env(safe-area-inset-top)) 0.95rem
 				calc(0.85rem + env(safe-area-inset-bottom));
 			border-left: none;
 			border-top: 1px solid rgba(255, 255, 255, 0.6);
 			border-radius: 0;
 			box-shadow: 0 -12px 34px rgba(0, 0, 0, 0.22);
-			transition: height 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+			transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 		}
 
 		.placecard--dragging {
