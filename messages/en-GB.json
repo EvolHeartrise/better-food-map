@@ -1,6 +1,5 @@
 {
 	"$schema": "https://inlang.com/schema/inlang-message-format",
-
 	"search_bar_aria": "Search and filters",
 	"search_placeholder": "Search places & dishes…",
 	"search_input_aria": "Search by place or dish name",
@@ -21,10 +20,8 @@
 	"map_aria": "Map of food locations",
 	"map_zoom_in_aria": "Zoom in",
 	"map_zoom_out_aria": "Zoom out",
-
 	"venue_details_aria": "Location details",
 	"venue_close_aria": "Close place details",
-	"sheet_resize_aria": "Resize details — drag, tap, or use the arrow keys",
 	"venue_like": "Like this place",
 	"venue_unlike": "Unlike this place",
 	"venue_address_label": "Address",
@@ -60,10 +57,8 @@
 	"course_all": "All",
 	"item_like": "Like this item",
 	"item_unlike": "Unlike this item",
-
 	"scanned_date": "Scanned {date}",
 	"scanned": "Scanned {relative}",
-
 	"tag_vegan": "Vegan",
 	"tag_vegetarian": "Vegetarian",
 	"tag_halal": "Halal",
@@ -73,26 +68,21 @@
 	"tag_food": "Food",
 	"tag_dessert": "Dessert",
 	"tag_drink": "Drinks",
-
 	"category_cafe": "Café",
 	"category_fast_food": "Fast food",
 	"category_restaurant": "Restaurant",
 	"category_bakery": "Bakery",
-
 	"diet_any": "Any diet",
 	"diet_filter_aria": "Dietary filter",
 	"diet_can_be_made": "Can be made {diet}",
-
 	"account_default_name": "Account",
 	"account_signed_in": "Signed in",
 	"account_sign_out": "Sign out",
 	"account_sign_in": "Sign in",
 	"language_label": "Language",
-
 	"sources_dialog_aria": "Data sources",
 	"sources_title": "Sources",
 	"sources_close_aria": "Close sources",
-
 	"directions_button_tooltip": "Open in other Maps app",
 	"directions_button_aria": "Open {address} in another Maps app",
 	"directions_dialog_aria": "Choose a maps app",
@@ -100,7 +90,6 @@
 	"directions_close_aria": "Close directions",
 	"directions_apple_maps": "Apple Maps",
 	"directions_google_maps": "Google Maps",
-
 	"landing_intro_aria": "About BetterFoodMaps",
 	"landing_title": "Find food that fits your diet, anywhere on the map.",
 	"landing_stats_aria": "Map coverage",
@@ -116,12 +105,10 @@
 	"stat_nut_free": "nut-free dishes",
 	"landing_cta": "Start using the map",
 	"landing_browse_link": "Or browse food by city →",
-
 	"error_not_found": "This page doesn't exist",
 	"error_generic": "Something went wrong",
 	"error_back": "Back to the map",
 	"error_page_title": "{status} · BetterFoodMaps",
-
 	"server_error_no_location_or_item": "No such location or item.",
 	"server_error_sign_in_required": "You must be signed in to do that.",
 	"server_error_location_not_found": "Location not found",
@@ -130,7 +117,6 @@
 	"server_error_oauth_invalid_callback": "Invalid OAuth callback.",
 	"server_error_oauth_code_validation": "Failed to validate the authorisation code.",
 	"server_error_oauth_missing_subject": "Google response was missing the subject claim.",
-
 	"head_site_description": "Explore cafés, fast food and restaurants around the world on an interactive map.",
 	"head_desc_no_menu": "See the menu on BetterFoodMaps.",
 	"head_located_in": "in {where}",

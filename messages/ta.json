@@ -1,6 +1,5 @@
 {
 	"$schema": "https://inlang.com/schema/inlang-message-format",
-
 	"search_bar_aria": "தேடலும் வடிப்பான்களும்",
 	"search_placeholder": "இடங்களையும் உணவுகளையும் தேடுங்கள்…",
 	"search_input_aria": "இடம் அல்லது உணவின் பெயரால் தேடுங்கள்",
@@ -21,10 +20,8 @@
 	"map_aria": "உணவு இடங்களின் வரைபடம்",
 	"map_zoom_in_aria": "பெரிதாக்கு",
 	"map_zoom_out_aria": "சிறிதாக்கு",
-
 	"venue_details_aria": "இட விவரங்கள்",
 	"venue_close_aria": "இட விவரங்களை மூடு",
-	"sheet_resize_aria": "விவரங்களின் அளவை மாற்று — இழுக்கவும், தட்டவும் அல்லது அம்புக்குறி விசைகளைப் பயன்படுத்தவும்",
 	"venue_like": "இந்த இடத்தை விரும்பு",
 	"venue_unlike": "இந்த இடத்திற்கான விருப்பத்தை நீக்கு",
 	"venue_address_label": "முகவரி",
@@ -60,10 +57,8 @@
 	"course_all": "அனைத்தும்",
 	"item_like": "இந்த உருப்படியை விரும்பு",
 	"item_unlike": "இந்த உருப்படிக்கான விருப்பத்தை நீக்கு",
-
 	"scanned_date": "{date} அன்று சரிபார்க்கப்பட்டது",
 	"scanned": "{relative} சரிபார்க்கப்பட்டது",
-
 	"tag_vegan": "வீகன்",
 	"tag_vegetarian": "சைவம்",
 	"tag_halal": "ஹலால்",
@@ -73,26 +68,21 @@
 	"tag_food": "உணவு",
 	"tag_dessert": "இனிப்பு",
 	"tag_drink": "பானங்கள்",
-
 	"category_cafe": "கஃபே",
 	"category_fast_food": "துரித உணவு",
 	"category_restaurant": "உணவகம்",
 	"category_bakery": "பேக்கரி",
-
 	"diet_any": "எந்த உணவுமுறையும்",
 	"diet_filter_aria": "உணவுமுறை வடிப்பான்",
 	"diet_can_be_made": "கேட்டால் {diet} கிடைக்கும்",
-
 	"account_default_name": "கணக்கு",
 	"account_signed_in": "உள்நுழைந்துள்ளீர்கள்",
 	"account_sign_out": "வெளியேறு",
 	"account_sign_in": "உள்நுழைக",
 	"language_label": "மொழி",
-
 	"sources_dialog_aria": "தரவு ஆதாரங்கள்",
 	"sources_title": "ஆதாரங்கள்",
 	"sources_close_aria": "ஆதாரங்களை மூடு",
-
 	"directions_button_tooltip": "வேறு வரைபட ஆப்பில் திற",
 	"directions_button_aria": "{address} ஐ வேறு வரைபட ஆப்பில் திற",
 	"directions_dialog_aria": "வரைபட ஆப்பைத் தேர்ந்தெடு",
@@ -100,7 +90,6 @@
 	"directions_close_aria": "வழிகளை மூடு",
 	"directions_apple_maps": "Apple Maps",
 	"directions_google_maps": "Google Maps",
-
 	"landing_intro_aria": "BetterFoodMaps பற்றி",
 	"landing_title": "வரைபடத்தில் எங்கும் உங்கள் உணவுமுறைக்கு ஏற்ற உணவைக் கண்டறியுங்கள்.",
 	"landing_stats_aria": "வரைபடப் புள்ளிவிவரங்கள்",
@@ -116,12 +105,10 @@
 	"stat_nut_free": "நட்ஸ் இல்லாத உணவுகள்",
 	"landing_cta": "வரைபடத்தைப் பயன்படுத்தத் தொடங்குங்கள்",
 	"landing_browse_link": "அல்லது நகர வாரியாக உணவுகளைப் பாருங்கள் →",
-
 	"error_not_found": "இந்தப் பக்கம் இல்லை",
 	"error_generic": "ஏதோ தவறு நடந்துவிட்டது",
 	"error_back": "வரைபடத்திற்குத் திரும்பு",
 	"error_page_title": "{status} · BetterFoodMaps",
-
 	"server_error_no_location_or_item": "அப்படி ஒரு இடமோ உருப்படியோ இல்லை.",
 	"server_error_sign_in_required": "இதைச் செய்ய உள்நுழைந்திருக்க வேண்டும்.",
 	"server_error_location_not_found": "இடம் கிடைக்கவில்லை",
@@ -130,7 +117,6 @@
 	"server_error_oauth_invalid_callback": "தவறான OAuth கால்பேக்.",
 	"server_error_oauth_code_validation": "அங்கீகாரக் குறியீட்டைச் சரிபார்க்க முடியவில்லை.",
 	"server_error_oauth_missing_subject": "Google இன் பதிலில் subject உரிமைக்கோரல் இல்லை.",
-
 	"head_site_description": "உலகம் முழுவதும் உள்ள கஃபேகள், துரித உணவு நிலையங்கள், உணவகங்கள் ஆகியவற்றை ஊடாடும் வரைபடத்தில் கண்டறியுங்கள்.",
 	"head_desc_no_menu": "BetterFoodMaps இல் மெனுவைப் பாருங்கள்.",
 	"head_located_in": "{where} இல்",

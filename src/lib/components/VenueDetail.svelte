@@ -16,17 +16,7 @@
 		type HoursRow
 	} from '$lib/opening-hours';
 	import { tooltip } from '$lib/tooltip';
-	import { innerHeight } from 'svelte/reactivity/window';
-	import {
-		SHEET_SNAPS,
-		snapHeightPx,
-		sheetBounds,
-		settleSnap,
-		stepSnap,
-		cycleSnap,
-		FALLBACK_VIEWPORT_H,
-		type SheetSnap
-	} from '$lib/bottom-sheet';
+	import { shouldDismissSheet } from '$lib/bottom-sheet';
 	import { m } from '$lib/paraglide/messages';
 	import { getLocale } from '$lib/paraglide/runtime';
 	import type { ResolvedLocation } from '$lib/resolve-location';
@@ -52,8 +42,6 @@
 		onClose,
 		flyParams,
 		narrow = false,
-		snap = 'peek',
-		onSnapChange,
 		sourcesOpen = $bindable(false),
 		directionsOpen = $bindable(false),
 		el = $bindable(null)
@@ -66,14 +54,10 @@
 		onToggleItemLike: (id: string) => void;
 		onClose: () => void;
 		flyParams: FlyParams;
-		// Narrow-screen bottom-sheet controls (issue #249). On a phone the panel is
-		// a draggable sheet; the PAGE owns the resting `snap` (so it can mirror the
-		// height as the map's camera inset), this component renders the grip and
-		// reports drag/tap/key changes via `onSnapChange`. On wide screens `narrow`
-		// is false and these are inert — the panel is a fixed right-hand column.
+		// On a phone (`narrow`) the panel is a full-screen sheet the user can swipe
+		// down to dismiss (see the touch handlers below). On wide screens `narrow`
+		// is false and the gesture is inert — the panel is a fixed right-hand column.
 		narrow?: boolean;
-		snap?: SheetSnap;
-		onSnapChange?: (snap: SheetSnap) => void;
 		sourcesOpen?: boolean;
 		directionsOpen?: boolean;
 		el?: HTMLElement | null;
@@ -219,97 +203,122 @@
 		return m.scanned({ relative });
 	}
 
-	// --- Bottom-sheet drag (narrow screens) --------------------------------------
-	// The height the sheet renders at: a live drag while one is in progress,
-	// otherwise the resting height of the page-owned `snap` for the current
-	// viewport. Both sides compute against the same reactive `innerHeight`, so the
-	// component and the page agree on the resting height to the pixel. The shared
-	// FALLBACK_VIEWPORT_H keeps the SSR / pre-measure render a plausible phone
-	// height rather than the MIN_SHEET_PX floor (`snapHeightPx` floors a zero
-	// viewport).
-	const vh = $derived(innerHeight.current ?? FALLBACK_VIEWPORT_H);
-	let dragHeight = $state<number | null>(null);
+	// --- Swipe-down dismiss (narrow screens) --------------------------------------
+	// On a phone the panel is a FULL-SCREEN sheet with no intermediate resting
+	// heights. At rest it simply FILLS its container (CSS `inset: 0` — the same
+	// box as the map, so it always fits the screen exactly; no JS viewport
+	// measurement, which desyncs from the layout viewport around mobile browser
+	// URL bars). A dismiss drag slides it down with a translateY offset — never a
+	// resize — and releasing either dismisses the panel (see shouldDismissSheet)
+	// or springs the offset back to zero.
+	let dragOffset = $state<number | null>(null);
 	let dragging = $state(false);
-	const sheetHeight = $derived(dragHeight ?? snapHeightPx(snap, vh));
 
-	// Pointer-drag bookkeeping — plain locals, read only inside the handlers.
+	// Drag bookkeeping — plain locals, read only inside the handlers.
 	let dragStartY = 0;
-	let dragStartHeight = 0;
-	let dragMoved = false;
-	let lastPointerY = 0;
-	let lastPointerT = 0;
-	// Height-change velocity near release (px/ms, + = growing), for the flick that
-	// jumps a whole snap (settleSnap).
+	// The panel's rendered height, measured when a drag captures — the offset
+	// clamp and the halfway dismiss threshold both compare against it.
+	let dragPanelHeight = 0;
+	let lastTouchY = 0;
+	let lastTouchT = 0;
+	// Offset velocity near release (px/ms, + = moving down), for the flick that
+	// dismisses regardless of distance (shouldDismissSheet).
 	let dragVelocity = 0;
-	// A drag must exceed this before it counts as a resize rather than a tap.
-	const TAP_SLOP_PX = 6;
 
-	function onGripPointerDown(event: PointerEvent) {
-		// Primary pointer only (ignore secondary mouse buttons).
-		if (event.button > 0) return;
-		dragging = true;
-		dragMoved = false;
-		dragStartY = event.clientY;
-		dragStartHeight = sheetHeight;
-		lastPointerY = event.clientY;
-		lastPointerT = event.timeStamp;
+	// The gesture is recognised on the whole panel (attached to the aside in the
+	// $effect below), so a swipe down on the header dismisses just like one on the
+	// menu. The rules per gesture, decided on its FIRST touchmove and held until
+	// the finger lifts (browsers commit a touch sequence to native scrolling once
+	// a touchmove goes unprevented, so a gesture can't switch modes midway):
+	//   • a predominantly horizontal swipe is never a sheet drag — it belongs to
+	//     a horizontal scroller inside the body (the course-tab strip);
+	//   • a downward pull grabs the sheet, UNLESS it starts inside the scrolled
+	//     menu list — the panel's one vertical scroller (scrolling back toward
+	//     its top must stay native);
+	//   • anything else (an upward drag) is native scrolling.
+	// While one of the panel's own modals is up, the gesture is inert — a drag
+	// on the sources list must not move the sheet behind it.
+	//
+	// These are raw non-passive listeners, not Svelte `ontouchmove` attributes —
+	// Svelte registers touchmove passively, and a passive listener cannot
+	// preventDefault the scroll.
+	let menuEl = $state<HTMLElement | null>(null);
+	// Per-gesture mode: undecided until the first touchmove, then fixed.
+	let touchMode: 'idle' | 'sheet' | 'native' = 'idle';
+	let touchStartY = 0;
+	let touchStartX = 0;
+	let touchInMenu = false;
+
+	function onSheetTouchStart(event: TouchEvent) {
+		if (!narrow || event.touches.length !== 1) return;
+		touchMode = 'idle';
+		touchStartY = event.touches[0].clientY;
+		touchStartX = event.touches[0].clientX;
+		touchInMenu = event.target instanceof Node && (menuEl?.contains(event.target) ?? false);
+		lastTouchY = touchStartY;
+		lastTouchT = event.timeStamp;
 		dragVelocity = 0;
-		// Capture so the drag keeps tracking even if the finger slides off the grip.
-		if (event.currentTarget instanceof HTMLElement) {
-			event.currentTarget.setPointerCapture(event.pointerId);
+	}
+
+	function onSheetTouchMove(event: TouchEvent) {
+		if (!narrow || event.touches.length !== 1) return;
+		if (touchMode === 'native') return; // committed to native scrolling
+		const y = event.touches[0].clientY;
+		if (touchMode === 'idle') {
+			// Decide this gesture's mode from its first movement.
+			const dy = y - touchStartY;
+			const horizontal = Math.abs(event.touches[0].clientX - touchStartX) > Math.abs(dy);
+			const scrolledMenu = touchInMenu && (menuEl?.scrollTop ?? 0) > 0;
+			if (sourcesOpen || directionsOpen || horizontal || dy <= 0 || scrolledMenu) {
+				touchMode = 'native';
+				return;
+			}
+			touchMode = 'sheet';
+			dragging = true;
+			dragStartY = y;
+			dragPanelHeight = el?.getBoundingClientRect().height ?? 0;
 		}
+		// Steal the gesture from native scrolling and track the finger 1:1.
+		event.preventDefault();
+		dragOffset = Math.min(dragPanelHeight, Math.max(0, y - dragStartY));
+		const dt = event.timeStamp - lastTouchT;
+		if (dt > 0) dragVelocity = (y - lastTouchY) / dt;
+		lastTouchY = y;
+		lastTouchT = event.timeStamp;
 	}
 
-	function onGripPointerMove(event: PointerEvent) {
-		if (!dragging) return;
-		const { min, max } = sheetBounds(vh);
-		// Dragging UP (clientY decreasing) grows the sheet; clamped to the snap range.
-		dragHeight = Math.min(max, Math.max(min, dragStartHeight + (dragStartY - event.clientY)));
-		const dt = event.timeStamp - lastPointerT;
-		if (dt > 0) dragVelocity = (lastPointerY - event.clientY) / dt;
-		lastPointerY = event.clientY;
-		lastPointerT = event.timeStamp;
-		if (Math.abs(event.clientY - dragStartY) > TAP_SLOP_PX) dragMoved = true;
-	}
-
-	function onGripPointerUp(event: PointerEvent) {
-		if (!dragging) return;
+	function onSheetTouchEnd() {
+		const wasSheet = touchMode === 'sheet';
+		touchMode = 'idle';
+		if (!wasSheet) return;
 		dragging = false;
-		if (
-			event.currentTarget instanceof HTMLElement &&
-			event.currentTarget.hasPointerCapture(event.pointerId)
-		) {
-			event.currentTarget.releasePointerCapture(event.pointerId);
+		if (shouldDismissSheet(dragOffset ?? 0, dragVelocity, dragPanelHeight)) {
+			// The drag offset is deliberately KEPT so the outro fly starts from
+			// where the finger left the sheet, not from a snapped-back position
+			// (the fly transition bakes the element's current transform into its
+			// animation base).
+			onClose();
+			return;
 		}
-		if (dragMoved) {
-			onSnapChange?.(settleSnap(dragHeight ?? dragStartHeight, dragVelocity, vh));
-		} else {
-			// A tap on the grip (no real movement) cycles to the next snap. The
-			// matching pointer `click` is ignored in onGripClick (event.detail > 0).
-			onSnapChange?.(cycleSnap(snap));
-		}
-		// Hand rendering back to the resting height, which animates to the new snap.
-		dragHeight = null;
+		// Spring back: drop the offset; the CSS transform transition eases the
+		// sheet back up to resting.
+		dragOffset = null;
 	}
 
-	function onGripClick(event: MouseEvent) {
-		// Keyboard activation (Enter/Space) fires a click with detail 0 and no
-		// pointer sequence — cycle then. Pointer taps (detail ≥ 1) are already
-		// handled in onGripPointerUp, so ignore them here to avoid a double cycle.
-		if (event.detail === 0) onSnapChange?.(cycleSnap(snap));
-	}
-
-	function onGripKeydown(event: KeyboardEvent) {
-		let target: SheetSnap | null = null;
-		if (event.key === 'ArrowUp') target = stepSnap(snap, 1);
-		else if (event.key === 'ArrowDown') target = stepSnap(snap, -1);
-		else if (event.key === 'Home') target = SHEET_SNAPS[0];
-		else if (event.key === 'End') target = SHEET_SNAPS[SHEET_SNAPS.length - 1];
-		if (target) {
-			event.preventDefault();
-			onSnapChange?.(target);
-		}
-	}
+	$effect(() => {
+		const sheet = el;
+		if (!sheet || !narrow) return;
+		sheet.addEventListener('touchstart', onSheetTouchStart, { passive: true });
+		sheet.addEventListener('touchmove', onSheetTouchMove, { passive: false });
+		sheet.addEventListener('touchend', onSheetTouchEnd);
+		sheet.addEventListener('touchcancel', onSheetTouchEnd);
+		return () => {
+			sheet.removeEventListener('touchstart', onSheetTouchStart);
+			sheet.removeEventListener('touchmove', onSheetTouchMove);
+			sheet.removeEventListener('touchend', onSheetTouchEnd);
+			sheet.removeEventListener('touchcancel', onSheetTouchEnd);
+		};
+	});
 </script>
 
 <aside
@@ -318,28 +327,9 @@
 	aria-label={m.venue_details_aria()}
 	tabindex="-1"
 	bind:this={el}
-	style:--sheet-height="{sheetHeight}px"
+	style:transform={dragOffset !== null ? `translateY(${dragOffset}px)` : undefined}
 	transition:fly={flyParams}
 >
-	<!-- The drag handle: only a bottom sheet (narrow screens) can be resized, so
-	     it renders solely there. Drag to any height (settles to peek/half/full on
-	     release), tap to cycle those snaps, or focus it and use ↑/↓ (Home/End).
-	     The page owns the resting snap; this reports changes via onSnapChange. -->
-	{#if narrow}
-		<button
-			type="button"
-			class="placecard__grip"
-			aria-label={m.sheet_resize_aria()}
-			onpointerdown={onGripPointerDown}
-			onpointermove={onGripPointerMove}
-			onpointerup={onGripPointerUp}
-			onpointercancel={onGripPointerUp}
-			onclick={onGripClick}
-			onkeydown={onGripKeydown}
-		>
-			<span class="placecard__grip-bar"></span>
-		</button>
-	{/if}
 	<button
 		type="button"
 		class="placecard__close"
@@ -510,7 +500,7 @@
 		     labels only rotate a teaser item per venue, so this is where the whole
 		     menu — each item's price, description and dietary markers — is read. -->
 		{#if loc.menu.length > 0}
-			<ul class="placecard__menu">
+			<ul class="placecard__menu" bind:this={menuEl}>
 				{#each visibleMenu as menuItem (menuItem.id)}
 					<li class="placecard__item">
 						<span class="placecard__item-line">
@@ -590,13 +580,17 @@
 		outline: none;
 	}
 
-	/* The scrolling middle of the panel (info block + menu), between the fixed
-	   header and footer. min-height: 0 lets it actually shrink inside the flex
-	   column so overflow-y can take over. */
+	/* The middle of the panel (info block, menu header, course tabs, menu list),
+	   between the fixed header and footer. The body itself does NOT scroll — the
+	   info block and course tabs stay put, and the menu LIST below them is the
+	   panel's one vertical scroll container (see .placecard__menu). min-height: 0
+	   lets the column actually shrink inside the panel flex column; overflow
+	   hidden clips anything a child fails to wrap or scroll itself, so no
+	   scrollbar can appear at this level. */
 	.placecard__body {
 		flex: 1;
 		min-height: 0;
-		overflow-y: auto;
+		overflow: hidden;
 		display: flex;
 		flex-direction: column;
 		gap: 0.6rem;
@@ -642,52 +636,6 @@
 		}
 	}
 
-	/* The bottom-sheet drag handle (rendered only on narrow screens — see the
-	   {#if narrow} in the markup). A full-width, comfortable touch target with a
-	   centred grabber bar. `touch-action: none` routes a vertical drag to the
-	   resize handlers instead of letting the browser scroll the page under it. */
-	.placecard__grip {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 100%;
-		padding: 0.4rem 0 0.2rem;
-		margin: 0;
-		background: none;
-		border: none;
-		cursor: grab;
-		touch-action: none;
-		-webkit-user-select: none;
-		user-select: none;
-	}
-
-	.placecard--dragging .placecard__grip {
-		cursor: grabbing;
-	}
-
-	.placecard__grip-bar {
-		width: 2.5rem;
-		height: 0.25rem;
-		border-radius: 999px;
-		background: rgba(0, 0, 0, 0.18);
-		transition: background-color 0.12s;
-	}
-
-	.placecard__grip:hover .placecard__grip-bar {
-		background: rgba(0, 0, 0, 0.28);
-	}
-
-	/* The button box carries no visible surface, so the keyboard focus ring lands
-	   on the bar itself. */
-	.placecard__grip:focus-visible {
-		outline: none;
-	}
-
-	.placecard__grip:focus-visible .placecard__grip-bar {
-		outline: 2px solid var(--color-accent);
-		outline-offset: 3px;
-	}
-
 	.placecard__head {
 		display: flex;
 		align-items: center;
@@ -718,14 +666,24 @@
 		color: var(--color-text-muted);
 	}
 
-	/* The open venue's full menu, listed inside the panel body (which owns the
-	   scrolling — see .placecard__body). */
+	/* The open venue's full menu: the panel's ONE vertical scroll container. The
+	   info block and course tabs above it stay fixed while a long menu scrolls
+	   under them. flex: 1 + min-height: 0 make it soak exactly the space the body
+	   has left; overflow-x hidden because overflow-y: auto alone would compute
+	   overflow-x to auto and let a poking child summon a horizontal scrollbar. */
 	.placecard__menu {
 		list-style: none;
 		margin: 0;
 		padding: 0;
 		display: flex;
 		flex-direction: column;
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+		overflow-x: hidden;
+		/* A scroll that hits the list's top hands the gesture to the sheet drag
+		   (see the touch handlers) — never to the page or a rubber-band bounce. */
+		overscroll-behavior-y: contain;
 	}
 
 	.placecard__item {
@@ -765,6 +723,8 @@
 	.placecard__item-name {
 		font-size: 0.85rem;
 		font-weight: 600;
+		/* A pathological unbroken name breaks mid-word rather than overflowing. */
+		overflow-wrap: anywhere;
 	}
 
 	/* The per-item like heart on a menu row. Centred on the row's height (the line
@@ -785,6 +745,7 @@
 		margin: 0;
 		font-size: 0.78rem;
 		color: var(--color-text-muted);
+		overflow-wrap: anywhere;
 	}
 
 	.badge {
@@ -880,11 +841,11 @@
 		font-size: 0.95rem;
 	}
 
-	/* The subtle note beside the Menu header: "12 items · Scanned 3 days ago". */
+	/* The subtle note beside the Menu header: "12 items · Scanned 3 days ago".
+	   Allowed to wrap — nowrap here could push the row past a narrow panel. */
 	.placecard__menu-meta {
 		font-size: 0.72rem;
 		color: var(--color-text-muted);
-		white-space: nowrap;
 	}
 
 	/* The "N Sources" button opening the sources modal: a quiet outlined pill that
@@ -937,16 +898,16 @@
 		display: flex;
 		flex-wrap: nowrap;
 		gap: 0.25rem;
-		/* The row is a flex item of the scrolling .placecard__body column, and its
+		/* The row is a flex item of the .placecard__body column, and its
 		   overflow-x drops its automatic minimum size to 0 — without this it is
 		   the one child squashed to zero height whenever the menu overflows the
-		   panel (i.e. on virtually every real venue). */
+		   panel (i.e. on virtually every real venue). No negative-margin bleed
+		   through the panel padding: inside the body's clip it can't paint wider
+		   anyway — it only manufactured phantom horizontal scroll. */
 		flex-shrink: 0;
 		overflow-x: auto;
 		scroll-behavior: smooth;
 		scrollbar-width: none;
-		margin: 0 calc(-0.95rem - env(safe-area-inset-right, 0px)) 0 -0.95rem;
-		padding: 0 calc(0.95rem + env(safe-area-inset-right, 0px)) 0 0.95rem;
 	}
 
 	.coursebar::-webkit-scrollbar {
@@ -996,26 +957,48 @@
 		}
 	}
 
-	/* On narrow screens the detail panel becomes a draggable bottom sheet (issue
-	   #249): the map keeps the top of the screen (and centres the venue there via
-	   the matching bottom camera inset), the details slide up from below. Its
-	   height is the resting/dragged snap height in `--sheet-height` (set inline,
-	   mirrored by the page as the map inset); the transition animates a snap
-	   settle, and is suppressed live during a drag so the sheet tracks the finger.
-	   The var fallback preserves the old fixed sheet if the property is ever unset. */
+	/* On narrow screens the detail panel is a FULL-SCREEN sheet: it slides up over
+	   the whole viewport when a venue opens, with no intermediate resting heights.
+	   At rest it fills the .app container edge to edge (inset 0 — the exact box
+	   the map occupies, so the fit can never drift from the real viewport the way
+	   a JS-measured height does around mobile URL bars). A dismiss drag offsets it
+	   with an inline translateY; the transform transition animates the spring-back
+	   after a released drag and is suppressed while the finger is down
+	   (.placecard--dragging). The safe-area top padding keeps the content clear of
+	   the notch/status bar; the top corners round only while a drag has peeled the
+	   sheet off the top edge. */
 	@media (max-width: 48rem) {
+		/* No bottom padding on the panel itself: the menu list is the last thing
+		   in the column, and its scroll edge must BE the bottom of the screen so
+		   items scroll through the screen edge rather than stopping at an inset
+		   strip. The breathing room moves INSIDE the scroll container (below). */
 		.placecard {
-			top: auto;
 			left: 0;
 			right: 0;
 			width: auto;
-			height: var(--sheet-height, min(calc(320px + env(safe-area-inset-bottom)), 55dvh));
-			padding: 0.35rem 0.95rem calc(0.85rem + env(safe-area-inset-bottom));
+			padding: calc(0.35rem + env(safe-area-inset-top)) 0.95rem 0;
 			border-left: none;
 			border-top: 1px solid rgba(255, 255, 255, 0.6);
-			border-radius: 0.9rem 0.9rem 0 0;
+			border-radius: 0;
 			box-shadow: 0 -12px 34px rgba(0, 0, 0, 0.22);
-			transition: height 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+			transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+		}
+
+		.placecard--dragging {
+			border-radius: 0.9rem 0.9rem 0 0;
+		}
+
+		/* Interior bottom padding on the menu list (the scroll container), so the
+		   last item can scroll up clear of the home indicator / screen edge while
+		   mid-list content still passes through the very bottom of the screen. */
+		.placecard__menu {
+			padding-bottom: calc(0.85rem + env(safe-area-inset-bottom));
+		}
+
+		/* The no-menu footer replaces the list as the panel's last content — give
+		   it back the bottom inset the panel no longer carries. */
+		.placecard__foot {
+			padding-bottom: calc(0.85rem + env(safe-area-inset-bottom));
 		}
 
 		/* On a phone at arm's length the panel's smallest load-bearing text — item
@@ -1027,14 +1010,6 @@
 		.placecard__menu-meta,
 		.placecard__hint {
 			font-size: 0.85rem;
-		}
-
-		/* The bottom sheet pads both sides a plain 0.95rem (no right safe-area
-		   inset), so the coursebar's bleed must drop the inset too or it would
-		   overshoot the sheet edge on notched-landscape phones. */
-		.coursebar {
-			margin-right: -0.95rem;
-			padding-right: 0.95rem;
 		}
 	}
 

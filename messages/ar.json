@@ -1,6 +1,5 @@
 {
 	"$schema": "https://inlang.com/schema/inlang-message-format",
-
 	"search_bar_aria": "البحث والفلاتر",
 	"search_placeholder": "ابحث عن الأماكن والأطباق…",
 	"search_input_aria": "ابحث باسم المكان أو الطبق",
@@ -25,10 +24,8 @@
 	"map_aria": "خريطة أماكن الطعام",
 	"map_zoom_in_aria": "تكبير",
 	"map_zoom_out_aria": "تصغير",
-
 	"venue_details_aria": "تفاصيل المكان",
 	"venue_close_aria": "إغلاق تفاصيل المكان",
-	"sheet_resize_aria": "تغيير حجم التفاصيل — اسحب أو انقر أو استخدم مفاتيح الأسهم",
 	"venue_like": "تسجيل الإعجاب بهذا المكان",
 	"venue_unlike": "إلغاء الإعجاب بهذا المكان",
 	"venue_address_label": "العنوان",
@@ -72,10 +69,8 @@
 	"course_all": "الكل",
 	"item_like": "تسجيل الإعجاب بهذا العنصر",
 	"item_unlike": "إلغاء الإعجاب بهذا العنصر",
-
 	"scanned_date": "فُحص في {date}",
 	"scanned": "فُحص {relative}",
-
 	"tag_vegan": "نباتي صرف",
 	"tag_vegetarian": "نباتي",
 	"tag_halal": "حلال",
@@ -85,26 +80,21 @@
 	"tag_food": "طعام",
 	"tag_dessert": "حلويات",
 	"tag_drink": "مشروبات",
-
 	"category_cafe": "مقهى",
 	"category_fast_food": "وجبات سريعة",
 	"category_restaurant": "مطعم",
 	"category_bakery": "مخبز",
-
 	"diet_any": "أي نظام غذائي",
 	"diet_filter_aria": "فلتر النظام الغذائي",
 	"diet_can_be_made": "يتوفر خيار {diet} عند الطلب",
-
 	"account_default_name": "الحساب",
 	"account_signed_in": "تم تسجيل الدخول",
 	"account_sign_out": "تسجيل الخروج",
 	"account_sign_in": "تسجيل الدخول",
 	"language_label": "اللغة",
-
 	"sources_dialog_aria": "مصادر البيانات",
 	"sources_title": "المصادر",
 	"sources_close_aria": "إغلاق المصادر",
-
 	"directions_button_tooltip": "فتح في تطبيق خرائط آخر",
 	"directions_button_aria": "فتح {address} في تطبيق خرائط آخر",
 	"directions_dialog_aria": "اختيار تطبيق خرائط",
@@ -112,7 +102,6 @@
 	"directions_close_aria": "إغلاق الاتجاهات",
 	"directions_apple_maps": "Apple Maps",
 	"directions_google_maps": "Google Maps",
-
 	"landing_intro_aria": "نبذة عن BetterFoodMaps",
 	"landing_title": "اعثر على طعام يناسب نظامك الغذائي في أي مكان على الخريطة.",
 	"landing_stats_aria": "تغطية الخريطة",
@@ -128,12 +117,10 @@
 	"stat_nut_free": "أطباق خالية من المكسرات",
 	"landing_cta": "ابدأ باستخدام الخريطة",
 	"landing_browse_link": "أو تصفَّح الطعام حسب المدينة ←",
-
 	"error_not_found": "هذه الصفحة غير موجودة",
 	"error_generic": "حدث خطأ ما",
 	"error_back": "العودة إلى الخريطة",
 	"error_page_title": "{status} · BetterFoodMaps",
-
 	"server_error_no_location_or_item": "المكان أو العنصر غير موجود.",
 	"server_error_sign_in_required": "يجب تسجيل الدخول للقيام بذلك.",
 	"server_error_location_not_found": "لم يُعثر على المكان",
@@ -142,7 +129,6 @@
 	"server_error_oauth_invalid_callback": "استدعاء OAuth غير صالح.",
 	"server_error_oauth_code_validation": "فشل التحقق من رمز التفويض.",
 	"server_error_oauth_missing_subject": "لم يتضمّن رد Google حقل subject.",
-
 	"head_site_description": "استكشف المقاهي ومطاعم الوجبات السريعة والمطاعم حول العالم على خريطة تفاعلية.",
 	"head_desc_no_menu": "اطّلع على قائمة الطعام على BetterFoodMaps.",
 	"head_located_in": "في {where}",

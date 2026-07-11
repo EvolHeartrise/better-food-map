@@ -1,6 +1,5 @@
 {
 	"$schema": "https://inlang.com/schema/inlang-message-format",
-
 	"search_bar_aria": "Tìm kiếm và bộ lọc",
 	"search_placeholder": "Tìm địa điểm và món ăn…",
 	"search_input_aria": "Tìm theo tên địa điểm hoặc món ăn",
@@ -20,10 +19,8 @@
 	"map_aria": "Bản đồ các địa điểm ăn uống",
 	"map_zoom_in_aria": "Phóng to",
 	"map_zoom_out_aria": "Thu nhỏ",
-
 	"venue_details_aria": "Chi tiết địa điểm",
 	"venue_close_aria": "Đóng chi tiết địa điểm",
-	"sheet_resize_aria": "Thay đổi kích thước phần chi tiết — kéo, chạm hoặc dùng phím mũi tên",
 	"venue_like": "Thích địa điểm này",
 	"venue_unlike": "Bỏ thích địa điểm này",
 	"venue_address_label": "Địa chỉ",
@@ -57,10 +54,8 @@
 	"course_all": "Tất cả",
 	"item_like": "Thích món này",
 	"item_unlike": "Bỏ thích món này",
-
 	"scanned_date": "Đã kiểm tra vào {date}",
 	"scanned": "Đã kiểm tra {relative}",
-
 	"tag_vegan": "Thuần chay",
 	"tag_vegetarian": "Chay",
 	"tag_halal": "Halal",
@@ -70,26 +65,21 @@
 	"tag_food": "Món ăn",
 	"tag_dessert": "Tráng miệng",
 	"tag_drink": "Đồ uống",
-
 	"category_cafe": "Quán cà phê",
 	"category_fast_food": "Đồ ăn nhanh",
 	"category_restaurant": "Nhà hàng",
 	"category_bakery": "Tiệm bánh",
-
 	"diet_any": "Mọi chế độ ăn",
 	"diet_filter_aria": "Bộ lọc chế độ ăn",
 	"diet_can_be_made": "Có thể làm {diet} theo yêu cầu",
-
 	"account_default_name": "Tài khoản",
 	"account_signed_in": "Đã đăng nhập",
 	"account_sign_out": "Đăng xuất",
 	"account_sign_in": "Đăng nhập",
 	"language_label": "Ngôn ngữ",
-
 	"sources_dialog_aria": "Nguồn dữ liệu",
 	"sources_title": "Nguồn",
 	"sources_close_aria": "Đóng danh sách nguồn",
-
 	"directions_button_tooltip": "Mở trong ứng dụng bản đồ khác",
 	"directions_button_aria": "Mở {address} trong ứng dụng bản đồ khác",
 	"directions_dialog_aria": "Chọn ứng dụng bản đồ",
@@ -97,7 +87,6 @@
 	"directions_close_aria": "Đóng chỉ đường",
 	"directions_apple_maps": "Apple Maps",
 	"directions_google_maps": "Google Maps",
-
 	"landing_intro_aria": "Giới thiệu về BetterFoodMaps",
 	"landing_title": "Tìm món ăn phù hợp với chế độ ăn của bạn, ở bất cứ đâu trên bản đồ.",
 	"landing_stats_aria": "Phạm vi bản đồ",
@@ -113,12 +102,10 @@
 	"stat_nut_free": "món không chứa hạt",
 	"landing_cta": "Bắt đầu dùng bản đồ",
 	"landing_browse_link": "Hoặc xem món ăn theo thành phố →",
-
 	"error_not_found": "Trang này không tồn tại",
 	"error_generic": "Đã có lỗi xảy ra",
 	"error_back": "Quay lại bản đồ",
 	"error_page_title": "{status} · BetterFoodMaps",
-
 	"server_error_no_location_or_item": "Không tìm thấy địa điểm hoặc món này.",
 	"server_error_sign_in_required": "Bạn cần đăng nhập để thực hiện thao tác này.",
 	"server_error_location_not_found": "Không tìm thấy địa điểm",
@@ -127,7 +114,6 @@
 	"server_error_oauth_invalid_callback": "Callback OAuth không hợp lệ.",
 	"server_error_oauth_code_validation": "Không xác thực được mã ủy quyền.",
 	"server_error_oauth_missing_subject": "Phản hồi của Google thiếu thông tin subject.",
-
 	"head_site_description": "Khám phá quán cà phê, đồ ăn nhanh và nhà hàng khắp thế giới trên bản đồ tương tác.",
 	"head_desc_no_menu": "Xem thực đơn trên BetterFoodMaps.",
 	"head_located_in": "tại {where}",
