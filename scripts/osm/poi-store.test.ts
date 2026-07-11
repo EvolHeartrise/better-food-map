@@ -222,3 +222,93 @@ test('searchBbox filters by brand:wikidata from tags_json', () => {
 	// Composes with other filters (AND semantics).
 	expect(store.searchBbox(bbox, { brand_wikidata: 'Q175106', name: 'nope' }).length).toBe(0);
 });
+
+test('bankOvertureMatches banks the match + fills and round-trips through reads', () => {
+	const store = freshStore();
+	store.insertMany('test', [
+		row({ osm_id: 'n1', latitude: 49.28, longitude: -123.12, name: 'Pho Real' }),
+		row({ osm_id: 'n2', latitude: 49.29, longitude: -123.13, name: 'Untouched' })
+	]);
+
+	const written = store.bankOvertureMatches([
+		{
+			osm_id: 'n1',
+			overture_id: 'ov-1',
+			overture_distance_m: 12.3,
+			website: 'https://pho-real.ca',
+			website_source: 'overture:ov-1 (2026-06-17.0)',
+			phone: '+16045550123',
+			phone_source: 'overture:ov-1 (2026-06-17.0)',
+			cuisine: 'vietnamese',
+			cuisine_source: 'overture:ov-1 (2026-06-17.0)'
+		},
+		{
+			// unknown osm_id: no row updated, no throw
+			osm_id: 'missing',
+			overture_id: 'ov-x',
+			overture_distance_m: 1,
+			website: null,
+			website_source: null,
+			phone: null,
+			phone_source: null,
+			cuisine: null,
+			cuisine_source: null
+		}
+	]);
+	expect(written).toBe(1);
+
+	const banked = store.getByOsmId('n1');
+	expect(banked?.overture_id).toBe('ov-1');
+	expect(banked?.overture_distance_m).toBe(12.3);
+	expect(banked?.website).toBe('https://pho-real.ca');
+	expect(banked?.website_source).toBe('overture:ov-1 (2026-06-17.0)');
+	expect(banked?.phone).toBe('+16045550123');
+	expect(banked?.cuisine).toBe('vietnamese');
+	expect(banked?.cuisine_source).toBe('overture:ov-1 (2026-06-17.0)');
+	// Coordinates untouched — OSM stays the coordinate source.
+	expect(banked?.latitude).toBe(49.28);
+	expect(banked?.longitude).toBe(-123.12);
+
+	const other = store.getByOsmId('n2');
+	expect(other?.overture_id).toBeNull();
+	expect(other?.website).toBeNull();
+
+	// contactEnrichmentPois reflects the banked values + provenance for re-runs.
+	const pois = store.contactEnrichmentPois();
+	expect(pois.length).toBe(2);
+	const p1 = pois.find((p) => p.osm_id === 'n1');
+	expect(p1?.website_source).toBe('overture:ov-1 (2026-06-17.0)');
+	expect(p1?.phone).toBe('+16045550123');
+	store.close();
+});
+
+test('open migrates a pre-overture store: contact columns appear as NULL', () => {
+	const path = join(tmpdir(), `poi-store-pre-overture-${process.pid}-${Math.random()}.sqlite`);
+	const legacy = new Database(path, { create: true });
+	legacy.run(`CREATE TABLE osm_poi (
+		osm_id TEXT PRIMARY KEY, osm_type TEXT NOT NULL, numeric_id INTEGER NOT NULL,
+		name TEXT, osm_class TEXT NOT NULL, suggested_category TEXT, cuisine TEXT,
+		latitude REAL NOT NULL, longitude REAL NOT NULL, address TEXT, phone TEXT,
+		website TEXT, opening_hours TEXT, diet_markers TEXT NOT NULL DEFAULT '[]',
+		tags_json TEXT NOT NULL DEFAULT '{}', address_source TEXT, admin_city TEXT,
+		admin_region TEXT, normalized_name TEXT, region TEXT NOT NULL
+	)`);
+	legacy.run(
+		`INSERT INTO osm_poi (osm_id, osm_type, numeric_id, name, osm_class, latitude, longitude, normalized_name, region)
+		 VALUES ('n1', 'node', 1, 'Cafe', 'cafe', 49.1, -123.1, 'cafe', 'test')`
+	);
+	legacy.close();
+	try {
+		// openReadonly self-heals (adds the overture columns) so reads keep working.
+		const store = OsmPoiStore.openReadonly(path);
+		const hit = store.getByOsmId('n1');
+		expect(hit?.overture_id).toBeNull();
+		expect(hit?.overture_distance_m).toBeNull();
+		expect(hit?.website_source).toBeNull();
+		expect(hit?.phone_source).toBeNull();
+		expect(hit?.cuisine_source).toBeNull();
+		store.close();
+	} finally {
+		for (const suffix of ['', '-wal', '-shm']) rmSync(path + suffix, { force: true });
+	}
+});

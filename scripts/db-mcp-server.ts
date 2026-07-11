@@ -2470,8 +2470,9 @@ const osmTools = [
 			'the database (set exclude_existing=false to see all), so you get only what is still ' +
 			'missing — ordered nearest-first for centre+radius queries. Each candidate includes an ' +
 			'`osm_id` and `osm_url`, a `suggested_category` (cafe/fast_food/restaurant/bakery, ' +
-			'or null for bars/pubs/ice_cream/food_court — pick the best fit), OSM ' +
-			'phone/website/cuisine/opening_hours where tagged, and structured `address_parts` ' +
+			'or null for bars/pubs/ice_cream/food_court — pick the best fit), ' +
+			'phone/website/cuisine/opening_hours where known (from OSM tags, or Overture-filled — ' +
+			'then `phone_source`/`website_source` is non-null), and structured `address_parts` ' +
 			"(the POI's own OSM tags, enrichment feeds, and admin-boundary city/region merged — exactly " +
 			'what an import stores). Pass `compact: true` for large sweeps (minimal shape, fits 200 ' +
 			'candidates well under output caps) and `exclude_osm_ids` to silence known false matches. ' +
