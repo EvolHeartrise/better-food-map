@@ -1254,7 +1254,9 @@ const auditLocationsArgs = v.object({
 				'phone/website/postcode, a `same_phone` flag (a shared phone ≈ the same store), a ' +
 				'`same_phone_staging` flag (phones matched only after a phone-less half borrowed its staging ' +
 				"POI's — often Overture-enriched — phone via its osm_id: weaker, corroborating evidence, never " +
-				'a confidence upgrade) and a `confidence` ' +
+				'a confidence upgrade; `same_phone_staging_same_donor: true` additionally means both staging ' +
+				'phones trace to ONE Overture place — a single upstream datum echoed twice, not two records ' +
+				'agreeing) and a `confidence` ' +
 				'classification: "high" (name match within ~30 m, or shared phone) vs "review". Nearest pairs ' +
 				"first; scope a post-import sweep with `brand_id`. Verify each against the venue's own store " +
 				'locator before delete_locations — two real branches CAN sit close together.\n' +
