@@ -49,6 +49,7 @@
 
 import { createHttpD1 } from '../../src/lib/server/d1-http';
 import { OsmPoiStore } from '../osm/poi-store';
+import { streamNdjson } from './eateries';
 import { matchNearestPlaces } from './match-overture';
 
 /** The slice of one snapshot line the diff needs (see fetch-canada-eateries.py). */
@@ -417,35 +418,19 @@ export function toSnapshotPlace(raw: unknown): SnapshotPlace | null {
 }
 
 /**
- * Streams a snapshot NDJSON into slim {@link SnapshotPlace}s (a country-scale
- * file runs to hundreds of MB — never materialize the raw text). Malformed
- * lines are skipped, mirroring overture-enrich's reader.
+ * Streams a snapshot NDJSON (via the shared {@link streamNdjson}) into slim
+ * {@link SnapshotPlace}s — a country-scale file runs to hundreds of MB, never
+ * materialize the raw text. Non-conforming records are dropped by
+ * toSnapshotPlace; a truly corrupt line makes streamNdjson THROW, which is
+ * right for a diff tool: silently under-reading a snapshot would fabricate
+ * `gone` signals for every place on the lost lines.
  */
 async function readSnapshot(path: string): Promise<SnapshotPlace[]> {
 	const places: SnapshotPlace[] = [];
-	const decoder = new TextDecoder();
-	let buf = '';
-	const take = (line: string): void => {
-		if (!line.trim()) return;
-		try {
-			const place = toSnapshotPlace(JSON.parse(line));
-			if (place) places.push(place);
-		} catch {
-			// skip malformed line
-		}
-	};
-	const stream = Bun.file(path).stream() as unknown as AsyncIterable<Uint8Array>;
-	for await (const chunk of stream) {
-		buf += decoder.decode(chunk, { stream: true });
-		let nl = buf.indexOf('\n');
-		while (nl >= 0) {
-			take(buf.slice(0, nl));
-			buf = buf.slice(nl + 1);
-			nl = buf.indexOf('\n');
-		}
+	for await (const raw of streamNdjson<unknown>(path)) {
+		const place = toSnapshotPlace(raw);
+		if (place) places.push(place);
 	}
-	buf += decoder.decode();
-	take(buf);
 	return places;
 }
 
