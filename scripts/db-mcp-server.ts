@@ -127,6 +127,8 @@ import {
 	deleteLocationsOutput
 } from './mcp/output-schemas';
 import { OsmPoiStore } from './osm/poi-store';
+import { OvertureLeadsStore } from './overture/leads-store';
+import { searchOvertureLeads } from './overture/search-leads';
 import { bboxAround, haversineMeters } from './osm/geo';
 
 // The D1 client is created lazily so the server can start and advertise its
@@ -143,6 +145,15 @@ function getDb(): D1Like {
 let _osmStore: OsmPoiStore | undefined;
 function getOsmStore(): OsmPoiStore {
 	return (_osmStore ??= OsmPoiStore.openReadonly(process.env.OSM_POI_DB ?? 'data/osm-poi.sqlite'));
+}
+
+// The Overture leads table lives INSIDE the same SQLite file (built by
+// `bun scripts/overture/build-leads.ts`); opened lazily/read-only the same way.
+let _leadsStore: OvertureLeadsStore | undefined;
+function getLeadsStore(): OvertureLeadsStore {
+	return (_leadsStore ??= OvertureLeadsStore.openReadonly(
+		process.env.OSM_POI_DB ?? 'data/osm-poi.sqlite'
+	));
 }
 
 // ---------------------------------------------------------------------------
@@ -1048,6 +1059,109 @@ const searchPoiArgs = v.pipe(
 		// rather than letting search_poi's resolveArea throw deep in the handler.
 		return hasBbox ? centreCount === 0 : centreCount === 3;
 	}, 'Provide EITHER `bbox` OR all of `latitude`, `longitude` and `radius_km` (not both, and centre coordinates must be complete).')
+);
+
+const searchOvertureLeadsArgs = v.pipe(
+	v.object({
+		latitude: v.optional(
+			v.pipe(latitudeSchema, v.description('Centre latitude (with longitude + radius_km).'))
+		),
+		longitude: v.optional(
+			v.pipe(longitudeSchema, v.description('Centre longitude (with latitude + radius_km).'))
+		),
+		radius_km: v.optional(
+			v.pipe(
+				v.number(),
+				v.minValue(0),
+				v.maxValue(50),
+				v.description('Search radius in km around the centre (max 50).')
+			)
+		),
+		bbox: v.optional(
+			v.pipe(
+				bboxSchema,
+				v.description(
+					'Bounding box to search. Area is optional: give this, OR a centre ' +
+						'(latitude+longitude+radius_km), OR neither to query the whole pool.'
+				)
+			)
+		),
+		city: v.optional(
+			v.pipe(
+				v.string(),
+				v.minLength(1),
+				v.description("Case-insensitive substring match on the lead's Overture locality (city).")
+			)
+		),
+		province: v.optional(
+			v.pipe(
+				v.string(),
+				v.trim(),
+				v.transform((s) => s.toUpperCase()),
+				v.regex(/^[A-Z]{2}$/, 'province must be a 2-letter code, e.g. "BC".'),
+				v.description('2-letter Canadian province code the lead resolved to, e.g. "BC".')
+			)
+		),
+		name: v.optional(
+			v.pipe(
+				v.string(),
+				v.minLength(1),
+				v.description('Case-insensitive substring match on the lead name OR brand name.')
+			)
+		),
+		min_confidence: v.optional(
+			v.pipe(
+				v.number(),
+				v.minValue(0),
+				v.maxValue(1),
+				v.description(
+					'Overture confidence floor for every row. OMIT it to get the defaults: 0.85 for rows ' +
+						'with a brand signal, 0.9 for independents (the junk guard — see the tool description).'
+				)
+			)
+		),
+		brands_only: v.optional(
+			v.pipe(
+				v.boolean(),
+				v.description('Only leads carrying a brand signal (brand_wikidata or brand_name).')
+			)
+		),
+		exclude_existing: v.optional(
+			v.pipe(
+				v.boolean(),
+				v.description(
+					'Omit leads already covered by a live venue — a name-related location within 500 m ' +
+						'(default true).'
+				)
+			)
+		),
+		limit: v.optional(
+			v.pipe(
+				v.number(),
+				v.integer(),
+				v.minValue(1),
+				v.maxValue(200),
+				v.description('Maximum leads per page (default 50, max 200).')
+			)
+		),
+		offset: v.optional(
+			v.pipe(
+				v.number(),
+				v.integer(),
+				v.minValue(0),
+				v.description('Skip this many leads (paging).')
+			)
+		)
+	}),
+	v.check((input) => {
+		const hasBbox = input.bbox !== undefined;
+		const centreCount = [input.latitude, input.longitude, input.radius_km].filter(
+			(value) => value !== undefined
+		).length;
+		// Area is OPTIONAL here (no area = whole pool), but a given area must still
+		// be exactly one complete mode — mirrors searchPoiArgs.
+		return hasBbox ? centreCount === 0 : centreCount === 0 || centreCount === 3;
+	}, 'Provide `bbox`, OR all of `latitude`, `longitude` and `radius_km`, OR no area at all (not both, and centre coordinates must be complete).')
 );
 
 const importChainArgs = v.pipe(
@@ -2519,6 +2633,52 @@ const osmTools = [
 					};
 				})
 			};
+		}
+	}),
+	defineTool({
+		name: 'search_overture_leads',
+		annotations: READ_ONLY,
+		description:
+			'Query the Overture LEADS pool: Canadian Overture Places eateries (confidence >= 0.85) with NO ' +
+			'name-related OSM staging POI within 500 m — a sized feed of venues likely missing from both ' +
+			'OSM and the map, heavy in chain units OSM rarely maps (Subway, Bento Sushi, Pizza Hut…). Reads ' +
+			'the `overture_leads` table inside the local staging store, built by ' +
+			'`bun scripts/overture/build-leads.ts` (rebuild + restart this server to refresh); near-duplicate ' +
+			'Overture rows are pre-collapsed and `dup_count` says how many one lead represents. Leads within ' +
+			'500 m of a name-related venue already RECORDED in D1 are dropped at query time — open venues ' +
+			'AND closed tombstones alike (a closed record deliberately blocks re-suggestion per the closed-' +
+			'venue policy; the record may postdate the table build). Set exclude_existing=false to see all. ' +
+			'Filters: an optional ' +
+			'area (`bbox`, or latitude+longitude+radius_km — nearest-first with `distance_m`; no area = whole ' +
+			'pool, best-confidence-first), `city`/`province`, `name` (matches brand_name too) and ' +
+			'`brands_only`. JUNK GUARD: independents (no brand_wikidata/brand_name) default to confidence ' +
+			'>= 0.9 instead of 0.85, because miscategorized non-eateries concentrate in the unbranded ' +
+			'0.85–0.9 band (e.g. most "Wine Rack" wine-retail units) — pass `min_confidence` explicitly to ' +
+			'override for every row. Paged via limit/offset like list_locations. POLICY: a lead is a ' +
+			'RESEARCH CANDIDATE, not an importable venue — its position/address are Overture-sourced and ' +
+			'must NEVER be passed to create_locations (locations are OSM-coordinate-exact). The position is ' +
+			'therefore returned as `approx_latitude`/`approx_longitude`, field names create_locations will ' +
+			'never accept. Workflow per ' +
+			'lead: verify the venue is real and open, find its OSM node (or add one to OSM), get it into the ' +
+			'staging store, then import via the `osm_id` (search_poi + create_locations, or import_chain for ' +
+			'chains).',
+		schema: searchOvertureLeadsArgs,
+		handler: async (input) => {
+			const db = input.exclude_existing === false ? null : getDb();
+			return searchOvertureLeads(getLeadsStore(), db, {
+				bbox: input.bbox ? toBounds(input.bbox) : undefined,
+				latitude: input.latitude,
+				longitude: input.longitude,
+				radius_km: input.radius_km,
+				city: input.city,
+				province: input.province,
+				name: input.name,
+				min_confidence: input.min_confidence,
+				brands_only: input.brands_only,
+				exclude_existing: input.exclude_existing,
+				limit: input.limit,
+				offset: input.offset
+			});
 		}
 	}),
 	defineTool({
