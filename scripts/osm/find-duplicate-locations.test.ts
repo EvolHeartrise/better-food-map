@@ -228,3 +228,169 @@ test('migration 0025 carries legacy pair verdicts over as dismissals', async () 
 		.all();
 	expect(results.length).toBe(1);
 });
+
+// --- staging-store phone fallback (same_phone_staging) -----------------------
+
+import { OsmPoiStore } from './poi-store';
+import type { PoiRow } from './map-feature';
+
+function poiRow(over: Partial<PoiRow> & Pick<PoiRow, 'osm_id' | 'latitude' | 'longitude'>): PoiRow {
+	return {
+		osm_type: 'node',
+		numeric_id: Number(over.osm_id.slice(1)) || 1,
+		name: 'Venue',
+		osm_class: 'restaurant',
+		suggested_category: 'restaurant',
+		cuisine: null,
+		address: null,
+		phone: null,
+		website: null,
+		opening_hours: null,
+		diet_markers: [],
+		admin_city: null,
+		admin_region: null,
+		tags_json: '{}',
+		...over
+	};
+}
+
+function stagingStore(rows: PoiRow[]): OsmPoiStore {
+	const store = OsmPoiStore.open(':memory:');
+	store.insertMany('test', rows);
+	return store;
+}
+
+test('staging phones stand in for missing venue phones as same_phone_staging', async () => {
+	const db = freshDb();
+	const store = stagingStore([
+		// Same phone under different formatting — often an Overture-enriched fill.
+		poiRow({ osm_id: 'n1', latitude: 49.28, longitude: -123.12, phone: '+1 604-555-0100' }),
+		poiRow({ osm_id: 'n2', latitude: 49.281, longitude: -123.12, phone: '(604) 555 0100' })
+	]);
+	await seed(db, [
+		// ~110 m apart, same name, NO venue phones → review; staging phones agree.
+		{ name: 'Twin', latitude: 49.28, longitude: -123.12, osm_id: 'n1' },
+		{ name: 'Twin', latitude: 49.281, longitude: -123.12, osm_id: 'n2' }
+	]);
+
+	const res = await findDuplicateLocations(db, { store });
+	expect(res.pairs.length).toBe(1);
+	expect(res.pairs[0].same_phone).toBe(false); // the venue rows themselves carry none
+	expect(res.pairs[0].same_phone_staging).toBe(true);
+	// Staging evidence is weaker: it must NOT promote the pair to "high".
+	expect(res.pairs[0].confidence).toBe('review');
+	// Halves expose the osm_id the fallback resolved through.
+	expect(res.pairs[0].a.osm_id).toBe('n1');
+
+	// Without a store the flag is simply false — discovery is unchanged.
+	const bare = await findDuplicateLocations(db);
+	expect(bare.pairs.length).toBe(1);
+	expect(bare.pairs[0].same_phone_staging).toBe(false);
+	store.close();
+});
+
+test('a venue phone on one half compares against the staging phone of the other', async () => {
+	const db = freshDb();
+	const store = stagingStore([
+		poiRow({ osm_id: 'n2', latitude: 50.001, longitude: -120.0, phone: '604 555 0100' })
+	]);
+	await seed(db, [
+		{ name: 'Mixed', latitude: 50.0, longitude: -120.0, phone: '+1 (604) 555-0100' },
+		{ name: 'Mixed', latitude: 50.001, longitude: -120.0, osm_id: 'n2' }
+	]);
+	const res = await findDuplicateLocations(db, { store });
+	expect(res.pairs.length).toBe(1);
+	expect(res.pairs[0].same_phone).toBe(false);
+	expect(res.pairs[0].same_phone_staging).toBe(true);
+	store.close();
+});
+
+test('the staging fallback never fires on disagreeing or unresolvable phones', async () => {
+	const db = freshDb();
+	const store = stagingStore([
+		poiRow({ osm_id: 'n1', latitude: 49.28, longitude: -123.12, phone: '604 555 0100' }),
+		poiRow({ osm_id: 'n2', latitude: 49.281, longitude: -123.12, phone: '604 555 0199' }),
+		poiRow({ osm_id: 'n3', latitude: 51.0, longitude: -114.0, phone: '403 555 0100' }),
+		poiRow({ osm_id: 'n4', latitude: 51.001, longitude: -114.0, phone: '403 555 0100' })
+	]);
+	await seed(db, [
+		// Staging phones DIFFER → no hit.
+		{ name: 'Twin A', latitude: 49.28, longitude: -123.12, osm_id: 'n1' },
+		{ name: 'Twin A', latitude: 49.281, longitude: -123.12, osm_id: 'n2' },
+		// Both venue rows carry their OWN, differing phones: that is already an
+		// answer — the store's agreeing values must not overrule it.
+		{ name: 'Twin B', latitude: 51.0, longitude: -114.0, phone: '403 555 0111', osm_id: 'n3' },
+		{ name: 'Twin B', latitude: 51.001, longitude: -114.0, phone: '403 555 0122', osm_id: 'n4' },
+		// No osm_id / not in the store on either half → unresolvable, no hit.
+		{ name: 'Twin C', latitude: 52.0, longitude: -113.0 },
+		{ name: 'Twin C', latitude: 52.001, longitude: -113.0, osm_id: 'n-missing' }
+	]);
+	const res = await findDuplicateLocations(db, { store });
+	expect(res.pairs.length).toBe(3);
+	expect(res.pairs.every((p) => !p.same_phone && !p.same_phone_staging)).toBe(true);
+	store.close();
+});
+
+test('a venue-row phone match stays same_phone, not same_phone_staging', async () => {
+	const db = freshDb();
+	const store = stagingStore([]);
+	await seed(db, [
+		{ name: 'Twin', latitude: 49.28, longitude: -123.12, phone: '604 555 0100' },
+		{ name: 'Twin', latitude: 49.281, longitude: -123.12, phone: '+1 604 555 0100' }
+	]);
+	const res = await findDuplicateLocations(db, { store });
+	expect(res.pairs.length).toBe(1);
+	expect(res.pairs[0].same_phone).toBe(true);
+	expect(res.pairs[0].same_phone_staging).toBe(false);
+	expect(res.pairs[0].confidence).toBe('high'); // venue-row phones still promote
+	store.close();
+});
+
+test('staging phones donated by ONE Overture place are flagged same-donor (no corroboration)', async () => {
+	const db = freshDb();
+	const store = stagingStore([
+		poiRow({ osm_id: 'n1', latitude: 49.28, longitude: -123.12 }),
+		poiRow({ osm_id: 'n2', latitude: 49.281, longitude: -123.12 }),
+		poiRow({ osm_id: 'n3', latitude: 51.0, longitude: -114.0 }),
+		poiRow({ osm_id: 'n4', latitude: 51.001, longitude: -114.0 })
+	]);
+	const bank = (osm_id: string, donor: string) => ({
+		osm_id,
+		overture_id: donor,
+		overture_distance_m: 12,
+		website: null,
+		website_source: null,
+		phone: '+1 604 555 0100',
+		phone_source: `overture:${donor} (2026-06-17.0)`,
+		cuisine: null,
+		cuisine_source: null
+	});
+	// Pair A: both phones filled from the SAME Overture place — one datum, echoed.
+	// Pair B: same number but from two DIFFERENT Overture places — real agreement.
+	store.bankOvertureMatches([
+		bank('n1', 'ov-shared'),
+		bank('n2', 'ov-shared'),
+		bank('n3', 'ov-x'),
+		bank('n4', 'ov-y')
+	]);
+	await seed(db, [
+		{ name: 'Twin A', latitude: 49.28, longitude: -123.12, osm_id: 'n1' },
+		{ name: 'Twin A', latitude: 49.281, longitude: -123.12, osm_id: 'n2' },
+		{ name: 'Twin B', latitude: 51.0, longitude: -114.0, osm_id: 'n3' },
+		{ name: 'Twin B', latitude: 51.001, longitude: -114.0, osm_id: 'n4' }
+	]);
+	const res = await findDuplicateLocations(db, { store });
+	expect(res.pairs.length).toBe(2);
+	const pairA = res.pairs.find((p) => p.a.name === 'Twin A');
+	const pairB = res.pairs.find((p) => p.a.name === 'Twin B');
+	expect(pairA?.same_phone_staging).toBe(true);
+	expect(pairA?.same_phone_staging_same_donor).toBe(true);
+	expect(pairB?.same_phone_staging).toBe(true);
+	expect(pairB?.same_phone_staging_same_donor).toBe(false);
+	// The annotation never touches confidence either way.
+	expect(res.pairs.every((p) => p.confidence === 'review')).toBe(true);
+	// And it is absent entirely when there is no staging hit to qualify.
+	const bare = await findDuplicateLocations(db);
+	expect(bare.pairs.every((p) => !('same_phone_staging_same_donor' in p))).toBe(true);
+	store.close();
+});

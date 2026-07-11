@@ -479,3 +479,53 @@ test('candidates carry Overture-enriched contacts with their provenance', async 
 	expect(c.cuisine).toBe('vietnamese');
 	store.close();
 });
+
+test('an enriched store flags unmatched POIs with no_overture_match', async () => {
+	const store = storeWith([
+		row({ osm_id: 'n1', latitude: 49.2827, longitude: -123.1207, name: 'Matched Cafe' }),
+		row({ osm_id: 'n2', latitude: 49.283, longitude: -123.121, name: 'Ghost Diner' })
+	]);
+	// One banked row makes the store "enriched": null overture_id now MEANS
+	// "no Overture counterpart", not "enrichment never ran".
+	store.bankOvertureMatches([
+		{
+			osm_id: 'n1',
+			overture_id: 'ov-1',
+			overture_distance_m: 4.2,
+			website: null,
+			website_source: null,
+			phone: null,
+			phone_source: null,
+			cuisine: null,
+			cuisine_source: null
+		}
+	]);
+	const res = await searchPoi(store, null, {
+		latitude: CENTRE.lat,
+		longitude: CENTRE.lon,
+		radius_km: 1,
+		exclude_existing: false
+	});
+	const byId = new Map(res.candidates.map((c) => [c.osm_id, c]));
+	expect(byId.get('n2')?.no_overture_match).toBe(true);
+	expect('no_overture_match' in byId.get('n1')!).toBe(false);
+	store.close();
+});
+
+test('an un-enriched store omits no_overture_match on every candidate', async () => {
+	// No banked rows at all → every overture_id is NULL because enrichment never
+	// ran; the flag must not scream on every POI.
+	const store = storeWith([
+		row({ osm_id: 'n1', latitude: 49.2827, longitude: -123.1207, name: 'Cafe One' }),
+		row({ osm_id: 'n2', latitude: 49.283, longitude: -123.121, name: 'Cafe Two' })
+	]);
+	const res = await searchPoi(store, null, {
+		latitude: CENTRE.lat,
+		longitude: CENTRE.lon,
+		radius_km: 1,
+		exclude_existing: false
+	});
+	expect(res.candidates.length).toBe(2);
+	expect(res.candidates.every((c) => !('no_overture_match' in c))).toBe(true);
+	store.close();
+});
