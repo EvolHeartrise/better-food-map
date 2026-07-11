@@ -86,6 +86,16 @@ export interface PoiCandidate {
 	phone_source: string | null;
 	website_source: string | null;
 	opening_hours: string | null;
+	/**
+	 * Reverse-staleness hint, present (true) only when the staging store HAS
+	 * been Overture-enriched and this POI still banked no match: Meta /
+	 * Foursquare / Microsoft collectively have no record of a name-related venue
+	 * within the ~100 m enrich radius (~29% of Canadian staging POIs). Treat it
+	 * as raising the priority of the check-open/closed-before-researching step —
+	 * it is NOT proof of closure (match-radius artifacts exist). Omitted
+	 * entirely, on every candidate, when enrichment has never run on the store.
+	 */
+	no_overture_match?: true;
 	/** Distance from the query centre in metres (only for centre+radius queries). */
 	distance_m?: number;
 }
@@ -284,7 +294,11 @@ export async function existingInBbox(db: D1Like, bbox: Bounds): Promise<Existing
 	return results;
 }
 
-function toCandidate(poi: StoredPoi, distance_m?: number): PoiCandidate {
+function toCandidate(
+	poi: StoredPoi,
+	distance_m: number | undefined,
+	flagNoOvertureMatch: boolean
+): PoiCandidate {
 	// The same merged parts create_locations resolves an osm_id import against
 	// (own addr:* tags → enriched line → admin-boundary city/region), so what a
 	// candidate advertises is exactly what an import would store.
@@ -306,6 +320,9 @@ function toCandidate(poi: StoredPoi, distance_m?: number): PoiCandidate {
 		phone_source: poi.phone_source,
 		website_source: poi.website_source,
 		opening_hours: poi.opening_hours,
+		...(flagNoOvertureMatch && poi.overture_id === null
+			? { no_overture_match: true as const }
+			: {}),
 		...(distance_m === undefined ? {} : { distance_m: Math.round(distance_m) })
 	};
 }
@@ -380,8 +397,14 @@ export async function searchPoi(
 		withDistance = kept;
 	}
 
+	// Flag `no_overture_match` only on an enriched store: on an un-enriched one
+	// every overture_id is NULL and the flag would scream on every candidate.
+	const flagNoOvertureMatch = store.hasOvertureBank();
+
 	const truncated = withDistance.length > limit;
-	const candidates = withDistance.slice(0, limit).map((x) => toCandidate(x.poi, x.distance_m));
+	const candidates = withDistance
+		.slice(0, limit)
+		.map((x) => toCandidate(x.poi, x.distance_m, flagNoOvertureMatch));
 
 	return {
 		candidates,
