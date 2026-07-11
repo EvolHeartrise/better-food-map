@@ -935,6 +935,11 @@
 		display: flex;
 		flex-wrap: nowrap;
 		gap: 0.25rem;
+		/* The row is a flex item of the scrolling .placecard__body column, and its
+		   overflow-x drops its automatic minimum size to 0 — without this it is
+		   the one child squashed to zero height whenever the menu overflows the
+		   panel (i.e. on virtually every real venue). */
+		flex-shrink: 0;
 		overflow-x: auto;
 		scroll-behavior: smooth;
 		scrollbar-width: none;
