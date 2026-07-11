@@ -3,8 +3,6 @@
 	import { pushState, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import { MediaQuery } from 'svelte/reactivity';
-	import { innerHeight } from 'svelte/reactivity/window';
-	import { snapHeightPx, FALLBACK_VIEWPORT_H, type SheetSnap } from '$lib/bottom-sheet';
 	import { getMapCells, getLocationData, getStats, getUserLocation } from '$lib/data.remote';
 	import { ViewportData } from '$lib/viewport-data.svelte';
 	import { getCurrentUser, getLikes, setLocationLiked, setItemLiked } from '$lib/user.remote';
@@ -406,43 +404,18 @@
 
 	// --- Detail panel geometry ---------------------------------------------------
 	// While a location is open, its details live in a panel docked to an edge: a
-	// fixed-width column on the RIGHT on wide screens, a bottom sheet on narrow ones
-	// (the 48rem breakpoint the rest of the page uses). The same footprint is passed
-	// to <LocationMap> as a camera inset so the venue centres in the map area the
-	// panel leaves visible. The width px mirrors the CSS (26rem); the map clamps it
-	// against its own size, so the CSS cap (100vw) needs no echo.
+	// fixed-width column on the RIGHT on wide screens (the map insets its camera by
+	// the panel width so the venue centres in the area left visible), a FULL-SCREEN
+	// sheet on narrow ones (the 48rem breakpoint the rest of the page uses) — the
+	// map is fully covered there, so it takes no inset and the venue centres over
+	// the whole map, which is what a swipe-down dismiss reveals. The width px
+	// mirrors the CSS (26rem); the map clamps it against its own size, so the CSS
+	// cap (100vw) needs no echo.
 	const PANEL_WIDTH_PX = 416;
 	const narrowScreen = new MediaQuery('(max-width: 48rem)');
 
-	// The narrow-screen bottom sheet is draggable/expandable (issue #249): the page
-	// OWNS the resting snap so it can mirror the height as both the map camera inset
-	// (below) and the `--sheet-height` custom property that lifts the map controls
-	// clear of the sheet (see the CSS). VenueDetail renders the grip and reports
-	// drag/tap/key changes via onSnapChange. `sheetSnap` DERIVES (rather than an
-	// effect resetting it) so a freshly selected venue reads 'peek' the same tick
-	// the selection changes — the map's selection fly then frames against the peek
-	// inset with no reset race. The `pickedForId` guard mirrors the course filter's
-	// per-venue memory inside VenueDetail.
-	let pickedSnap = $state<SheetSnap>('peek');
-	let pickedSnapForId = $state<string | null>(null);
-	const sheetSnap = $derived(pickedSnapForId === selectedId ? pickedSnap : 'peek');
-	function setSheetSnap(next: SheetSnap): void {
-		pickedSnapForId = selectedId;
-		pickedSnap = next;
-	}
-	// The resting height in px for the current snap and viewport. The shared
-	// FALLBACK_VIEWPORT_H is also VenueDetail's pre-measure fallback, so the two
-	// agree before the first client measure.
-	const sheetHeightPx = $derived(
-		snapHeightPx(sheetSnap, innerHeight.current ?? FALLBACK_VIEWPORT_H)
-	);
-
 	const detailInset = $derived(
-		selectedId
-			? narrowScreen.current
-				? { right: 0, bottom: sheetHeightPx }
-				: { right: PANEL_WIDTH_PX, bottom: 0 }
-			: null
+		selectedId && !narrowScreen.current ? { right: PANEL_WIDTH_PX, bottom: 0 } : null
 	);
 
 	// How the panel enters/leaves: sliding from the edge it docks to. `opacity: 1`
@@ -641,12 +614,7 @@
      from `headVenue` inside VenueHead (null renders the default head). -->
 <VenueHead venue={headVenue} />
 
-<div
-	class="app"
-	class:app--detail={Boolean(selectedId)}
-	class:app--landing={landing}
-	style:--sheet-height="{sheetHeightPx}px"
->
+<div class="app" class:app--detail={Boolean(selectedId)} class:app--landing={landing}>
 	<div class="app__map">
 		<LocationMap
 			locations={mapLocations}
@@ -680,8 +648,6 @@
 			onClose={closeDetail}
 			flyParams={panelFly}
 			narrow={narrowScreen.current}
-			snap={sheetSnap}
-			onSnapChange={setSheetSnap}
 			bind:sourcesOpen={sourcesModalOpen}
 			bind:directionsOpen={directionsModalOpen}
 			bind:el={placecardEl}
@@ -1047,16 +1013,6 @@
 			bottom: calc(7.5rem + env(safe-area-inset-bottom));
 		}
 
-		/* While the detail sheet is open it covers the bottom of the screen (z-index 12,
-		   above the row's 10) — ride the row up above the sheet's live resting height,
-		   exactly like the MapLibre bottom controls below track it. */
-		.app--detail .searchbar {
-			bottom: calc(
-				0.75rem + var(--sheet-height, min(calc(320px + env(safe-area-inset-bottom)), 55dvh))
-			);
-			transition: bottom 0.3s ease;
-		}
-
 		/* The account/sign-in control stays anchored in the top-left corner, out of the
 		   bottom search row's flow (fixed to the viewport, not the searchbar). */
 		.searchbar :global(.account) {
@@ -1087,18 +1043,9 @@
 			font-size: 0.85rem;
 		}
 
-		/* The sheet covers the map's bottom edge, so both bottom controls — zoom
-		   (left) and the OSM attribution (right, which must stay visible) — ride up
-		   above it; the right one no longer needs the wide-screen sideways shift.
-		   `--sheet-height` is the live resting sheet height (set on .app), so the
-		   controls track the sheet as it snaps between peek/half/full (issue #249);
-		   the transition eases that move and the fallback matches the old fixed sheet. */
-		.app--detail .app__map :global(.maplibregl-ctrl-bottom-left),
-		.app--detail .app__map :global(.maplibregl-ctrl-bottom-right) {
-			margin-bottom: var(--sheet-height, min(calc(320px + env(safe-area-inset-bottom)), 55dvh));
-			transition: margin 0.3s ease;
-		}
-
+		/* The full-screen sheet covers the whole map (the OSM attribution needn't
+		   stay visible under it — a covered map isn't displayed), so the narrow
+		   layout only needs to undo the wide-screen sideways attribution shift. */
 		.app--detail .app__map :global(.maplibregl-ctrl-bottom-right) {
 			margin-right: env(safe-area-inset-right);
 		}

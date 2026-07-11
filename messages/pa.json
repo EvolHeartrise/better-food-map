@@ -1,6 +1,5 @@
 {
 	"$schema": "https://inlang.com/schema/inlang-message-format",
-
 	"search_bar_aria": "ਖੋਜ ਅਤੇ ਫਿਲਟਰ",
 	"search_placeholder": "ਥਾਵਾਂ ਅਤੇ ਪਕਵਾਨ ਖੋਜੋ…",
 	"search_input_aria": "ਥਾਂ ਜਾਂ ਪਕਵਾਨ ਦੇ ਨਾਂ ਨਾਲ ਖੋਜੋ",
@@ -21,10 +20,8 @@
 	"map_aria": "ਖਾਣ-ਪੀਣ ਦੀਆਂ ਥਾਵਾਂ ਦਾ ਨਕਸ਼ਾ",
 	"map_zoom_in_aria": "ਜ਼ੂਮ ਇਨ ਕਰੋ",
 	"map_zoom_out_aria": "ਜ਼ੂਮ ਆਊਟ ਕਰੋ",
-
 	"venue_details_aria": "ਥਾਂ ਦੇ ਵੇਰਵੇ",
 	"venue_close_aria": "ਥਾਂ ਦੇ ਵੇਰਵੇ ਬੰਦ ਕਰੋ",
-	"sheet_resize_aria": "ਵੇਰਵਿਆਂ ਦਾ ਆਕਾਰ ਬਦਲੋ — ਖਿੱਚੋ, ਟੈਪ ਕਰੋ ਜਾਂ ਤੀਰ ਵਾਲੀਆਂ ਕੁੰਜੀਆਂ ਵਰਤੋ",
 	"venue_like": "ਇਹ ਥਾਂ ਪਸੰਦ ਕਰੋ",
 	"venue_unlike": "ਇਸ ਥਾਂ ਤੋਂ ਪਸੰਦ ਹਟਾਓ",
 	"venue_address_label": "ਪਤਾ",
@@ -60,10 +57,8 @@
 	"course_all": "ਸਾਰੇ",
 	"item_like": "ਇਹ ਆਈਟਮ ਪਸੰਦ ਕਰੋ",
 	"item_unlike": "ਇਸ ਆਈਟਮ ਤੋਂ ਪਸੰਦ ਹਟਾਓ",
-
 	"scanned_date": "{date} ਨੂੰ ਜਾਂਚਿਆ ਗਿਆ",
 	"scanned": "{relative} ਜਾਂਚਿਆ ਗਿਆ",
-
 	"tag_vegan": "ਵੀਗਨ",
 	"tag_vegetarian": "ਸ਼ਾਕਾਹਾਰੀ",
 	"tag_halal": "ਹਲਾਲ",
@@ -73,26 +68,21 @@
 	"tag_food": "ਖਾਣਾ",
 	"tag_dessert": "ਮਠਿਆਈ",
 	"tag_drink": "ਡਰਿੰਕਸ",
-
 	"category_cafe": "ਕੈਫ਼ੇ",
 	"category_fast_food": "ਫਾਸਟ ਫੂਡ",
 	"category_restaurant": "ਰੈਸਟੋਰੈਂਟ",
 	"category_bakery": "ਬੇਕਰੀ",
-
 	"diet_any": "ਕੋਈ ਵੀ ਖੁਰਾਕ",
 	"diet_filter_aria": "ਖੁਰਾਕ ਫਿਲਟਰ",
 	"diet_can_be_made": "ਕਹਿਣ 'ਤੇ {diet} ਬਣ ਸਕਦਾ ਹੈ",
-
 	"account_default_name": "ਖਾਤਾ",
 	"account_signed_in": "ਸਾਈਨ ਇਨ ਕੀਤਾ ਹੋਇਆ",
 	"account_sign_out": "ਸਾਈਨ ਆਊਟ ਕਰੋ",
 	"account_sign_in": "ਸਾਈਨ ਇਨ ਕਰੋ",
 	"language_label": "ਭਾਸ਼ਾ",
-
 	"sources_dialog_aria": "ਡਾਟਾ ਸਰੋਤ",
 	"sources_title": "ਸਰੋਤ",
 	"sources_close_aria": "ਸਰੋਤ ਬੰਦ ਕਰੋ",
-
 	"directions_button_tooltip": "ਕਿਸੇ ਹੋਰ ਨਕਸ਼ਾ ਐਪ ਵਿੱਚ ਖੋਲ੍ਹੋ",
 	"directions_button_aria": "{address} ਨੂੰ ਕਿਸੇ ਹੋਰ ਨਕਸ਼ਾ ਐਪ ਵਿੱਚ ਖੋਲ੍ਹੋ",
 	"directions_dialog_aria": "ਨਕਸ਼ਾ ਐਪ ਚੁਣੋ",
@@ -100,7 +90,6 @@
 	"directions_close_aria": "ਦਿਸ਼ਾਵਾਂ ਬੰਦ ਕਰੋ",
 	"directions_apple_maps": "Apple Maps",
 	"directions_google_maps": "Google Maps",
-
 	"landing_intro_aria": "BetterFoodMaps ਬਾਰੇ",
 	"landing_title": "ਨਕਸ਼ੇ ਉੱਤੇ ਕਿਤੇ ਵੀ ਆਪਣੀ ਖੁਰਾਕ ਮੁਤਾਬਕ ਖਾਣਾ ਲੱਭੋ।",
 	"landing_stats_aria": "ਨਕਸ਼ੇ ਦੀ ਕਵਰੇਜ",
@@ -116,12 +105,10 @@
 	"stat_nut_free": "ਨਟ-ਮੁਕਤ ਪਕਵਾਨ",
 	"landing_cta": "ਨਕਸ਼ਾ ਵਰਤਣਾ ਸ਼ੁਰੂ ਕਰੋ",
 	"landing_browse_link": "ਜਾਂ ਸ਼ਹਿਰ ਮੁਤਾਬਕ ਖਾਣਾ ਵੇਖੋ →",
-
 	"error_not_found": "ਇਹ ਪੰਨਾ ਮੌਜੂਦ ਨਹੀਂ ਹੈ",
 	"error_generic": "ਕੁਝ ਗਲਤ ਹੋ ਗਿਆ",
 	"error_back": "ਨਕਸ਼ੇ ਉੱਤੇ ਵਾਪਸ ਜਾਓ",
 	"error_page_title": "{status} · BetterFoodMaps",
-
 	"server_error_no_location_or_item": "ਅਜਿਹੀ ਕੋਈ ਥਾਂ ਜਾਂ ਆਈਟਮ ਨਹੀਂ ਹੈ।",
 	"server_error_sign_in_required": "ਇਹ ਕਰਨ ਲਈ ਤੁਹਾਨੂੰ ਸਾਈਨ ਇਨ ਹੋਣਾ ਪਵੇਗਾ।",
 	"server_error_location_not_found": "ਥਾਂ ਨਹੀਂ ਮਿਲੀ",
@@ -130,7 +117,6 @@
 	"server_error_oauth_invalid_callback": "ਅਵੈਧ OAuth ਕਾਲਬੈਕ।",
 	"server_error_oauth_code_validation": "ਪ੍ਰਮਾਣੀਕਰਨ ਕੋਡ ਦੀ ਪੁਸ਼ਟੀ ਅਸਫਲ ਰਹੀ।",
 	"server_error_oauth_missing_subject": "Google ਦੇ ਜਵਾਬ ਵਿੱਚ subject ਦਾਅਵਾ ਮੌਜੂਦ ਨਹੀਂ ਸੀ।",
-
 	"head_site_description": "ਇੰਟਰਐਕਟਿਵ ਨਕਸ਼ੇ ਉੱਤੇ ਦੁਨੀਆ ਭਰ ਦੇ ਕੈਫ਼ੇ, ਫਾਸਟ ਫੂਡ ਅਤੇ ਰੈਸਟੋਰੈਂਟ ਖੋਜੋ।",
 	"head_desc_no_menu": "BetterFoodMaps ਉੱਤੇ ਮੀਨੂ ਵੇਖੋ।",
 	"head_located_in": "{where} ਵਿੱਚ",

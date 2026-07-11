@@ -1,6 +1,5 @@
 {
 	"$schema": "https://inlang.com/schema/inlang-message-format",
-
 	"search_bar_aria": "검색 및 필터",
 	"search_placeholder": "장소와 메뉴 검색…",
 	"search_input_aria": "장소 또는 메뉴 이름으로 검색",
@@ -20,10 +19,8 @@
 	"map_aria": "음식점 지도",
 	"map_zoom_in_aria": "확대",
 	"map_zoom_out_aria": "축소",
-
 	"venue_details_aria": "장소 상세 정보",
 	"venue_close_aria": "장소 상세 정보 닫기",
-	"sheet_resize_aria": "상세 정보 크기 조절 — 드래그, 탭 또는 화살표 키를 사용하세요",
 	"venue_like": "이 장소 좋아요",
 	"venue_unlike": "이 장소 좋아요 취소",
 	"venue_address_label": "주소",
@@ -57,10 +54,8 @@
 	"course_all": "전체",
 	"item_like": "이 메뉴 좋아요",
 	"item_unlike": "이 메뉴 좋아요 취소",
-
 	"scanned_date": "{date} 확인",
 	"scanned": "{relative} 확인",
-
 	"tag_vegan": "비건",
 	"tag_vegetarian": "채식",
 	"tag_halal": "할랄",
@@ -70,26 +65,21 @@
 	"tag_food": "식사",
 	"tag_dessert": "디저트",
 	"tag_drink": "음료",
-
 	"category_cafe": "카페",
 	"category_fast_food": "패스트푸드",
 	"category_restaurant": "음식점",
 	"category_bakery": "베이커리",
-
 	"diet_any": "모든 식단",
 	"diet_filter_aria": "식단 필터",
 	"diet_can_be_made": "요청 시 {diet} 가능",
-
 	"account_default_name": "계정",
 	"account_signed_in": "로그인됨",
 	"account_sign_out": "로그아웃",
 	"account_sign_in": "로그인",
 	"language_label": "언어",
-
 	"sources_dialog_aria": "데이터 출처",
 	"sources_title": "출처",
 	"sources_close_aria": "출처 닫기",
-
 	"directions_button_tooltip": "다른 지도 앱에서 열기",
 	"directions_button_aria": "다른 지도 앱에서 {address} 열기",
 	"directions_dialog_aria": "지도 앱 선택",
@@ -97,7 +87,6 @@
 	"directions_close_aria": "길찾기 닫기",
 	"directions_apple_maps": "Apple Maps",
 	"directions_google_maps": "Google Maps",
-
 	"landing_intro_aria": "BetterFoodMaps 소개",
 	"landing_title": "지도 위 어디서든 내 식단에 맞는 음식을 찾아보세요.",
 	"landing_stats_aria": "지도 등록 현황",
@@ -113,12 +102,10 @@
 	"stat_nut_free": "견과류 무함유 메뉴",
 	"landing_cta": "지도 바로가기",
 	"landing_browse_link": "또는 도시별로 음식 둘러보기 →",
-
 	"error_not_found": "페이지를 찾을 수 없습니다",
 	"error_generic": "문제가 발생했습니다",
 	"error_back": "지도로 돌아가기",
 	"error_page_title": "{status} · BetterFoodMaps",
-
 	"server_error_no_location_or_item": "해당 장소 또는 메뉴가 없습니다.",
 	"server_error_sign_in_required": "이 작업을 하려면 로그인이 필요합니다.",
 	"server_error_location_not_found": "장소를 찾을 수 없습니다",
@@ -127,7 +114,6 @@
 	"server_error_oauth_invalid_callback": "잘못된 OAuth 콜백입니다.",
 	"server_error_oauth_code_validation": "인증 코드 확인에 실패했습니다.",
 	"server_error_oauth_missing_subject": "Google 응답에 subject 클레임이 없습니다.",
-
 	"head_site_description": "전 세계의 카페, 패스트푸드점, 음식점을 인터랙티브 지도에서 살펴보세요.",
 	"head_desc_no_menu": "BetterFoodMaps에서 메뉴를 확인하세요.",
 	"head_located_in": "{where} 소재",

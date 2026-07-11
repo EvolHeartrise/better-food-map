@@ -1,6 +1,5 @@
 {
 	"$schema": "https://inlang.com/schema/inlang-message-format",
-
 	"search_bar_aria": "تلاش اور فلٹرز",
 	"search_placeholder": "جگہیں اور پکوان تلاش کریں…",
 	"search_input_aria": "جگہ یا پکوان کے نام سے تلاش کریں",
@@ -21,10 +20,8 @@
 	"map_aria": "کھانے پینے کی جگہوں کا نقشہ",
 	"map_zoom_in_aria": "زوم اِن",
 	"map_zoom_out_aria": "زوم آؤٹ",
-
 	"venue_details_aria": "جگہ کی تفصیلات",
 	"venue_close_aria": "جگہ کی تفصیلات بند کریں",
-	"sheet_resize_aria": "تفصیلات کا سائز تبدیل کریں — گھسیٹیں، ٹیپ کریں یا تیر والے بٹن استعمال کریں",
 	"venue_like": "اس جگہ کو پسند کریں",
 	"venue_unlike": "اس جگہ سے پسند ہٹائیں",
 	"venue_address_label": "پتہ",
@@ -60,10 +57,8 @@
 	"course_all": "سب",
 	"item_like": "اس آئٹم کو پسند کریں",
 	"item_unlike": "اس آئٹم سے پسند ہٹائیں",
-
 	"scanned_date": "{date} کو جانچا گیا",
 	"scanned": "{relative} جانچا گیا",
-
 	"tag_vegan": "ویگن",
 	"tag_vegetarian": "ویجیٹیرین",
 	"tag_halal": "حلال",
@@ -73,26 +68,21 @@
 	"tag_food": "کھانا",
 	"tag_dessert": "میٹھا",
 	"tag_drink": "مشروبات",
-
 	"category_cafe": "کیفے",
 	"category_fast_food": "فاسٹ فوڈ",
 	"category_restaurant": "ریستوران",
 	"category_bakery": "بیکری",
-
 	"diet_any": "کوئی بھی غذا",
 	"diet_filter_aria": "غذائی فلٹر",
 	"diet_can_be_made": "درخواست پر {diet} بنایا جا سکتا ہے",
-
 	"account_default_name": "اکاؤنٹ",
 	"account_signed_in": "آپ سائن اِن ہیں",
 	"account_sign_out": "سائن آؤٹ کریں",
 	"account_sign_in": "سائن اِن کریں",
 	"language_label": "زبان",
-
 	"sources_dialog_aria": "ڈیٹا کے ذرائع",
 	"sources_title": "ذرائع",
 	"sources_close_aria": "ذرائع بند کریں",
-
 	"directions_button_tooltip": "کسی اور میپس ایپ میں کھولیں",
 	"directions_button_aria": "{address} کو کسی اور میپس ایپ میں کھولیں",
 	"directions_dialog_aria": "میپس ایپ منتخب کریں",
@@ -100,7 +90,6 @@
 	"directions_close_aria": "ڈائریکشنز بند کریں",
 	"directions_apple_maps": "Apple Maps",
 	"directions_google_maps": "Google Maps",
-
 	"landing_intro_aria": "BetterFoodMaps کے بارے میں",
 	"landing_title": "نقشے پر کہیں بھی اپنی غذا کے مطابق کھانا تلاش کریں۔",
 	"landing_stats_aria": "نقشے کی کوریج",
@@ -116,12 +105,10 @@
 	"stat_nut_free": "نٹ فری پکوان",
 	"landing_cta": "نقشہ استعمال کرنا شروع کریں",
 	"landing_browse_link": "یا شہر کے لحاظ سے کھانا دیکھیں ←",
-
 	"error_not_found": "یہ صفحہ موجود نہیں ہے",
 	"error_generic": "کچھ غلط ہو گیا",
 	"error_back": "نقشے پر واپس جائیں",
 	"error_page_title": "{status} · BetterFoodMaps",
-
 	"server_error_no_location_or_item": "ایسی کوئی جگہ یا آئٹم نہیں۔",
 	"server_error_sign_in_required": "یہ کرنے کے لیے سائن اِن ہونا ضروری ہے۔",
 	"server_error_location_not_found": "جگہ نہیں ملی",
@@ -130,7 +117,6 @@
 	"server_error_oauth_invalid_callback": "غلط OAuth کال بیک۔",
 	"server_error_oauth_code_validation": "اجازت کے کوڈ کی تصدیق ناکام رہی۔",
 	"server_error_oauth_missing_subject": "Google کے جواب میں subject کلیم موجود نہیں تھا۔",
-
 	"head_site_description": "انٹرایکٹو نقشے پر دنیا بھر کے کیفے، فاسٹ فوڈ اور ریستوران دریافت کریں۔",
 	"head_desc_no_menu": "BetterFoodMaps پر مینو دیکھیں۔",
 	"head_located_in": "{where} میں",

@@ -1,6 +1,5 @@
 {
 	"$schema": "https://inlang.com/schema/inlang-message-format",
-
 	"search_bar_aria": "Поиск и фильтры",
 	"search_placeholder": "Поиск заведений и блюд…",
 	"search_input_aria": "Поиск по названию заведения или блюда",
@@ -23,10 +22,8 @@
 	"map_aria": "Карта заведений питания",
 	"map_zoom_in_aria": "Приблизить",
 	"map_zoom_out_aria": "Отдалить",
-
 	"venue_details_aria": "Информация о заведении",
 	"venue_close_aria": "Закрыть информацию о заведении",
-	"sheet_resize_aria": "Изменить размер панели — перетащите, коснитесь или используйте клавиши со стрелками",
 	"venue_like": "Поставить лайк заведению",
 	"venue_unlike": "Убрать лайк с заведения",
 	"venue_address_label": "Адрес",
@@ -66,10 +63,8 @@
 	"course_all": "Все",
 	"item_like": "Поставить лайк позиции",
 	"item_unlike": "Убрать лайк с позиции",
-
 	"scanned_date": "Проверено {date}",
 	"scanned": "Проверено {relative}",
-
 	"tag_vegan": "Веганское",
 	"tag_vegetarian": "Вегетарианское",
 	"tag_halal": "Халяль",
@@ -79,26 +74,21 @@
 	"tag_food": "Еда",
 	"tag_dessert": "Десерты",
 	"tag_drink": "Напитки",
-
 	"category_cafe": "Кафе",
 	"category_fast_food": "Фастфуд",
 	"category_restaurant": "Ресторан",
 	"category_bakery": "Пекарня",
-
 	"diet_any": "Любая диета",
 	"diet_filter_aria": "Фильтр по диете",
 	"diet_can_be_made": "По запросу: {diet}",
-
 	"account_default_name": "Аккаунт",
 	"account_signed_in": "Вы вошли",
 	"account_sign_out": "Выйти",
 	"account_sign_in": "Войти",
 	"language_label": "Язык",
-
 	"sources_dialog_aria": "Источники данных",
 	"sources_title": "Источники",
 	"sources_close_aria": "Закрыть источники",
-
 	"directions_button_tooltip": "Открыть в другом приложении карт",
 	"directions_button_aria": "Открыть {address} в другом приложении карт",
 	"directions_dialog_aria": "Выбрать приложение карт",
@@ -106,7 +96,6 @@
 	"directions_close_aria": "Закрыть окно маршрутов",
 	"directions_apple_maps": "Apple Maps",
 	"directions_google_maps": "Google Maps",
-
 	"landing_intro_aria": "О BetterFoodMaps",
 	"landing_title": "Находите еду под свою диету в любой точке карты.",
 	"landing_stats_aria": "Покрытие карты",
@@ -122,12 +111,10 @@
 	"stat_nut_free": "блюд без орехов",
 	"landing_cta": "Открыть карту",
 	"landing_browse_link": "Или смотрите заведения по городам →",
-
 	"error_not_found": "Такой страницы нет",
 	"error_generic": "Что-то пошло не так",
 	"error_back": "Вернуться к карте",
 	"error_page_title": "{status} · BetterFoodMaps",
-
 	"server_error_no_location_or_item": "Такого заведения или позиции нет.",
 	"server_error_sign_in_required": "Для этого нужно войти.",
 	"server_error_location_not_found": "Заведение не найдено",
@@ -136,7 +123,6 @@
 	"server_error_oauth_invalid_callback": "Недопустимый обратный вызов OAuth.",
 	"server_error_oauth_code_validation": "Не удалось проверить код авторизации.",
 	"server_error_oauth_missing_subject": "В ответе Google отсутствует утверждение subject.",
-
 	"head_site_description": "Исследуйте кафе, фастфуд и рестораны по всему миру на интерактивной карте.",
 	"head_desc_no_menu": "Смотрите меню на BetterFoodMaps.",
 	"head_located_in": "в {where}",
