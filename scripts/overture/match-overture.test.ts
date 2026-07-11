@@ -1,6 +1,7 @@
 import { test, expect } from 'bun:test';
 import {
 	matchOverturePlaces,
+	matchNearestPlaces,
 	nameRelated,
 	composeOvertureAddress,
 	type AddresslessPoi,
@@ -113,4 +114,49 @@ test('respects the radius — a far same-brand place is not matched', async () =
 	expect(
 		(await matchOverturePlaces(pois, places, { radiusM: 300, releaseLabel: 'r' })).length
 	).toBe(1);
+});
+
+test('matchNearestPlaces carries the FULL matched place and the exact distance', async () => {
+	// A contacts-shaped place: no address at all — the generic core must not care.
+	const eateries = [
+		{
+			id: 'ov-kfc',
+			name: 'KFC',
+			latitude: 49.28114,
+			longitude: -123.121,
+			website: 'https://kfc.ca',
+			phone: '+16045550123',
+			category: 'chicken_restaurant'
+		},
+		{
+			id: 'ov-quiznos',
+			name: 'Quiznos',
+			latitude: 49.30009,
+			longitude: -123.2,
+			website: null,
+			phone: null,
+			category: null
+		}
+	];
+	const matches = await matchNearestPlaces(pois, eateries, 100);
+	const byId = Object.fromEntries(matches.map((m) => [m.osm_id, m]));
+
+	expect(matches.length).toBe(2); // n3 has no nearby place
+	expect(byId['n1'].place.id).toBe('ov-kfc');
+	expect(byId['n1'].place.website).toBe('https://kfc.ca');
+	expect(byId['n1'].place.category).toBe('chicken_restaurant');
+	// Exact (unrounded) haversine metres — callers round as they store.
+	expect(byId['n1'].distance_m).toBeGreaterThan(0);
+	expect(byId['n1'].distance_m).toBeLessThan(30);
+	expect(Number.isInteger(byId['n1'].distance_m)).toBe(false);
+	expect(byId['n2'].place.id).toBe('ov-quiznos');
+});
+
+test('matchNearestPlaces keeps the nearest of several name-related places', async () => {
+	const eateries = [
+		{ id: 'far', name: 'KFC', latitude: 49.282, longitude: -123.121 }, // ~120 m from n1
+		{ id: 'near', name: 'Taco Bell / KFC', latitude: 49.28114, longitude: -123.121 } // ~16 m
+	];
+	const matches = await matchNearestPlaces(pois, eateries, 300);
+	expect(matches.find((m) => m.osm_id === 'n1')?.place.id).toBe('near');
 });

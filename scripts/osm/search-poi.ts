@@ -78,6 +78,13 @@ export interface PoiCandidate {
 	address_source: string | null;
 	phone: string | null;
 	website: string | null;
+	/**
+	 * Provenance of `phone` / `website`, mirroring `address_source`: null = the
+	 * POI's own OSM tags; "overture:<id> (<release>)" = filled by the Overture
+	 * contacts enrichment (bun run overture:enrich).
+	 */
+	phone_source: string | null;
+	website_source: string | null;
 	opening_hours: string | null;
 	/** Distance from the query centre in metres (only for centre+radius queries). */
 	distance_m?: number;
@@ -296,6 +303,8 @@ function toCandidate(poi: StoredPoi, distance_m?: number): PoiCandidate {
 		address_source: poi.address_source,
 		phone: poi.phone,
 		website: poi.website,
+		phone_source: poi.phone_source,
+		website_source: poi.website_source,
 		opening_hours: poi.opening_hours,
 		...(distance_m === undefined ? {} : { distance_m: Math.round(distance_m) })
 	};
