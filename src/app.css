@@ -35,6 +35,11 @@ html,
 body {
 	margin: 0;
 	padding: 0;
+	/* The app is a fixed-viewport map (the document itself never scrolls), so no
+	   root overscroll gesture is ever meaningful — in particular this disables
+	   mobile pull-to-refresh, which the venue sheet's swipe-down-to-close would
+	   otherwise trigger whenever a downward drag starts near the top of the page. */
+	overscroll-behavior-y: none;
 }
 
 body {

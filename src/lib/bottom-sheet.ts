@@ -5,12 +5,16 @@
 // tap-to-cycle or key up/down between three resting heights ("snaps"):
 //   peek — the compact height a venue opens at (header + info + a few rows),
 //   half — a taller reading window,
-//   full — a thin strip of map above an almost-full-height sheet, so a 50+ item
-//          exhaustive menu can actually be read (issue #249).
+//   full — the WHOLE screen: the sheet takes over the viewport so a 50+ item
+//          exhaustive menu can actually be read (issues #249, full-screen rev).
 // Each snap is a FRACTION of the viewport height so the sheet scales with the
 // device; the page mirrors the resting height as the map's camera inset and as
 // the `--sheet-height` custom property that lifts the OSM attribution clear of
 // the sheet.
+//
+// The sheet can also be swiped AWAY: the drag range extends below peek down to
+// zero, and a release below peek (or a firm downward flick at peek) settles to
+// 'closed' — the caller dismisses the panel and returns to the map.
 
 export type SheetSnap = 'peek' | 'half' | 'full';
 
@@ -18,12 +22,13 @@ export type SheetSnap = 'peek' | 'half' | 'full';
 // all walk this order, so it is the single source of truth for "next"/"prev".
 export const SHEET_SNAPS = ['peek', 'half', 'full'] as const satisfies readonly SheetSnap[];
 
-// Each snap's height as a fraction of the viewport. 'full' deliberately stops
-// short of the whole screen so the map strip (and its attribution) stays visible.
+// Each snap's height as a fraction of the viewport. 'full' is the whole screen —
+// the sheet fully covers the map (which is then not displayed, so the OSM
+// attribution needn't stay visible behind it).
 const SNAP_FRACTION: Record<SheetSnap, number> = {
 	peek: 0.42,
 	half: 0.62,
-	full: 0.9
+	full: 1
 };
 
 // Floor so the sheet never collapses below a usable height (header + grip +
@@ -45,11 +50,11 @@ export function snapHeightPx(snap: SheetSnap, viewportHeight: number): number {
 	return Math.max(MIN_SHEET_PX, Math.round(SNAP_FRACTION[snap] * vh));
 }
 
-// The drag's clamp range: the shortest and tallest snap heights. A live drag is
-// pinned within these so the sheet can't be flung off either end.
+// The drag's clamp range: from zero (a drag below peek is the dismiss gesture —
+// see settleSnap's 'closed') up to the tallest snap.
 export function sheetBounds(viewportHeight: number): { min: number; max: number } {
 	return {
-		min: snapHeightPx('peek', viewportHeight),
+		min: 0,
 		max: snapHeightPx('full', viewportHeight)
 	};
 }
@@ -75,10 +80,17 @@ export const SHEET_FLING_VELOCITY = 0.5;
 
 // Where a drag settles when the finger lifts. A firm upward flick lands on the
 // next snap taller than the release height (or the tallest); a firm downward
-// flick on the next shorter (or the shortest); a slow release settles to the
-// nearest snap by height. The ±1px guards keep a release resting exactly on a
-// snap from being nudged off it by rounding noise.
-export function settleSnap(heightPx: number, velocity: number, viewportHeight: number): SheetSnap {
+// flick on the next shorter — and 'closed' when there is no shorter snap (a
+// down-flick at peek dismisses the sheet). A slow release settles to the
+// nearest snap by height, except a release closer to the bottom edge than to
+// peek (below half the peek height) also reads as a dismiss. The ±1px guards
+// keep a release resting exactly on a snap from being nudged off it by
+// rounding noise.
+export function settleSnap(
+	heightPx: number,
+	velocity: number,
+	viewportHeight: number
+): SheetSnap | 'closed' {
 	const ascending = SHEET_SNAPS.map((snap) => ({ snap, h: snapHeightPx(snap, viewportHeight) }));
 	if (velocity >= SHEET_FLING_VELOCITY) {
 		const up = ascending.find(({ h }) => h > heightPx + 1);
@@ -86,8 +98,9 @@ export function settleSnap(heightPx: number, velocity: number, viewportHeight: n
 	}
 	if (velocity <= -SHEET_FLING_VELOCITY) {
 		const down = [...ascending].reverse().find(({ h }) => h < heightPx - 1);
-		return (down ?? ascending[0]).snap;
+		return down ? down.snap : 'closed';
 	}
+	if (heightPx < snapHeightPx('peek', viewportHeight) / 2) return 'closed';
 	return nearestSnap(heightPx, viewportHeight);
 }
 

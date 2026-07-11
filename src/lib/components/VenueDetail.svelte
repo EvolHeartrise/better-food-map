@@ -272,6 +272,22 @@
 		if (Math.abs(event.clientY - dragStartY) > TAP_SLOP_PX) dragMoved = true;
 	}
 
+	// Where a finished drag lands: a snap (reported to the page, which owns the
+	// resting height) or 'closed' — a swipe below/past peek dismisses the panel
+	// (see settleSnap). On a dismiss the drag height is deliberately KEPT so the
+	// outro fly starts from where the finger left the sheet, not from a snapped-
+	// back resting height.
+	function settleDrag() {
+		const settled = settleSnap(dragHeight ?? dragStartHeight, dragVelocity, vh);
+		if (settled === 'closed') {
+			onClose();
+			return;
+		}
+		onSnapChange?.(settled);
+		// Hand rendering back to the resting height, which animates to the new snap.
+		dragHeight = null;
+	}
+
 	function onGripPointerUp(event: PointerEvent) {
 		if (!dragging) return;
 		dragging = false;
@@ -282,14 +298,13 @@
 			event.currentTarget.releasePointerCapture(event.pointerId);
 		}
 		if (dragMoved) {
-			onSnapChange?.(settleSnap(dragHeight ?? dragStartHeight, dragVelocity, vh));
+			settleDrag();
 		} else {
 			// A tap on the grip (no real movement) cycles to the next snap. The
 			// matching pointer `click` is ignored in onGripClick (event.detail > 0).
 			onSnapChange?.(cycleSnap(snap));
+			dragHeight = null;
 		}
-		// Hand rendering back to the resting height, which animates to the new snap.
-		dragHeight = null;
 	}
 
 	function onGripClick(event: MouseEvent) {
@@ -310,11 +325,98 @@
 			onSnapChange?.(target);
 		}
 	}
+
+	// --- Content drag (narrow screens) -------------------------------------------
+	// Native bottom-sheet feel (à la Google Maps): a touch drag on the panel BODY
+	// also moves the sheet, not just the grip. The rules per gesture:
+	//   • below full: the body doesn't scroll — any vertical drag moves the sheet
+	//     (swipe up to expand, down toward peek/dismiss);
+	//   • at full: the body scrolls natively, EXCEPT a downward pull while the
+	//     content is already at its top, which grabs the sheet and drags it down.
+	// The choice is made on the FIRST touchmove of a gesture and held until the
+	// finger lifts: browsers commit a touch sequence to native scrolling once a
+	// touchmove goes unprevented, so a gesture can't switch modes midway.
+	//
+	// These are raw non-passive listeners (attached in the $effect below), not
+	// Svelte `ontouchmove` attributes — Svelte registers touchmove passively, and
+	// a passive listener cannot preventDefault the scroll.
+	let bodyEl = $state<HTMLElement | null>(null);
+	// Per-gesture mode: undecided until the first touchmove, then fixed.
+	let contentMode: 'idle' | 'sheet' | 'scroll' = 'idle';
+	let contentStartY = 0;
+	let contentStartX = 0;
+
+	function onBodyTouchStart(event: TouchEvent) {
+		if (!narrow || event.touches.length !== 1) return;
+		contentMode = 'idle';
+		contentStartY = event.touches[0].clientY;
+		contentStartX = event.touches[0].clientX;
+		lastPointerY = contentStartY;
+		lastPointerT = event.timeStamp;
+		dragVelocity = 0;
+	}
+
+	function onBodyTouchMove(event: TouchEvent) {
+		if (!narrow || event.touches.length !== 1) return;
+		if (contentMode === 'scroll') return; // committed to native scrolling
+		const y = event.touches[0].clientY;
+		if (contentMode === 'idle') {
+			// Decide this gesture's mode from its first movement. A predominantly
+			// horizontal swipe is never a sheet drag — it belongs to a horizontal
+			// scroller inside the body (the course-tab strip).
+			const dy = y - contentStartY;
+			if (Math.abs(event.touches[0].clientX - contentStartX) > Math.abs(dy)) {
+				contentMode = 'scroll';
+				return;
+			}
+			const pullingDown = dy > 0;
+			if (snap === 'full' && ((bodyEl?.scrollTop ?? 0) > 0 || !pullingDown)) {
+				contentMode = 'scroll';
+				return;
+			}
+			contentMode = 'sheet';
+			dragging = true;
+			dragStartY = y;
+			dragStartHeight = sheetHeight;
+		}
+		// Steal the gesture from native scrolling and track the finger 1:1.
+		event.preventDefault();
+		const { min, max } = sheetBounds(vh);
+		dragHeight = Math.min(max, Math.max(min, dragStartHeight + (dragStartY - y)));
+		const dt = event.timeStamp - lastPointerT;
+		if (dt > 0) dragVelocity = (lastPointerY - y) / dt;
+		lastPointerY = y;
+		lastPointerT = event.timeStamp;
+	}
+
+	function onBodyTouchEnd() {
+		const wasSheet = contentMode === 'sheet';
+		contentMode = 'idle';
+		if (!wasSheet) return;
+		dragging = false;
+		settleDrag();
+	}
+
+	$effect(() => {
+		const body = bodyEl;
+		if (!body || !narrow) return;
+		body.addEventListener('touchstart', onBodyTouchStart, { passive: true });
+		body.addEventListener('touchmove', onBodyTouchMove, { passive: false });
+		body.addEventListener('touchend', onBodyTouchEnd);
+		body.addEventListener('touchcancel', onBodyTouchEnd);
+		return () => {
+			body.removeEventListener('touchstart', onBodyTouchStart);
+			body.removeEventListener('touchmove', onBodyTouchMove);
+			body.removeEventListener('touchend', onBodyTouchEnd);
+			body.removeEventListener('touchcancel', onBodyTouchEnd);
+		};
+	});
 </script>
 
 <aside
 	class="placecard"
 	class:placecard--dragging={dragging}
+	class:placecard--full={narrow && snap === 'full' && dragHeight === null}
 	aria-label={m.venue_details_aria()}
 	tabindex="-1"
 	bind:this={el}
@@ -373,7 +475,7 @@
 	<!-- Everything between the header and the footer scrolls as one column, so a
 	     long menu (or a tall info block on the bottom sheet) never overflows the
 	     panel. -->
-	<div class="placecard__body">
+	<div class="placecard__body" bind:this={bodyEl}>
 		{#if loc.address || phone || loc.website || loc.opening_hours}
 			<dl class="info">
 				{#if loc.address}
@@ -597,6 +699,10 @@
 		flex: 1;
 		min-height: 0;
 		overflow-y: auto;
+		/* On the bottom sheet a scroll that hits the content's top hands the gesture
+		   to the sheet drag (see the content-drag handlers) — never to the page or
+		   to a rubber-band bounce behind it. */
+		overscroll-behavior-y: contain;
 		display: flex;
 		flex-direction: column;
 		gap: 0.6rem;
@@ -1015,7 +1121,18 @@
 			border-top: 1px solid rgba(255, 255, 255, 0.6);
 			border-radius: 0.9rem 0.9rem 0 0;
 			box-shadow: 0 -12px 34px rgba(0, 0, 0, 0.22);
-			transition: height 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+			transition:
+				height 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+				padding-top 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+				border-radius 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+		}
+
+		/* At the full snap the sheet IS the screen: square off the top corners and
+		   pad the content clear of the notch/status bar (the safe-area top inset only
+		   matters when the sheet's top edge actually reaches the top of the screen). */
+		.placecard--full {
+			padding-top: calc(0.35rem + env(safe-area-inset-top));
+			border-radius: 0;
 		}
 
 		/* On a phone at arm's length the panel's smallest load-bearing text — item

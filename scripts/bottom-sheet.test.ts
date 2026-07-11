@@ -20,7 +20,7 @@ import {
 const VH = 800; // a typical phone height
 const peek = snapHeightPx('peek', VH); // 336
 const half = snapHeightPx('half', VH); // 496
-const full = snapHeightPx('full', VH); // 720
+const full = snapHeightPx('full', VH); // 800 — full IS the whole screen
 
 test('resting heights are ordered peek < half < full and scale with the viewport', () => {
 	expect(peek).toBeLessThan(half);
@@ -39,8 +39,12 @@ test('never collapses below the floor on a short screen (or with no viewport)', 
 	expect(snapHeightPx('full', 0)).toBe(MIN_SHEET_PX); // SSR / pre-measure
 });
 
-test('sheetBounds spans the shortest and tallest snaps', () => {
-	expect(sheetBounds(VH)).toEqual({ min: peek, max: full });
+test('full covers the whole viewport', () => {
+	expect(full).toBe(VH);
+});
+
+test('sheetBounds spans zero (the dismiss drag) to the tallest snap', () => {
+	expect(sheetBounds(VH)).toEqual({ min: 0, max: full });
 });
 
 test('nearestSnap picks the closest resting height', () => {
@@ -71,8 +75,17 @@ test('a firm upward flick jumps to the next taller snap', () => {
 test('a firm downward flick jumps to the next shorter snap', () => {
 	expect(settleSnap(half - 10, -SHEET_FLING_VELOCITY, VH)).toBe('peek');
 	expect(settleSnap(full, -1.2, VH)).toBe('half');
-	// Already at the bottom: a firm down flick stays at peek.
-	expect(settleSnap(peek, -2, VH)).toBe('peek');
+});
+
+test('swiping down past peek dismisses the sheet', () => {
+	// A firm down flick with no shorter snap left closes.
+	expect(settleSnap(peek, -2, VH)).toBe('closed');
+	expect(settleSnap(peek - 100, -SHEET_FLING_VELOCITY, VH)).toBe('closed');
+	// A slow release nearer the bottom edge than peek closes too…
+	expect(settleSnap(peek / 2 - 1, 0, VH)).toBe('closed');
+	// …but a slow release above that threshold springs back to peek.
+	expect(settleSnap(peek / 2 + 1, 0, VH)).toBe('peek');
+	expect(settleSnap(peek - 40, -(SHEET_FLING_VELOCITY - 0.01), VH)).toBe('peek');
 });
 
 test('resting exactly on a snap is not nudged off it by a flick', () => {
