@@ -74,3 +74,17 @@ test('0021: sources are menu-only — location_sources / item_sources are droppe
 	// menu_sources is the sole surviving provenance table.
 	expect((await tableNames('menu_sources'))?.name).toBe('menu_sources');
 });
+
+test('0028: locations.osm_id column and its partial index exist', async () => {
+	const db = freshDb();
+	const col = await db
+		.prepare(`SELECT name FROM pragma_table_info('locations') WHERE name = ?`)
+		.bind('osm_id')
+		.first<{ name: string }>();
+	expect(col?.name).toBe('osm_id');
+	const idx = await db
+		.prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`)
+		.bind('idx_locations_osm_id')
+		.first<{ name: string }>();
+	expect(idx?.name).toBe('idx_locations_osm_id');
+});

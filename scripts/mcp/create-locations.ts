@@ -19,6 +19,7 @@ import {
 	assertBrandMenuRefs,
 	existingIds,
 	existingLocationsAtCoords,
+	existingLocationsByOsmId,
 	coordinateKey,
 	openLocationsInBbox,
 	insertLocations,
@@ -322,7 +323,8 @@ export function resolveLocationInsertCore(
 /**
  * The create_locations core, shared with import_chain: validates chain refs,
  * skips already-created ids, resolves coordinates/addresses (collecting EVERY
- * failure rather than dying on the first), de-dups by exact coordinates, warns
+ * failure rather than dying on the first), de-dups by exact coordinates AND by
+ * already-stamped osm_id (a moved node's re-import), warns
  * about near-duplicates, and inserts the remainder in bounded chunks — each
  * location atomic with its own private menu/items, cross-location atomicity
  * per chunk (a mid-run failure reports the committed part, see ToolPartialFailure).
@@ -420,7 +422,7 @@ export async function createLocationsBatch(
 		existing_id: string | null;
 	}[] = [];
 	const seenCoords = new Set<string>();
-	const toInsert = resolved.filter(({ it, core }) => {
+	const afterCoordDedup = resolved.filter(({ it, core }) => {
 		const key = coordinateKey(core.latitude, core.longitude);
 		const onMap = existingAtCoords.get(key);
 		if (onMap) {
@@ -434,6 +436,29 @@ export async function createLocationsBatch(
 		}
 		seenCoords.add(key);
 		return true;
+	});
+	// Identity de-dup (osm_id, migration 0028): coordinate-exact dedup cannot
+	// catch a re-import of a node that MOVED in a fresh extract — same source
+	// node, new coordinates. One osm_id must never resolve to two rows, so a
+	// candidate whose osm_id is already stamped is skipped like a coordinate
+	// duplicate, with a warning: the move itself is worth a look (the stored
+	// row's coordinates are now stale). An in-batch repeat of one osm_id never
+	// reaches here — the same POI yields identical coordinates, so seenCoords
+	// above already dropped it.
+	const existingByOsmId = await existingLocationsByOsmId(
+		db,
+		afterCoordDedup.flatMap(({ it }) => (it.osm_id ? [it.osm_id] : []))
+	);
+	const toInsert = afterCoordDedup.filter(({ it }) => {
+		const onMap = it.osm_id ? existingByOsmId.get(it.osm_id) : undefined;
+		if (!onMap) return true;
+		skippedDuplicateLocations.push({ name: it.name, existing_id: onMap.id });
+		warnings.push(
+			`"${it.name}" (${it.osm_id}) is already on the map as ${onMap.id} ("${onMap.name}") with the ` +
+				`same osm_id but different coordinates — the OSM node moved since that row was imported. ` +
+				`Skipped; verify the venue and update the stored coordinates/address if the move is real.`
+		);
+		return false;
 	});
 	warnings.push(...(await nearDuplicateWarnings(db, toInsert)));
 	// Pre-assign ids to any inline menu_items so we can return them; a location,
@@ -473,6 +498,9 @@ export async function createLocationsBatch(
 			// Resolved above (caller's, else the POI's on an osm_id import); the
 			// write layer derives the machine-readable opening_hours_json from it.
 			opening_hours: core.opening_hours,
+			// Durable source identity (migration 0028): an osm_id import stamps the
+			// POI's id on the row; a manual-coordinates venue stores NULL.
+			osm_id: it.osm_id ?? null,
 			brand_id: it.brand_id ?? null,
 			menu_id: it.menu_id ?? null,
 			currency: it.currency,

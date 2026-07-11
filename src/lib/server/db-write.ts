@@ -294,6 +294,36 @@ export async function existingLocationsAtCoords(
 }
 
 /**
+ * Maps each given osm_id that ALREADY identifies a location to that location
+ * (osm_id → id/name). The identity companion to {@link existingLocationsAtCoords}:
+ * coordinate-exact dedup cannot catch a re-import of a node that MOVED in a
+ * fresh extract — same source node, new coordinates — which would silently
+ * stamp one osm_id on two rows (migration 0028). Closed rows are included on
+ * purpose: a tombstone blocks re-creation by identity just as it does by
+ * coordinates.
+ */
+export async function existingLocationsByOsmId(
+	db: D1Like,
+	osmIds: string[]
+): Promise<Map<string, { id: string; name: string }>> {
+	const distinct = [...new Set(osmIds)];
+	if (distinct.length === 0) return new Map();
+	// One JSON-array bind expanded with json_each, matching the coordinate read's
+	// guard against D1's ~100 per-query bound-parameter cap on a 100-item batch.
+	const { results } = await db
+		.prepare(
+			`SELECT id, name, osm_id FROM locations WHERE osm_id IN (SELECT value FROM json_each(?))`
+		)
+		.bind(JSON.stringify(distinct))
+		.all<{ id: string; name: string; osm_id: string }>();
+	const out = new Map<string, { id: string; name: string }>();
+	for (const r of results) {
+		if (!out.has(r.osm_id)) out.set(r.osm_id, { id: r.id, name: r.name });
+	}
+	return out;
+}
+
+/**
  * Every OPEN location whose point falls inside `bbox`, as the minimal shape the
  * proximity checks need (near-duplicate warnings on create, the duplicate audit).
  * Callers refine by exact distance/name — this is just the indexed box read.
@@ -497,6 +527,14 @@ export type LocationInsert = Omit<
 	brand_id?: string | null;
 	menu_id?: string | null;
 	/**
+	 * The OSM element this row was imported from (e.g. "node/42") — the durable
+	 * source identity (migration 0028), stamped when a create_locations /
+	 * import_chain candidate resolves via its staging-store `osm_id`. Null for a
+	 * venue with no OSM POI (manual coordinates). Identity only: it never
+	 * replaces the coordinate-verbatim invariant.
+	 */
+	osm_id?: string | null;
+	/**
 	 * RAW weekly hours in OSM `opening_hours` syntax; normalized on write and
 	 * stored alongside its derived `opening_hours_json` (see
 	 * src/lib/opening-hours.ts). The derived column is never taken from the
@@ -589,8 +627,8 @@ export async function insertLocations(db: D1Like, locs: LocationInsert[]): Promi
 		stmts.push(
 			db
 				.prepare(
-					`INSERT INTO locations (id, name, category, latitude, longitude, street, city, region, postcode, country, phone, website, opening_hours, opening_hours_json, brand_id, menu_id, closed_at, closed_reason)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+					`INSERT INTO locations (id, name, category, latitude, longitude, street, city, region, postcode, country, phone, website, opening_hours, opening_hours_json, osm_id, brand_id, menu_id, closed_at, closed_reason)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 				)
 				.bind(
 					id,
@@ -607,6 +645,7 @@ export async function insertLocations(db: D1Like, locs: LocationInsert[]): Promi
 					loc.website,
 					openingHours,
 					weeklyHoursJson(openingHours),
+					loc.osm_id ?? null,
 					loc.brand_id ?? null,
 					loc.menu_id ?? privateMenuId,
 					loc.closed_at ?? null,
