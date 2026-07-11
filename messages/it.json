@@ -1,6 +1,5 @@
 {
 	"$schema": "https://inlang.com/schema/inlang-message-format",
-
 	"search_bar_aria": "Ricerca e filtri",
 	"search_placeholder": "Cerca locali e piatti…",
 	"search_input_aria": "Cerca per nome del locale o del piatto",
@@ -22,10 +21,8 @@
 	"map_aria": "Mappa dei posti dove mangiare",
 	"map_zoom_in_aria": "Aumenta lo zoom",
 	"map_zoom_out_aria": "Riduci lo zoom",
-
 	"venue_details_aria": "Dettagli del locale",
 	"venue_close_aria": "Chiudi i dettagli del locale",
-	"sheet_resize_aria": "Ridimensiona i dettagli: trascina, tocca o usa i tasti freccia",
 	"venue_like": "Metti Mi piace a questo locale",
 	"venue_unlike": "Rimuovi il Mi piace da questo locale",
 	"venue_address_label": "Indirizzo",
@@ -63,10 +60,8 @@
 	"course_all": "Tutto",
 	"item_like": "Metti Mi piace a questa voce",
 	"item_unlike": "Rimuovi il Mi piace da questa voce",
-
 	"scanned_date": "Verificato il {date}",
 	"scanned": "Verificato {relative}",
-
 	"tag_vegan": "Vegano",
 	"tag_vegetarian": "Vegetariano",
 	"tag_halal": "Halal",
@@ -76,26 +71,21 @@
 	"tag_food": "Piatti",
 	"tag_dessert": "Dolci",
 	"tag_drink": "Bevande",
-
 	"category_cafe": "Caffetteria",
 	"category_fast_food": "Fast food",
 	"category_restaurant": "Ristorante",
 	"category_bakery": "Panetteria",
-
 	"diet_any": "Qualsiasi dieta",
 	"diet_filter_aria": "Filtro per dieta",
 	"diet_can_be_made": "{diet} su richiesta",
-
 	"account_default_name": "Account",
 	"account_signed_in": "Accesso effettuato",
 	"account_sign_out": "Esci",
 	"account_sign_in": "Accedi",
 	"language_label": "Lingua",
-
 	"sources_dialog_aria": "Fonti dei dati",
 	"sources_title": "Fonti",
 	"sources_close_aria": "Chiudi le fonti",
-
 	"directions_button_tooltip": "Apri in un’altra app di mappe",
 	"directions_button_aria": "Apri {address} in un’altra app di mappe",
 	"directions_dialog_aria": "Scegli un’app di mappe",
@@ -103,7 +93,6 @@
 	"directions_close_aria": "Chiudi le indicazioni",
 	"directions_apple_maps": "Apple Maps",
 	"directions_google_maps": "Google Maps",
-
 	"landing_intro_aria": "Informazioni su BetterFoodMaps",
 	"landing_title": "Trova piatti adatti alla tua dieta, ovunque sulla mappa.",
 	"landing_stats_aria": "Copertura della mappa",
@@ -119,12 +108,10 @@
 	"stat_nut_free": "piatti senza frutta a guscio",
 	"landing_cta": "Inizia a usare la mappa",
 	"landing_browse_link": "Oppure esplora i piatti per città →",
-
 	"error_not_found": "Questa pagina non esiste",
 	"error_generic": "Qualcosa è andato storto",
 	"error_back": "Torna alla mappa",
 	"error_page_title": "{status} · BetterFoodMaps",
-
 	"server_error_no_location_or_item": "Nessun locale o voce corrispondente.",
 	"server_error_sign_in_required": "Devi accedere per farlo.",
 	"server_error_location_not_found": "Locale non trovato",
@@ -133,7 +120,6 @@
 	"server_error_oauth_invalid_callback": "Callback OAuth non valido.",
 	"server_error_oauth_code_validation": "Impossibile convalidare il codice di autorizzazione.",
 	"server_error_oauth_missing_subject": "La risposta di Google non conteneva il claim subject.",
-
 	"head_site_description": "Esplora caffetterie, fast food e ristoranti di tutto il mondo su una mappa interattiva.",
 	"head_desc_no_menu": "Scopri il menu su BetterFoodMaps.",
 	"head_located_in": "a {where}",

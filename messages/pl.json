@@ -1,6 +1,5 @@
 {
 	"$schema": "https://inlang.com/schema/inlang-message-format",
-
 	"search_bar_aria": "Wyszukiwanie i filtry",
 	"search_placeholder": "Szukaj miejsc i dań…",
 	"search_input_aria": "Szukaj po nazwie miejsca lub dania",
@@ -23,10 +22,8 @@
 	"map_aria": "Mapa miejsc z jedzeniem",
 	"map_zoom_in_aria": "Przybliż",
 	"map_zoom_out_aria": "Oddal",
-
 	"venue_details_aria": "Szczegóły miejsca",
 	"venue_close_aria": "Zamknij szczegóły miejsca",
-	"sheet_resize_aria": "Zmień rozmiar panelu szczegółów — przeciągnij, stuknij lub użyj klawiszy strzałek",
 	"venue_like": "Polub to miejsce",
 	"venue_unlike": "Cofnij polubienie tego miejsca",
 	"venue_address_label": "Adres",
@@ -66,10 +63,8 @@
 	"course_all": "Wszystko",
 	"item_like": "Polub tę pozycję",
 	"item_unlike": "Cofnij polubienie tej pozycji",
-
 	"scanned_date": "Sprawdzono {date}",
 	"scanned": "Sprawdzono {relative}",
-
 	"tag_vegan": "Wegańskie",
 	"tag_vegetarian": "Wegetariańskie",
 	"tag_halal": "Halal",
@@ -79,26 +74,21 @@
 	"tag_food": "Dania",
 	"tag_dessert": "Desery",
 	"tag_drink": "Napoje",
-
 	"category_cafe": "Kawiarnia",
 	"category_fast_food": "Fast food",
 	"category_restaurant": "Restauracja",
 	"category_bakery": "Piekarnia",
-
 	"diet_any": "Dowolna dieta",
 	"diet_filter_aria": "Filtr diety",
 	"diet_can_be_made": "Na życzenie: {diet}",
-
 	"account_default_name": "Konto",
 	"account_signed_in": "Zalogowano",
 	"account_sign_out": "Wyloguj się",
 	"account_sign_in": "Zaloguj się",
 	"language_label": "Język",
-
 	"sources_dialog_aria": "Źródła danych",
 	"sources_title": "Źródła",
 	"sources_close_aria": "Zamknij źródła",
-
 	"directions_button_tooltip": "Otwórz w innej aplikacji z mapami",
 	"directions_button_aria": "Otwórz {address} w innej aplikacji z mapami",
 	"directions_dialog_aria": "Wybierz aplikację z mapami",
@@ -106,7 +96,6 @@
 	"directions_close_aria": "Zamknij wybór aplikacji",
 	"directions_apple_maps": "Apple Maps",
 	"directions_google_maps": "Google Maps",
-
 	"landing_intro_aria": "O BetterFoodMaps",
 	"landing_title": "Znajdź jedzenie dopasowane do Twojej diety — w dowolnym miejscu na mapie.",
 	"landing_stats_aria": "Zasięg mapy",
@@ -122,12 +111,10 @@
 	"stat_nut_free": "dań bez orzechów",
 	"landing_cta": "Zacznij korzystać z mapy",
 	"landing_browse_link": "Możesz też przeglądać jedzenie według miast →",
-
 	"error_not_found": "Ta strona nie istnieje",
 	"error_generic": "Coś poszło nie tak",
 	"error_back": "Wróć do mapy",
 	"error_page_title": "{status} · BetterFoodMaps",
-
 	"server_error_no_location_or_item": "Nie ma takiego miejsca ani pozycji.",
 	"server_error_sign_in_required": "Aby to zrobić, musisz się zalogować.",
 	"server_error_location_not_found": "Nie znaleziono miejsca",
@@ -136,7 +123,6 @@
 	"server_error_oauth_invalid_callback": "Nieprawidłowe wywołanie zwrotne OAuth.",
 	"server_error_oauth_code_validation": "Nie udało się zweryfikować kodu autoryzacji.",
 	"server_error_oauth_missing_subject": "W odpowiedzi Google zabrakło pola subject.",
-
 	"head_site_description": "Odkrywaj kawiarnie, fast foody i restauracje na całym świecie na interaktywnej mapie.",
 	"head_desc_no_menu": "Zobacz menu w BetterFoodMaps.",
 	"head_located_in": "w {where}",
