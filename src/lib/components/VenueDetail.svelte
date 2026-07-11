@@ -233,7 +233,8 @@
 	//   • a predominantly horizontal swipe is never a sheet drag — it belongs to
 	//     a horizontal scroller inside the body (the course-tab strip);
 	//   • a downward pull grabs the sheet, UNLESS it starts inside the scrolled
-	//     body (scrolling back toward the top must stay native);
+	//     menu list — the panel's one vertical scroller (scrolling back toward
+	//     its top must stay native);
 	//   • anything else (an upward drag) is native scrolling.
 	// While one of the panel's own modals is up, the gesture is inert — a drag
 	// on the sources list must not move the sheet behind it.
@@ -241,19 +242,19 @@
 	// These are raw non-passive listeners, not Svelte `ontouchmove` attributes —
 	// Svelte registers touchmove passively, and a passive listener cannot
 	// preventDefault the scroll.
-	let bodyEl = $state<HTMLElement | null>(null);
+	let menuEl = $state<HTMLElement | null>(null);
 	// Per-gesture mode: undecided until the first touchmove, then fixed.
 	let touchMode: 'idle' | 'sheet' | 'native' = 'idle';
 	let touchStartY = 0;
 	let touchStartX = 0;
-	let touchInBody = false;
+	let touchInMenu = false;
 
 	function onSheetTouchStart(event: TouchEvent) {
 		if (!narrow || event.touches.length !== 1) return;
 		touchMode = 'idle';
 		touchStartY = event.touches[0].clientY;
 		touchStartX = event.touches[0].clientX;
-		touchInBody = event.target instanceof Node && (bodyEl?.contains(event.target) ?? false);
+		touchInMenu = event.target instanceof Node && (menuEl?.contains(event.target) ?? false);
 		lastTouchY = touchStartY;
 		lastTouchT = event.timeStamp;
 		dragVelocity = 0;
@@ -267,8 +268,8 @@
 			// Decide this gesture's mode from its first movement.
 			const dy = y - touchStartY;
 			const horizontal = Math.abs(event.touches[0].clientX - touchStartX) > Math.abs(dy);
-			const scrolledBody = touchInBody && (bodyEl?.scrollTop ?? 0) > 0;
-			if (sourcesOpen || directionsOpen || horizontal || dy <= 0 || scrolledBody) {
+			const scrolledMenu = touchInMenu && (menuEl?.scrollTop ?? 0) > 0;
+			if (sourcesOpen || directionsOpen || horizontal || dy <= 0 || scrolledMenu) {
 				touchMode = 'native';
 				return;
 			}
@@ -362,7 +363,7 @@
 	<!-- Everything between the header and the footer scrolls as one column, so a
 	     long menu (or a tall info block on the bottom sheet) never overflows the
 	     panel. -->
-	<div class="placecard__body" bind:this={bodyEl}>
+	<div class="placecard__body">
 		{#if loc.address || phone || loc.website || loc.opening_hours}
 			<dl class="info">
 				{#if loc.address}
@@ -499,7 +500,7 @@
 		     labels only rotate a teaser item per venue, so this is where the whole
 		     menu — each item's price, description and dietary markers — is read. -->
 		{#if loc.menu.length > 0}
-			<ul class="placecard__menu">
+			<ul class="placecard__menu" bind:this={menuEl}>
 				{#each visibleMenu as menuItem (menuItem.id)}
 					<li class="placecard__item">
 						<span class="placecard__item-line">
@@ -579,22 +580,17 @@
 		outline: none;
 	}
 
-	/* The scrolling middle of the panel (info block + menu), between the fixed
-	   header and footer. min-height: 0 lets it actually shrink inside the flex
-	   column so overflow-y can take over. */
+	/* The middle of the panel (info block, menu header, course tabs, menu list),
+	   between the fixed header and footer. The body itself does NOT scroll — the
+	   info block and course tabs stay put, and the menu LIST below them is the
+	   panel's one vertical scroll container (see .placecard__menu). min-height: 0
+	   lets the column actually shrink inside the panel flex column; overflow
+	   hidden clips anything a child fails to wrap or scroll itself, so no
+	   scrollbar can appear at this level. */
 	.placecard__body {
 		flex: 1;
 		min-height: 0;
-		overflow-y: auto;
-		/* Never a horizontal scrollbar: `overflow-y: auto` alone computes
-		   overflow-x to auto too, so any child poking out (a long unbreakable
-		   name, a nowrap row) would summon one. Wide content must wrap or scroll
-		   inside its own container (the coursebar does). */
-		overflow-x: hidden;
-		/* On the bottom sheet a scroll that hits the content's top hands the gesture
-		   to the sheet drag (see the content-drag handlers) — never to the page or
-		   to a rubber-band bounce behind it. */
-		overscroll-behavior-y: contain;
+		overflow: hidden;
 		display: flex;
 		flex-direction: column;
 		gap: 0.6rem;
@@ -670,14 +666,24 @@
 		color: var(--color-text-muted);
 	}
 
-	/* The open venue's full menu, listed inside the panel body (which owns the
-	   scrolling — see .placecard__body). */
+	/* The open venue's full menu: the panel's ONE vertical scroll container. The
+	   info block and course tabs above it stay fixed while a long menu scrolls
+	   under them. flex: 1 + min-height: 0 make it soak exactly the space the body
+	   has left; overflow-x hidden because overflow-y: auto alone would compute
+	   overflow-x to auto and let a poking child summon a horizontal scrollbar. */
 	.placecard__menu {
 		list-style: none;
 		margin: 0;
 		padding: 0;
 		display: flex;
 		flex-direction: column;
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+		overflow-x: hidden;
+		/* A scroll that hits the list's top hands the gesture to the sheet drag
+		   (see the touch handlers) — never to the page or a rubber-band bounce. */
+		overscroll-behavior-y: contain;
 	}
 
 	.placecard__item {
@@ -892,12 +898,12 @@
 		display: flex;
 		flex-wrap: nowrap;
 		gap: 0.25rem;
-		/* The row is a flex item of the scrolling .placecard__body column, and its
+		/* The row is a flex item of the .placecard__body column, and its
 		   overflow-x drops its automatic minimum size to 0 — without this it is
 		   the one child squashed to zero height whenever the menu overflows the
 		   panel (i.e. on virtually every real venue). No negative-margin bleed
-		   through the panel padding: inside the body's scroll clip it can't paint
-		   wider anyway — it only manufactured phantom horizontal scroll. */
+		   through the panel padding: inside the body's clip it can't paint wider
+		   anyway — it only manufactured phantom horizontal scroll. */
 		flex-shrink: 0;
 		overflow-x: auto;
 		scroll-behavior: smooth;
