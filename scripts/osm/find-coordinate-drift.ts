@@ -15,6 +15,7 @@
 
 import type { D1Like } from '../../src/lib/server/db';
 import { DismissFilter, type DismissableFinding, type DismissalOpts } from './audit-dismiss';
+import { clampLimit } from './paging';
 import { osmUrl } from './map-feature';
 import type { OsmPoiStore } from './poi-store';
 import { LOCATION_AUDIT, nearestNameMatch } from './poi-match';
@@ -98,7 +99,13 @@ export async function findCoordinateDrift(
 	db: D1Like,
 	params: FindDriftParams
 ): Promise<FindDriftResult> {
-	const limit = Math.min(Math.max(1, params.limit ?? DEFAULT_LIMIT), MAX_LIMIT);
+	// trunc:false preserves this finder's original non-truncating clamp.
+	const limit = clampLimit(params.limit, {
+		def: DEFAULT_LIMIT,
+		min: 1,
+		max: MAX_LIMIT,
+		trunc: false
+	});
 	const tolerance = Math.max(0, params.tolerance_m ?? DEFAULT_TOLERANCE_M);
 	const searchRadiusKm =
 		Math.min(Math.max(0, params.search_radius_m ?? DEFAULT_SEARCH_RADIUS_M), MAX_SEARCH_RADIUS_M) /

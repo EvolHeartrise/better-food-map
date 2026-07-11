@@ -23,6 +23,7 @@
 
 import { formatAddress } from '../../src/lib/address';
 import { DismissFilter, type DismissableFinding, type DismissalOpts } from './audit-dismiss';
+import { DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT, clampLimit, pageFindings } from './paging';
 import { namesMatch, normalizeName } from './search-poi';
 import type { D1Like } from '../../src/lib/server/db';
 
@@ -54,9 +55,6 @@ export interface FindUnlinkedChainBranchesResult {
 	suppressed_dismissed: number;
 }
 
-const DEFAULT_LIMIT = 50;
-const MAX_LIMIT = 200;
-
 /**
  * Flags every OPEN independent venue (brand_id IS NULL) whose normalized name
  * matches a chain in the brands table — a branch that was never linked to its
@@ -67,7 +65,7 @@ export async function findUnlinkedChainBranches(
 	db: D1Like,
 	opts: { limit?: number } & DismissalOpts = {}
 ): Promise<FindUnlinkedChainBranchesResult> {
-	const limit = Math.min(Math.max(1, Math.trunc(opts.limit ?? DEFAULT_LIMIT)), MAX_LIMIT);
+	const limit = clampLimit(opts.limit, { def: DEFAULT_PAGE_LIMIT, min: 1, max: MAX_PAGE_LIMIT });
 	const filter = new DismissFilter(opts);
 
 	const [brandRows, locationRows] = await Promise.all([
@@ -123,7 +121,10 @@ export async function findUnlinkedChainBranches(
 		});
 	}
 
-	const returnedFlagged = flagged.slice(0, limit);
+	const { page: returnedFlagged, tail } = pageFindings(flagged, {
+		limit,
+		suppressed: filter.suppressed
+	});
 
 	// Item counts for the returned venues' private menus (the stale-menu size).
 	const menuIds = [
@@ -146,11 +147,5 @@ export async function findUnlinkedChainBranches(
 		item_count: f.menu_id ? (itemCounts.get(f.menu_id) ?? 0) : 0
 	}));
 
-	return {
-		unlinked,
-		total: flagged.length,
-		returned: unlinked.length,
-		additional: flagged.length - unlinked.length,
-		suppressed_dismissed: filter.suppressed
-	};
+	return { unlinked, ...tail };
 }

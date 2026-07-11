@@ -66,7 +66,9 @@
 // ---------------------------------------------------------------------------
 
 import { existsSync } from 'node:fs';
+import { parseArgs as parseArgsUtil } from 'node:util';
 import { OsmPoiStore } from './osm/poi-store';
+import { streamNdjson } from './overture/eateries';
 import {
 	matchOverturePlaces,
 	matchNearestPlaces,
@@ -93,45 +95,39 @@ interface Args {
 }
 
 function parseArgs(argv: string[]): Args {
-	const args: Partial<Args> = {
-		db: 'data/osm-poi.sqlite',
-		radiusM: 100,
-		dryRun: false,
-		allowMassClear: false
-	};
-	for (let i = 0; i < argv.length; i++) {
-		const a = argv[i];
-		switch (a) {
-			case '--db':
-				args.db = argv[++i];
-				break;
-			case '--input':
-				args.input = argv[++i];
-				break;
-			case '--eateries':
-				args.eateries = argv[++i];
-				break;
-			case '--radius-m':
-				args.radiusM = Number(argv[++i]);
-				break;
-			case '--release':
-				args.release = argv[++i];
-				break;
-			case '--dry-run':
-				args.dryRun = true;
-				break;
-			case '--allow-mass-clear':
-				args.allowMassClear = true;
-				break;
-			case '--help':
-			case '-h':
-				printUsageAndExit(0);
-				break;
-			default:
-				console.error(`Unknown argument: ${a}`);
-				printUsageAndExit(1);
-		}
+	let values;
+	try {
+		({ values } = parseArgsUtil({
+			args: argv,
+			options: {
+				db: { type: 'string', default: 'data/osm-poi.sqlite' },
+				input: { type: 'string' },
+				eateries: { type: 'string' },
+				'radius-m': { type: 'string', default: '100' },
+				release: { type: 'string' },
+				'dry-run': { type: 'boolean', default: false },
+				'allow-mass-clear': { type: 'boolean', default: false },
+				help: { type: 'boolean', short: 'h', default: false }
+			},
+			allowPositionals: false
+		}));
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		const m = msg.match(/'([^']+)'/);
+		console.error(`Unknown argument: ${m ? m[1] : msg}`);
+		return printUsageAndExit(1);
 	}
+	if (values.help) printUsageAndExit(0);
+
+	const args: Args = {
+		db: values.db,
+		input: values.input,
+		eateries: values.eateries,
+		radiusM: Number(values['radius-m']),
+		release: values.release as string,
+		dryRun: values['dry-run'],
+		allowMassClear: values['allow-mass-clear']
+	};
 	if ((!args.input && !args.eateries) || !args.release) {
 		console.error('Error: --release and at least one of --input / --eateries are required.\n');
 		printUsageAndExit(1);
@@ -140,7 +136,7 @@ function parseArgs(argv: string[]): Args {
 		console.error('Error: --radius-m must be a positive number.\n');
 		printUsageAndExit(1);
 	}
-	return args as Args;
+	return args;
 }
 
 function printUsageAndExit(code: number): never {
@@ -186,50 +182,15 @@ function toPlace(raw: RawPlace): OverturePlace | null {
 	return { id: raw.id, name: raw.name ?? null, latitude: raw.lat, longitude: raw.lon, address };
 }
 
-/**
- * Streams a cache file's raw JSON records (newline-delimited JSON, or a JSON
- * array for small hand-made caches) — a country-scale NDJSON runs to millions
- * of lines / ~1 GB, which must never be materialized in memory. Malformed
- * lines are skipped.
- */
-async function* rawRecords(path: string): AsyncGenerator<unknown> {
-	const head = Bun.file(path).slice(0, 1);
-	const isArray = (await head.text()).trimStart().startsWith('[');
-	if (isArray) {
-		yield* JSON.parse(await Bun.file(path).text()) as unknown[];
-		return;
-	}
-	const decoder = new TextDecoder();
-	let buf = '';
-	const stream = Bun.file(path).stream() as unknown as AsyncIterable<Uint8Array>;
-	for await (const chunk of stream) {
-		buf += decoder.decode(chunk, { stream: true });
-		let nl = buf.indexOf('\n');
-		while (nl >= 0) {
-			const line = buf.slice(0, nl);
-			buf = buf.slice(nl + 1);
-			nl = buf.indexOf('\n');
-			if (!line.trim()) continue;
-			try {
-				yield JSON.parse(line);
-			} catch {
-				// skip malformed line
-			}
-		}
-	}
-	buf += decoder.decode();
-	if (buf.trim()) {
-		try {
-			yield JSON.parse(buf);
-		} catch {
-			// skip malformed tail
-		}
-	}
-}
+// A cache file's raw JSON records stream via the shared streamNdjson with
+// `acceptArray` (a JSON array for small hand-made caches) and `skipMalformed`
+// (a country-scale NDJSON runs to millions of lines / ~1 GB and must never be
+// materialized in memory; a stray junk line is skipped, not fatal).
+const RAW_RECORD_OPTS = { acceptArray: true, skipMalformed: true } as const;
 
 /** Streams usable address-pass places; `stats.seen` counts them for the summary line. */
 async function* loadPlaces(path: string, stats: { seen: number }): AsyncGenerator<OverturePlace> {
-	for await (const raw of rawRecords(path)) {
+	for await (const raw of streamNdjson<unknown>(path, RAW_RECORD_OPTS)) {
 		const p = toPlace(raw as RawPlace);
 		if (p) {
 			stats.seen++;
@@ -272,7 +233,7 @@ async function* loadEateries(
 	path: string,
 	stats: { seen: number }
 ): AsyncGenerator<OvertureEatery> {
-	for await (const raw of rawRecords(path)) {
+	for await (const raw of streamNdjson<unknown>(path, RAW_RECORD_OPTS)) {
 		const e = toEatery(raw as RawEatery);
 		if (e) {
 			stats.seen++;

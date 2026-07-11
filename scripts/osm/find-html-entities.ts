@@ -26,6 +26,7 @@ import { formatAddress } from '../../src/lib/address';
 import { decodeHtmlEntities } from '../../src/lib/text';
 import type { D1Like } from '../../src/lib/server/db';
 import { DismissFilter, fnv1a, type DismissableFinding, type DismissalOpts } from './audit-dismiss';
+import { DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT, clampLimit } from './paging';
 
 /** A location serving a menu that carries an encoded item (blast-radius context). */
 export interface EncodedItemLocation {
@@ -80,8 +81,6 @@ export interface FindHtmlEntitiesResult {
 	suppressed_dismissed: number;
 }
 
-const DEFAULT_LIMIT = 50;
-const MAX_LIMIT = 200;
 const ITEM_LOCATION_CAP = 5;
 
 /** True when the text still carries an HTML character reference the decoder would fix. */
@@ -99,7 +98,7 @@ export async function findHtmlEntities(
 	db: D1Like,
 	opts: { limit?: number } & DismissalOpts = {}
 ): Promise<FindHtmlEntitiesResult> {
-	const limit = Math.min(Math.max(1, Math.trunc(opts.limit ?? DEFAULT_LIMIT)), MAX_LIMIT);
+	const limit = clampLimit(opts.limit, { def: DEFAULT_PAGE_LIMIT, min: 1, max: MAX_PAGE_LIMIT });
 	// Subjects span four tables, so they carry a kind prefix; the fingerprint
 	// hashes the stored text — edited text is new evidence.
 	const filter = new DismissFilter(opts);

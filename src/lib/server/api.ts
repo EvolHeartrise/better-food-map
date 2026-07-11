@@ -28,14 +28,6 @@ import { requireUser } from './context';
 import { apiBodyTooLarge } from './api-cors';
 import type { User } from './db';
 
-// Re-exported so route handlers have one import site for the API helpers.
-export {
-	API_V1_PREFIX,
-	apiAllowedOrigins,
-	applyApiResponseHeaders,
-	apiPreflightResponse
-} from './api-cors';
-
 /**
  * A short, ENGLISH, dev-facing message for a malformed API request (a bad query
  * string or JSON body). Not a user-facing UI string — a conforming app never hits

@@ -11,6 +11,7 @@
 	import { m } from '$lib/paraglide/messages';
 	import { getLocale, locales, type Locale } from '$lib/paraglide/runtime';
 	import { IS_APP } from '$lib/app/platform';
+	import { createPopoverDismiss } from '$lib/popover-dismiss';
 	import type { User } from '$lib/server/db';
 
 	// The account control: a popover that holds the per-user preferences (there is no
@@ -106,24 +107,14 @@
 		}
 	}
 
-	// Escape closes the popover from anywhere (the trigger or a control inside may hold
-	// focus); a pointerdown outside the control closes it too. Both are handled on the
-	// window — mirroring DietSelector — and `closest('.account')` keeps clicks on the
-	// trigger/popover from closing it. When focus is inside the control it returns to the
-	// trigger, so closing the popover can't drop it to <body>; an outside click keeps
-	// focus where the user put it.
-	function handleWindowKeydown(event: KeyboardEvent) {
-		if (event.key === 'Escape' && open) {
-			event.preventDefault();
-			open = false;
-			if (rootEl.contains(document.activeElement)) triggerEl?.focus();
-		}
-	}
-
-	function handleWindowPointerDown(event: PointerEvent) {
-		if (!open) return;
-		if (!(event.target as HTMLElement | null)?.closest('.account')) open = false;
-	}
+	// Escape closes the popover from anywhere and a pointerdown outside it closes it too,
+	// with focus returned to the trigger — shared with DietSelector.
+	const dismiss = createPopoverDismiss({
+		isOpen: () => open,
+		close: () => (open = false),
+		getRoot: () => rootEl,
+		getTrigger: () => triggerEl
+	});
 
 	// In the Capacitor app the `/auth/login/google` route doesn't exist in the
 	// bundle and OAuth must run in the SYSTEM browser, so sign-in calls the app's
@@ -150,7 +141,7 @@
 	}
 </script>
 
-<svelte:window onkeydown={handleWindowKeydown} onpointerdown={handleWindowPointerDown} />
+<svelte:window onkeydown={dismiss.onWindowKeydown} onpointerdown={dismiss.onWindowPointerDown} />
 
 <!-- The language picker, shared by the signed-in and signed-out popovers: a labelled
      group of toggle buttons, the active locale pressed (and check-marked). -->

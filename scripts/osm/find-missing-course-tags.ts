@@ -24,6 +24,7 @@
 import type { D1Like } from '../../src/lib/server/db';
 import { TAGS } from '../../src/lib/tags';
 import { DismissFilter, type DismissableFinding, type DismissalOpts } from './audit-dismiss';
+import { DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT, clampLimit, pageFindings } from './paging';
 
 const courseTagIds = TAGS.filter((t) => t.tag_type === 'course').map((t) => t.id);
 
@@ -52,9 +53,6 @@ export interface FindMissingCourseTagsResult {
 	limit: number;
 	offset: number;
 }
-
-const DEFAULT_LIMIT = 50;
-const MAX_LIMIT = 200;
 
 // Word-boundary keyword lists. Whole-word matching only (never substrings), so
 // "chocolate" does not match "cola" and "platter" does not match "latte" —
@@ -146,7 +144,7 @@ export async function findMissingCourseTags(
 	db: D1Like,
 	opts: { limit?: number; offset?: number } & DismissalOpts = {}
 ): Promise<FindMissingCourseTagsResult> {
-	const limit = Math.min(Math.max(1, Math.trunc(opts.limit ?? DEFAULT_LIMIT)), MAX_LIMIT);
+	const limit = clampLimit(opts.limit, { def: DEFAULT_PAGE_LIMIT, min: 1, max: MAX_PAGE_LIMIT });
 	const offset = Math.max(0, Math.trunc(opts.offset ?? 0));
 	const filter = new DismissFilter(opts);
 
@@ -190,16 +188,13 @@ export async function findMissingCourseTags(
 	// each hint bucket.
 	flagged.sort((a, b) => HINT_RANK[a.hint ?? 'none'] - HINT_RANK[b.hint ?? 'none']);
 
-	const items = flagged.slice(offset, offset + limit);
-	return {
-		items,
-		total: flagged.length,
-		returned: items.length,
-		// Clamped: an offset past the end (a stale page position — the flagged set
-		// shrinks as items are re-tagged or dismissed between calls) is not "-N left".
-		additional: Math.max(0, flagged.length - offset - items.length),
-		suppressed_dismissed: filter.suppressed,
+	// `additional` is clamped at 0 by pageFindings: an offset past the end (a stale
+	// page position — the flagged set shrinks as items are re-tagged or dismissed
+	// between calls) is not "-N left".
+	const { page: items, tail } = pageFindings(flagged, {
 		limit,
-		offset
-	};
+		offset,
+		suppressed: filter.suppressed
+	});
+	return { items, ...tail, limit, offset };
 }
