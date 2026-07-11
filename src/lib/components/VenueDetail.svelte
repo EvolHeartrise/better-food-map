@@ -373,9 +373,14 @@
 					<div class="info__row">
 						<dt>{m.venue_address_label()}</dt>
 						<dd>
+							<!-- dir="ltr": address/phone/website are LTR Latin data (DB content
+							     is never translated); without an isolated LTR run the bidi
+							     algorithm reorders their neutral-separated segments under the
+							     RTL locales' <html dir="rtl">. -->
 							<button
 								type="button"
 								class="info__directions"
+								dir="ltr"
 								aria-haspopup="dialog"
 								aria-label={m.directions_button_aria({ address: loc.address })}
 								onclick={() => (directionsOpen = true)}
@@ -391,7 +396,7 @@
 						<dt>{m.venue_phone_label()}</dt>
 						<dd>
 							<a href="tel:{phone.tel}"
-								>{phone.display}{#if phone.extension}
+								><span dir="ltr">{phone.display}</span>{#if phone.extension}
 									{m.venue_phone_extension({ ext: phone.extension })}{/if}</a
 							>
 						</dd>
@@ -406,11 +411,11 @@
 						<dt>{m.venue_website_label()}</dt>
 						<dd>
 							{#if websiteHref}
-								<a href={websiteHref} target="_blank" rel="external noopener noreferrer">
+								<a href={websiteHref} dir="ltr" target="_blank" rel="external noopener noreferrer">
 									{loc.website}
 								</a>
 							{:else}
-								{loc.website}
+								<span dir="ltr">{loc.website}</span>
 							{/if}
 						</dd>
 					</div>

@@ -12,7 +12,7 @@ describe('formatPhone', () => {
 			'604.555.1234',
 			'1-604-555-1234'
 		]) {
-			expect(formatPhone(raw, 'CA')?.display).toBe('(604) 555-1234');
+			expect(formatPhone(raw, 'CA')?.display).toBe('+1 (604) 555-1234');
 		}
 	});
 
@@ -26,23 +26,23 @@ describe('formatPhone', () => {
 	});
 
 	test('defaults a bare 10-digit number to NANP without a country', () => {
-		expect(formatPhone('6045551234')?.display).toBe('(604) 555-1234');
+		expect(formatPhone('6045551234')?.display).toBe('+1 (604) 555-1234');
 		expect(formatPhone('6045551234')?.e164).toBe('+16045551234');
 	});
 
 	test('returns the extension separately (number in display, ext for a localized label)', () => {
 		const a = formatPhone('+1-416-922-2905x5', 'CA');
-		expect(a?.display).toBe('(416) 922-2905');
+		expect(a?.display).toBe('+1 (416) 922-2905');
 		expect(a?.extension).toBe('5');
 		expect(a?.tel).toBe('+14169222905;ext=5');
 
 		const b = formatPhone('+1 613-533-6000 x78283', 'CA');
-		expect(b?.display).toBe('(613) 533-6000');
+		expect(b?.display).toBe('+1 (613) 533-6000');
 		expect(b?.extension).toBe('78283');
 		expect(b?.tel).toBe('+16135336000;ext=78283');
 
 		const c = formatPhone('+1 613 533 6000 extension 42', 'CA');
-		expect(c?.display).toBe('(613) 533-6000');
+		expect(c?.display).toBe('+1 (613) 533-6000');
 		expect(c?.extension).toBe('42');
 	});
 
@@ -52,7 +52,7 @@ describe('formatPhone', () => {
 
 	test('takes the primary number from an OSM multi-value phone', () => {
 		const p = formatPhone('+1-604-380-4665;+1-604-463-0278', 'CA');
-		expect(p?.display).toBe('(604) 380-4665');
+		expect(p?.display).toBe('+1 (604) 380-4665');
 		expect(p?.tel).toBe('+16043804665');
 		expect(p?.extension).toBeNull();
 	});
@@ -61,7 +61,7 @@ describe('formatPhone', () => {
 		// Regression: the extension must be pulled from the primary segment AFTER the
 		// multi-value split, never folded into the digits (would corrupt the E.164).
 		const p = formatPhone('+1-416-922-2905x5;+1-604-463-0278', 'CA');
-		expect(p?.display).toBe('(416) 922-2905');
+		expect(p?.display).toBe('+1 (416) 922-2905');
 		expect(p?.extension).toBe('5');
 		expect(p?.tel).toBe('+14169222905;ext=5');
 		expect(p?.e164).toBe('+14169222905');
@@ -69,15 +69,15 @@ describe('formatPhone', () => {
 
 	test('an extension on a SECOND number is dropped with that number', () => {
 		const p = formatPhone('+1-604-380-4665;+1-604-463-0278x5', 'CA');
-		expect(p?.display).toBe('(604) 380-4665');
+		expect(p?.display).toBe('+1 (604) 380-4665');
 		expect(p?.extension).toBeNull();
 		expect(p?.tel).toBe('+16043804665');
 	});
 
 	test('round-trips its own canonical stored form', () => {
-		expect(formatPhone('+16045551234', 'CA')?.display).toBe('(604) 555-1234');
+		expect(formatPhone('+16045551234', 'CA')?.display).toBe('+1 (604) 555-1234');
 		const withExt = formatPhone('+16045551234;ext=5', 'CA');
-		expect(withExt?.display).toBe('(604) 555-1234');
+		expect(withExt?.display).toBe('+1 (604) 555-1234');
 		expect(withExt?.extension).toBe('5');
 		expect(withExt?.tel).toBe('+16045551234;ext=5');
 	});
