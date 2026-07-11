@@ -14,7 +14,10 @@
 // POI. Everything else is REPORTED, not patched:
 //   • zero exact POIs — the node moved/vanished since the extract, a closed
 //     tombstone whose POI was dropped, or a known staging gap (Caffè
-//     Artigiano); resolvable only by a fresh extract or by hand.
+//     Artigiano); resolvable only by a fresh extract or by hand. A sub-ULP
+//     coordinate NEAR-MISS (a way-centroid re-derived ~1e-14° off the stored
+//     double, name still matching) is split into its own bucket so it doesn't
+//     read as a moved node — reported, not stamped.
 //   • several POIs at one point — an OSM double-mapping; picking one would
 //     bake a coin flip into the identity column.
 //   • one POI claimed by several locations (or by a row already stamped with
@@ -42,6 +45,12 @@ const CHUNK = 100;
 // exact coordinate equality (verbatim-imported doubles round-trip exactly).
 const EPS = 1e-7;
 
+// A POI inside this of a stored coordinate WITHOUT being bit-identical is a
+// float NEAR-MISS, not a moved node: a way-centroid re-derived in a fresh
+// extract can land 1 ULP (~1e-14° at these magnitudes) off the stored double.
+// 1e-9° ≈ 0.1 mm — far below any real node move, comfortably inside the probe.
+const NEAR_MISS_EPS = 1e-9;
+
 /** The live-location projection the plan works from (one D1 read). */
 export interface LiveLocation {
 	id: string;
@@ -58,6 +67,13 @@ export interface BackfillPlan {
 	alreadyHave: number;
 	/** No coordinate-exact POI (moved node, dropped closed POI, staging gap). */
 	noExactPoi: { id: string; name: string; closed: boolean }[];
+	/**
+	 * Name-matching POI(s) within NEAR_MISS_EPS but not bit-identical — way-
+	 * centroid float re-derivation, almost certainly the same element. Reported
+	 * for hand-stamping (or a stamping flag, if these grow), never stamped blind:
+	 * the join's contract is EXACT equality.
+	 */
+	nearMisses: { id: string; name: string; osm_ids: string[] }[];
 	/** Several POIs at the exact point — OSM double-mapping, not guessed between. */
 	multiPoi: { id: string; name: string; osm_ids: string[] }[];
 	/**
@@ -86,6 +102,7 @@ export function planBackfill(locations: LiveLocation[], store: OsmIdStoreLike): 
 		assignments: [],
 		alreadyHave: 0,
 		noExactPoi: [],
+		nearMisses: [],
 		multiPoi: [],
 		poiConflicts: [],
 		nameMismatches: []
@@ -114,7 +131,18 @@ export function planBackfill(locations: LiveLocation[], store: OsmIdStoreLike): 
 			(p) => p.latitude === loc.latitude && p.longitude === loc.longitude
 		);
 		if (exact.length === 0) {
-			plan.noExactPoi.push({ id: loc.id, name: loc.name, closed: loc.closed_at !== null });
+			// Split off the sub-ULP float near-misses before calling anything "moved".
+			const near = candidates.filter(
+				(p) =>
+					Math.abs(p.latitude - loc.latitude) < NEAR_MISS_EPS &&
+					Math.abs(p.longitude - loc.longitude) < NEAR_MISS_EPS &&
+					namesMatch(normalizeName(loc.name), normalizeName(p.name))
+			);
+			if (near.length > 0) {
+				plan.nearMisses.push({ id: loc.id, name: loc.name, osm_ids: near.map((p) => p.osm_id) });
+			} else {
+				plan.noExactPoi.push({ id: loc.id, name: loc.name, closed: loc.closed_at !== null });
+			}
 			continue;
 		}
 		if (exact.length > 1) {
@@ -158,13 +186,21 @@ async function main(): Promise<void> {
 		.bind()
 		.all<LiveLocation>();
 
-	const { assignments, alreadyHave, noExactPoi, multiPoi, poiConflicts, nameMismatches } =
-		planBackfill(locations, store);
+	const {
+		assignments,
+		alreadyHave,
+		noExactPoi,
+		nearMisses,
+		multiPoi,
+		poiConflicts,
+		nameMismatches
+	} = planBackfill(locations, store);
 
 	const closedNoPoi = noExactPoi.filter((l) => l.closed).length;
 	console.error(`Locations scanned:             ${locations.length}`);
 	console.error(`Already have osm_id:           ${alreadyHave}`);
 	console.error(`No coordinate-exact POI:       ${noExactPoi.length} (${closedNoPoi} closed)`);
+	console.error(`Sub-ULP near-miss (reported):  ${nearMisses.length}`);
 	console.error(`Multiple POIs at point:        ${multiPoi.length}`);
 	console.error(`POI claimed twice (WITHHELD):  ${poiConflicts.length}`);
 	console.error(`Name mismatch (skipped):       ${nameMismatches.length}`);
@@ -183,6 +219,15 @@ async function main(): Promise<void> {
 		console.error('\nOSM double-mappings — several POIs at one point, none chosen:');
 		for (const m of multiPoi) {
 			console.error(`  ${m.id}  "${m.name}"  candidates: ${m.osm_ids.join(', ')}`);
+		}
+	}
+	if (nearMisses.length) {
+		console.error(
+			'\nSub-ULP near-misses — a re-derived way centroid, same element by name; the exact-equality ' +
+				'contract withholds the stamp, so apply these by hand after a spot check:'
+		);
+		for (const n of nearMisses) {
+			console.error(`  ${n.id}  "${n.name}"  candidates: ${n.osm_ids.join(', ')}`);
 		}
 	}
 	if (nameMismatches.length) {
@@ -212,6 +257,7 @@ async function main(): Promise<void> {
 	// never patched through the MCP update surface. The IS NULL guard keeps a
 	// re-run (or a concurrent import) from ever overwriting a stamp.
 	let updated = 0;
+	let attempted = 0;
 	for (let i = 0; i < assignments.length; i += CHUNK) {
 		const chunk = assignments.slice(i, i + CHUNK);
 		const stmts: D1PreparedLike[] = chunk.map((a) =>
@@ -219,11 +265,14 @@ async function main(): Promise<void> {
 				.prepare(`UPDATE locations SET osm_id = ? WHERE id = ? AND osm_id IS NULL`)
 				.bind(a.osm_id, a.id)
 		);
-		await db.batch(stmts);
-		updated += chunk.length;
+		// Count what the UPDATEs actually changed (the IS NULL guard can no-op a
+		// row stamped since the plan was read), not what was attempted.
+		const results = (await db.batch(stmts)) as { meta?: { changes?: number } }[];
+		updated += results.reduce((n, r) => n + (r?.meta?.changes ?? 0), 0);
+		attempted += chunk.length;
 		console.error(`applied ${updated}/${assignments.length}`);
 	}
-	console.error(`\nDone: ${updated} locations stamped.`);
+	console.error(`\nDone: ${updated} locations stamped (${attempted - updated} no-op).`);
 }
 
 // Only run as a CLI — the matching core (planBackfill) is imported by tests.

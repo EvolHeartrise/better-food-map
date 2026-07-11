@@ -82,6 +82,26 @@ test('report buckets: no exact POI (closed flagged), double-mapping, name mismat
 	]);
 });
 
+test('a 1-ULP way-centroid near-miss lands in nearMisses, not among the moved nodes', () => {
+	// Real prod case: "Burgoo" vs w289846713 — the re-extracted way centroid is
+	// 1 ULP (~1.4e-14°) off the stored longitude, so exact equality fails.
+	const store = fakeStore([
+		{ osm_id: 'w289846713', name: 'Burgoo', latitude: 49.26, longitude: -123.10083173999999 },
+		// A near-miss whose name DOESN'T match is not "the same element re-derived".
+		{ osm_id: 'n5', name: 'New Occupant Ramen', latitude: 49.3, longitude: -123.30000000000001 }
+	]);
+	const plan = planBackfill(
+		[
+			loc({ id: 'burgoo', name: 'Burgoo', latitude: 49.26, longitude: -123.10083174 }),
+			loc({ id: 'other', latitude: 49.3, longitude: -123.3 })
+		],
+		store
+	);
+	expect(plan.assignments).toEqual([]);
+	expect(plan.nearMisses).toEqual([{ id: 'burgoo', name: 'Burgoo', osm_ids: ['w289846713'] }]);
+	expect(plan.noExactPoi).toEqual([{ id: 'other', name: 'Cafe', closed: false }]);
+});
+
 test('a POI claimed by two locations is withheld and reported loudly', () => {
 	// Two rows at one point should be impossible under coordinate-exact dedup;
 	// if it happens anyway, neither may be stamped.
