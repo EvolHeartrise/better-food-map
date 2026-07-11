@@ -26,6 +26,7 @@
 import { formatAddress } from '../../src/lib/address';
 import type { D1Like } from '../../src/lib/server/db';
 import { DismissFilter, type DismissableFinding, type DismissalOpts } from './audit-dismiss';
+import { DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT, clampLimit, pageFindings } from './paging';
 
 /** One flagged location on the empty/thin-menu work-list. */
 export interface IncompleteMenuLocation extends DismissableFinding {
@@ -53,8 +54,6 @@ export interface FindIncompleteMenusResult {
 	min_items: number;
 }
 
-const DEFAULT_LIMIT = 50;
-const MAX_LIMIT = 200;
 const DEFAULT_MIN_ITEMS = 1;
 
 /** Raw grouped-query row (address parts kept only to derive the display address). */
@@ -86,7 +85,7 @@ export async function findIncompleteMenus(
 	opts: { min_items?: number; limit?: number } & DismissalOpts = {}
 ): Promise<FindIncompleteMenusResult> {
 	const minItems = Math.max(0, Math.trunc(opts.min_items ?? DEFAULT_MIN_ITEMS));
-	const limit = Math.min(Math.max(0, Math.trunc(opts.limit ?? DEFAULT_LIMIT)), MAX_LIMIT);
+	const limit = clampLimit(opts.limit, { def: DEFAULT_PAGE_LIMIT, min: 0, max: MAX_PAGE_LIMIT });
 	const filter = new DismissFilter(opts);
 
 	const { results } = await db
@@ -132,13 +131,6 @@ export async function findIncompleteMenus(
 		});
 	}
 
-	const locations = flagged.slice(0, limit);
-	return {
-		locations,
-		total: flagged.length,
-		returned: locations.length,
-		additional: flagged.length - locations.length,
-		suppressed_dismissed: filter.suppressed,
-		min_items: minItems
-	};
+	const { page: locations, tail } = pageFindings(flagged, { limit, suppressed: filter.suppressed });
+	return { locations, ...tail, min_items: minItems };
 }

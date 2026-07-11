@@ -1,9 +1,9 @@
 // ---------------------------------------------------------------------------
 // Shared Overture-eatery primitives: the NDJSON row shape written by
 // fetch-canada-eateries.py, Canadian-province resolution, category → staging-
-// class bucketing, and NDJSON streaming. Extracted from compare-osm-eateries.ts
-// so the leads builder (build-leads.ts) and the comparison experiment consume
-// the SAME parsing/bucketing and can never drift.
+// class bucketing, and NDJSON streaming, shared so every Overture consumer
+// (e.g. the leads builder, build-leads.ts) uses the SAME parsing/bucketing and
+// can never drift.
 // ---------------------------------------------------------------------------
 
 /** The Overture Places release the local NDJSON/DuckDB caches were fetched from. */
@@ -123,18 +123,53 @@ export function primaryDataset(datasets: string[] | null): string {
 	return (datasets ?? []).find((x) => x !== 'Overture' && x !== 'Overture-signals') ?? 'Overture';
 }
 
-/** Streams JSON rows from an NDJSON file without materializing it (blank lines skipped). */
-export async function* streamNdjson<T>(path: string): AsyncGenerator<T> {
+/** Options for {@link streamNdjson} (both default off, i.e. strict NDJSON). */
+export interface StreamNdjsonOptions {
+	/** Also accept a whole top-level JSON array (small hand-made caches). */
+	acceptArray?: boolean;
+	/** Skip lines that fail to parse instead of throwing on them. */
+	skipMalformed?: boolean;
+}
+
+/**
+ * Streams JSON rows from an NDJSON file without materializing it (blank lines
+ * skipped). By default a malformed line THROWS — right for diff/lead tools where
+ * silently under-reading a snapshot would fabricate results. `skipMalformed`
+ * tolerates junk lines and `acceptArray` also handles a single top-level JSON
+ * array (see overture-enrich.ts, the address/contacts caches).
+ */
+export async function* streamNdjson<T>(
+	path: string,
+	options: StreamNdjsonOptions = {}
+): AsyncGenerator<T> {
+	const { acceptArray = false, skipMalformed = false } = options;
+	if (acceptArray) {
+		const head = await Bun.file(path).slice(0, 1).text();
+		if (head.trimStart().startsWith('[')) {
+			yield* JSON.parse(await Bun.file(path).text()) as T[];
+			return;
+		}
+	}
+	const parseLine = function* (line: string): Generator<T> {
+		if (!line.trim()) return;
+		if (!skipMalformed) {
+			yield JSON.parse(line) as T;
+			return;
+		}
+		try {
+			yield JSON.parse(line) as T;
+		} catch {
+			// skip malformed line
+		}
+	};
 	const decoder = new TextDecoder();
 	let buf = '';
 	for await (const chunk of Bun.file(path).stream()) {
 		buf += decoder.decode(chunk, { stream: true });
 		const lines = buf.split('\n');
 		buf = lines.pop() ?? '';
-		for (const line of lines) {
-			if (!line.trim()) continue;
-			yield JSON.parse(line) as T;
-		}
+		for (const line of lines) yield* parseLine(line);
 	}
-	if (buf.trim()) yield JSON.parse(buf) as T;
+	buf += decoder.decode(); // flush any trailing multibyte remainder
+	yield* parseLine(buf);
 }

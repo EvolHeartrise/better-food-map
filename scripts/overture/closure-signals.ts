@@ -47,6 +47,7 @@
 // (closure-signals.test.ts) — that is expected, not a gap.
 // ---------------------------------------------------------------------------
 
+import { parseArgs as parseArgsUtil } from 'node:util';
 import { createHttpD1 } from '../../src/lib/server/d1-http';
 import { OsmPoiStore } from '../osm/poi-store';
 import { streamNdjson } from './eateries';
@@ -446,49 +447,41 @@ interface Args {
 }
 
 function parseArgs(argv: string[]): Args {
-	const args: Partial<Args> = {
-		db: process.env.OSM_POI_DB ?? 'data/osm-poi.sqlite',
-		out: 'data/closure-signals.worklist.json',
-		confidenceDrop: DEFAULT_CONFIDENCE_DROP,
-		churnRadiusM: DEFAULT_CHURN_RADIUS_M,
-		allowMassSignals: false,
-		allowSwapped: false
-	};
-	for (let i = 0; i < argv.length; i++) {
-		switch (argv[i]) {
-			case '--old':
-				args.old = argv[++i];
-				break;
-			case '--new':
-				args.new = argv[++i];
-				break;
-			case '--db':
-				args.db = argv[++i];
-				break;
-			case '--out':
-				args.out = argv[++i];
-				break;
-			case '--confidence-drop':
-				args.confidenceDrop = Number(argv[++i]);
-				break;
-			case '--churn-radius-m':
-				args.churnRadiusM = Number(argv[++i]);
-				break;
-			case '--allow-mass-signals':
-				args.allowMassSignals = true;
-				break;
-			case '--allow-swapped':
-				args.allowSwapped = true;
-				break;
-			case '--help':
-			case '-h':
-				printUsageAndExit(0);
-				break;
-			default:
-				console.error(`Unknown argument: ${argv[i]}`);
-				printUsageAndExit(1);
-		}
+	let values;
+	try {
+		({ values } = parseArgsUtil({
+			args: argv,
+			options: {
+				old: { type: 'string' },
+				new: { type: 'string' },
+				db: { type: 'string', default: process.env.OSM_POI_DB ?? 'data/osm-poi.sqlite' },
+				out: { type: 'string', default: 'data/closure-signals.worklist.json' },
+				'confidence-drop': { type: 'string', default: String(DEFAULT_CONFIDENCE_DROP) },
+				'churn-radius-m': { type: 'string', default: String(DEFAULT_CHURN_RADIUS_M) },
+				'allow-mass-signals': { type: 'boolean', default: false },
+				'allow-swapped': { type: 'boolean', default: false },
+				help: { type: 'boolean', short: 'h', default: false }
+			},
+			allowPositionals: false
+		}));
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		const m = msg.match(/'([^']+)'/);
+		console.error(`Unknown argument: ${m ? m[1] : msg}`);
+		return printUsageAndExit(1);
 	}
+	if (values.help) printUsageAndExit(0);
+
+	const args: Args = {
+		old: values.old as string,
+		new: values.new as string,
+		db: values.db,
+		out: values.out,
+		confidenceDrop: Number(values['confidence-drop']),
+		churnRadiusM: Number(values['churn-radius-m']),
+		allowMassSignals: values['allow-mass-signals'],
+		allowSwapped: values['allow-swapped']
+	};
 	if (!args.old || !args.new) {
 		console.error('Error: --old and --new are both required.\n');
 		printUsageAndExit(1);
@@ -501,7 +494,7 @@ function parseArgs(argv: string[]): Args {
 		console.error('Error: --churn-radius-m must be a positive number.\n');
 		printUsageAndExit(1);
 	}
-	return args as Args;
+	return args;
 }
 
 function printUsageAndExit(code: number): never {

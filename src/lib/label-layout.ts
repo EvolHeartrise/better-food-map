@@ -218,7 +218,7 @@ export type FillBox = {
  * splits apart and shows, a food-court pile-up doesn't jostle forever. Well
  * inside the sim's maxLeader, so the resolving nudges stay near the anchors.
  */
-export const FILL_ADMIT_BUDGET_PX = 56;
+const FILL_ADMIT_BUDGET_PX = 56;
 /**
  * The (looser) penetration an already-admitted pill may carry and STAY
  * admitted. The gap above {@link FILL_ADMIT_BUDGET_PX} is the hysteresis band:
@@ -228,7 +228,7 @@ export const FILL_ADMIT_BUDGET_PX = 56;
  * across the admission boundary. Entering is strict; only clearly-worse
  * overlap evicts.
  */
-export const FILL_RETAIN_BUDGET_PX = 64;
+const FILL_RETAIN_BUDGET_PX = 64;
 /**
  * Half-box (px) assumed for a pill that has never been rendered, hence never
  * measured (the engine measures on DOM attach). Sized generously — a bit above
@@ -236,8 +236,8 @@ export const FILL_RETAIN_BUDGET_PX = 64;
  * once its real box lands; over-estimating only delays an admission by a
  * pass, while under-estimating admits a pill that then must be evicted.
  */
-export const FILL_EST_HALF_W_PX = 76;
-export const FILL_EST_HALF_H_PX = 26;
+const FILL_EST_HALF_W_PX = 76;
+const FILL_EST_HALF_H_PX = 26;
 
 /**
  * How deeply two boxes interpenetrate on their LEAST axis (0 when apart) — the

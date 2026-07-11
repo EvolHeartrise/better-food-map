@@ -54,7 +54,7 @@ export interface SearchableLocation {
  * mirror the server's LIKE exactly — Unicode lowercasing would keep venues the
  * filtered cell read drops (see $lib/search).
  */
-export function nameMatches(name: string, queryTerm: string): boolean {
+function nameMatches(name: string, queryTerm: string): boolean {
 	return queryTerm !== '' && foldAsciiCase(name).includes(queryTerm);
 }
 

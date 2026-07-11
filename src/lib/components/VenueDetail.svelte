@@ -24,6 +24,7 @@
 		settleSnap,
 		stepSnap,
 		cycleSnap,
+		FALLBACK_VIEWPORT_H,
 		type SheetSnap
 	} from '$lib/bottom-sheet';
 	import { m } from '$lib/paraglide/messages';
@@ -222,10 +223,11 @@
 	// The height the sheet renders at: a live drag while one is in progress,
 	// otherwise the resting height of the page-owned `snap` for the current
 	// viewport. Both sides compute against the same reactive `innerHeight`, so the
-	// component and the page agree on the resting height to the pixel. `?? 800`
-	// keeps the SSR / pre-measure render a plausible phone height rather than the
-	// MIN_SHEET_PX floor (`snapHeightPx` floors a zero viewport).
-	const vh = $derived(innerHeight.current ?? 800);
+	// component and the page agree on the resting height to the pixel. The shared
+	// FALLBACK_VIEWPORT_H keeps the SSR / pre-measure render a plausible phone
+	// height rather than the MIN_SHEET_PX floor (`snapHeightPx` floors a zero
+	// viewport).
+	const vh = $derived(innerHeight.current ?? FALLBACK_VIEWPORT_H);
 	let dragHeight = $state<number | null>(null);
 	let dragging = $state(false);
 	const sheetHeight = $derived(dragHeight ?? snapHeightPx(snap, vh));

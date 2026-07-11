@@ -69,7 +69,7 @@ export const TAGS: readonly Tag[] = [
 // (e.g. alcohol), so halal stays independent: always stored, always shown, and
 // its filter matches only explicitly halal-tagged items. An OPTIONAL vegan tag
 // ("can be made vegan") never dominates — only the asserted form entails.
-export const DIET_TAG_IMPLIES: Partial<Record<TagId, readonly TagId[]>> = {
+const DIET_TAG_IMPLIES: Partial<Record<TagId, readonly TagId[]>> = {
 	vegan: ['vegetarian', 'dairy_free']
 };
 

@@ -30,6 +30,13 @@ const SNAP_FRACTION: Record<SheetSnap, number> = {
 // a couple of rows) on a very short landscape phone, where 0.42·vh would be tiny.
 export const MIN_SHEET_PX = 200;
 
+// The viewport height assumed before the first client measure (SSR / pre-hydration),
+// where `innerHeight.current` is undefined. A plausible phone height so the page and
+// VenueDetail compute the SAME resting sheet height that first frame (both fall back
+// to this), rather than the MIN_SHEET_PX floor `snapHeightPx` would apply to a zero
+// viewport.
+export const FALLBACK_VIEWPORT_H = 800;
+
 // The resting pixel height for a snap at the given viewport height. Rounded to a
 // whole pixel (the value drives a CSS length and a camera inset). A zero/absent
 // viewport (SSR, before the first measure) floors to MIN_SHEET_PX.

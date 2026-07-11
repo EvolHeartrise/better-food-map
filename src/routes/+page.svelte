@@ -2,25 +2,24 @@
 	import { resolve } from '$app/paths';
 	import { pushState, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
-	import { SvelteSet, SvelteMap, MediaQuery } from 'svelte/reactivity';
+	import { MediaQuery } from 'svelte/reactivity';
 	import { innerHeight } from 'svelte/reactivity/window';
-	import { snapHeightPx, type SheetSnap } from '$lib/bottom-sheet';
+	import { snapHeightPx, FALLBACK_VIEWPORT_H, type SheetSnap } from '$lib/bottom-sheet';
 	import { getMapCells, getLocationData, getStats, getUserLocation } from '$lib/data.remote';
 	import { ViewportData } from '$lib/viewport-data.svelte';
 	import { getCurrentUser, getLikes, setLocationLiked, setItemLiked } from '$lib/user.remote';
-	import { createLikeQueue } from '$lib/like-queue';
+	import { createOptimisticLikes } from '$lib/likes.svelte';
+	import { refreshIfUnhydrated } from '$lib/remote-fallback.svelte';
 	import { getDiet, setDiet } from '$lib/profile.remote';
 	import LocationMap from '$lib/components/LocationMap.svelte';
 	import MapStatsOverlay from '$lib/components/MapStatsOverlay.svelte';
 	import DietSelector from '$lib/components/DietSelector.svelte';
 	import AccountMenu from '$lib/components/AccountMenu.svelte';
 	import VenueDetail from '$lib/components/VenueDetail.svelte';
+	import VenueHead from '$lib/components/VenueHead.svelte';
 	import Search from '@lucide/svelte/icons/search';
-	import { venueHeadMeta } from '$lib/venue-head';
-	import { venueJsonLdScript } from '$lib/venue-jsonld';
 	import { matchedItems, searchResults } from '$lib/search-match';
 	import { idFromPath, locationPath } from '$lib/location-path';
-	import { CANONICAL_ORIGIN } from '$lib/canonical';
 	import { DEFAULT_MAP_CENTER } from '$lib/map-defaults';
 	import { foldAsciiCase, searchableQuery } from '$lib/search';
 	import { resolveLocation, type ResolvedLocation } from '$lib/resolve-location';
@@ -62,21 +61,13 @@
 		dietSeeded = true;
 	});
 
-	// Hydration fallback, mirroring the stats one below: this query instance is
-	// only ever read via `.current` (never awaited or rendered), so no result is
-	// serialized during SSR — and a client-side instance with no serialized result
-	// has been observed to stay pending forever rather than issuing its own fetch
-	// (experimental remoteFunctions). Without this, `current` would sit undefined
-	// and a signed-in user's saved diet would silently never seed the selector.
-	// One explicit refresh() fills it. The effect re-runs only when `current`
-	// changes, so a persistent failure can't loop it, and once a value lands it
-	// never fires again. The seed effect above still applies the value only once
-	// (dietSeeded), so a user's explicit pick is never clobbered.
-	$effect(() => {
-		if (savedDietResource.current === undefined) {
-			void savedDietResource.refresh().catch(() => {});
-		}
-	});
+	// Hydration fallback (see refreshIfUnhydrated): this query instance is only ever
+	// read via `.current`, so no result is serialized during SSR and the client
+	// instance can stay pending forever without a nudge — a signed-in user's saved
+	// diet would then silently never seed the selector. The seed effect above still
+	// applies the value only once (dietSeeded), so a user's explicit pick is never
+	// clobbered.
+	$effect(() => refreshIfUnhydrated(savedDietResource));
 
 	// Applies a diet selection and persists it for the signed-in user. Called only on
 	// a user action (not the initial seed), so it never echoes the loaded value back.
@@ -203,17 +194,10 @@
 	const statsResource = getStats();
 	const stats = $derived(statsResource.current ?? null);
 
-	// Hydration fallback: when the SSR render raced the stats read and serialized
-	// no result, the client-side query instance has been observed to stay pending
-	// forever rather than issuing its own fetch (experimental remoteFunctions), so
-	// the overlay would sit on its placeholders. One explicit refresh() fills it.
-	// The effect re-runs only when `current` changes, so a persistent failure
-	// can't loop it, and once a value lands it never fires again.
-	$effect(() => {
-		if (statsResource.current === undefined) {
-			void statsResource.refresh().catch(() => {});
-		}
-	});
+	// Hydration fallback (see refreshIfUnhydrated): when the SSR render raced the
+	// stats read and serialized no result, the client instance can stay pending
+	// forever, leaving the overlay on its placeholders — one refresh() fills it.
+	$effect(() => refreshIfUnhydrated(statsResource));
 
 	// The visitor's IP-detected location, resolved with a TOP-LEVEL AWAIT so it is
 	// genuinely part of the render: awaited during SSR it settles immediately (the
@@ -289,19 +273,28 @@
 	// or a deep link), so it's never stranded on a control that just unmounted.
 	let placecardEl = $state<HTMLElement | null>(null);
 
+	// A location trimmed to the marker shape <LocationMap> plots: identity, position,
+	// like-derived score and the item names its label rotates through. Shared by the
+	// in-view result set and the open venue's marker (which sources its items
+	// differently — see mapSelected).
+	function toMapPill(
+		loc: { id: string; name: string; latitude: number; longitude: number; score: number },
+		items: { item_name: string }[]
+	) {
+		return {
+			id: loc.id,
+			name: loc.name,
+			latitude: loc.latitude,
+			longitude: loc.longitude,
+			score: loc.score,
+			items: items.map((menuItem) => menuItem.item_name)
+		};
+	}
+
 	// The map plots EVERY matching location — the map itself is the result surface.
 	// Each carries the item names its label rotates through; a 30-branch chain
 	// still drops 30 name pills.
-	const mapLocations = $derived(
-		results.map((result) => ({
-			id: result.loc.id,
-			name: result.loc.name,
-			latitude: result.loc.latitude,
-			longitude: result.loc.longitude,
-			score: result.loc.score,
-			items: result.items.map((menuItem) => menuItem.item_name)
-		}))
-	);
+	const mapLocations = $derived(results.map((result) => toMapPill(result.loc, result.items)));
 
 	// --- Selected location (integrated detail view) ---------------------------
 	// The open location is driven by shallow routing: selecting pushes a
@@ -395,34 +388,10 @@
 	// The venue driving the head metadata. Gated on `selectedId` because
 	// `selectedLocation` intentionally survives a close (see above): once the
 	// detail is closed this drops to null and the head reverts to the static
-	// defaults.
+	// defaults. Passed to <VenueHead>, which derives the title/description/JSON-LD/
+	// OG metadata from it (SEO copy in $lib/venue-head, structured data in
+	// $lib/venue-jsonld).
 	const headVenue = $derived(selectedId ? (selectedLocation ?? landingVenue) : null);
-
-	// Title, description and canonical URL for the venue head (SEO copy lives in
-	// $lib/venue-head so scripts/venue-head.test.ts can pin it): the title leads
-	// with the city and the description surfaces the menu's dietary coverage
-	// (issue #222), and `url` is the canonical descriptive slug (issue #221). Null
-	// keeps the static site-wide head.
-	const headMeta = $derived(headVenue ? venueHeadMeta(headVenue) : null);
-
-	// The schema.org FoodEstablishment JSON-LD for the same venue (issue #218): the
-	// structured-data twin of the head copy above, carrying the venue's address,
-	// coordinates and full menu (prices + per-item diet suitability) for rich
-	// results. A ready-to-inject ld+json script string whose content is escaped in
-	// $lib/venue-jsonld so a menu name or description can't break out of the script
-	// tag, so the head renders it with {@html}. Null (no venue) keeps the head
-	// markup-free.
-	const headJsonLd = $derived(headVenue ? venueJsonLdScript(headVenue) : null);
-
-	// Open Graph place metadata for the venue (issue #224): a venue page is a
-	// physical place, so it declares the OG restaurant vertical (`restaurant.restaurant`,
-	// which inherits the `place:location:*` geo properties) instead of the generic
-	// `website` type, carrying the venue's exact OSM coordinates. Emitted verbatim,
-	// the same coordinates the JSON-LD `geo` node and the map marker use. Null (no
-	// open venue) leaves the head on its default `og:type website`.
-	const ogPlace = $derived(
-		headVenue ? { latitude: headVenue.latitude, longitude: headVenue.longitude } : null
-	);
 
 	// The selected venue, trimmed to what <LocationMap> needs and carrying its own
 	// rotating item line. Passed as `selected` so the map keeps its label (and rotation)
@@ -431,16 +400,7 @@
 	// which survives a close — see selectedLocation) so deselecting unhighlights.
 	const mapSelected = $derived(
 		selectedId && selectedLocation
-			? {
-					id: selectedLocation.id,
-					name: selectedLocation.name,
-					latitude: selectedLocation.latitude,
-					longitude: selectedLocation.longitude,
-					score: selectedLocation.score,
-					items: matchedItems(selectedLocation, queryTerm, diet).map(
-						(menuItem) => menuItem.item_name
-					)
-				}
+			? toMapPill(selectedLocation, matchedItems(selectedLocation, queryTerm, diet))
 			: null
 	);
 
@@ -470,9 +430,12 @@
 		pickedSnapForId = selectedId;
 		pickedSnap = next;
 	}
-	// The resting height in px for the current snap and viewport. `?? 800` matches
-	// VenueDetail's fallback so the two agree before the first client measure.
-	const sheetHeightPx = $derived(snapHeightPx(sheetSnap, innerHeight.current ?? 800));
+	// The resting height in px for the current snap and viewport. The shared
+	// FALLBACK_VIEWPORT_H is also VenueDetail's pre-measure fallback, so the two
+	// agree before the first client measure.
+	const sheetHeightPx = $derived(
+		snapHeightPx(sheetSnap, innerHeight.current ?? FALLBACK_VIEWPORT_H)
+	);
 
 	const detailInset = $derived(
 		selectedId
@@ -656,117 +619,27 @@
 		await getLikes().catch(() => ({ locationIds: [] as string[], itemIds: [] as string[] }))
 	);
 
-	// Optimistic like state: a pending map of just-toggled ids layered over the
-	// server set, so a tap reflects instantly without waiting on the round trip (and
-	// reverts if it fails). The pending maps are reactive, so the id sets below
-	// recompute as toggles land; a later server reload supersedes the pending entry.
-	const pendingLocationLikes = new SvelteMap<string, boolean>();
-
-	function overlayLikes(
-		serverIds: string[],
-		pending: SvelteMap<string, boolean>
-	): SvelteSet<string> {
-		const ids = new SvelteSet(serverIds);
-		for (const [id, liked] of pending) {
-			if (liked) ids.add(id);
-			else ids.delete(id);
-		}
-		return ids;
-	}
-
-	const likedLocationIds = $derived(overlayLikes(serverLikes.locationIds, pendingLocationLikes));
-
-	// Serializes the like commands per liked thing ($lib/like-queue): without it,
-	// two rapid taps on one heart race their writes — the unlike can land on D1
-	// before the like it undoes, persisting the opposite of the UI — and an old
-	// failure's revert can clobber a newer tap's optimistic state. The queue sends
-	// writes for a key strictly in tap order, skips superseded ones (the latest
-	// tap carries the final desired state) and gates each revert on still being
-	// the latest. Non-reactive plumbing, like the pending maps' sibling memos.
-	const likeQueue = createLikeQueue();
-
-	function toggleLocationLike(id: string) {
-		const liked = likedLocationIds.has(id);
-		pendingLocationLikes.set(id, !liked);
-		likeQueue.enqueue(
-			`location:${id}`,
-			() => setLocationLiked({ locationId: id, liked: !liked }),
-			() => pendingLocationLikes.set(id, liked)
-		);
-	}
-
-	// Item likes mirror location likes exactly — same pending overlay over the
-	// server set, same optimistic set-then-revert — keyed by item id and backing
-	// the heart on each menu row in the open venue's card.
-	const pendingItemLikes = new SvelteMap<string, boolean>();
-
-	const likedItemIds = $derived(overlayLikes(serverLikes.itemIds, pendingItemLikes));
-
-	function toggleItemLike(id: string) {
-		const liked = likedItemIds.has(id);
-		pendingItemLikes.set(id, !liked);
-		likeQueue.enqueue(
-			`item:${id}`,
-			() => setItemLiked({ itemId: id, liked: !liked }),
-			() => pendingItemLikes.set(id, liked)
-		);
-	}
+	// Optimistic like state ($lib/likes.svelte): a pending map of just-toggled ids
+	// layered over the server set, so a tap reflects instantly without waiting on
+	// the round trip (and reverts if it fails). The factory owns the pending maps,
+	// the overlay memos and the per-key write queue; the page hands it the reactive
+	// `serverLikes` (as a getter) and the two remote setters, and reads back the
+	// liked-id sets and toggle functions the detail card binds to.
+	const likes = createOptimisticLikes({
+		serverLikes: () => serverLikes,
+		setLocationLiked,
+		setItemLiked
+	});
+	const likedLocationIds = $derived(likes.likedLocationIds);
+	const likedItemIds = $derived(likes.likedItemIds);
 </script>
 
 <svelte:window onkeydown={onWindowKeydown} />
 
-<svelte:head>
-	<!-- Warm the tile connection early (issue #224): the map is this route's LCP
-	     element, and its vector tiles come from our single self-hosted PMTiles
-	     origin, tiles.betterfoodmaps.com (see mapStyle in LocationMap.svelte; the
-	     tile URL template is inlined there, so tiles are the origin's FIRST fetch)
-	     — a `preconnect` shaves the TLS handshake off it. `crossorigin` matches
-	     MapLibre's anonymous CORS tile fetch, so the warmed connection is actually
-	     reused. -->
-	<link rel="preconnect" href="https://tiles.betterfoodmaps.com" crossorigin="anonymous" />
-	{#if headMeta}
-		<!-- Venue head for an open location. On a hard /locations/<id> load this is
-		     already in the server-rendered HTML (see the landing-venue fetch above),
-		     so link unfurlers and crawlers see the venue rather than the site
-		     defaults. Svelte escapes text and attribute content here, so the venue
-		     fields need no hand-escaping. -->
-		<title>{headMeta.title}</title>
-		<meta name="description" content={headMeta.description} />
-		<!-- The canonicalization signal (og:url is not one): points query-string or
-		     stale-slug variants of this venue's URL at the one address the sitemap
-		     lists, matching the server's 301 target. -->
-		<link rel="canonical" href={headMeta.url} />
-		<meta property="og:title" content={headMeta.title} />
-		<meta property="og:description" content={headMeta.description} />
-		<meta property="og:site_name" content="BetterFoodMaps" />
-		<meta property="og:url" content={headMeta.url} />
-		<!-- A venue page is a physical place: the OG restaurant vertical (issue #224)
-		     carries the venue's exact OSM coordinates for geo-aware unfurlers, and
-		     inherits the `place:location:*` properties the generic `website` type
-		     lacks. `ogPlace` is non-null here (it derives from the same `headVenue`
-		     that gates `headMeta`), so the guard is only for the compiler's null
-		     narrowing — the venue head always emits the restaurant vertical. -->
-		{#if ogPlace}
-			<meta property="og:type" content="restaurant.restaurant" />
-			<meta property="place:location:latitude" content={String(ogPlace.latitude)} />
-			<meta property="place:location:longitude" content={String(ogPlace.longitude)} />
-		{/if}
-		<!-- schema.org JSON-LD (issue #218): the machine-readable venue graph
-		     crawlers parse for rich results, built in $lib/venue-jsonld and injected
-		     raw — its content is escaped there so a menu name or description can't
-		     break out of the script tag. -->
-		{#if headJsonLd}
-			<!-- eslint-disable-next-line svelte/no-at-html-tags -->
-			{@html headJsonLd}
-		{/if}
-	{:else}
-		<title>BetterFoodMaps</title>
-		<meta name="description" content={m.head_site_description()} />
-		<!-- The map root canonicalizes to the bare origin, so query-string variants
-		     (shared links, campaign params) don't fragment its indexing. -->
-		<link rel="canonical" href="{CANONICAL_ORIGIN}/" />
-	{/if}
-</svelte:head>
+<!-- The document head: the tile-warming preconnect (always), and either the open
+     venue's SEO/OG/JSON-LD metadata or the static site defaults — all rendered
+     from `headVenue` inside VenueHead (null renders the default head). -->
+<VenueHead venue={headVenue} />
 
 <div
 	class="app"
@@ -802,8 +675,8 @@
 			{user}
 			{likedLocationIds}
 			{likedItemIds}
-			onToggleLocationLike={toggleLocationLike}
-			onToggleItemLike={toggleItemLike}
+			onToggleLocationLike={likes.toggleLocationLike}
+			onToggleItemLike={likes.toggleItemLike}
 			onClose={closeDetail}
 			flyParams={panelFly}
 			narrow={narrowScreen.current}

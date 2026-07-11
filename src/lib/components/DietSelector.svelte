@@ -4,6 +4,7 @@
 	import { DIET_OPTIONS } from '$lib/diet-profile';
 	import { dietIcon } from '$lib/dietary-icons';
 	import { tagDisplayName } from '$lib/tags';
+	import { createPopoverDismiss } from '$lib/popover-dismiss';
 	import { m } from '$lib/paraglide/messages';
 
 	// The dietary selector: a single floating pill that filters the map to items a
@@ -103,27 +104,17 @@
 		target?.focus();
 	}
 
-	// Escape closes the dropdown from anywhere (the trigger or an option may hold
-	// focus); a pointerdown outside the control closes it too. Both are handled on the
-	// window — mirroring AccountMenu — so the wrapper stays a plain, role-free element
-	// and there's no open/close state churned from an $effect. When focus is inside
-	// the control it returns to the trigger, so closing the list can't drop it to
-	// <body>; an outside click keeps focus where the user put it.
-	function onKeydown(event: KeyboardEvent): void {
-		if (event.key === 'Escape' && open) {
-			event.preventDefault();
-			open = false;
-			if (rootEl.contains(document.activeElement)) triggerEl.focus();
-		}
-	}
-
-	function onWindowPointerDown(event: PointerEvent): void {
-		if (!open) return;
-		if (!(event.target as HTMLElement | null)?.closest('.diet')) open = false;
-	}
+	// Escape closes the dropdown from anywhere and a pointerdown outside it closes it too,
+	// with focus returned to the trigger — shared with AccountMenu.
+	const dismiss = createPopoverDismiss({
+		isOpen: () => open,
+		close: () => (open = false),
+		getRoot: () => rootEl,
+		getTrigger: () => triggerEl
+	});
 </script>
 
-<svelte:window onkeydown={onKeydown} onpointerdown={onWindowPointerDown} />
+<svelte:window onkeydown={dismiss.onWindowKeydown} onpointerdown={dismiss.onWindowPointerDown} />
 
 <!-- The leading glyph for a diet id (or the neutral knife-and-fork for "Any diet",
      id null), shared by the trigger and every dropdown option. It carries no color of

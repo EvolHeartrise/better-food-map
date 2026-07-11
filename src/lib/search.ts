@@ -15,7 +15,7 @@
 // ---------------------------------------------------------------------------
 
 /** The FTS5 trigram width: the shortest literal run the index can serve. */
-export const SEARCH_MIN_RUN = 3;
+const SEARCH_MIN_RUN = 3;
 
 /**
  * ASCII-only lowercase — the EXACT case folding SQLite's `LIKE` applies (it
