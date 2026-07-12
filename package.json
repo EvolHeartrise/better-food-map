@@ -22,6 +22,8 @@
 		"deploy": "bun run build && wrangler deploy",
 		"bench:lint": "bun run scripts/bench/lint.ts",
 		"bench:record": "bun run scripts/bench/record.ts",
+		"bench:run": "bun run scripts/bench/run.ts",
+		"bench:score": "bun run scripts/bench/score.ts",
 		"bench:serve": "bun run scripts/bench/serve.ts",
 		"db:mcp": "bun run scripts/db-mcp-server.ts",
 		"db:pull": "bun run scripts/db-pull.ts",
