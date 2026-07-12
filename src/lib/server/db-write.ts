@@ -1294,7 +1294,10 @@ const MENU_COLUMNS = ['brand_id', 'name', 'region', 'currency', 'refresh_notes']
  * Partial update of a menu. Scalar fields present in `patch` are written; if
  * `patch.sources` is given it replaces the whole source set (pass `[]` to clear).
  * Any update also refreshes `last_verified` to today (it is auto-managed, not a
- * patch field). Returns the updated menu, or `null` if no menu has that id.
+ * patch field) — unless `stampVerified: false`, which writes the patch without
+ * asserting the menu's data was re-checked (e.g. banking the fuller page
+ * inventory an INCOMPLETE refresh discovered). Returns the updated menu, or
+ * `null` if no menu has that id.
  */
 export async function updateMenu(
 	db: D1Like,
@@ -1302,14 +1305,20 @@ export async function updateMenu(
 	patch: Partial<Omit<Menu, 'id' | 'last_verified'>> & {
 		/** Append these sources (dedupe by url), keeping existing ones — vs `sources` which replaces. */
 		addSources?: Source[];
+		/** Pass false to skip the `last_verified` re-stamp: the edit banks metadata without claiming the menu's data was re-verified. */
+		stampVerified?: boolean;
 	}
 ): Promise<Menu | null> {
 	if (!(await getMenuById(db, id))) return null;
 
 	const stmts: D1PreparedLike[] = [];
-	// Always re-stamp last_verified, so even a sources-only edit marks the menu fresh.
-	const assignments: string[] = ['last_verified = ?'];
-	const values: (string | null)[] = [currentVerificationDate()];
+	// Re-stamp last_verified by default, so even a sources-only edit marks the menu fresh.
+	const assignments: string[] = [];
+	const values: (string | null)[] = [];
+	if (patch.stampVerified !== false) {
+		assignments.push('last_verified = ?');
+		values.push(currentVerificationDate());
+	}
 	for (const col of MENU_COLUMNS) {
 		const value = patch[col];
 		if (value !== undefined) {
@@ -1317,9 +1326,11 @@ export async function updateMenu(
 			values.push(col === 'name' && typeof value === 'string' ? cleanText(value) : (value ?? null));
 		}
 	}
-	stmts.push(
-		db.prepare(`UPDATE menus SET ${assignments.join(', ')} WHERE id = ?`).bind(...values, id)
-	);
+	if (assignments.length > 0) {
+		stmts.push(
+			db.prepare(`UPDATE menus SET ${assignments.join(', ')} WHERE id = ?`).bind(...values, id)
+		);
+	}
 	// `sources` replaces the whole set; `addSources` appends (dedupe via the PK).
 	const replaceSources = patch.sources !== undefined;
 	if (replaceSources) {
