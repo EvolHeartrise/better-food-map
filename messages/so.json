@@ -1,0 +1,143 @@
+{
+	"$schema": "https://inlang.com/schema/inlang-message-format",
+	"search_bar_aria": "Raadin iyo shaandhooyin",
+	"search_placeholder": "Raadi goobo iyo cuntooyin…",
+	"search_input_aria": "Ku raadi magaca goobta ama cuntada",
+	"results_nav_aria": "Goobaha raadinta u dhigma",
+	"results_cap": "Waxaa la muujinayaa {max}-kii ugu horreeyay ee {total} goobood. Sii faahfaahi raadinta si liisku u soo gaabto.",
+	"places_found": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} goob ayaa la helay",
+				"countPlural=other": "{count} goobood ayaa la helay"
+			}
+		}
+	],
+	"search_failed": "Raadintu way fashilantay - waxaa la muujinayaa natiijooyinkii hore.",
+	"browse_failed": "Goobaha aaggan lama soo rari karin - waxaa la muujinayaa natiijooyinkii hore.",
+	"map_aria": "Khariidadda goobaha cuntada",
+	"map_zoom_in_aria": "Soo dhowee",
+	"map_zoom_out_aria": "Ka fogee",
+	"venue_details_aria": "Faahfaahinta goobta",
+	"venue_close_aria": "Xir faahfaahinta goobta",
+	"venue_like": "Jeclow goobtan",
+	"venue_unlike": "Ka noqo jacaylka goobtan",
+	"venue_address_label": "Cinwaan",
+	"venue_phone_label": "Telefoon",
+	"venue_hours_label": "Saacadaha",
+	"venue_hours_closed": "Xiran",
+	"venue_phone_extension": "khadka {ext}",
+	"venue_website_label": "Degel",
+	"venue_menu_label": "Liiska cuntada",
+	"venue_no_menu": "Weli liis cunto lama hayo.",
+	"menu_items_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} shay",
+				"countPlural=other": "{count} shay"
+			}
+		}
+	],
+	"menu_last_scanned": "Liiska cuntada waxaa markii u dambeysay la baaray {date}",
+	"sources_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} Il",
+				"countPlural=other": "{count} Ilo"
+			}
+		}
+	],
+	"course_filter_aria": "Liiska cuntada ku kala shaandhee qaybaha cuntada",
+	"course_all": "Dhammaan",
+	"item_like": "Jeclow shaygan",
+	"item_unlike": "Ka noqo jacaylka shaygan",
+	"scanned_date": "La baaray {date}",
+	"scanned": "La baaray {relative}",
+	"tag_vegan": "Vegan",
+	"tag_vegetarian": "Khudaar keliya",
+	"tag_halal": "Xalaal",
+	"tag_gluten_free": "Gluten la'aan",
+	"tag_dairy_free": "Caano la'aan",
+	"tag_nut_free": "Lows la'aan",
+	"tag_food": "Cunto",
+	"tag_dessert": "Macmacaan",
+	"tag_drink": "Cabbitaanno",
+	"category_cafe": "Kafee",
+	"category_fast_food": "Cunto degdeg ah",
+	"category_restaurant": "Maqaayad",
+	"category_bakery": "Bakeeri",
+	"diet_any": "Cunto-nooc kasta",
+	"diet_filter_aria": "Shaandhada cunto-nooca",
+	"diet_can_be_made": "Waxaa laga dhigi karaa {diet}",
+	"account_default_name": "Akoon",
+	"account_signed_in": "Waad soo gashay",
+	"account_sign_out": "Ka bax",
+	"account_sign_in": "Gal",
+	"language_label": "Luqad",
+	"sources_dialog_aria": "Ilaha xogta",
+	"sources_title": "Ilo",
+	"sources_close_aria": "Xir ilaha",
+	"directions_button_tooltip": "Ku fur app kale oo khariidado ah",
+	"directions_button_aria": "Ku fur {address} app kale oo khariidado ah",
+	"directions_dialog_aria": "Dooro app khariidadeed",
+	"directions_title": "Ku fur app kale oo khariidado ah",
+	"directions_close_aria": "Xir jihooyinka",
+	"directions_apple_maps": "Apple Maps",
+	"directions_google_maps": "Google Maps",
+	"landing_intro_aria": "Ku saabsan BetterFoodMaps",
+	"landing_title": "Hel cunto ku habboon cunto-noocaaga, meel kasta oo khariidadda ka mid ah.",
+	"landing_stats_aria": "Baaxadda khariidadda",
+	"landing_actions_aria": "Bilaabista",
+	"stat_venues": "goobood",
+	"stat_menu_items": "shay oo liiska cuntada ah",
+	"stat_cities": "magaalo",
+	"stat_vegan": "cunto vegan ah",
+	"stat_vegetarian": "cunto khudaar keliya ah",
+	"stat_halal": "cunto xalaal ah",
+	"stat_gluten_free": "cunto gluten la'aan ah",
+	"stat_dairy_free": "cunto caano la'aan ah",
+	"stat_nut_free": "cunto lows la'aan ah",
+	"landing_cta": "Bilow isticmaalka khariidadda",
+	"landing_browse_link": "Ama ku baadh cuntada magaalo ahaan →",
+	"error_not_found": "Boggan ma jiro",
+	"error_generic": "Wax baa qaldamay",
+	"error_back": "Ku noqo khariidadda",
+	"error_page_title": "{status} · BetterFoodMaps",
+	"server_error_no_location_or_item": "Goob ama shay noocaas ah ma jiro.",
+	"server_error_sign_in_required": "Waa inaad gashaa si aad taas u samayso.",
+	"server_error_location_not_found": "Goobta lama helin",
+	"server_error_location_gone": "Goobtan si joogto ah ayay u xirantay.",
+	"server_error_database_unavailable": "Kaydka xogta lama heli karo.",
+	"server_error_oauth_invalid_callback": "Dib-u-yeedhis OAuth oo aan sax ahayn.",
+	"server_error_oauth_code_validation": "Xaqiijinta koodhka oggolaanshaha waa fashilantay.",
+	"server_error_oauth_missing_subject": "Jawaabta Google waxaa ka maqnaa subject claim-ka.",
+	"head_site_description": "Khariidad is-dhexgal ah ku baadh kafeyaal, cunto degdeg ah iyo maqaayado adduunka oo dhan.",
+	"head_desc_no_menu": "Ka eeg liiska cuntada BetterFoodMaps.",
+	"head_located_in": "oo ku taal {where}",
+	"head_list_pair": "{first} iyo {last}",
+	"head_desc_on_brand": "{content} oo laga helo BetterFoodMaps.",
+	"head_coverage_diet": "{count} {diet}",
+	"head_coverage_clause": "{list} {noun}",
+	"head_lead": "{name}{categoryClause}{whereClause}.",
+	"head_lead_category": ", {category}",
+	"head_lead_where": " {locatedIn}",
+	"head_list_sep": ", ",
+	"head_plain_count": "{count} {noun}",
+	"head_desc": "{lead} {tail}",
+	"head_menu_item_noun": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "shay oo liiska cuntada ah",
+				"countPlural=other": "shay oo liiska cuntada ah"
+			}
+		}
+	]
+}

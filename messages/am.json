@@ -1,0 +1,143 @@
+{
+	"$schema": "https://inlang.com/schema/inlang-message-format",
+	"search_bar_aria": "ፍለጋ እና ማጣሪያዎች",
+	"search_placeholder": "ቦታዎችን እና ምግቦችን ይፈልጉ…",
+	"search_input_aria": "በቦታ ወይም በምግብ ስም ይፈልጉ",
+	"results_nav_aria": "የሚዛመዱ ቦታዎች",
+	"results_cap": "ከ{total} ቦታዎች የመጀመሪያዎቹ {max} እየታዩ ነው። ዝርዝሩን ለማጥበብ ፍለጋውን ያጥሩ።",
+	"places_found": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} ቦታ ተገኝቷል",
+				"countPlural=other": "{count} ቦታዎች ተገኝተዋል"
+			}
+		}
+	],
+	"search_failed": "ፍለጋው አልተሳካም - የቀድሞ ውጤቶች እየታዩ ነው።",
+	"browse_failed": "የዚህ አካባቢ ቦታዎችን መጫን አልተቻለም - የቀድሞ ውጤቶች እየታዩ ነው።",
+	"map_aria": "የምግብ ቦታዎች ካርታ",
+	"map_zoom_in_aria": "ያጉሉ",
+	"map_zoom_out_aria": "ያሳንሱ",
+	"venue_details_aria": "የቦታ ዝርዝሮች",
+	"venue_close_aria": "የቦታ ዝርዝሮችን ይዝጉ",
+	"venue_like": "ይህን ቦታ ይውደዱ",
+	"venue_unlike": "የዚህን ቦታ ውዴታ ያንሱ",
+	"venue_address_label": "አድራሻ",
+	"venue_phone_label": "ስልክ",
+	"venue_hours_label": "የስራ ሰዓታት",
+	"venue_hours_closed": "ዝግ ነው",
+	"venue_phone_extension": "ቅጥያ {ext}",
+	"venue_website_label": "ድረ-ገጽ",
+	"venue_menu_label": "ምናሌ",
+	"venue_no_menu": "እስካሁን ምንም ምናሌ አልተመዘገበም።",
+	"menu_items_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} ንጥል",
+				"countPlural=other": "{count} ንጥሎች"
+			}
+		}
+	],
+	"menu_last_scanned": "ምናሌው ለመጨረሻ ጊዜ የተቃኘው በ{date} ነው",
+	"sources_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} ምንጭ",
+				"countPlural=other": "{count} ምንጮች"
+			}
+		}
+	],
+	"course_filter_aria": "ምናሌውን በዓይነት ያጣሩ",
+	"course_all": "ሁሉም",
+	"item_like": "ይህን ንጥል ይውደዱ",
+	"item_unlike": "የዚህን ንጥል ውዴታ ያንሱ",
+	"scanned_date": "በ{date} ተቃኝቷል",
+	"scanned": "{relative} ተቃኝቷል",
+	"tag_vegan": "ቪጋን",
+	"tag_vegetarian": "ቬጀቴሪያን",
+	"tag_halal": "ሐላል",
+	"tag_gluten_free": "ግሉተን-ነጻ",
+	"tag_dairy_free": "የወተት ተዋጽኦ-ነጻ",
+	"tag_nut_free": "ለውዝ-ነጻ",
+	"tag_food": "ምግብ",
+	"tag_dessert": "ጣፋጭ",
+	"tag_drink": "መጠጦች",
+	"category_cafe": "ካፌ",
+	"category_fast_food": "ፈጣን ምግብ",
+	"category_restaurant": "ሬስቶራንት",
+	"category_bakery": "ዳቦ ቤት",
+	"diet_any": "ማንኛውም አመጋገብ",
+	"diet_filter_aria": "የአመጋገብ ማጣሪያ",
+	"diet_can_be_made": "{diet} ተደርጎ ሊዘጋጅ ይችላል",
+	"account_default_name": "መለያ",
+	"account_signed_in": "ገብተዋል",
+	"account_sign_out": "ይውጡ",
+	"account_sign_in": "ይግቡ",
+	"language_label": "ቋንቋ",
+	"sources_dialog_aria": "የመረጃ ምንጮች",
+	"sources_title": "ምንጮች",
+	"sources_close_aria": "ምንጮችን ይዝጉ",
+	"directions_button_tooltip": "በሌላ የካርታ መተግበሪያ ይክፈቱ",
+	"directions_button_aria": "{address}ን በሌላ የካርታ መተግበሪያ ይክፈቱ",
+	"directions_dialog_aria": "የካርታ መተግበሪያ ይምረጡ",
+	"directions_title": "በሌላ የካርታ መተግበሪያ ይክፈቱ",
+	"directions_close_aria": "አቅጣጫዎችን ይዝጉ",
+	"directions_apple_maps": "Apple Maps",
+	"directions_google_maps": "Google Maps",
+	"landing_intro_aria": "ስለ BetterFoodMaps",
+	"landing_title": "በካርታው ላይ በየትም ቦታ፣ ከአመጋገብዎ ጋር የሚስማማ ምግብ ያግኙ።",
+	"landing_stats_aria": "የካርታ ሽፋን",
+	"landing_actions_aria": "መጀመር",
+	"stat_venues": "ቦታዎች",
+	"stat_menu_items": "የምናሌ ንጥሎች",
+	"stat_cities": "ከተሞች",
+	"stat_vegan": "ቪጋን ምግቦች",
+	"stat_vegetarian": "ቬጀቴሪያን ምግቦች",
+	"stat_halal": "ሐላል ምግቦች",
+	"stat_gluten_free": "ግሉተን-ነጻ ምግቦች",
+	"stat_dairy_free": "የወተት ተዋጽኦ-ነጻ ምግቦች",
+	"stat_nut_free": "ለውዝ-ነጻ ምግቦች",
+	"landing_cta": "ካርታውን መጠቀም ይጀምሩ",
+	"landing_browse_link": "ወይም ምግብን በከተማ ያስሱ →",
+	"error_not_found": "ይህ ገጽ የለም",
+	"error_generic": "የሆነ ስህተት ተከስቷል",
+	"error_back": "ወደ ካርታው ይመለሱ",
+	"error_page_title": "{status} · BetterFoodMaps",
+	"server_error_no_location_or_item": "እንደዚህ ያለ ቦታ ወይም ንጥል የለም።",
+	"server_error_sign_in_required": "ይህን ለማድረግ መግባት አለብዎት።",
+	"server_error_location_not_found": "ቦታው አልተገኘም",
+	"server_error_location_gone": "ይህ ቦታ በቋሚነት ተዘግቷል።",
+	"server_error_database_unavailable": "የውሂብ ጎታ አይገኝም።",
+	"server_error_oauth_invalid_callback": "ልክ ያልሆነ የOAuth መልሶ ጥሪ።",
+	"server_error_oauth_code_validation": "የፈቀዳ ኮዱን ማረጋገጥ አልተቻለም።",
+	"server_error_oauth_missing_subject": "የGoogle ምላሽ subject claim አልያዘም።",
+	"head_site_description": "በበይነተገናኝ ካርታ ላይ በዓለም ዙሪያ ያሉ ካፌዎችን፣ ፈጣን ምግብን እና ሬስቶራንቶችን ያስሱ።",
+	"head_desc_no_menu": "ምናሌውን በBetterFoodMaps ላይ ይመልከቱ።",
+	"head_located_in": "በ{where} ውስጥ",
+	"head_list_pair": "{first} እና {last}",
+	"head_desc_on_brand": "{content} በBetterFoodMaps ላይ።",
+	"head_coverage_diet": "{count} {diet}",
+	"head_coverage_clause": "{list} {noun}",
+	"head_lead": "{name}{categoryClause}{whereClause}።",
+	"head_lead_category": "፣ {category}",
+	"head_lead_where": " {locatedIn}",
+	"head_list_sep": "፣ ",
+	"head_plain_count": "{count} {noun}",
+	"head_desc": "{lead} {tail}",
+	"head_menu_item_noun": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "የምናሌ ንጥል",
+				"countPlural=other": "የምናሌ ንጥሎች"
+			}
+		}
+	]
+}

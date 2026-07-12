@@ -71,7 +71,12 @@
 		ta: 'தமிழ்',
 		ko: '한국어',
 		pl: 'Polski',
-		ar: 'العربية'
+		ar: 'العربية',
+		bn: 'বাংলা',
+		so: 'Soomaali',
+		gu: 'ગુજરાતી',
+		tr: 'Türkçe',
+		am: 'አማርኛ'
 	};
 
 	// The signed-out fallback (the app is normally reached only when signed in, but a
@@ -350,7 +355,7 @@
 		color: var(--color-text-muted);
 	}
 
-	/* With 23 locales a single column would tower past the viewport, so the picker
+	/* With 27 locales a single column would tower past the viewport, so the picker
 	   lays the endonyms out in two columns and scrolls once it outgrows the cap
 	   (short phones); the check gutter keeps the two-column labels aligned. */
 	.account__langs {

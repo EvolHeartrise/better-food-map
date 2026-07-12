@@ -1,0 +1,143 @@
+{
+	"$schema": "https://inlang.com/schema/inlang-message-format",
+	"search_bar_aria": "શોધ અને ફિલ્ટર",
+	"search_placeholder": "જગ્યાઓ અને વાનગીઓ શોધો…",
+	"search_input_aria": "જગ્યા કે વાનગીના નામથી શોધો",
+	"results_nav_aria": "મળતી જગ્યાઓ",
+	"results_cap": "{total} જગ્યાઓમાંથી પહેલી {max} બતાવાઈ રહી છે. યાદી ટૂંકી કરવા શોધ વધુ ચોક્કસ કરો.",
+	"places_found": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} જગ્યા મળી",
+				"countPlural=other": "{count} જગ્યાઓ મળી"
+			}
+		}
+	],
+	"search_failed": "શોધ નિષ્ફળ ગઈ - અગાઉનાં પરિણામો બતાવાઈ રહ્યાં છે.",
+	"browse_failed": "આ વિસ્તારની જગ્યાઓ લોડ થઈ શકી નહીં - અગાઉનાં પરિણામો બતાવાઈ રહ્યાં છે.",
+	"map_aria": "ખાવાની જગ્યાઓનો નકશો",
+	"map_zoom_in_aria": "ઝૂમ ઇન",
+	"map_zoom_out_aria": "ઝૂમ આઉટ",
+	"venue_details_aria": "જગ્યાની વિગતો",
+	"venue_close_aria": "જગ્યાની વિગતો બંધ કરો",
+	"venue_like": "આ જગ્યા પસંદ કરો",
+	"venue_unlike": "આ જગ્યાની પસંદગી હટાવો",
+	"venue_address_label": "સરનામું",
+	"venue_phone_label": "ફોન",
+	"venue_hours_label": "સમય",
+	"venue_hours_closed": "બંધ",
+	"venue_phone_extension": "એક્સ્ટેન્શન {ext}",
+	"venue_website_label": "વેબસાઇટ",
+	"venue_menu_label": "મેનૂ",
+	"venue_no_menu": "હજુ સુધી કોઈ મેનૂ નોંધાયેલું નથી.",
+	"menu_items_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} આઇટમ",
+				"countPlural=other": "{count} આઇટમો"
+			}
+		}
+	],
+	"menu_last_scanned": "મેનૂ છેલ્લે {date} ના રોજ સ્કૅન થયું",
+	"sources_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} સ્રોત",
+				"countPlural=other": "{count} સ્રોતો"
+			}
+		}
+	],
+	"course_filter_aria": "કોર્સ પ્રમાણે મેનૂ ફિલ્ટર કરો",
+	"course_all": "બધું",
+	"item_like": "આ આઇટમ પસંદ કરો",
+	"item_unlike": "આ આઇટમની પસંદગી હટાવો",
+	"scanned_date": "{date} ના રોજ સ્કૅન થયું",
+	"scanned": "{relative} સ્કૅન થયું",
+	"tag_vegan": "વીગન",
+	"tag_vegetarian": "શાકાહારી",
+	"tag_halal": "હલાલ",
+	"tag_gluten_free": "ગ્લુટેન-મુક્ત",
+	"tag_dairy_free": "ડેરી-મુક્ત",
+	"tag_nut_free": "નટ-મુક્ત",
+	"tag_food": "ભોજન",
+	"tag_dessert": "મીઠાઈ",
+	"tag_drink": "પીણાં",
+	"category_cafe": "કૅફે",
+	"category_fast_food": "ફાસ્ટ ફૂડ",
+	"category_restaurant": "રેસ્ટોરન્ટ",
+	"category_bakery": "બેકરી",
+	"diet_any": "કોઈપણ ડાયેટ",
+	"diet_filter_aria": "ડાયેટ ફિલ્ટર",
+	"diet_can_be_made": "{diet} બનાવી શકાય છે",
+	"account_default_name": "એકાઉન્ટ",
+	"account_signed_in": "સાઇન ઇન થયેલ છે",
+	"account_sign_out": "સાઇન આઉટ",
+	"account_sign_in": "સાઇન ઇન",
+	"language_label": "ભાષા",
+	"sources_dialog_aria": "માહિતીના સ્રોત",
+	"sources_title": "સ્રોત",
+	"sources_close_aria": "સ્રોત બંધ કરો",
+	"directions_button_tooltip": "બીજી મૅપ્સ ઍપમાં ખોલો",
+	"directions_button_aria": "{address} બીજી મૅપ્સ ઍપમાં ખોલો",
+	"directions_dialog_aria": "મૅપ્સ ઍપ પસંદ કરો",
+	"directions_title": "બીજી મૅપ્સ ઍપમાં ખોલો",
+	"directions_close_aria": "દિશા-નિર્દેશ બંધ કરો",
+	"directions_apple_maps": "Apple Maps",
+	"directions_google_maps": "Google Maps",
+	"landing_intro_aria": "BetterFoodMaps વિશે",
+	"landing_title": "નકશા પર ગમે ત્યાં, તમારા ડાયેટને અનુકૂળ ખાવાનું શોધો.",
+	"landing_stats_aria": "નકશાનું કવરેજ",
+	"landing_actions_aria": "શરૂઆત કરો",
+	"stat_venues": "સ્થળો",
+	"stat_menu_items": "મેનૂ આઇટમો",
+	"stat_cities": "શહેરો",
+	"stat_vegan": "વીગન વાનગીઓ",
+	"stat_vegetarian": "શાકાહારી વાનગીઓ",
+	"stat_halal": "હલાલ વાનગીઓ",
+	"stat_gluten_free": "ગ્લુટેન-મુક્ત વાનગીઓ",
+	"stat_dairy_free": "ડેરી-મુક્ત વાનગીઓ",
+	"stat_nut_free": "નટ-મુક્ત વાનગીઓ",
+	"landing_cta": "નકશો વાપરવાનું શરૂ કરો",
+	"landing_browse_link": "અથવા શહેર પ્રમાણે ખાવાનું બ્રાઉઝ કરો →",
+	"error_not_found": "આ પેજ અસ્તિત્વમાં નથી",
+	"error_generic": "કંઈક ખોટું થયું",
+	"error_back": "નકશા પર પાછા જાઓ",
+	"error_page_title": "{status} · BetterFoodMaps",
+	"server_error_no_location_or_item": "એવી કોઈ જગ્યા કે આઇટમ નથી.",
+	"server_error_sign_in_required": "તે કરવા માટે તમારે સાઇન ઇન કરવું પડશે.",
+	"server_error_location_not_found": "જગ્યા મળી નહીં",
+	"server_error_location_gone": "આ સ્થળ કાયમ માટે બંધ થઈ ગયું છે.",
+	"server_error_database_unavailable": "ડેટાબેઝ ઉપલબ્ધ નથી.",
+	"server_error_oauth_invalid_callback": "અમાન્ય OAuth કૉલબૅક.",
+	"server_error_oauth_code_validation": "ઑથોરાઇઝેશન કોડ ચકાસી શકાયો નહીં.",
+	"server_error_oauth_missing_subject": "Google ના જવાબમાં subject claim નહોતો.",
+	"head_site_description": "ઇન્ટરેક્ટિવ નકશા પર દુનિયાભરનાં કૅફે, ફાસ્ટ ફૂડ અને રેસ્ટોરન્ટ જુઓ.",
+	"head_desc_no_menu": "BetterFoodMaps પર મેનૂ જુઓ.",
+	"head_located_in": "{where}માં",
+	"head_list_pair": "{first} અને {last}",
+	"head_desc_on_brand": "BetterFoodMaps પર {content}.",
+	"head_coverage_diet": "{count} {diet}",
+	"head_coverage_clause": "{list} {noun}",
+	"head_lead": "{name}{categoryClause}{whereClause}.",
+	"head_lead_category": ", {category}",
+	"head_lead_where": " {locatedIn}",
+	"head_list_sep": ", ",
+	"head_plain_count": "{count} {noun}",
+	"head_desc": "{lead} {tail}",
+	"head_menu_item_noun": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "મેનૂ આઇટમ",
+				"countPlural=other": "મેનૂ આઇટમો"
+			}
+		}
+	]
+}

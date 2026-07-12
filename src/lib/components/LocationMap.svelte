@@ -388,8 +388,9 @@
 			// carry multilingual name tags, and the flavor's label expressions prefer
 			// `name:<lang>`, coalescing through English and then the local name. A lang
 			// outside language_script_pairs (@protomaps/basemaps) degrades to that same
-			// fallback chain rather than break — of the app's locales that's pa, fil and
-			// ta (no Gurmukhi/Tamil font support in the basemap, and no `tl` tag either).
+			// fallback chain rather than break — of the app's locales that's pa, fil, ta,
+			// bn, gu, am and so (no Gurmukhi/Tamil/Bengali/Gujarati/Ethiopic font support
+			// in the basemap, and no `tl`/`so` tags either).
 			// Chinese is supported only as script-tagged zh-Hans/zh-Hant, so the bare
 			// `zh` (Simplified) and `yue` (Cantonese, Traditional-script) UI locales map
 			// onto those; the regional English/French UI variants collapse to their base
