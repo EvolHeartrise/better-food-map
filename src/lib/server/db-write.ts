@@ -42,7 +42,7 @@ import {
 	type LocationRow,
 	type OverrideRow
 } from './db';
-import { impliedDietTagIds } from '../tags';
+import { impliedDietTagIds, TAGS } from '../tags';
 import { formatAddress } from '../address';
 import { normalizeOpeningHours, weeklyHoursJson } from '../opening-hours';
 import { decodeHtmlEntities } from '../text';
@@ -756,7 +756,9 @@ function locationUpdateStmts(db: D1Like, patch: LocationPatch): D1PreparedLike[]
 	// An hours patch writes BOTH columns — the normalized raw string and its
 	// derived weekly table — so the pair can never drift (`opening_hours: null`
 	// clears both).
-	const effective: LocationPatch & { opening_hours_json?: string | null } = { ...patch };
+	const effective: LocationPatch & { opening_hours_json?: string | null } = {
+		...patch
+	};
 	if (patch.opening_hours !== undefined) {
 		const raw = normalizeOpeningHours(patch.opening_hours);
 		effective.opening_hours = raw;
@@ -1421,11 +1423,20 @@ export async function auditDismissals(
 			 FROM audit_dismissals WHERE check_name = ?`
 		)
 		.bind(check)
-		.all<{ subject_key: string; fingerprint: string; reason: string; dismissed_at: string }>();
+		.all<{
+			subject_key: string;
+			fingerprint: string;
+			reason: string;
+			dismissed_at: string;
+		}>();
 	return new Map(
 		results.map((r) => [
 			r.subject_key,
-			{ fingerprint: r.fingerprint, reason: r.reason, dismissed_at: r.dismissed_at }
+			{
+				fingerprint: r.fingerprint,
+				reason: r.reason,
+				dismissed_at: r.dismissed_at
+			}
 		])
 	);
 }
@@ -1517,57 +1528,224 @@ export type ItemUpdate = {
 	item_name?: string;
 	description?: string | null;
 	price?: number | null;
+	/** Merge ops: edit the tag sets WITHOUT restating them (see {@link updateItems}). */
+	addTags?: TagId[];
+	addOptionalTags?: TagId[];
+	removeTags?: TagId[];
 } & ItemContent;
 
 /** A partial update to one item, keyed by id (for {@link updateItems}). */
 export type ItemPatch = ItemUpdate & { id: string };
 
+/** One stored dietary/course tag link, as read back for the tag-edit paths. */
+type StoredTagLink = { id: string; optional: boolean };
+
+const COURSE_TAG_ID_SET = new Set<string>(
+	TAGS.filter((t) => t.tag_type === 'course').map((t) => t.id)
+);
+const DIETARY_TAG_ID_SET = new Set<string>(
+	TAGS.filter((t) => t.tag_type === 'dietary').map((t) => t.id)
+);
+
+const hasMergeOps = (patch: ItemUpdate): boolean =>
+	patch.addTags !== undefined ||
+	patch.addOptionalTags !== undefined ||
+	patch.removeTags !== undefined;
+
+const touchesTags = (patch: ItemUpdate): boolean =>
+	patch.tags !== undefined || patch.optionalTags !== undefined || hasMergeOps(patch);
+
+/**
+ * Resolves a patch's merge ops (`addTags`/`addOptionalTags`/`removeTags`)
+ * against the item's CURRENT tag links into plain replace sets, so
+ * {@link itemUpdateStmts} needs no second write path. Removals apply first,
+ * then adds; an add moves a tag already linked at the other optionality (the
+ * patch's assertion wins, matching the replace path's cross-scope rule).
+ * Enforces the course-tag invariants the replace path gets from the MCP input
+ * schema: a removal may not strip the last required course tag, "food" may not
+ * end up combined with dessert/drink, and a course tag can never be optional.
+ */
+function compileTagMergeOps(
+	id: string,
+	name: string,
+	patch: ItemUpdate,
+	current: StoredTagLink[]
+): ItemUpdate {
+	if (!hasMergeOps(patch)) return patch;
+	if (patch.tags !== undefined || patch.optionalTags !== undefined) {
+		throw new Error(
+			`Item ${id} ("${name}"): pass EITHER tags/optional_tags (replace) OR add_tags/` +
+				`add_optional_tags/remove_tags (merge), not both in one patch.`
+		);
+	}
+	const required = new Set(current.filter((t) => !t.optional).map((t) => t.id));
+	const optional = new Set(current.filter((t) => t.optional).map((t) => t.id));
+	for (const tagId of patch.removeTags ?? []) {
+		required.delete(tagId);
+		optional.delete(tagId);
+	}
+	for (const tagId of patch.addTags ?? []) {
+		optional.delete(tagId);
+		required.add(tagId);
+	}
+	for (const tagId of patch.addOptionalTags ?? []) {
+		if (COURSE_TAG_ID_SET.has(tagId)) {
+			throw new Error(
+				`Item ${id} ("${name}"): a course tag ("${tagId}") describes what the item factually is ` +
+					`and can never be optional.`
+			);
+		}
+		required.delete(tagId);
+		optional.add(tagId);
+	}
+	const hadCourse = current.some((t) => !t.optional && COURSE_TAG_ID_SET.has(t.id));
+	const hasCourse = [...required].some((tagId) => COURSE_TAG_ID_SET.has(tagId));
+	if (hadCourse && !hasCourse) {
+		throw new Error(
+			`Item ${id} ("${name}"): remove_tags would strip its last course tag — every item needs ` +
+				`one of food/dessert/drink. Add the corrected course tag via add_tags in the same patch.`
+		);
+	}
+	if (required.has('food') && (required.has('dessert') || required.has('drink'))) {
+		throw new Error(
+			`Item ${id} ("${name}"): "food" marks an item as explicitly neither dessert nor drink — ` +
+				`it cannot combine with them. remove_tags the tag that no longer applies.`
+		);
+	}
+	const { addTags: _a, addOptionalTags: _ao, removeTags: _r, ...rest } = patch;
+	return {
+		...rest,
+		tags: [...required] as TagId[],
+		optionalTags: [...optional] as TagId[]
+	};
+}
+
+/**
+ * Warns when a REPLACE-path patch (tags/optionalTags restated) silently loses a
+ * dietary tag the item previously carried. Dietary tags are source-asserted, so
+ * a replace that drops one is usually a restated-from-partial-knowledge
+ * accident (the failure mode that stripped a burger section's `vegan`), not a
+ * decision — merge-op removals are explicit and never warn. A tag that survives
+ * via the vegan implication closure (vegetarian/dairy_free next to an asserted
+ * vegan) is not "dropped": writes strip it as redundant and the diet filter
+ * still matches it.
+ */
+function dietaryDropWarning(
+	id: string,
+	name: string,
+	patch: ItemUpdate,
+	current: StoredTagLink[]
+): string | null {
+	if (hasMergeOps(patch)) return null;
+	if (patch.tags === undefined && patch.optionalTags === undefined) return null;
+	// Effective post-update sets, mirroring itemUpdateStmts: a provided set
+	// replaces its scope; a tag id named in the patch also leaves the other scope.
+	const named = new Set<string>([...(patch.tags ?? []), ...(patch.optionalTags ?? [])]);
+	const required = new Set<string>(
+		patch.tags ?? current.filter((t) => !t.optional && !named.has(t.id)).map((t) => t.id)
+	);
+	const optional = new Set<string>(
+		patch.optionalTags ?? current.filter((t) => t.optional && !named.has(t.id)).map((t) => t.id)
+	);
+	const implied = impliedDietTagIds([...required].map((tagId) => ({ id: tagId, optional: false })));
+	const dropped = [...new Set(current.map((t) => t.id))].filter(
+		(tagId) =>
+			DIETARY_TAG_ID_SET.has(tagId) &&
+			!required.has(tagId) &&
+			!optional.has(tagId) &&
+			!implied.has(tagId)
+	);
+	if (dropped.length === 0) return null;
+	return (
+		`Item ${id} ("${name}"): this update REMOVED previously-present dietary tag(s) ` +
+		`${dropped.join(', ')} — \`tags\`/\`optional_tags\` replace the whole set. Dietary tags are ` +
+		`source-asserted, so losing one by restating the set is a known accident: if unintended, ` +
+		`re-add it with add_tags; prefer add_tags/remove_tags for incremental edits.`
+	);
+}
+
 /**
  * Applies one or more partial item updates in one atomic batch, mirroring
  * {@link updateLocations}. For a shared chain item the change applies to EVERY
  * branch serving its menu; for a venue's own item it applies to that venue. Each
- * patch touches only the fields it carries (replace-set semantics; see
- * {@link itemUpdateStmts}). Ids that don't exist are skipped and reported in
- * `notFoundIds` rather than aborting the batch. Returns which ids were updated and
- * which were not found — one round trip instead of a call per item, for menu-wide
- * corrections.
+ * patch touches only the fields it carries. Tag edits come in two shapes:
+ * replace sets (`tags`/`optionalTags`, per-set semantics; see
+ * {@link itemUpdateStmts}) or merge ops (`addTags`/`addOptionalTags`/
+ * `removeTags`, resolved against the stored links by
+ * {@link compileTagMergeOps}) — a replace that drops a previously-present
+ * dietary tag is flagged in `warnings` ({@link dietaryDropWarning}). Ids that
+ * don't exist are skipped and reported in `notFoundIds` rather than aborting
+ * the batch. Returns which ids were updated and which were not found — one
+ * round trip instead of a call per item, for menu-wide corrections.
  */
 export async function updateItems(
 	db: D1Like,
 	patches: ItemPatch[]
-): Promise<{ updatedIds: string[]; notFoundIds: string[] }> {
-	if (patches.length === 0) return { updatedIds: [], notFoundIds: [] };
+): Promise<{
+	updatedIds: string[];
+	notFoundIds: string[];
+	warnings: string[];
+}> {
+	if (patches.length === 0) return { updatedIds: [], notFoundIds: [], warnings: [] };
 	const ids = patches.map((p) => p.id);
 	// Single json_each bind: update_items batches up to 200 patches, double D1's ~100
 	// per-query bound-parameter limit as an `IN (?, …)` list.
 	const { results } = await db
-		.prepare(`SELECT id, menu_id FROM items WHERE id IN (SELECT value FROM json_each(?))`)
+		.prepare(
+			`SELECT id, menu_id, item_name FROM items WHERE id IN (SELECT value FROM json_each(?))`
+		)
 		.bind(JSON.stringify(ids))
-		.all<{ id: string; menu_id: string }>();
-	const menuByItem = new Map(results.map((r) => [r.id, r.menu_id]));
+		.all<{ id: string; menu_id: string; item_name: string }>();
+	const rowByItem = new Map(results.map((r) => [r.id, r]));
+
+	// Current dietary/course links, read once for the whole batch: merge-op
+	// patches compile against them and replace-path patches diff against them
+	// for the dietary-drop warning.
+	const tagsByItem = new Map<string, StoredTagLink[]>();
+	if (patches.some(touchesTags)) {
+		const { results: links } = await db
+			.prepare(
+				`SELECT it.item_id AS item_id, it.tag_id AS tag_id, it.optional AS optional
+				 FROM item_tags it JOIN tags t ON t.id = it.tag_id
+				 WHERE t.tag_type IN ('dietary', 'course')
+				   AND it.item_id IN (SELECT value FROM json_each(?))`
+			)
+			.bind(JSON.stringify(ids))
+			.all<{ item_id: string; tag_id: string; optional: number }>();
+		for (const link of links) {
+			const list = tagsByItem.get(link.item_id) ?? [];
+			list.push({ id: link.tag_id, optional: link.optional !== 0 });
+			tagsByItem.set(link.item_id, list);
+		}
+	}
 
 	const updatedIds: string[] = [];
 	const notFoundIds: string[] = [];
+	const warnings: string[] = [];
 	const affectedMenus = new Set<string>();
 	const stmts: D1PreparedLike[] = [];
 	for (const { id, ...patch } of patches) {
-		const currentMenu = menuByItem.get(id);
-		if (currentMenu === undefined) {
+		const row = rowByItem.get(id);
+		if (row === undefined) {
 			notFoundIds.push(id);
 			continue;
 		}
+		const current = tagsByItem.get(id) ?? [];
+		const applied = compileTagMergeOps(id, row.item_name, patch, current);
+		const warning = dietaryDropWarning(id, row.item_name, patch, current);
+		if (warning) warnings.push(warning);
 		updatedIds.push(id);
 		// The item's current menu is refreshed; a move (patch.menu_id) also touches
 		// the destination menu, which just gained the item.
-		affectedMenus.add(currentMenu);
-		if (patch.menu_id) affectedMenus.add(patch.menu_id);
-		stmts.push(...itemUpdateStmts(db, id, patch));
+		affectedMenus.add(row.menu_id);
+		if (applied.menu_id) affectedMenus.add(applied.menu_id);
+		stmts.push(...itemUpdateStmts(db, id, applied));
 	}
 	if (stmts.length > 0) {
 		stmts.push(...touchMenuStmts(db, affectedMenus));
 		await db.batch(stmts);
 	}
-	return { updatedIds, notFoundIds };
+	return { updatedIds, notFoundIds, warnings };
 }
 
 /** Deletes an item and its tag links (and any per-location overrides). Returns `true` if removed. */
