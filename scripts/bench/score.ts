@@ -71,6 +71,14 @@ export interface ScoreReport {
 	spurious_warnings: string[];
 	source_recall: number;
 	source_precision: number;
+	/**
+	 * Candidate source URLs that were IGNORED for precision: a site ROOT page
+	 * (normalized pathname exactly "/" with no query string) that gold does not
+	 * itself list. Such a URL counts as neither a hit nor a miss — it is excluded
+	 * from the precision denominator entirely (see `scoreCandidate`). Sorted.
+	 * A root URL that gold DOES list is a normal hit and never appears here.
+	 */
+	ignored_sources: string[];
 }
 
 /** 0/0 counts as a perfect ratio: nothing was asserted, so nothing is wrong or missing. */
@@ -187,6 +195,20 @@ function scoreTagField(
 	};
 }
 
+/**
+ * A source URL is a site ROOT if, after `normalizeUrl`, its pathname is exactly
+ * "/" and it carries no query string (a homepage like "https://x.com/"). An
+ * unparseable URL is never a root.
+ */
+function isRootUrl(normalized: string): boolean {
+	try {
+		const u = new URL(normalized);
+		return u.pathname === '/' && u.search === '';
+	} catch {
+		return false;
+	}
+}
+
 function sourceSet(urls: readonly string[]): Set<string> {
 	const out = new Set<string>();
 	for (const url of urls) {
@@ -231,7 +253,15 @@ export function scoreCandidate(gold: GoldMenu, candidate: CandidateMenu): ScoreR
 	const goldSources = sourceSet(gold.sources);
 	const candSources = sourceSet(candidate.sources);
 	let sourceHits = 0;
-	for (const s of candSources) if (goldSources.has(s)) sourceHits += 1;
+	const ignoredSources: string[] = [];
+	for (const s of candSources) {
+		if (goldSources.has(s)) {
+			sourceHits += 1;
+		} else if (isRootUrl(s)) {
+			ignoredSources.push(s);
+		}
+	}
+	const candSourceDenom = candSources.size - ignoredSources.length;
 
 	return {
 		gold_items: gold.items.length,
@@ -254,7 +284,8 @@ export function scoreCandidate(gold: GoldMenu, candidate: CandidateMenu): ScoreR
 		missing_warnings: missingWarnings.toSorted((a, b) => a.localeCompare(b)),
 		spurious_warnings: spuriousWarnings.toSorted((a, b) => a.localeCompare(b)),
 		source_recall: ratio(sourceHits, goldSources.size),
-		source_precision: ratio(sourceHits, candSources.size)
+		source_precision: ratio(sourceHits, candSourceDenom),
+		ignored_sources: ignoredSources.toSorted((a, b) => a.localeCompare(b))
 	};
 }
 
@@ -274,7 +305,10 @@ export function formatSummary(report: ScoreReport): string {
 		`price      ${pct(report.price_accuracy)}   description ${pct(report.description_accuracy)}`,
 		`warnings   ${pct(report.warning_accuracy)}` +
 			`  (${report.missing_warnings.length} missing, ${report.spurious_warnings.length} spurious)`,
-		`sources    recall ${pct(report.source_recall)}  precision ${pct(report.source_precision)}`
+		`sources    recall ${pct(report.source_recall)}  precision ${pct(report.source_precision)}` +
+			(report.ignored_sources.length === 0
+				? ''
+				: `  (${report.ignored_sources.length} root URL${report.ignored_sources.length === 1 ? '' : 's'} ignored)`)
 	];
 	for (const fp of report.tag_false_positives) {
 		const suffix = fp.implied_by === undefined ? '' : ` (implied by ${fp.implied_by})`;

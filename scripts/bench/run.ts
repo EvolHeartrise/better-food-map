@@ -166,6 +166,33 @@ export function fetchPage(store: SnapshotStore, rawUrl: string): FetchPageResult
 
 // --- submit_menu tool ---------------------------------------------------------
 
+/**
+ * List-delimiter junk models occasionally leak onto the END of a submitted
+ * string (a live run submitted `…potatoes.', ` — apostrophe/comma/space glued
+ * onto otherwise-perfect text). Deterministic tail cleanup ONLY: no snapshot,
+ * gold, or answer-key-adjacent data is ever consulted. Every submission is
+ * treated identically.
+ */
+const TRAILING_JUNK_PUNCT = new Set([',', "'", '"', '`', '’', '‘', '“', '”']);
+
+/** A char is trailing junk if it is whitespace or one of the delimiter marks. */
+function isTrailingJunk(ch: string): boolean {
+	return /\s/.test(ch) || TRAILING_JUNK_PUNCT.has(ch);
+}
+
+/**
+ * Strip trailing list-delimiter junk from a string. Removes, from the END only,
+ * any run of whitespace / `,` / quotes (straight and curly) / backtick; never
+ * touches letters, digits, periods, or anything else, and never touches the
+ * interior. Returns the original unchanged if stripping would empty it.
+ */
+export function stripTrailingJunk(text: string): string {
+	let end = text.length;
+	while (end > 0 && isTrailingJunk(text[end - 1])) end -= 1;
+	if (end === 0) return text;
+	return end === text.length ? text : text.slice(0, end);
+}
+
 export type SubmitResult =
 	| { ok: true; candidate: v.InferOutput<typeof CandidateSchema> }
 	| { ok: false; issues: string[] };
@@ -413,6 +440,12 @@ export async function runAgent(opts: {
 						name: call.function.name,
 						result: { ok: true }
 					});
+					// Deterministic tail cleanup of leaked list-delimiter junk on
+					// descriptions only — no snapshot/gold data consulted; the model's
+					// tool result and the raw transcript submission are left untouched.
+					for (const item of submission.candidate.items) {
+						if (item.description !== null) item.description = stripTrailingJunk(item.description);
+					}
 					return done({ status: 'scored', candidate: submission.candidate });
 				}
 				result = { ok: false, issues: submission.issues };

@@ -117,7 +117,7 @@ averaged together):
 - `description_accuracy` — equality after `normalizeForSearch` over matched pairs (`null === null` correct; `null` vs text incorrect).
 - `warning_accuracy` — presence-only agreement on the `warning` flag over matched pairs: a warning counts as present iff it is a string (`null`/absent are "no warning"), and the CONTENT is never compared.
 - `missing_warnings` / `spurious_warnings` — matched item names where gold flags a warning the candidate lacks / the candidate flags one gold lacks.
-- `source_recall` / `source_precision` — candidate vs gold sources compared after `normalizeUrl`.
+- `source_recall` / `source_precision` — candidate vs gold sources compared after `normalizeUrl`. A candidate source that is a site ROOT page (normalized pathname exactly `/` with no query string) which gold does not itself list is IGNORED — excluded from the precision denominator (neither hit nor miss) and reported in `ignored_sources`; `source_recall` is unaffected. A root URL gold DOES list scores as a normal hit.
 - `gold_items` / `candidate_items` / `matched` — raw counts.
 
 ## Running a model against a task
@@ -137,7 +137,12 @@ never touches the real network — its two tools are served in-process:
   Returned text is capped at 60,000 chars with a `[truncated: N of M chars]` marker.
 - `submit_menu(payload)` — validated against the scorer's `CandidateSchema`.
   Validation failures are handed back as issues so the model can re-submit (up to
-  3 attempts); a valid submission ends the run.
+  3 attempts); a valid submission ends the run. On a valid submission each item's
+  `description` is deterministically stripped of trailing list-delimiter junk
+  (whitespace, commas, straight/curly quotes, backticks) that models occasionally
+  leak onto the end of the string — a fixed cleanup applied equally to every
+  submission, consulting no snapshot or gold data; the raw submitted text is still
+  preserved verbatim in the transcript.
 
 Options: `--max-tool-calls N` (default 40). Requires `OPENROUTER_API_KEY` (exit 2
 if unset). The run aborts as failed if the model exhausts its tool-call budget,

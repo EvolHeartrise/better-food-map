@@ -12,6 +12,7 @@ import {
 	fetchPage,
 	modelSlug,
 	runAgent,
+	stripTrailingJunk,
 	validateSubmission,
 	type ChatFn,
 	type ChatResponse,
@@ -170,6 +171,37 @@ describe('fetchPage', () => {
 	});
 });
 
+describe('stripTrailingJunk', () => {
+	test('strips the live list-delimiter artifact down to the trailing period', () => {
+		const artifact =
+			"Delicious sooji papdi with our special combination of yogurt, spices, chutneys, onions and potatoes.', ";
+		const cleaned = stripTrailingJunk(artifact);
+		expect(cleaned).toBe(
+			'Delicious sooji papdi with our special combination of yogurt, spices, chutneys, onions and potatoes.'
+		);
+		expect(cleaned.endsWith('potatoes.')).toBe(true);
+	});
+
+	test('removes a plain trailing comma but keeps a trailing period', () => {
+		expect(stripTrailingJunk('mashed potatoes,')).toBe('mashed potatoes');
+		expect(stripTrailingJunk('mashed potatoes.')).toBe('mashed potatoes.');
+	});
+
+	test('leaves a clean string untouched', () => {
+		expect(stripTrailingJunk('Grilled halloumi with mint')).toBe('Grilled halloumi with mint');
+	});
+
+	test('returns a pure-junk string unchanged rather than emptying it', () => {
+		const junk = '  ,\'," `’‘“”';
+		expect(stripTrailingJunk(junk)).toBe(junk);
+	});
+
+	test('never touches junk in the interior — only the tail is stripped', () => {
+		expect(stripTrailingJunk("a, b, c and 'd'")).toBe("a, b, c and 'd");
+		expect(stripTrailingJunk('yogurt, spices, chutneys')).toBe('yogurt, spices, chutneys');
+	});
+});
+
 describe('validateSubmission', () => {
 	test('accepts a valid candidate and reports issues for an invalid one', () => {
 		const good = validateSubmission({
@@ -230,6 +262,45 @@ describe('runAgent', () => {
 			expect(result.status).toBe('scored');
 			expect(result.submitAttempts).toBe(2);
 			expect(result.candidate?.items).toHaveLength(1);
+		});
+	});
+
+	test('sanitizes trailing junk on a submitted description, preserving the raw text in the transcript', async () => {
+		await withStoreAsync(async (store) => {
+			const transcript: TranscriptEvent[] = [];
+			const rawDescription =
+				"Delicious sooji papdi with our special combination of yogurt, spices, chutneys, onions and potatoes.', ";
+			const chat = scriptedChat([
+				toolCallResponse('submit_menu', {
+					sources: ['https://x.com/menu'],
+					items: [
+						{
+							name: 'Sooji Papdi',
+							description: rawDescription,
+							tags: [],
+							optional_tags: [],
+							price: 5.99
+						}
+					]
+				})
+			]);
+			const result = await runAgent({
+				chat,
+				store,
+				entryUrl: 'https://x.com/',
+				maxToolCalls: 40,
+				transcript
+			});
+			expect(result.status).toBe('scored');
+			// candidate description is sanitized...
+			expect(result.candidate?.items[0].description).toBe(
+				'Delicious sooji papdi with our special combination of yogurt, spices, chutneys, onions and potatoes.'
+			);
+			// ...but the transcript's tool_call event still holds the raw submitted text.
+			const submitCall = transcript.find((e) => e.type === 'tool_call' && e.name === 'submit_menu');
+			if (!submitCall) throw new Error('expected a submit_menu tool_call event');
+			const args = submitCall.arguments as { items: { description: string }[] };
+			expect(args.items[0].description).toBe(rawDescription);
 		});
 	});
 
