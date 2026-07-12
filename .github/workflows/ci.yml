@@ -24,6 +24,10 @@ jobs:
         run: bun run format:check
       - name: Lint (oxlint + eslint)
         run: bun run lint
+      # Bench data lives outside git (see scripts/bench/README.md); this skips
+      # cleanly when bench/tasks is absent and activates if bench data lands.
+      - name: Bench gold lint
+        run: bun run bench:lint
 
   typecheck:
     name: Type Check

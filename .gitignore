@@ -40,3 +40,6 @@ data/
 # Claude Code local worktrees (never committed; each carries a tsconfig.json that
 # breaks typescript-eslint's project-root detection when eslint globs into them)
 .claude/worktrees/
+
+# Menu-extraction bench data (snapshots ~60MB/venue; deliberately not in git — see scripts/bench/README.md)
+/bench/
