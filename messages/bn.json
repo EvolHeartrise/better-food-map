@@ -1,0 +1,143 @@
+{
+	"$schema": "https://inlang.com/schema/inlang-message-format",
+	"search_bar_aria": "অনুসন্ধান ও ফিল্টার",
+	"search_placeholder": "জায়গা ও খাবার খুঁজুন…",
+	"search_input_aria": "জায়গা বা খাবারের নাম দিয়ে খুঁজুন",
+	"results_nav_aria": "মিলে যাওয়া জায়গা",
+	"results_cap": "{total}টি জায়গার মধ্যে প্রথম {max}টি দেখানো হচ্ছে। তালিকা ছোট করতে অনুসন্ধান আরও নির্দিষ্ট করুন।",
+	"places_found": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count}টি জায়গা পাওয়া গেছে",
+				"countPlural=other": "{count}টি জায়গা পাওয়া গেছে"
+			}
+		}
+	],
+	"search_failed": "অনুসন্ধান ব্যর্থ হয়েছে - আগের ফলাফল দেখানো হচ্ছে।",
+	"browse_failed": "এই এলাকার জায়গাগুলি লোড করা যায়নি - আগের ফলাফল দেখানো হচ্ছে।",
+	"map_aria": "খাবারের জায়গার মানচিত্র",
+	"map_zoom_in_aria": "জুম ইন",
+	"map_zoom_out_aria": "জুম আউট",
+	"venue_details_aria": "জায়গার বিবরণ",
+	"venue_close_aria": "জায়গার বিবরণ বন্ধ করুন",
+	"venue_like": "এই জায়গাটি পছন্দ করুন",
+	"venue_unlike": "এই জায়গার পছন্দ তুলে নিন",
+	"venue_address_label": "ঠিকানা",
+	"venue_phone_label": "ফোন",
+	"venue_hours_label": "খোলার সময়",
+	"venue_hours_closed": "বন্ধ",
+	"venue_phone_extension": "এক্সটেনশন {ext}",
+	"venue_website_label": "ওয়েবসাইট",
+	"venue_menu_label": "মেনু",
+	"venue_no_menu": "এখনও কোনও মেনু নথিভুক্ত নেই।",
+	"menu_items_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count}টি আইটেম",
+				"countPlural=other": "{count}টি আইটেম"
+			}
+		}
+	],
+	"menu_last_scanned": "মেনু শেষবার {date} তারিখে স্ক্যান করা হয়েছে",
+	"sources_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count}টি উৎস",
+				"countPlural=other": "{count}টি উৎস"
+			}
+		}
+	],
+	"course_filter_aria": "কোর্স অনুযায়ী মেনু ফিল্টার করুন",
+	"course_all": "সব",
+	"item_like": "এই আইটেমটি পছন্দ করুন",
+	"item_unlike": "এই আইটেমের পছন্দ তুলে নিন",
+	"scanned_date": "স্ক্যান করা হয়েছে {date}",
+	"scanned": "স্ক্যান করা হয়েছে {relative}",
+	"tag_vegan": "ভেগান",
+	"tag_vegetarian": "নিরামিষ",
+	"tag_halal": "হালাল",
+	"tag_gluten_free": "গ্লুটেন-মুক্ত",
+	"tag_dairy_free": "দুগ্ধ-মুক্ত",
+	"tag_nut_free": "বাদাম-মুক্ত",
+	"tag_food": "খাবার",
+	"tag_dessert": "মিষ্টান্ন",
+	"tag_drink": "পানীয়",
+	"category_cafe": "ক্যাফে",
+	"category_fast_food": "ফাস্ট ফুড",
+	"category_restaurant": "রেস্তোরাঁ",
+	"category_bakery": "বেকারি",
+	"diet_any": "যেকোনো ডায়েট",
+	"diet_filter_aria": "খাদ্যাভ্যাস ফিল্টার",
+	"diet_can_be_made": "{diet} হিসেবে বানানো যায়",
+	"account_default_name": "অ্যাকাউন্ট",
+	"account_signed_in": "সাইন ইন করা আছে",
+	"account_sign_out": "সাইন আউট",
+	"account_sign_in": "সাইন ইন",
+	"language_label": "ভাষা",
+	"sources_dialog_aria": "তথ্যের উৎস",
+	"sources_title": "উৎস",
+	"sources_close_aria": "উৎস বন্ধ করুন",
+	"directions_button_tooltip": "অন্য মানচিত্র অ্যাপে খুলুন",
+	"directions_button_aria": "{address} অন্য মানচিত্র অ্যাপে খুলুন",
+	"directions_dialog_aria": "একটি মানচিত্র অ্যাপ বেছে নিন",
+	"directions_title": "অন্য মানচিত্র অ্যাপে খুলুন",
+	"directions_close_aria": "দিকনির্দেশ বন্ধ করুন",
+	"directions_apple_maps": "Apple Maps",
+	"directions_google_maps": "Google Maps",
+	"landing_intro_aria": "BetterFoodMaps সম্পর্কে",
+	"landing_title": "মানচিত্রের যেকোনো জায়গায়, আপনার ডায়েটের সাথে মানানসই খাবার খুঁজুন।",
+	"landing_stats_aria": "মানচিত্রের কভারেজ",
+	"landing_actions_aria": "শুরু করা",
+	"stat_venues": "ভেন্যু",
+	"stat_menu_items": "মেনু আইটেম",
+	"stat_cities": "শহর",
+	"stat_vegan": "ভেগান পদ",
+	"stat_vegetarian": "নিরামিষ পদ",
+	"stat_halal": "হালাল পদ",
+	"stat_gluten_free": "গ্লুটেন-মুক্ত পদ",
+	"stat_dairy_free": "দুগ্ধ-মুক্ত পদ",
+	"stat_nut_free": "বাদাম-মুক্ত পদ",
+	"landing_cta": "মানচিত্র ব্যবহার শুরু করুন",
+	"landing_browse_link": "অথবা শহর অনুযায়ী খাবার ব্রাউজ করুন →",
+	"error_not_found": "এই পৃষ্ঠাটি নেই",
+	"error_generic": "কিছু একটা ভুল হয়েছে",
+	"error_back": "মানচিত্রে ফিরে যান",
+	"error_page_title": "{status} · BetterFoodMaps",
+	"server_error_no_location_or_item": "এমন কোনও জায়গা বা আইটেম নেই।",
+	"server_error_sign_in_required": "এটি করতে আপনাকে সাইন ইন করতে হবে।",
+	"server_error_location_not_found": "জায়গাটি পাওয়া যায়নি",
+	"server_error_location_gone": "এই ভেন্যুটি স্থায়ীভাবে বন্ধ হয়ে গেছে।",
+	"server_error_database_unavailable": "ডেটাবেস উপলব্ধ নেই।",
+	"server_error_oauth_invalid_callback": "অবৈধ OAuth কলব্যাক।",
+	"server_error_oauth_code_validation": "অনুমোদন কোড যাচাই করা যায়নি।",
+	"server_error_oauth_missing_subject": "Google-এর জবাবে subject claim ছিল না।",
+	"head_site_description": "ইন্টারঅ্যাকটিভ মানচিত্রে বিশ্বজুড়ে ক্যাফে, ফাস্ট ফুড ও রেস্তোরাঁ ঘুরে দেখুন।",
+	"head_desc_no_menu": "মেনুটি BetterFoodMaps-এ দেখুন।",
+	"head_located_in": "{where}-এ",
+	"head_list_pair": "{first} এবং {last}",
+	"head_desc_on_brand": "BetterFoodMaps-এ {content}।",
+	"head_coverage_diet": "{count}টি {diet}",
+	"head_coverage_clause": "{list} {noun}",
+	"head_lead": "{name}{whereClause}{categoryClause}।",
+	"head_lead_category": " {category}",
+	"head_lead_where": ", {locatedIn}",
+	"head_list_sep": ", ",
+	"head_plain_count": "{count}টি {noun}",
+	"head_desc": "{lead} {tail}",
+	"head_menu_item_noun": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "মেনু আইটেম",
+				"countPlural=other": "মেনু আইটেম"
+			}
+		}
+	]
+}
