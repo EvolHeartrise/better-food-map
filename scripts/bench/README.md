@@ -46,6 +46,11 @@ bench/tasks/<venue-slug>/
   by this bench. Store tags minimally (e.g. `vegan` alone); the scorer expands
   the vegan → vegetarian + dairy_free implication on both sides before comparing.
 - `description` is the venue's own menu text verbatim, else `null`.
+- `warning` is an optional terse note flagging an OBVIOUS source contradiction
+  (e.g. a "Vegan" label on an item whose description lists paneer): a non-empty
+  string means "flag it", `null` or an omitted key means "no warning". Scoring is
+  presence-only — whether each side flagged the item, never the wording — so the
+  string content is authored judgment and is NOT checked against the snapshot.
 
 Validate with `bun run bench:lint [task-dir...]` (defaults to all tasks): schema
 and vocabulary checks, and every item name / source URL must exist in the task's
@@ -107,9 +112,11 @@ averaged together):
 - `missed_items` / `hallucinated_items` — unmatched gold / candidate item names.
 - `tag_precision` / `tag_recall` — micro-averaged dietary tags over matched pairs, after expanding vegan → vegan+vegetarian+dairy_free on both sides.
 - `optional_tag_precision` / `optional_tag_recall` — same, over `optional_tags`.
-- `tag_false_positives` — `{item, tag}` the candidate asserted that gold (expanded) lacks; these are the dangerous free-of/safety claims, surfaced explicitly.
+- `tag_false_positives` — `{item, tag}` the candidate asserted that gold (expanded) lacks; these are the dangerous free-of/safety claims, surfaced explicitly. A tag the candidate did not assert literally but that appeared via the vegan expansion carries `implied_by` (e.g. `dairy_free` implied by `vegan`) so implied FPs read clearly instead of looking like direct assertions.
 - `price_accuracy` — exact numeric equality over matched pairs (`null === null` counts correct).
 - `description_accuracy` — equality after `normalizeForSearch` over matched pairs (`null === null` correct; `null` vs text incorrect).
+- `warning_accuracy` — presence-only agreement on the `warning` flag over matched pairs: a warning counts as present iff it is a string (`null`/absent are "no warning"), and the CONTENT is never compared.
+- `missing_warnings` / `spurious_warnings` — matched item names where gold flags a warning the candidate lacks / the candidate flags one gold lacks.
 - `source_recall` / `source_precision` — candidate vs gold sources compared after `normalizeUrl`.
 - `gold_items` / `candidate_items` / `matched` — raw counts.
 

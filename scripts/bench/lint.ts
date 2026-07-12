@@ -41,7 +41,13 @@ export const GoldSchema = v.object({
 				description: v.nullable(v.pipe(v.string(), v.minLength(1))),
 				tags: v.array(TagSchema),
 				optional_tags: v.array(TagSchema),
-				price: v.nullable(v.pipe(v.number(), v.minValue(0)))
+				price: v.nullable(v.pipe(v.number(), v.minValue(0))),
+				// A terse authored note flagging an OBVIOUS source contradiction
+				// (e.g. a "Vegan" label on an item whose description lists paneer).
+				// Presence-only: a non-empty string means "flag it", null/absent
+				// means "no warning". Content is authored judgment, not source
+				// text, so there is NO snapshot-corpus check for it.
+				warning: v.optional(v.nullable(v.pipe(v.string(), v.minLength(1))))
 			})
 		),
 		v.minLength(1)

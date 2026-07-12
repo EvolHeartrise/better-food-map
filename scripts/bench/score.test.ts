@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync, readFileSync } from 'node:fs';
 import * as v from 'valibot';
 import { GoldSchema } from './lint';
-import { CandidateSchema, expandTags, scoreCandidate } from './score';
+import { CandidateSchema, expandTags, formatSummary, scoreCandidate } from './score';
 
 const baseGold = {
 	policy_version: '2026-07-11',
@@ -96,10 +96,45 @@ describe('scoreCandidate', () => {
 		const c = structuredClone(baseGold);
 		c.items[0].tags = ['vegan', 'gluten_free'];
 		const r = scoreCandidate(gold(), cand(c));
+		// literally asserted wrong tag → no implied_by
 		expect(r.tag_false_positives).toEqual([{ item: 'Vegan Burger', tag: 'gluten_free' }]);
+		expect(r.tag_false_positives[0].implied_by).toBeUndefined();
 		expect(r.tag_precision).toBeLessThan(1);
 		// recall stays perfect — nothing gold asserted was missed
 		expect(r.tag_recall).toBe(1);
+	});
+
+	test('implied false positives are annotated; literal ones are not', () => {
+		// gold's Fries has no tags; candidate wrongly tags Fries vegan, which
+		// expands to vegan+vegetarian+dairy_free — three FPs gold lacks.
+		const c = structuredClone(baseGold);
+		c.items[1].tags = ['vegan'];
+		const r = scoreCandidate(gold(), cand(c));
+
+		const byTag = new Map(r.tag_false_positives.map((fp) => [fp.tag, fp]));
+		expect([...byTag.keys()].toSorted()).toEqual(['dairy_free', 'vegan', 'vegetarian']);
+		// the literally-asserted vegan carries no implied_by
+		expect(byTag.get('vegan')?.implied_by).toBeUndefined();
+		// the two implied tags are annotated as implied by vegan
+		expect(byTag.get('vegetarian')?.implied_by).toBe('vegan');
+		expect(byTag.get('dairy_free')?.implied_by).toBe('vegan');
+
+		// metric MATH is unchanged by the annotation. Fries: gold 0 tags,
+		// candidate 3 expanded → 0 tp. Vegan Burger: 3/3 tp both sides.
+		// precision = 3 / (3 + 3) = 0.5; recall = 3 / 3 = 1.
+		expect(r.tag_precision).toBe(0.5);
+		expect(r.tag_recall).toBe(1);
+
+		// formatSummary renders the "(implied by vegan)" suffix for implied FPs
+		const summary = formatSummary(r);
+		expect(summary).toContain(
+			'! false-positive tag: "Fries" asserts dairy_free (implied by vegan)'
+		);
+		expect(summary).toContain(
+			'! false-positive tag: "Fries" asserts vegetarian (implied by vegan)'
+		);
+		// the literal vegan FP has no suffix
+		expect(summary).toContain('! false-positive tag: "Fries" asserts vegan\n');
 	});
 
 	test('duplicate candidate names: first matches, rest hallucinate', () => {
@@ -151,6 +186,58 @@ describe('scoreCandidate', () => {
 		const r = scoreCandidate(gold(), cand(c));
 		expect(r.source_recall).toBe(1);
 		expect(r.source_precision).toBe(0.5);
+	});
+
+	test('no warnings anywhere: accuracy 1, lists empty', () => {
+		const r = scoreCandidate(gold(), cand(structuredClone(baseGold)));
+		expect(r.warning_accuracy).toBe(1);
+		expect(r.missing_warnings).toEqual([]);
+		expect(r.spurious_warnings).toEqual([]);
+	});
+
+	test('warning is presence-only: matching presence with different content scores 1', () => {
+		const g = structuredClone(baseGold) as Record<string, unknown>;
+		(g.items as Record<string, unknown>[])[0].warning = 'gold-authored note';
+		const c = structuredClone(baseGold) as Record<string, unknown>;
+		(c.items as Record<string, unknown>[])[0].warning = 'totally different candidate text';
+		const r = scoreCandidate(gold(g), cand(c));
+		expect(r.warning_accuracy).toBe(1);
+		expect(r.missing_warnings).toEqual([]);
+		expect(r.spurious_warnings).toEqual([]);
+	});
+
+	test('gold has a warning the candidate lacks → missing_warnings, accuracy < 1', () => {
+		const g = structuredClone(baseGold) as Record<string, unknown>;
+		(g.items as Record<string, unknown>[])[0].warning = 'label conflicts with ingredients';
+		const r = scoreCandidate(gold(g), cand(structuredClone(baseGold)));
+		expect(r.missing_warnings).toEqual(['Vegan Burger']);
+		expect(r.spurious_warnings).toEqual([]);
+		expect(r.warning_accuracy).toBeLessThan(1);
+		expect(r.warning_accuracy).toBe(0.5);
+	});
+
+	test('candidate warns where gold does not → spurious_warnings', () => {
+		const c = structuredClone(baseGold) as Record<string, unknown>;
+		(c.items as Record<string, unknown>[])[0].warning = 'candidate flagged this';
+		const r = scoreCandidate(gold(), cand(c));
+		expect(r.spurious_warnings).toEqual(['Vegan Burger']);
+		expect(r.missing_warnings).toEqual([]);
+		expect(r.warning_accuracy).toBe(0.5);
+	});
+
+	test('null candidate warning where gold has a string counts as missing', () => {
+		const g = structuredClone(baseGold) as Record<string, unknown>;
+		(g.items as Record<string, unknown>[])[0].warning = 'gold flags it';
+		const c = structuredClone(baseGold) as Record<string, unknown>;
+		(c.items as Record<string, unknown>[])[0].warning = null;
+		const r = scoreCandidate(gold(g), cand(c));
+		expect(r.missing_warnings).toEqual(['Vegan Burger']);
+		expect(r.warning_accuracy).toBe(0.5);
+
+		// formatSummary renders the presence-only warnings line and the mismatch
+		const summary = formatSummary(r);
+		expect(summary).toContain('warnings');
+		expect(summary).toContain('! missing warning: "Vegan Burger"');
 	});
 });
 

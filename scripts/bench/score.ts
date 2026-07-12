@@ -36,6 +36,14 @@ type MenuItem = GoldMenu['items'][number];
 export interface TagFalsePositive {
 	item: string;
 	tag: string;
+	/**
+	 * Set only when this false-positive tag was NOT in the candidate's literal
+	 * tag list for the item but appeared through `expandTags` — i.e. the model
+	 * never asserted it directly, an implication did. Holds the raw tag that
+	 * implied it (with the current table, always `vegan`). Diagnostics only:
+	 * precision/recall counts are unaffected.
+	 */
+	implied_by?: string;
 }
 
 export interface ScoreReport {
@@ -53,6 +61,14 @@ export interface ScoreReport {
 	tag_false_positives: TagFalsePositive[];
 	price_accuracy: number;
 	description_accuracy: number;
+	/**
+	 * Presence-only agreement on the `warning` flag over matched pairs: a warning
+	 * is "present" iff it is a string, "absent" for null/undefined/missing. The
+	 * warning CONTENT is never compared — only whether each side flagged the item.
+	 */
+	warning_accuracy: number;
+	missing_warnings: string[];
+	spurious_warnings: string[];
 	source_recall: number;
 	source_precision: number;
 }
@@ -74,6 +90,18 @@ export function expandTags(tags: readonly string[]): Set<string> {
 		out.add('dairy_free');
 	}
 	return out;
+}
+
+/**
+ * Given the candidate's raw (pre-expansion) tags and an expanded tag NOT among
+ * them, find the raw tag whose implication produced it — derived from
+ * `expandTags`, not hardcoded. Returns undefined if no raw tag implies it.
+ */
+function impliedBy(rawTags: readonly string[], tag: string): string | undefined {
+	for (const raw of rawTags) {
+		if (raw !== tag && expandTags([raw]).has(tag)) return raw;
+	}
+	return undefined;
 }
 
 interface Pair {
@@ -132,13 +160,23 @@ function scoreTagField(
 	const falsePositives: TagFalsePositive[] = [];
 
 	for (const { gold, candidate } of pairs) {
+		const rawCand = candidate[field];
+		const literalTags = new Set(rawCand);
 		const goldExpanded = expandTags(gold[field]);
-		const candExpanded = expandTags(candidate[field]);
+		const candExpanded = expandTags(rawCand);
 		goldTotal += goldExpanded.size;
 		candTotal += candExpanded.size;
 		for (const tag of candExpanded) {
-			if (goldExpanded.has(tag)) tp += 1;
-			else falsePositives.push({ item: candidate.name, tag });
+			if (goldExpanded.has(tag)) {
+				tp += 1;
+				continue;
+			}
+			const fp: TagFalsePositive = { item: candidate.name, tag };
+			if (!literalTags.has(tag)) {
+				const source = impliedBy(rawCand, tag);
+				if (source !== undefined) fp.implied_by = source;
+			}
+			falsePositives.push(fp);
 		}
 	}
 
@@ -171,6 +209,9 @@ export function scoreCandidate(gold: GoldMenu, candidate: CandidateMenu): ScoreR
 
 	let priceHits = 0;
 	let descHits = 0;
+	let warningHits = 0;
+	const missingWarnings: string[] = [];
+	const spuriousWarnings: string[] = [];
 	for (const { gold: g, candidate: c } of pairs) {
 		if (g.price === c.price) priceHits += 1;
 		const descMatch =
@@ -178,6 +219,13 @@ export function scoreCandidate(gold: GoldMenu, candidate: CandidateMenu): ScoreR
 				? g.description === c.description
 				: normalizeForSearch(g.description) === normalizeForSearch(c.description);
 		if (descMatch) descHits += 1;
+
+		// Presence-only: content is never compared.
+		const goldHasWarning = typeof g.warning === 'string';
+		const candHasWarning = typeof c.warning === 'string';
+		if (goldHasWarning === candHasWarning) warningHits += 1;
+		else if (goldHasWarning) missingWarnings.push(g.name);
+		else spuriousWarnings.push(c.name);
 	}
 
 	const goldSources = sourceSet(gold.sources);
@@ -202,6 +250,9 @@ export function scoreCandidate(gold: GoldMenu, candidate: CandidateMenu): ScoreR
 		),
 		price_accuracy: ratio(priceHits, matched),
 		description_accuracy: ratio(descHits, matched),
+		warning_accuracy: ratio(warningHits, matched),
+		missing_warnings: missingWarnings.toSorted((a, b) => a.localeCompare(b)),
+		spurious_warnings: spuriousWarnings.toSorted((a, b) => a.localeCompare(b)),
 		source_recall: ratio(sourceHits, goldSources.size),
 		source_precision: ratio(sourceHits, candSources.size)
 	};
@@ -221,10 +272,19 @@ export function formatSummary(report: ScoreReport): string {
 			`  (${report.tag_false_positives.length} false-positive tag(s))`,
 		`opt.tags   recall ${pct(report.optional_tag_recall)}  precision ${pct(report.optional_tag_precision)}`,
 		`price      ${pct(report.price_accuracy)}   description ${pct(report.description_accuracy)}`,
+		`warnings   ${pct(report.warning_accuracy)}` +
+			`  (${report.missing_warnings.length} missing, ${report.spurious_warnings.length} spurious)`,
 		`sources    recall ${pct(report.source_recall)}  precision ${pct(report.source_precision)}`
 	];
 	for (const fp of report.tag_false_positives) {
-		lines.push(`  ! false-positive tag: "${fp.item}" asserts ${fp.tag}`);
+		const suffix = fp.implied_by === undefined ? '' : ` (implied by ${fp.implied_by})`;
+		lines.push(`  ! false-positive tag: "${fp.item}" asserts ${fp.tag}${suffix}`);
+	}
+	for (const name of report.missing_warnings) {
+		lines.push(`  ! missing warning: "${name}" (gold flags it, candidate does not)`);
+	}
+	for (const name of report.spurious_warnings) {
+		lines.push(`  ! spurious warning: "${name}" (candidate flags it, gold does not)`);
 	}
 	return lines.join('\n');
 }

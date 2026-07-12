@@ -78,6 +78,25 @@ describe('lintGold', () => {
 		expect(r.errors[0]).toContain('never-crawled');
 	});
 
+	test('warning: a non-empty string or null passes; 42 or "" fails schema', () => {
+		const withWarning = structuredClone(goodGold) as Record<string, unknown>;
+		(withWarning.items as Record<string, unknown>[])[0].warning =
+			'label says vegan but lists paneer';
+		expect(lintGold(withWarning, CORPUS, RECORDED).errors).toEqual([]);
+
+		const nullWarning = structuredClone(goodGold) as Record<string, unknown>;
+		(nullWarning.items as Record<string, unknown>[])[0].warning = null;
+		expect(lintGold(nullWarning, CORPUS, RECORDED).errors).toEqual([]);
+
+		const numberWarning = structuredClone(goodGold) as Record<string, unknown>;
+		(numberWarning.items as Record<string, unknown>[])[0].warning = 42;
+		expect(lintGold(numberWarning, CORPUS, RECORDED).errors.length).toBeGreaterThan(0);
+
+		const emptyWarning = structuredClone(goodGold) as Record<string, unknown>;
+		(emptyWarning.items as Record<string, unknown>[])[0].warning = '';
+		expect(lintGold(emptyWarning, CORPUS, RECORDED).errors.length).toBeGreaterThan(0);
+	});
+
 	test('malformed shape reports schema errors instead of crashing', () => {
 		const r = lintGold({ items: 'nope' }, CORPUS, RECORDED);
 		expect(r.errors.length).toBeGreaterThan(0);
