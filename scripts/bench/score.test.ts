@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import * as v from 'valibot';
 import { GoldSchema } from './lint';
 import { CandidateSchema, expandTags, scoreCandidate } from './score';
@@ -168,9 +168,11 @@ describe('CandidateSchema', () => {
 	});
 });
 
-describe('real gold scored against itself', () => {
+// Skips on CI: bench/ is gitignored, so the gold file only exists on a developer's machine.
+const goldPath = 'bench/tasks/namdharirestaurant/gold/data.json';
+describe.skipIf(!existsSync(goldPath))('real gold scored against itself', () => {
 	test('every ratio is 1 and every list empty', () => {
-		const path = 'bench/tasks/namdharirestaurant/gold/data.json';
+		const path = goldPath;
 		const raw: unknown = JSON.parse(readFileSync(path, 'utf-8'));
 		const g = v.parse(GoldSchema, raw);
 		const c = v.parse(CandidateSchema, raw);
