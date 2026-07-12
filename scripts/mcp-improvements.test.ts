@@ -69,7 +69,11 @@ function indieLocation(over: Record<string, unknown> = {}) {
 
 test('menu currency is stored and attached to every item on read', async () => {
 	const db = freshDb();
-	const brandId = await insertBrand(db, { name: 'Subway', website: null, logo_url: null });
+	const brandId = await insertBrand(db, {
+		name: 'Subway',
+		website: null,
+		logo_url: null
+	});
 	const menuId = await insertMenu(db, {
 		brand_id: brandId,
 		name: 'Subway UK',
@@ -88,7 +92,11 @@ test('menu currency is stored and attached to every item on read', async () => {
 
 test('menu currency defaults to CAD when not given', async () => {
 	const db = freshDb();
-	const brandId = await insertBrand(db, { name: 'Tims', website: null, logo_url: null });
+	const brandId = await insertBrand(db, {
+		name: 'Tims',
+		website: null,
+		logo_url: null
+	});
 	const menuId = await insertMenu(db, { brand_id: brandId, name: 'Tims CA' });
 	expect((await getMenuById(db, menuId))?.currency).toBe('CAD');
 });
@@ -104,7 +112,11 @@ test('insertFoods sets the auto-created private menu currency', async () => {
 test('insertLocations inline items use the location currency', async () => {
 	const db = freshDb();
 	const [locId] = await insertLocations(db, [
-		indieLocation({ name: 'EU Spot', currency: 'EUR', items: [{ item_name: 'Plat', price: 12 }] })
+		indieLocation({
+			name: 'EU Spot',
+			currency: 'EUR',
+			items: [{ item_name: 'Plat', price: 12 }]
+		})
 	]);
 	const items = await getFoodByLocation(db, locId);
 	expect(items[0]?.currency).toBe('EUR');
@@ -117,14 +129,22 @@ test('insertLocations inline items use the location currency', async () => {
 
 test('insertMenu stamps last_verified to today', async () => {
 	const db = freshDb();
-	const brandId = await insertBrand(db, { name: 'B', website: null, logo_url: null });
+	const brandId = await insertBrand(db, {
+		name: 'B',
+		website: null,
+		logo_url: null
+	});
 	const menuId = await insertMenu(db, { brand_id: brandId, name: 'M' });
 	expect(await menuDate(db, menuId)).toBe(currentVerificationDate());
 });
 
 test('updateMenu refreshes last_verified on any edit (incl. sources-only)', async () => {
 	const db = freshDb();
-	const brandId = await insertBrand(db, { name: 'B', website: null, logo_url: null });
+	const brandId = await insertBrand(db, {
+		name: 'B',
+		website: null,
+		logo_url: null
+	});
 	const menuId = await insertMenu(db, { brand_id: brandId, name: 'M' });
 
 	await staleMenu(db, menuId);
@@ -133,13 +153,19 @@ test('updateMenu refreshes last_verified on any edit (incl. sources-only)', asyn
 
 	// A sources-only edit (no scalar columns) still marks the menu fresh.
 	await staleMenu(db, menuId);
-	await updateMenu(db, menuId, { addSources: [{ url: 'https://m', label: null }] });
+	await updateMenu(db, menuId, {
+		addSources: [{ url: 'https://m', label: null }]
+	});
 	expect(await menuDate(db, menuId)).toBe(currentVerificationDate());
 });
 
 test('adding items refreshes the parent menu (create_items, both paths)', async () => {
 	const db = freshDb();
-	const brandId = await insertBrand(db, { name: 'B', website: null, logo_url: null });
+	const brandId = await insertBrand(db, {
+		name: 'B',
+		website: null,
+		logo_url: null
+	});
 	const menuId = await insertMenu(db, { brand_id: brandId, name: 'M' });
 	await staleMenu(db, menuId);
 	await insertMenuItems(db, [{ menu_id: menuId, item_name: 'Sub', price: 5 }]);
@@ -157,7 +183,11 @@ test('adding items refreshes the parent menu (create_items, both paths)', async 
 
 test('editing and deleting items refresh the parent menu', async () => {
 	const db = freshDb();
-	const brandId = await insertBrand(db, { name: 'B', website: null, logo_url: null });
+	const brandId = await insertBrand(db, {
+		name: 'B',
+		website: null,
+		logo_url: null
+	});
 	const menuId = await insertMenu(db, { brand_id: brandId, name: 'M' });
 	const [a, b] = await insertMenuItems(db, [
 		{ menu_id: menuId, item_name: 'A', price: 1 },
@@ -179,11 +209,20 @@ test('editing and deleting items refresh the parent menu', async () => {
 
 test('per-location overrides refresh the parent menu', async () => {
 	const db = freshDb();
-	const brandId = await insertBrand(db, { name: 'KFC', website: null, logo_url: null });
+	const brandId = await insertBrand(db, {
+		name: 'KFC',
+		website: null,
+		logo_url: null
+	});
 	const menuId = await insertMenu(db, { brand_id: brandId, name: 'KFC CA' });
 	const [itemId] = await insertMenuItems(db, [{ menu_id: menuId, item_name: 'Bucket', price: 20 }]);
 	const [locId] = await insertLocations(db, [
-		indieLocation({ name: 'KFC Branch', category: 'fast_food', brand_id: brandId, menu_id: menuId })
+		indieLocation({
+			name: 'KFC Branch',
+			category: 'fast_food',
+			brand_id: brandId,
+			menu_id: menuId
+		})
 	]);
 
 	await staleMenu(db, menuId);
@@ -199,24 +238,37 @@ test('per-location overrides refresh the parent menu', async () => {
 
 test('setLocationItemOverride is a partial patch (omitted field is preserved)', async () => {
 	const db = freshDb();
-	const brandId = await insertBrand(db, { name: 'KFC', website: null, logo_url: null });
+	const brandId = await insertBrand(db, {
+		name: 'KFC',
+		website: null,
+		logo_url: null
+	});
 	const menuId = await insertMenu(db, { brand_id: brandId, name: 'KFC CA' });
 	const [itemId] = await insertMenuItems(db, [{ menu_id: menuId, item_name: 'Bucket', price: 20 }]);
 	const [locId] = await insertLocations(db, [
-		indieLocation({ name: 'KFC Branch', category: 'fast_food', brand_id: brandId, menu_id: menuId })
+		indieLocation({
+			name: 'KFC Branch',
+			category: 'fast_food',
+			brand_id: brandId,
+			menu_id: menuId
+		})
 	]);
 
 	// Set the price only.
 	await setLocationItemOverride(db, locId, itemId, { price: 18 });
 	// Now set availability only — the previously-set price must survive.
-	const merged = await setLocationItemOverride(db, locId, itemId, { available: false });
+	const merged = await setLocationItemOverride(db, locId, itemId, {
+		available: false
+	});
 	expect(merged).toEqual({ available: false, price: 18 });
 	expect(await getLocationItemOverrides(db, locId)).toEqual([
 		{ location_id: locId, item_id: itemId, available: false, price: 18 }
 	]);
 
 	// An explicit null resets just that field to inherit; the other is kept.
-	const reset = await setLocationItemOverride(db, locId, itemId, { price: null });
+	const reset = await setLocationItemOverride(db, locId, itemId, {
+		price: null
+	});
 	expect(reset).toEqual({ available: false, price: null });
 });
 
@@ -224,25 +276,35 @@ test('setLocationItemOverride is a partial patch (omitted field is preserved)', 
 
 test('updateMenu add_sources appends and de-dupes; sources replaces', async () => {
 	const db = freshDb();
-	const brandId = await insertBrand(db, { name: 'B', website: null, logo_url: null });
+	const brandId = await insertBrand(db, {
+		name: 'B',
+		website: null,
+		logo_url: null
+	});
 	const menuId = await insertMenu(db, {
 		brand_id: brandId,
 		name: 'M',
 		sources: [{ url: 'https://a', label: null }]
 	});
 
-	await updateMenu(db, menuId, { addSources: [{ url: 'https://b', label: 'B' }] });
+	await updateMenu(db, menuId, {
+		addSources: [{ url: 'https://b', label: 'B' }]
+	});
 	expect((await getMenuById(db, menuId))?.sources.map((s) => s.url)).toEqual([
 		'https://a',
 		'https://b'
 	]);
 
 	// Re-appending an existing url is a no-op (de-duped by url).
-	await updateMenu(db, menuId, { addSources: [{ url: 'https://b', label: 'B' }] });
+	await updateMenu(db, menuId, {
+		addSources: [{ url: 'https://b', label: 'B' }]
+	});
 	expect((await getMenuById(db, menuId))?.sources).toHaveLength(2);
 
 	// `sources` replaces the whole set.
-	await updateMenu(db, menuId, { sources: [{ url: 'https://c', label: null }] });
+	await updateMenu(db, menuId, {
+		sources: [{ url: 'https://c', label: null }]
+	});
 	expect((await getMenuById(db, menuId))?.sources.map((s) => s.url)).toEqual(['https://c']);
 });
 
@@ -276,7 +338,12 @@ test('updateItems tag patches are per-set: one set never wipes the other', async
 	const db = freshDb();
 	const [locId] = await insertLocations(db, [indieLocation()]);
 	const [id] = await insertFoods(db, [
-		{ location_id: locId, item_name: 'Thali', tags: ['halal'], optionalTags: ['gluten_free'] }
+		{
+			location_id: locId,
+			item_name: 'Thali',
+			tags: ['halal'],
+			optionalTags: ['gluten_free']
+		}
 	]);
 
 	const byId = async () =>
@@ -344,7 +411,11 @@ test('existingLocationsAtCoords matches coordinate-exact locations only', async 
 
 test('findBrandIdsByName / findMenuIdsByName are case-insensitive', async () => {
 	const db = freshDb();
-	const brandId = await insertBrand(db, { name: "McDonald's", website: null, logo_url: null });
+	const brandId = await insertBrand(db, {
+		name: "McDonald's",
+		website: null,
+		logo_url: null
+	});
 	expect(await findBrandIdsByName(db, "mcdonald's")).toEqual([brandId]);
 	expect(await findBrandIdsByName(db, 'Wendys')).toEqual([]);
 
@@ -355,7 +426,11 @@ test('findBrandIdsByName / findMenuIdsByName are case-insensitive', async () => 
 
 test('itemNameCollisions reports existing names case-insensitively', async () => {
 	const db = freshDb();
-	const brandId = await insertBrand(db, { name: 'B', website: null, logo_url: null });
+	const brandId = await insertBrand(db, {
+		name: 'B',
+		website: null,
+		logo_url: null
+	});
 	const menuId = await insertMenu(db, { brand_id: brandId, name: 'M' });
 	const [bucketId] = await insertMenuItems(db, [{ menu_id: menuId, item_name: 'Bucket' }]);
 
@@ -369,7 +444,11 @@ test('itemNameCollisions reports existing names case-insensitively', async () =>
 
 test('getMenus counts open branches per menu; countLocations filters by brand', async () => {
 	const db = freshDb();
-	const brandId = await insertBrand(db, { name: 'ChainCo', website: null, logo_url: null });
+	const brandId = await insertBrand(db, {
+		name: 'ChainCo',
+		website: null,
+		logo_url: null
+	});
 	const menuId = await insertMenu(db, {
 		brand_id: brandId,
 		name: 'ChainCo Canada',
@@ -402,7 +481,11 @@ test('getMenus counts open branches per menu; countLocations filters by brand', 
 
 test('menus bank refresh_notes: stored on create, patchable, clearable', async () => {
 	const db = freshDb();
-	const brandId = await insertBrand(db, { name: 'ChainCo', website: null, logo_url: null });
+	const brandId = await insertBrand(db, {
+		name: 'ChainCo',
+		website: null,
+		logo_url: null
+	});
 	const menuId = await insertMenu(db, {
 		brand_id: brandId,
 		name: 'ChainCo Canada',
@@ -421,6 +504,139 @@ test('menus bank refresh_notes: stored on create, patchable, clearable', async (
 	await updateMenu(db, menuId, { refresh_notes: null });
 	expect((await getMenuById(db, menuId))?.refresh_notes).toBeNull();
 	// A menu created without notes reads null.
-	const bareId = await insertMenu(db, { brand_id: brandId, name: 'Bare', region: 'CA' });
+	const bareId = await insertMenu(db, {
+		brand_id: brandId,
+		name: 'Bare',
+		region: 'CA'
+	});
 	expect((await getMenuById(db, bareId))?.refresh_notes).toBeNull();
+});
+
+test('updateItems merge ops edit tags without restating the set', async () => {
+	const db = freshDb();
+	const [locId] = await insertLocations(db, [indieLocation()]);
+	const [id] = await insertFoods(db, [
+		{
+			location_id: locId,
+			item_name: 'Burger',
+			tags: ['vegan', 'food'],
+			optionalTags: ['gluten_free']
+		}
+	]);
+
+	const byId = async () =>
+		new Map(((await getItemById(db, id))?.tags ?? []).map((t) => [t.id, t.optional]));
+
+	// add_tags links one more required tag; everything else is untouched.
+	await updateItems(db, [{ id, addTags: ['halal'] }]);
+	expect(await byId()).toEqual(
+		new Map([
+			['vegan', false],
+			['food', false],
+			['halal', false],
+			['gluten_free', true]
+		])
+	);
+
+	// remove_tags unlinks from BOTH scopes without touching the rest.
+	const { warnings } = await updateItems(db, [{ id, removeTags: ['halal', 'gluten_free'] }]);
+	expect(warnings).toEqual([]); // merge-op removals are explicit, never warned
+	expect(await byId()).toEqual(
+		new Map([
+			['vegan', false],
+			['food', false]
+		])
+	);
+
+	// add_optional_tags moves a required dietary tag to optional (explicit assertion wins)...
+	await updateItems(db, [{ id, addOptionalTags: ['vegan'] }]);
+	expect(await byId()).toEqual(
+		new Map([
+			['food', false],
+			['vegan', true]
+		])
+	);
+
+	// ...and add_tags moves it back to required.
+	await updateItems(db, [{ id, addTags: ['vegan'] }]);
+	expect(await byId()).toEqual(
+		new Map([
+			['food', false],
+			['vegan', false]
+		])
+	);
+});
+
+test('updateItems merge ops enforce the course-tag invariants', async () => {
+	const db = freshDb();
+	const [locId] = await insertLocations(db, [indieLocation()]);
+	const [id] = await insertFoods(db, [
+		{ location_id: locId, item_name: 'Milkshake', tags: ['drink'] }
+	]);
+
+	// Removing the last course tag is rejected (nothing is written).
+	expect(updateItems(db, [{ id, removeTags: ['drink'] }])).rejects.toThrow(/last course tag/);
+
+	// Swapping the course tag in one patch is fine.
+	await updateItems(db, [{ id, removeTags: ['drink'], addTags: ['dessert'] }]);
+	expect(((await getItemById(db, id))?.tags ?? []).map((t) => t.id)).toEqual(['dessert']);
+
+	// "food" cannot end up combined with dessert/drink via a merge add.
+	expect(updateItems(db, [{ id, addTags: ['food'] }])).rejects.toThrow(/neither dessert nor drink/);
+
+	// A course tag can never be linked optional.
+	expect(updateItems(db, [{ id, addOptionalTags: ['drink'] }])).rejects.toThrow(
+		/never be optional/
+	);
+
+	// Mixing replace sets and merge ops in one patch is rejected.
+	expect(updateItems(db, [{ id, tags: ['food'], addTags: ['vegan'] }])).rejects.toThrow(/not both/);
+});
+
+test('updateItems warns when a replace-path patch drops a dietary tag', async () => {
+	const db = freshDb();
+	const [locId] = await insertLocations(db, [indieLocation()]);
+	const [burger, salad] = await insertFoods(db, [
+		{ location_id: locId, item_name: 'Vegan Burger', tags: ['vegan', 'food'] },
+		{
+			location_id: locId,
+			item_name: 'Salad',
+			tags: ['food'],
+			optionalTags: ['gluten_free']
+		}
+	]);
+
+	// The MeeT-on-Main failure mode: a footnote pass restates `tags` without the
+	// dietary tag → the drop is applied (replace semantics) but WARNED.
+	const res = await updateItems(db, [{ id: burger, tags: ['food'] }]);
+	expect(res.warnings).toHaveLength(1);
+	expect(res.warnings[0]).toContain(burger);
+	expect(res.warnings[0]).toContain('vegan');
+	expect(((await getItemById(db, burger))?.tags ?? []).map((t) => t.id)).toEqual(['food']);
+
+	// Restating the set WITH the tag present does not warn; nor does a patch that
+	// never touches tags, nor dropping an optional-set dietary tag that the patch
+	// explicitly replaces with itself.
+	await updateItems(db, [{ id: burger, tags: ['vegan', 'food'] }]);
+	expect((await updateItems(db, [{ id: burger, price: 9 }])).warnings).toEqual([]);
+	expect((await updateItems(db, [{ id: burger, tags: ['vegan', 'food'] }])).warnings).toEqual([]);
+
+	// Dropping an OPTIONAL dietary tag by restating optional_tags also warns.
+	const dropped = await updateItems(db, [{ id: salad, optionalTags: [] }]);
+	expect(dropped.warnings).toHaveLength(1);
+	expect(dropped.warnings[0]).toContain('gluten_free');
+
+	// Replacing vegan with vegetarian+dairy_free is NOT a drop — the implication
+	// closure already covered them, so nothing the filter matched is lost... but
+	// replacing vegetarian/dairy_free coverage the other way IS: swapping vegan
+	// out for vegetarian drops nothing the closure still covers.
+	await updateItems(db, [{ id: burger, tags: ['vegan', 'food'] }]);
+	const swap = await updateItems(db, [{ id: burger, tags: ['vegetarian', 'dairy_free', 'food'] }]);
+	expect(swap.warnings).toHaveLength(1); // vegan itself was dropped — warned
+	expect(swap.warnings[0]).toContain('vegan');
+
+	// A tag moved across scopes in one patch (required -> optional) is not a drop.
+	await updateItems(db, [{ id: burger, tags: ['vegan', 'food'] }]);
+	const moved = await updateItems(db, [{ id: burger, tags: ['food'], optionalTags: ['vegan'] }]);
+	expect(moved.warnings).toEqual([]);
 });

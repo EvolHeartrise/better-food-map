@@ -206,7 +206,9 @@ export const createItemsOutput = v.object({
 export const updateItemsOutput = v.object({
 	updated: v.number(),
 	updated_ids: v.array(v.string()),
-	not_found_ids: v.array(v.string())
+	not_found_ids: v.array(v.string()),
+	// present when a replace-path patch dropped a previously-present dietary tag
+	warnings: v.optional(v.array(v.string()))
 });
 
 /** create_chain: the bundled brand + menu + items result (already_existed/warnings optional). */

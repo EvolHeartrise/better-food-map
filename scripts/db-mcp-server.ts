@@ -101,6 +101,7 @@ import { findIdentityDrift } from './osm/find-identity-drift';
 import { findMissingAddress } from './osm/find-missing-address';
 import { findDuplicateLocations } from './osm/find-duplicate-locations';
 import { findIncompleteMenus } from './osm/find-incomplete-menus';
+import { findNoDrinksMenus } from './osm/find-no-drinks-menu';
 import { findHtmlEntities } from './osm/find-html-entities';
 import { findMissingCourseTags } from './osm/find-missing-course-tags';
 import { findUnlinkedChainBranches } from './osm/find-unlinked-chain-branches';
@@ -219,7 +220,12 @@ const TAG_POLICY =
 	`explicitly designates the item — via a dietary marker/label/section heading, or when the item's ` +
 	`name as shown in the source contains the designation (e.g. "Vegan Burger", "Halal Chicken", ` +
 	`"Vegetarian Thali"). Never infer a dietary tag from the ingredient list or general knowledge of ` +
-	`the dish; when unsure, omit it. Course tags (${courseTagIds.join(', ')}) are FACTUAL, not source-` +
+	`the dish; when unsure, omit it. Allergen SYMBOL LEGENDS (◊/‡/*, "contains nuts", "contains ` +
+	`gluten") assert PRESENCE only — the absence of a symbol is NOT a free-of designation, so never ` +
+	`derive nut_free / gluten_free / dairy_free from an item merely lacking a symbol. (An explicit ` +
+	`free-of designation ON the item — a "GF" marker, "nut-free" in its name or the source's own ` +
+	`free-of label — remains valid support; only symbol-ABSENCE is banned as evidence.) ` +
+	`Course tags (${courseTagIds.join(', ')}) are FACTUAL, not source-` +
 	'asserted, and every item REQUIRES at least one: "food" marks it as explicitly neither a dessert ' +
 	'nor a drink (so no course tag at all unambiguously means "never course-reviewed", not "food"), ' +
 	'and it can never combine with "dessert" or "drink". "dessert" and "drink" MAY combine on one item ' +
@@ -234,7 +240,8 @@ const TAG_POLICY =
 // advertised JSON Schema, so the fields just restate the load-bearing rule.
 const TAG_POLICY_SHORT =
 	'Dietary tags are SOURCE-ASSERTED — apply only when the source explicitly designates the item ' +
-	'(name or marker), never inferred from ingredients. Course tags are factual and REQUIRED — every ' +
+	'(name or marker), never inferred from ingredients; allergen symbol legends mark PRESENCE only, ' +
+	"so a symbol's absence never supports a free-of tag. Course tags are factual and REQUIRED — every " +
 	`item needs at least one of (${courseTagIds.join(', ')}); "food" = explicitly neither dessert nor ` +
 	'drink and never combines with them; dessert+drink may combine when genuinely both; never put a ' +
 	'course tag in `optional_tags`. See the server tag policy.';
@@ -307,7 +314,13 @@ const REFRESH_NOTES_POLICY =
 	"refresh_notes — banks HOW to refresh a menu's data for the next verification pass: the " +
 	'machine-readable feed endpoint (ordering API, nutrition PDF, CMS query) plus fetch caveats (e.g. ' +
 	'"menu page is client-rendered; use the ordering API behind it"). RECORD it whenever menu ' +
-	'research discovers a non-obvious source; CHECK it (get_menu) before re-researching from scratch.';
+	'research discovers a non-obvious source; CHECK it (get_menu) before re-researching from scratch. ' +
+	"It MUST include the venue's full menu-PAGE INVENTORY: before extracting a single item, " +
+	"enumerate the site's nav for EVERY menu-shaped link (food, drinks, cocktails, dessert, happy " +
+	'hour, brunch/lunch/dinner, kids) and list every URL found — including pages not yet ingested, ' +
+	'flagged as such. A lone "Menu" link is rarely the whole menu; a recorded inventory is what ' +
+	'stops the next refresh from re-scoping to whichever page turned up first and shipping a menu ' +
+	'with no drinks or desserts.';
 
 // The one-line load-bearing pointer stamped on every name field (see NAME_POLICY).
 const NAME_DESC_SHORT =
@@ -1330,6 +1343,7 @@ const AUDIT_CHECKS_SCHEMA = v.picklist([
 	'empty_menu',
 	'html_entities',
 	'missing_course_tag',
+	'no_drinks_menu',
 	'unlinked_chain_branch'
 ]);
 
@@ -1400,6 +1414,16 @@ const auditLocationsArgs = v.object({
 				'this check should be ~NEVER used: the course-tag mandate makes every item taggable (tie-break ' +
 				'on the source menu section, or on what the item is served as) — re-tag instead. Reads only ' +
 				'the live D1.\n' +
+				'• "no_drinks_menu" — OPEN restaurant-category venues whose effective menu has items (at ' +
+				'least `min_items`, default 1) but ZERO drink-tagged ones: the classic tell that menu ' +
+				'research missed a separate drinks/cocktails/happy-hour PAGE (menus are routinely split ' +
+				'across pages, and a lone "Menu" link is rarely the whole menu). Biggest menus first — the ' +
+				'more items a drink-less menu carries, the more certain a page was missed. Each entry is ' +
+				'{ id, name, address, item_count, brand_id, menu_id }. Fix by re-reading the venue site NAV ' +
+				'for every menu-shaped link (drinks/happy hour/brunch/kids), ingesting the missed pages, and ' +
+				"listing the full page inventory in the menu's refresh_notes; dismiss only a venue VERIFIED " +
+				'to genuinely list no drinks (the dismissal pins the item count — a changed menu re-flags). ' +
+				'Empty menus are left to empty_menu. Reads only the live D1.\n' +
 				'• "unlinked_chain_branch" — INDEPENDENT venues (brand_id IS NULL) whose name matches an existing ' +
 				'chain: a branch that was never linked to its chain, so it serves a stale private menu instead of ' +
 				'the shared chain menu every real branch shows (issue #242). import_chain excludes a pre-existing ' +
@@ -1425,8 +1449,10 @@ const auditLocationsArgs = v.object({
 			v.integer(),
 			v.minValue(1),
 			v.description(
-				'[empty_menu only] Flag locations whose effective menu has FEWER than this many items ' +
-					'(default 1 ⇒ only empty menus; raise it to catch suspiciously thin menus).'
+				'[empty_menu / no_drinks_menu] For empty_menu: flag locations whose effective menu has ' +
+					'FEWER than this many items (default 1 ⇒ only empty menus; raise it to catch suspiciously ' +
+					'thin menus). For no_drinks_menu: only consider venues with AT LEAST this many effective ' +
+					'items (default 1; raise it to focus on the big menus where a missed drinks page is near-certain).'
 			)
 		)
 	),
@@ -1584,7 +1610,9 @@ const dismissAuditFindingArgs = v.pipe(
 const REFRESH_NOTES_DESC =
 	"HOW to re-fetch this menu's source, banked for the next verification pass (the machine-readable " +
 	'feed endpoint + fetch caveats) and read back (get_menu) before re-researching from scratch. ' +
-	'See the refresh-notes policy in the server instructions.';
+	'MUST list the full menu-page inventory — every menu-shaped nav link (food/drinks/happy hour/' +
+	'brunch/kids), including pages not yet ingested. See the refresh-notes policy in the server ' +
+	'instructions.';
 
 const createBrandArgs = v.object({
 	name: v.pipe(
@@ -1727,18 +1755,69 @@ const updateItemArgs = v.pipe(
 				v.description(
 					'Replaces the full dietary/course tag set for this item. Must include at least one course ' +
 						'tag when provided (an item always needs one) — omit `tags` entirely to leave it unchanged. ' +
+						'PREFER add_tags/remove_tags for incremental edits: restating the set from partial ' +
+						'knowledge silently drops dietary tags it forgets. ' +
 						TAG_POLICY_SHORT
 				)
 			)
 		),
-		optional_tags: optionalTagsSchema
+		optional_tags: optionalTagsSchema,
+		add_tags: v.optional(
+			v.pipe(
+				v.array(tagIdSchema),
+				v.description(
+					'MERGE op: link these as required tags WITHOUT restating the rest of the set (a tag ' +
+						'currently optional moves to required). The safe way to add one tag — unlike `tags`, ' +
+						'nothing already on the item is touched. Mutually exclusive with `tags`/`optional_tags`. ' +
+						TAG_POLICY_SHORT
+				)
+			)
+		),
+		add_optional_tags: v.optional(
+			v.pipe(
+				v.array(tagIdSchema),
+				v.description(
+					'MERGE op: link these as OPTIONAL tags (satisfiable on request, e.g. "can be made vegan") ' +
+						'without restating the set; a tag currently required moves to optional. Course tags are ' +
+						'never optional. Mutually exclusive with `tags`/`optional_tags`.'
+				)
+			)
+		),
+		remove_tags: v.optional(
+			v.pipe(
+				v.array(tagIdSchema),
+				v.description(
+					'MERGE op: unlink these tags (from BOTH the required and optional set) without restating ' +
+						'the rest. Removing the last course tag is rejected — add the corrected course tag via ' +
+						'add_tags in the same patch. Mutually exclusive with `tags`/`optional_tags`.'
+				)
+			)
+		)
 	}),
 	v.check((item) => item.tags === undefined || hasCourseTag(item.tags), MISSING_COURSE_TAG_MSG),
 	v.check(
 		(item) => item.tags === undefined || !hasFoodConflict(item.tags),
 		FOOD_COURSE_CONFLICT_MSG
 	),
-	v.check((item) => !hasOptionalCourseTag(item.optional_tags), OPTIONAL_COURSE_TAG_MSG)
+	v.check((item) => !hasOptionalCourseTag(item.optional_tags), OPTIONAL_COURSE_TAG_MSG),
+	v.check(
+		(item) =>
+			(item.tags === undefined && item.optional_tags === undefined) ||
+			(item.add_tags === undefined &&
+				item.add_optional_tags === undefined &&
+				item.remove_tags === undefined),
+		'pass EITHER the replace sets (`tags`/`optional_tags`) OR the merge ops (`add_tags`/' +
+			'`add_optional_tags`/`remove_tags`) in one patch, not both'
+	),
+	v.check(
+		(item) =>
+			!(item.remove_tags ?? []).some(
+				(tag) => item.add_tags?.includes(tag) || item.add_optional_tags?.includes(tag)
+			),
+		'a tag cannot appear in both remove_tags and an add op in the same patch'
+	),
+	v.check((item) => !hasFoodConflict(item.add_tags ?? []), FOOD_COURSE_CONFLICT_MSG),
+	v.check((item) => !hasOptionalCourseTag(item.add_optional_tags), OPTIONAL_COURSE_TAG_MSG)
 );
 
 const updateItemsArgs = v.object({
@@ -2064,7 +2143,9 @@ const tools = [
 			'fetch details with get_location if needed.',
 		schema: createLocationsArgs,
 		handler: ({ items, skip_invalid }) =>
-			createLocationsBatch(getDb(), getOsmStore(), items, { skipInvalid: skip_invalid })
+			createLocationsBatch(getDb(), getOsmStore(), items, {
+				skipInvalid: skip_invalid
+			})
 	}),
 	defineTool({
 		name: 'update_locations',
@@ -2286,29 +2367,39 @@ const tools = [
 			'Update one or more menu items by id in a single atomic batch — pass a one-item `items` array to ' +
 			'edit one. Each patch carries an `id` plus only the fields to change; editing a shared chain item ' +
 			'changes it for EVERY branch serving its menu — for a one-branch difference use ' +
-			'set_location_item_override instead. Per-set replace semantics: `tags` replaces only the ' +
-			'required dietary/course set and `optional_tags` only the optional set — omitting one leaves ' +
-			'it untouched (pass `[]` to clear a set; pass both to replace everything). (Provenance is ' +
-			'menu-level — edit sources with ' +
-			'update_menu, not per item.) Ideal for menu-wide ' +
+			'set_location_item_override instead. Tag edits come in two shapes. PREFER the MERGE ops for ' +
+			'incremental edits — `add_tags` / `add_optional_tags` / `remove_tags` change only the tags ' +
+			'named, so a second pass (a section footnote, one corrected tag) can never wipe tags it did ' +
+			'not restate. The REPLACE sets remain for full rewrites: `tags` replaces the whole required ' +
+			'dietary/course set and `optional_tags` the whole optional set — omitting one leaves it ' +
+			'untouched (pass `[]` to clear a set; pass both to replace everything). A replace that drops a ' +
+			'previously-present dietary tag is flagged in `warnings` (dietary tags are source-asserted; ' +
+			'review every such warning — if the drop was unintended, re-add via add_tags). (Provenance is ' +
+			'menu-level — edit sources with update_menu, not per item.) Ideal for menu-wide ' +
 			'corrections in one call. Ids that do not exist are reported in `not_found_ids`. ' +
-			'Returns { updated, updated_ids, not_found_ids }.',
+			'Returns { updated, updated_ids, not_found_ids, warnings? }.',
 		schema: updateItemsArgs,
 		handler: async ({ items }) => {
 			// Validate any menu MOVE before writing: the target must exist and stay
 			// within the item's own brand — never another venue's private menu or
 			// another brand's shared menu (see assertItemMenuMoves).
 			await assertItemMenuMoves(getDb(), items);
-			const patches = items.map(({ id, optional_tags, ...patch }) => ({
-				id,
-				...patch,
-				optionalTags: optional_tags
-			}));
-			const { updatedIds, notFoundIds } = await updateItems(getDb(), patches);
+			const patches = items.map(
+				({ id, optional_tags, add_tags, add_optional_tags, remove_tags, ...patch }) => ({
+					id,
+					...patch,
+					optionalTags: optional_tags,
+					addTags: add_tags,
+					addOptionalTags: add_optional_tags,
+					removeTags: remove_tags
+				})
+			);
+			const { updatedIds, notFoundIds, warnings } = await updateItems(getDb(), patches);
 			return {
 				updated: updatedIds.length,
 				updated_ids: updatedIds,
-				not_found_ids: notFoundIds
+				not_found_ids: notFoundIds,
+				...(warnings.length ? { warnings } : {})
 			};
 		}
 	}),
@@ -2815,7 +2906,9 @@ const osmTools = [
 				);
 				let res: CreateLocationsResult;
 				try {
-					res = await createLocationsBatch(getDb(), getOsmStore(), items, { skipInvalid: true });
+					res = await createLocationsBatch(getDb(), getOsmStore(), items, {
+						skipInvalid: true
+					});
 				} catch (err) {
 					// Chunks 1..N-1 are committed; surface their results instead of
 					// discarding them with the error (see ToolPartialFailure). Chunk N
@@ -2891,6 +2984,9 @@ const osmTools = [
 			'tag mandate this means the item was never course-reviewed, NOT that it defaults to "food". PAGED ' +
 			'via `limit`/`offset`, since the pre-mandate backlog is large; each entry carries a heuristic ' +
 			'`hint` to verify, not to auto-apply; fix by re-tagging with update_items), ' +
+			'"no_drinks_menu" (open restaurants with a populated menu but zero drink items — the tell that ' +
+			'a separate drinks/happy-hour/brunch PAGE was missed during menu research; re-read the site nav ' +
+			'and ingest the missed pages), ' +
 			'or "unlinked_chain_branch" (INDEPENDENT venues whose name matches an existing chain, a branch ' +
 			'never linked to its chain, so it serves a stale private menu instead of the shared chain menu; ' +
 			'adopt with update_locations onto the shared menu, or delete_locations a bad row). ' +
@@ -2961,9 +3057,20 @@ const osmTools = [
 					...dismissal
 				});
 			}
+			if (input.check === 'no_drinks_menu') {
+				// Reads only the live D1 — no staging store needed.
+				return findNoDrinksMenus(getDb(), {
+					min_items: input.min_items,
+					limit: input.limit,
+					...dismissal
+				});
+			}
 			if (input.check === 'unlinked_chain_branch') {
 				// Reads only the live D1 — no staging store needed.
-				return findUnlinkedChainBranches(getDb(), { limit: input.limit, ...dismissal });
+				return findUnlinkedChainBranches(getDb(), {
+					limit: input.limit,
+					...dismissal
+				});
 			}
 			return findMissingAddress(getOsmStore(), getDb(), {
 				limit: input.limit,
