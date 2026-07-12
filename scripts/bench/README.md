@@ -87,6 +87,63 @@ bun run bench:serve bench/tasks/<slug> --port 8787
   back at the replay server, for human browsing in a real browser. Leave it off
   for agent evals: bodies stay byte-faithful to what the site served.
 
+## Scoring a candidate extraction
+
+```bash
+bun run bench:score bench/tasks/<slug> <candidate-output.json>
+```
+
+Deterministically scores a candidate menu (same shape as `gold/data.json`, but
+`policy_version` is optional) against the task's gold. NO fuzzy matching, NO LLM:
+candidate items match gold items only by exact `normalizeForSearch(name)`
+equality (each side matched at most once; a repeated candidate name matches on
+its first occurrence, the rest count as hallucinations). The JSON report goes to
+stdout (pipe/save it); a short summary goes to stderr. Exit 0 on any successful
+scoring however bad the scores; exit 2 on a missing/invalid candidate or gold
+file. Metrics (recall and precision are always reported separately, never
+averaged together):
+
+- `item_recall` / `item_precision` — matched items over gold / candidate totals.
+- `missed_items` / `hallucinated_items` — unmatched gold / candidate item names.
+- `tag_precision` / `tag_recall` — micro-averaged dietary tags over matched pairs, after expanding vegan → vegan+vegetarian+dairy_free on both sides.
+- `optional_tag_precision` / `optional_tag_recall` — same, over `optional_tags`.
+- `tag_false_positives` — `{item, tag}` the candidate asserted that gold (expanded) lacks; these are the dangerous free-of/safety claims, surfaced explicitly.
+- `price_accuracy` — exact numeric equality over matched pairs (`null === null` counts correct).
+- `description_accuracy` — equality after `normalizeForSearch` over matched pairs (`null === null` correct; `null` vs text incorrect).
+- `source_recall` / `source_precision` — candidate vs gold sources compared after `normalizeUrl`.
+- `gold_items` / `candidate_items` / `matched` — raw counts.
+
+## Running a model against a task
+
+```bash
+OPENROUTER_API_KEY=sk-... bun run bench:run bench/tasks/<slug> --model <openrouter-model-id>
+```
+
+Drives an OpenAI-compatible tool-calling loop (via OpenRouter, non-streaming)
+against the task's frozen snapshot and scores what the model extracts. The model
+never touches the real network — its two tools are served in-process:
+
+- `fetch_page({ url })` — resolves the URL against the task's SnapshotStore
+  (scheme-swap fallback). HTML pages return the rendered DOM as text plus a
+  `links` array (all hosts) scraped from the page; JSON/text bodies pass through;
+  PDFs return a byte-count stub; anything not recorded returns `{ status: 404 }`.
+  Returned text is capped at 60,000 chars with a `[truncated: N of M chars]` marker.
+- `submit_menu(payload)` — validated against the scorer's `CandidateSchema`.
+  Validation failures are handed back as issues so the model can re-submit (up to
+  3 attempts); a valid submission ends the run.
+
+Options: `--max-tool-calls N` (default 40). Requires `OPENROUTER_API_KEY` (exit 2
+if unset). The run aborts as failed if the model exhausts its tool-call budget,
+stops calling tools without submitting (nudged once first), or can't produce a
+valid submission.
+
+Each run writes `bench/runs/<task-slug>/<iso-timestamp>-<model-slug>/`:
+`candidate.json` (submitted extraction), `report.json` (`scoreCandidate` output),
+`transcript.jsonl` (one event per API request/response and tool call/result, with
+token usage), and `meta.json` (model, tokens, timings, status). `bench/` is
+gitignored, so runs stay out of git. Exit 0 on a scored run, 1 on a failed run,
+2 on usage/config errors.
+
 ## Authoring workflow
 
 1. `bench:record` the venue.
