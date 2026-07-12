@@ -1671,12 +1671,24 @@ const updateMenuArgs = v.object({
 	name: v.optional(v.pipe(v.string(), v.minLength(1))),
 	region: v.optional(v.nullable(v.string())),
 	currency: v.optional(currencySchema),
-	// last_verified is not accepted: any update re-stamps it to today automatically.
+	// last_verified is not accepted: any update re-stamps it to today automatically
+	// (unless stamp_verified: false).
 	refresh_notes: v.optional(
 		v.nullable(v.pipe(v.string(), v.description(REFRESH_NOTES_DESC + ' Pass null to clear.')))
 	),
 	sources: updateSourcesSchema,
-	add_sources: addSourcesSchema
+	add_sources: addSourcesSchema,
+	stamp_verified: v.optional(
+		v.pipe(
+			v.boolean(),
+			v.description(
+				'Default true: any update re-stamps last_verified to today. Pass false to bank ' +
+					'refresh_notes/sources WITHOUT marking the menu verified — e.g. recording the fuller ' +
+					"menu-page inventory an INCOMPLETE refresh discovered, when the menu's items were NOT " +
+					're-checked against the source.'
+			)
+		)
+	)
 });
 
 // create_chain bundles create_brand + create_menu + create_items into one call.
@@ -2623,10 +2635,11 @@ const chainTools = [
 			'Update a menu (including its `currency` and `refresh_notes` — bank a newly discovered feed ' +
 			'endpoint here). Only provided fields change; if `sources` is given it ' +
 			'replaces the whole source set (pass [] to clear), or use `add_sources` to append one. Any update ' +
-			"also refreshes the menu's `last_verified` date to today automatically. Returns the updated menu, " +
-			'or null if the id does not exist.',
+			"also refreshes the menu's `last_verified` date to today automatically — unless " +
+			'`stamp_verified: false`, which banks the edit without claiming the menu was re-verified. ' +
+			'Returns the updated menu, or null if the id does not exist.',
 		schema: updateMenuArgs,
-		handler: async ({ id, sources, add_sources, ...patch }) => {
+		handler: async ({ id, sources, add_sources, stamp_verified, ...patch }) => {
 			assertSourcesNotBoth(sources, add_sources, id);
 			if (patch.brand_id && !(await getBrandById(getDb(), patch.brand_id))) {
 				throw new Error(`No brand with id "${patch.brand_id}".`);
@@ -2634,7 +2647,8 @@ const chainTools = [
 			return updateMenu(getDb(), id, {
 				...patch,
 				sources: normalizeSources(sources),
-				addSources: normalizeSources(add_sources)
+				addSources: normalizeSources(add_sources),
+				stampVerified: stamp_verified
 			});
 		}
 	}),

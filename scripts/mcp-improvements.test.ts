@@ -159,6 +159,31 @@ test('updateMenu refreshes last_verified on any edit (incl. sources-only)', asyn
 	expect(await menuDate(db, menuId)).toBe(currentVerificationDate());
 });
 
+test('updateMenu stampVerified: false banks the edit without refreshing last_verified', async () => {
+	const db = freshDb();
+	const brandId = await insertBrand(db, {
+		name: 'B',
+		website: null,
+		logo_url: null
+	});
+	const menuId = await insertMenu(db, { brand_id: brandId, name: 'M' });
+
+	// An incomplete refresh banks its discovered page inventory: notes change,
+	// the staleness date must not.
+	await staleMenu(db, menuId);
+	const updated = await updateMenu(db, menuId, {
+		refresh_notes: 'pages: /menu, /menu/drinks (never extracted)',
+		stampVerified: false
+	});
+	expect(updated?.refresh_notes).toBe('pages: /menu, /menu/drinks (never extracted)');
+	expect(await menuDate(db, menuId)).toBe('2000-01-01');
+
+	// A notes-only no-stamp edit must not leave the row untouched by accident:
+	// the same call WITH stamping (default) refreshes the date.
+	await updateMenu(db, menuId, { refresh_notes: 'pages: all extracted' });
+	expect(await menuDate(db, menuId)).toBe(currentVerificationDate());
+});
+
 test('adding items refreshes the parent menu (create_items, both paths)', async () => {
 	const db = freshDb();
 	const brandId = await insertBrand(db, {
