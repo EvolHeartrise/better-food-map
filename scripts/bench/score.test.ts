@@ -186,6 +186,49 @@ describe('scoreCandidate', () => {
 		const r = scoreCandidate(gold(), cand(c));
 		expect(r.source_recall).toBe(1);
 		expect(r.source_precision).toBe(0.5);
+		expect(r.ignored_sources).toEqual([]);
+	});
+
+	test('extra homepage root URL is ignored, not counted against precision', () => {
+		const c = structuredClone(baseGold);
+		c.sources = ['https://x.com/menu', 'https://x.com/'];
+		const r = scoreCandidate(gold(), cand(c));
+		expect(r.source_precision).toBe(1);
+		expect(r.source_recall).toBe(1);
+		expect(r.ignored_sources).toEqual(['https://x.com/']);
+
+		// formatSummary annotates the ignored count on the sources line
+		expect(formatSummary(r)).toContain(
+			'sources    recall 100.0%  precision 100.0%  (1 root URL ignored)'
+		);
+	});
+
+	test('a root URL that gold itself lists is a normal hit, not ignored', () => {
+		const rootGold = structuredClone(baseGold);
+		rootGold.sources = ['https://x.com/'];
+		const g = gold(rootGold);
+		const c = structuredClone(baseGold);
+		c.sources = ['https://x.com/'];
+		const r = scoreCandidate(g, cand(c));
+		expect(r.source_recall).toBe(1);
+		expect(r.source_precision).toBe(1);
+		expect(r.ignored_sources).toEqual([]);
+	});
+
+	test('non-root extra source still drops precision', () => {
+		const c = structuredClone(baseGold);
+		c.sources = ['https://x.com/menu', 'https://x.com/about'];
+		const r = scoreCandidate(gold(), cand(c));
+		expect(r.source_precision).toBe(0.5);
+		expect(r.ignored_sources).toEqual([]);
+	});
+
+	test('root URL with a query string is NOT ignored (counts as a miss)', () => {
+		const c = structuredClone(baseGold);
+		c.sources = ['https://x.com/menu', 'https://x.com/?page=menu'];
+		const r = scoreCandidate(gold(), cand(c));
+		expect(r.source_precision).toBe(0.5);
+		expect(r.ignored_sources).toEqual([]);
 	});
 
 	test('no warnings anywhere: accuracy 1, lists empty', () => {
