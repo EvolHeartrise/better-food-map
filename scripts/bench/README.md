@@ -205,6 +205,18 @@ bun run bench:run bench/tasks/<slug> --model openai/gpt-5 --temperature 0.2
   exits 2: the Agent SDK exposes no sampling control and those models reject it
   anyway.
 
+**Pre-flight parameter validation (openrouter).** When you pass `--effort` and/or
+`--temperature`, the run first checks them against the model's
+`supported_parameters` (from the same `GET /api/v1/models` payload fetched once per
+run for pricing) and exits 2 BEFORE any chat request if a knob is unsupported —
+`--effort` needs `reasoning` or `reasoning_effort`, `--temperature` needs
+`temperature` (this catches e.g. `anthropic/claude-sonnet-5 --temperature` up
+front instead of burning a request on a provider 400). The error names the model
+and prints its actual `supported_parameters`. This is a courtesy, never a gate: if
+the models endpoint can't be fetched/parsed or the model id isn't found, it prints
+a one-line skip warning to stderr and proceeds — a network blip must never fail a
+run the provider would have accepted.
+
 `meta.json` records both settings on **both** backends: `effort` (the requested
 level, or `null` when unset), `temperature` (the requested number, or `null` —
 always `null` on the claude backend), and `effort_default` (a short factual note
@@ -302,8 +314,11 @@ gitignored and absent, `--status` prints a "no bench data" note and exits 0.
 
 ```bash
 OPENROUTER_API_KEY=sk-... bun run bench:draft <task-dir> \
-  --model <openrouter-model-id> [--max-tool-calls N] [--policy-version <v>] [--force]
+  --model <openrouter-model-id> [--effort <level>] [--max-tool-calls N] [--policy-version <v>] [--force]
 ```
+
+`--effort <level>` sets the model's reasoning depth (OpenRouter-only, same level
+set and pre-flight `supported_parameters` check as [`bench:run`](#reasoning-effort--temperature)); the requested effort is recorded on the draft transcript and the stderr summary line.
 
 Drives the **same** extraction loop as `bench:run` (identical tools, system
 prompt, and snapshot-served `fetch_page`) and writes the model's submission to
