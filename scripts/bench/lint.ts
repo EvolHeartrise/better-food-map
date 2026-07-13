@@ -66,11 +66,20 @@ const ENTITIES: Record<string, string> = {
 	'&nbsp;': ' '
 };
 
-/** Rendered/raw HTML → searchable text: no scripts/styles/tags, entities decoded. */
+/**
+ * Rendered/raw HTML → searchable text: no scripts/styles/tags, entities decoded.
+ * `<img>` alt text survives as `[image: …]` — menu sites routinely carry the only
+ * on-page dietary designation ("Vegan Battered Cauliflower …") in a dish photo's
+ * alt text, which attribute stripping would otherwise silently drop.
+ */
 export function htmlToText(html: string): string {
 	return html
 		.replace(/<script[\s\S]*?<\/script>/gi, ' ')
 		.replace(/<style[\s\S]*?<\/style>/gi, ' ')
+		.replace(/<img\b[^>]*\balt\s*=\s*(?:"([^"]*)"|'([^']*)')[^>]*>/gi, (_m, dq, sq) => {
+			const alt = (dq ?? sq ?? '').trim();
+			return alt ? ` [image: ${alt}] ` : ' ';
+		})
 		.replace(/<[^>]+>/g, ' ')
 		.replace(/&[a-z]+;|&#\d+;/gi, (e) => ENTITIES[e.toLowerCase()] ?? ' ');
 }
