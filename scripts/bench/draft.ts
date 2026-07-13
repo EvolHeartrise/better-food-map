@@ -9,7 +9,7 @@
  *
  * Usage:
  *   bun run bench:draft <task-dir> --model <openrouter-model-id> \
- *     [--max-tool-calls N] [--policy-version <v>] [--force]
+ *     [--effort <level>] [--max-tool-calls N] [--policy-version <v>] [--force]
  *
  * Requires OPENROUTER_API_KEY (exit 2 if unset). Exit 0 once a draft is written
  * (however rough), 1 on a failed model run, 2 on usage/config errors or a
@@ -19,7 +19,16 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildCorpus, DIETARY_TAGS, lintGold, type LintResult } from './lint';
 import { type CandidateMenu } from './score';
-import { openRouterChat, runAgent, type ChatFn, type RunResult, type TranscriptEvent } from './run';
+import {
+	fetchModelInfo,
+	openRouterChat,
+	OPENROUTER_EFFORT_LEVELS,
+	runAgent,
+	validateRequestedParams,
+	type ChatFn,
+	type RunResult,
+	type TranscriptEvent
+} from './run';
 import { loadManifest, SnapshotStore } from './snapshot-store';
 
 const DEFAULT_MAX_TOOL_CALLS = 40;
@@ -151,24 +160,35 @@ export async function draftTask(opts: {
 
 // --- CLI ----------------------------------------------------------------------
 
-interface CliArgs {
+export interface CliArgs {
 	taskDir: string;
 	model: string;
 	maxToolCalls: number;
 	policyVersion: string;
 	force: boolean;
+	/** Reasoning-effort level, validated against OpenRouter's set; undefined = provider default. */
+	effort?: string;
 }
 
-function parseCli(argv: string[]): CliArgs | { error: string } {
+export function parseCli(argv: string[]): CliArgs | { error: string } {
 	let taskDir: string | undefined;
 	let model: string | undefined;
 	let maxToolCalls = DEFAULT_MAX_TOOL_CALLS;
 	let policyVersion = DEFAULT_POLICY_VERSION;
 	let force = false;
+	let effort: string | undefined;
 	for (let i = 0; i < argv.length; i += 1) {
 		const arg = argv[i];
 		if (arg === '--model') {
 			model = argv[++i];
+		} else if (arg === '--effort') {
+			const level = argv[++i];
+			if (level === undefined) return { error: '--effort requires a level' };
+			if (!OPENROUTER_EFFORT_LEVELS.includes(level as (typeof OPENROUTER_EFFORT_LEVELS)[number]))
+				return {
+					error: `--effort must be one of ${OPENROUTER_EFFORT_LEVELS.join('|')} (got ${level})`
+				};
+			effort = level;
 		} else if (arg === '--max-tool-calls') {
 			const n = Number(argv[++i]);
 			if (!Number.isInteger(n) || n <= 0)
@@ -189,11 +209,11 @@ function parseCli(argv: string[]): CliArgs | { error: string } {
 	}
 	if (!taskDir) return { error: 'missing <task-dir>' };
 	if (!model) return { error: 'missing --model <openrouter-model-id>' };
-	return { taskDir, model, maxToolCalls, policyVersion, force };
+	return { taskDir, model, maxToolCalls, policyVersion, force, effort };
 }
 
 const USAGE =
-	'usage: bun run bench:draft <task-dir> --model <openrouter-model-id> [--max-tool-calls N] [--policy-version <v>] [--force]';
+	'usage: bun run bench:draft <task-dir> --model <openrouter-model-id> [--effort <level>] [--max-tool-calls N] [--policy-version <v>] [--force]';
 
 async function main(): Promise<number> {
 	const cli = parseCli(process.argv.slice(2));
@@ -222,12 +242,39 @@ async function main(): Promise<number> {
 		);
 	}
 
+	// Pre-flight: reject an --effort the model does not accept BEFORE burning a chat
+	// request. Fetch model info ONLY when --effort is given (no pricing to compute,
+	// so the no-flag path stays zero-overhead). A missing/unfetchable allowlist NEVER
+	// blocks the run — it warns and proceeds (the provider is the source of truth).
+	if (cli.effort !== undefined) {
+		const modelInfo = await fetchModelInfo(cli.model);
+		const supported = modelInfo?.supportedParameters ?? null;
+		if (supported === null) {
+			console.error(
+				`note: could not read supported_parameters for ${cli.model} — skipping pre-flight --effort validation`
+			);
+		} else {
+			const err = validateRequestedParams({ effort: cli.effort }, supported);
+			if (err) {
+				console.error(`error: model ${cli.model} ${err}`);
+				return 2;
+			}
+		}
+	}
+
 	const store = new SnapshotStore(join(cli.taskDir, 'snapshot'));
 	const transcript: TranscriptEvent[] = [];
+	// Record the requested reasoning effort (or its absence) so a draft's
+	// provenance survives in draft-transcript.jsonl.
+	transcript.push({
+		type: 'note',
+		ts: new Date().toISOString(),
+		note: `requested effort: ${cli.effort ?? 'none (provider default)'}`
+	});
 	let outcome: DraftOutcome;
 	try {
 		outcome = await draftTask({
-			chat: openRouterChat(cli.model, apiKey),
+			chat: openRouterChat(cli.model, apiKey, { effort: cli.effort }),
 			store,
 			taskDir: cli.taskDir,
 			entryUrl: manifest.entryUrl,
@@ -251,7 +298,9 @@ async function main(): Promise<number> {
 		return 1;
 	}
 
-	console.error(`wrote ${outcome.draftPath} (NOT promoted — review before use)`);
+	console.error(
+		`wrote ${outcome.draftPath} (NOT promoted — review before use) [effort: ${cli.effort ?? 'none (provider default)'}]`
+	);
 	console.error(formatReview(outcome.draftPath, outcome.review));
 	console.error(`transcript: ${join(cli.taskDir, 'gold', 'draft-transcript.jsonl')}`);
 	return 0;

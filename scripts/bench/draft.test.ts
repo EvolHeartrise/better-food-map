@@ -2,7 +2,15 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildReview, draftTask, formatReview, stampDraft, type Draft } from './draft';
+import {
+	buildReview,
+	draftTask,
+	formatReview,
+	parseCli,
+	stampDraft,
+	type CliArgs,
+	type Draft
+} from './draft';
 import { SnapshotStore } from './snapshot-store';
 import type { ChatFn, ChatResponse, TranscriptEvent } from './run';
 
@@ -58,6 +66,35 @@ const SUBMIT = {
 		{ name: 'Chai', description: null, tags: [], optional_tags: [], price: 2.5 }
 	]
 };
+
+describe('parseCli --effort', () => {
+	const base = ['task-dir', '--model', 'openai/gpt-5'];
+	const ok = (argv: string[]): CliArgs => {
+		const parsed = parseCli(argv);
+		if ('error' in parsed) throw new Error(`unexpected parse error: ${parsed.error}`);
+		return parsed;
+	};
+
+	test('accepts a valid OpenRouter effort level', () => {
+		expect(ok([...base, '--effort', 'high']).effort).toBe('high');
+		expect(ok([...base, '--effort', 'none']).effort).toBe('none');
+		expect(ok([...base, '--effort', 'max']).effort).toBe('max');
+	});
+
+	test('rejects an unknown level (parse error, main() exits 2)', () => {
+		const parsed = parseCli([...base, '--effort', 'ultra']);
+		expect('error' in parsed && parsed.error).toContain('--effort must be one of');
+	});
+
+	test('rejects a missing level value', () => {
+		const parsed = parseCli([...base, '--effort']);
+		expect('error' in parsed && parsed.error).toBe('--effort requires a level');
+	});
+
+	test('absent --effort leaves effort undefined', () => {
+		expect(ok(base).effort).toBeUndefined();
+	});
+});
 
 describe('stampDraft', () => {
 	test('stamps the given policy_version onto a candidate', () => {

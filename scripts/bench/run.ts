@@ -188,21 +188,27 @@ export function estimateCachedPrice(
 const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models';
 
 /**
- * Fetch one model's per-token pricing from OpenRouter's public models endpoint.
- * Returns null on ANY fetch/parse failure or a missing model (→ `price_cached`
- * null); a missing `input_cache_read` is tolerated by falling back to the prompt
- * rate (noted on stderr). CLI-only — never called from tests (it hits the net).
+ * One model's entry from OpenRouter's public models endpoint, reduced to the two
+ * fields the harness reads: per-token `pricing` (null when the price fields are
+ * missing/unparseable) and the `supportedParameters` allowlist (null when the
+ * model exposes none). Fetched ONCE per run and shared by the run-cost accounting
+ * and the pre-flight parameter validation.
  */
-async function fetchModelPricing(model: string): Promise<ModelPricing | null> {
-	let data: { data?: { id?: string; pricing?: Record<string, string | undefined> }[] };
-	try {
-		const res = await fetch(OPENROUTER_MODELS_URL);
-		if (!res.ok) return null;
-		data = (await res.json()) as typeof data;
-	} catch {
-		return null;
-	}
-	const p = data.data?.find((m) => m.id === model)?.pricing;
+export interface ModelInfo {
+	pricing: ModelPricing | null;
+	supportedParameters: string[] | null;
+}
+
+/**
+ * Parse one model's per-token pricing from its models-endpoint `pricing` object.
+ * Returns null when the prompt/completion rates are missing or unparseable; a
+ * missing `input_cache_read` is tolerated by falling back to the prompt rate
+ * (noted on stderr). Pure aside from that one stderr note.
+ */
+function parseModelPricing(
+	model: string,
+	p: Record<string, string | undefined> | undefined
+): ModelPricing | null {
 	if (!p) return null;
 	const prompt = Number(p.prompt);
 	const completion = Number(p.completion);
@@ -216,6 +222,66 @@ async function fetchModelPricing(model: string): Promise<ModelPricing | null> {
 		return { prompt, completion, cacheRead: prompt };
 	}
 	return { prompt, completion, cacheRead };
+}
+
+/**
+ * Fetch one model's pricing + `supported_parameters` from OpenRouter's public
+ * models endpoint, in ONE request shared by the cost accounting and the
+ * pre-flight parameter validation. Returns null on ANY fetch/parse failure or a
+ * missing model id (the same failure modes the old `fetchModelPricing` tolerated
+ * → `price_cached` null AND validation skipped). CLI-only — never called from
+ * tests (it hits the net); the pure `validateRequestedParams` is the unit seam.
+ */
+export async function fetchModelInfo(model: string): Promise<ModelInfo | null> {
+	let data: {
+		data?: {
+			id?: string;
+			pricing?: Record<string, string | undefined>;
+			supported_parameters?: unknown;
+		}[];
+	};
+	try {
+		const res = await fetch(OPENROUTER_MODELS_URL);
+		if (!res.ok) return null;
+		data = (await res.json()) as typeof data;
+	} catch {
+		return null;
+	}
+	const entry = data.data?.find((m) => m.id === model);
+	if (!entry) return null;
+	const sp = entry.supported_parameters;
+	const supportedParameters =
+		Array.isArray(sp) && sp.every((x) => typeof x === 'string') ? sp : null;
+	return { pricing: parseModelPricing(model, entry.pricing), supportedParameters };
+}
+
+/**
+ * Pre-flight check that the requested reasoning/sampling knobs are ones the model
+ * actually accepts, per its OpenRouter `supported_parameters` allowlist. Pure and
+ * network-free: the model id is deliberately kept OUT of the signature (the caller
+ * composes the model-named message). Returns a human-readable error string when a
+ * requested knob is unsupported, or null when everything requested is fine OR when
+ * support is UNKNOWABLE (`supportedParameters` is null — a missing/unfetchable
+ * allowlist never blocks a run the provider might accept). `--effort` needs either
+ * `reasoning` or `reasoning_effort`; `--temperature` needs `temperature`.
+ */
+export function validateRequestedParams(
+	requested: { effort?: string; temperature?: number },
+	supportedParameters: string[] | null
+): string | null {
+	if (supportedParameters === null) return null;
+	const list = supportedParameters.join(', ');
+	if (
+		requested.effort !== undefined &&
+		!supportedParameters.includes('reasoning') &&
+		!supportedParameters.includes('reasoning_effort')
+	) {
+		return `does not support reasoning effort (--effort); supported_parameters: ${list}`;
+	}
+	if (requested.temperature !== undefined && !supportedParameters.includes('temperature')) {
+		return `does not support temperature (--temperature); supported_parameters: ${list}`;
+	}
+	return null;
 }
 
 // --- Anthropic prompt-cache breakpoints (OpenRouter passes cache_control through) --
@@ -1011,18 +1077,20 @@ export function buildMeta(
 /**
  * Openrouter run-cost accounting for a completed (or partially-run) result:
  * `price` from the summed per-request `usage.cost`, `price_cached` from the
- * cached-price counterfactual once model pricing is fetched (null when pricing
- * is unavailable). CLI-only (fetches model pricing). Returns undefined for any
+ * cached-price counterfactual using the pricing in the already-fetched
+ * `modelInfo` (null when pricing is unavailable). Pure — model info is fetched
+ * once per run by the caller and passed in. Returns undefined for any
  * non-openrouter backend so those metas omit the fields entirely.
  */
-async function computeOpenRouterCosts(
+function computeOpenRouterCosts(
 	cli: CliArgs,
-	result: RunResult
-): Promise<{ price: number | null; price_cached: number | null } | undefined> {
+	result: RunResult,
+	modelInfo: ModelInfo | null
+): { price: number | null; price_cached: number | null } | undefined {
 	if (cli.backend !== 'openrouter') return undefined;
 	const usages = result.usages ?? [];
 	const price = sumRealCost(usages);
-	const pricing = await fetchModelPricing(cli.model);
+	const pricing = modelInfo?.pricing ?? null;
 	const price_cached = pricing
 		? estimateCachedPrice(
 				usages.map((u) => ({
@@ -1071,6 +1139,32 @@ async function main(): Promise<number> {
 	} catch (e) {
 		console.error(`error: could not read gold/data.json: ${String(e)}`);
 		return 2;
+	}
+
+	// Fetch the model's OpenRouter metadata ONCE (pricing + supported_parameters)
+	// and share it between pre-flight parameter validation (below) and the run-cost
+	// accounting (after the run). Only the openrouter backend uses the endpoint.
+	const modelInfo = cli.backend === 'openrouter' ? await fetchModelInfo(cli.model) : null;
+
+	// Pre-flight: reject an --effort/--temperature the model does not accept BEFORE
+	// burning a chat request. A missing/unfetchable allowlist NEVER blocks the run —
+	// it warns and proceeds (the provider is the source of truth, this is a courtesy).
+	if (cli.backend === 'openrouter' && (cli.effort !== undefined || cli.temperature !== undefined)) {
+		const supported = modelInfo?.supportedParameters ?? null;
+		if (supported === null) {
+			console.error(
+				`note: could not read supported_parameters for ${cli.model} — skipping pre-flight --effort/--temperature validation`
+			);
+		} else {
+			const err = validateRequestedParams(
+				{ effort: cli.effort, temperature: cli.temperature },
+				supported
+			);
+			if (err) {
+				console.error(`error: model ${cli.model} ${err}`);
+				return 2;
+			}
+		}
 	}
 
 	const store = new SnapshotStore(join(cli.taskDir, 'snapshot'));
@@ -1133,7 +1227,7 @@ async function main(): Promise<number> {
 	}
 
 	const report = result.candidate ? scoreCandidate(gold, result.candidate) : undefined;
-	const costs = await computeOpenRouterCosts(cli, result);
+	const costs = computeOpenRouterCosts(cli, result, modelInfo);
 	const meta = buildMeta(cli, manifest, gold.policy_version, startedAt, result, costs);
 	writeRun(runDir, { meta, transcript, candidate: result.candidate, report });
 

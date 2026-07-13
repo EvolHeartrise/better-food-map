@@ -18,6 +18,7 @@ import {
 	runAgent,
 	stripTrailingJunk,
 	sumRealCost,
+	validateRequestedParams,
 	validateSubmission,
 	type ChatFn,
 	type ChatMessage,
@@ -253,6 +254,55 @@ describe('estimateCachedPrice', () => {
 
 	test('an empty sequence costs nothing', () => {
 		expect(estimateCachedPrice([], pricing)).toBe(0);
+	});
+});
+
+describe('validateRequestedParams', () => {
+	// A model that supports reasoning + reasoning_effort but NOT temperature
+	// (mirrors anthropic/claude-sonnet-5 on OpenRouter).
+	const reasoningOnly = ['reasoning', 'reasoning_effort', 'tools', 'tool_choice'];
+	// A model whose only reasoning knob is reasoning_effort (no bare `reasoning`).
+	const effortAlias = ['reasoning_effort', 'temperature', 'tools'];
+	// A model that supports temperature but no reasoning at all.
+	const tempOnly = ['temperature', 'tools', 'top_p'];
+
+	test('effort ok when `reasoning` is supported', () => {
+		expect(validateRequestedParams({ effort: 'high' }, reasoningOnly)).toBeNull();
+	});
+
+	test('effort ok when only `reasoning_effort` is supported', () => {
+		expect(validateRequestedParams({ effort: 'high' }, effortAlias)).toBeNull();
+	});
+
+	test('effort rejected when neither reasoning knob is present', () => {
+		const err = validateRequestedParams({ effort: 'high' }, tempOnly);
+		expect(err).not.toBeNull();
+		expect(err).toContain('reasoning effort');
+		expect(err).toContain('--effort');
+		// the actual supported list is surfaced so the user sees what IS available
+		expect(err).toContain('temperature');
+	});
+
+	test('temperature ok when `temperature` is supported', () => {
+		expect(validateRequestedParams({ temperature: 0.5 }, tempOnly)).toBeNull();
+	});
+
+	test('temperature rejected when `temperature` is absent (e.g. Sonnet 5)', () => {
+		const err = validateRequestedParams({ temperature: 0.5 }, reasoningOnly);
+		expect(err).not.toBeNull();
+		expect(err).toContain('temperature');
+		expect(err).toContain('--temperature');
+		expect(err).toContain('reasoning_effort'); // the supported list is included
+	});
+
+	test('neither flag requested → null passthrough even when nothing is supported', () => {
+		expect(validateRequestedParams({}, [])).toBeNull();
+	});
+
+	test('null supportedParameters is unknowable → always null (never blocks a run)', () => {
+		expect(validateRequestedParams({ effort: 'high' }, null)).toBeNull();
+		expect(validateRequestedParams({ temperature: 0.5 }, null)).toBeNull();
+		expect(validateRequestedParams({ effort: 'max', temperature: 1 }, null)).toBeNull();
 	});
 });
 
