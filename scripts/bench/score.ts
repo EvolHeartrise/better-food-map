@@ -118,6 +118,18 @@ interface Pair {
 }
 
 /**
+ * Name-matching key: paren-insensitive form of a name. Parentheses are
+ * dropped BEFORE `normalizeForSearch` runs — each `(` / `)` becomes a space so
+ * a variant like "Fresh Soup (Bowl)" keys identically to "Fresh Soup Bowl" (and
+ * "Soup(bowl)" keys as "soup bowl", not "soupbowl") — then the existing
+ * lowercase/whitespace-collapse handles the rest. This lets a candidate match a
+ * gold variant name regardless of the source's parenthesization.
+ */
+export function nameMatchKey(name: string): string {
+	return normalizeForSearch(name.replace(/[()]/g, ' '));
+}
+
+/**
  * Match candidate items to gold items by exact normalized-name equality. Each
  * gold item matches at most one candidate and vice versa; a candidate name that
  * repeats matches on its FIRST occurrence, later copies fall through as
@@ -131,15 +143,22 @@ function matchItems(
 	missed: MenuItem[];
 	hallucinated: MenuItem[];
 } {
+	// First-in wins: gold names are unique by lint, but two gold names COULD
+	// collide once parens are stripped ("X (a)" vs "X a") — gold should not
+	// contain such paren-insensitive duplicate names. On collision we keep the
+	// first-seen item so matching stays deterministic (never crash on odd gold).
 	const goldByKey = new Map<string, MenuItem>();
-	for (const item of gold.items) goldByKey.set(normalizeForSearch(item.name), item);
+	for (const item of gold.items) {
+		const key = nameMatchKey(item.name);
+		if (!goldByKey.has(key)) goldByKey.set(key, item);
+	}
 
 	const pairs: Pair[] = [];
 	const hallucinated: MenuItem[] = [];
 	const usedGoldKeys = new Set<string>();
 
 	for (const cand of candidate.items) {
-		const key = normalizeForSearch(cand.name);
+		const key = nameMatchKey(cand.name);
 		const goldItem = goldByKey.get(key);
 		if (goldItem && !usedGoldKeys.has(key)) {
 			usedGoldKeys.add(key);
@@ -149,7 +168,7 @@ function matchItems(
 		}
 	}
 
-	const missed = gold.items.filter((g) => !usedGoldKeys.has(normalizeForSearch(g.name)));
+	const missed = gold.items.filter((g) => !usedGoldKeys.has(nameMatchKey(g.name)));
 	return { pairs, missed, hallucinated };
 }
 

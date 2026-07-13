@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { parseCli, requiresOpenRouterKey, type TranscriptEvent } from './run';
 import {
+	buildBenchMcpServer,
+	buildClaudeOptions,
 	fetchPageToolResult,
 	mapSdkMessage,
 	newRunState,
@@ -141,6 +143,62 @@ describe('mapSdkMessage', () => {
 		expect(call?.arguments).toEqual({ url: 'https://x.com/menu' });
 	});
 
+	test('dedupes the usage-carrying response by API message id across per-block events', () => {
+		// The SDK emits one assistant event per content block of a single API
+		// request — a text block, then a tool_use block — both carrying the SAME
+		// message id and the SAME usage. Sharing a `seenMessageIds` set, the
+		// usage-bearing `response` event must appear ONCE (on the first event),
+		// while the tool_use block still maps to its own tool_call.
+		const seen = new Set<string>();
+		const usage = { input_tokens: 10, output_tokens: 4, cache_creation_input_tokens: 5104 };
+
+		const first = mapSdkMessage(
+			sdkMsg({
+				type: 'assistant',
+				message: { id: 'msg_1', content: [{ type: 'text', text: 'Fetching the menu.' }], usage }
+			}),
+			seen
+		);
+		const second = mapSdkMessage(
+			sdkMsg({
+				type: 'assistant',
+				message: {
+					id: 'msg_1',
+					content: [
+						{
+							type: 'tool_use',
+							id: 'tu_1',
+							name: 'mcp__bench__fetch_page',
+							input: { url: 'https://x.com/menu' }
+						}
+					],
+					usage
+				}
+			}),
+			seen
+		);
+
+		// Usage is carried once, on the first event's response only.
+		const firstResponses = first.filter((e) => e.type === 'response');
+		expect(firstResponses).toHaveLength(1);
+		expect(firstResponses[0].usage).toEqual(usage);
+		expect(second.filter((e) => e.type === 'response')).toHaveLength(0);
+		// The tool_use block still maps to a tool_call on the deduped event.
+		const calls = second.filter((e) => e.type === 'tool_call');
+		expect(calls).toHaveLength(1);
+		expect(calls[0].name).toBe('fetch_page');
+
+		// A NEW API message id emits its own response again.
+		const third = mapSdkMessage(
+			sdkMsg({
+				type: 'assistant',
+				message: { id: 'msg_2', content: [{ type: 'text', text: 'Done.' }], usage }
+			}),
+			seen
+		);
+		expect(third.filter((e) => e.type === 'response')).toHaveLength(1);
+	});
+
 	test('user tool_result → tool_result event', () => {
 		const events = mapSdkMessage(
 			sdkMsg({
@@ -252,6 +310,102 @@ describe('runClaudeAgent (injected queryFn)', () => {
 		});
 	});
 
+	test('usage from per-content-block events sharing one message id counts once', async () => {
+		await withStoreAsync(async (store) => {
+			store.put({
+				method: 'GET',
+				url: 'https://x.com/menu',
+				status: 200,
+				contentType: 'text/html',
+				body: enc('<h1>Samosa $3.99</h1>')
+			});
+			const transcript: TranscriptEvent[] = [];
+			const submission = {
+				sources: ['https://x.com/menu'],
+				items: [
+					{ name: 'Samosa', description: null, tags: ['vegan'], optional_tags: [], price: 3.99 }
+				]
+			};
+			// Each API request arrives as TWO assistant events (text block, then
+			// tool_use block) sharing one message id + identical usage — the exact
+			// pattern that used to double-count tokens.
+			const queryFn: QueryFn = async function* ({ tools }) {
+				const u1 = { input_tokens: 10, output_tokens: 4 };
+				yield sdkMsg({
+					type: 'assistant',
+					message: { id: 'msg_1', content: [{ type: 'text', text: 'Fetching.' }], usage: u1 }
+				});
+				yield sdkMsg({
+					type: 'assistant',
+					message: {
+						id: 'msg_1',
+						content: [
+							{
+								type: 'tool_use',
+								id: 'tu_0',
+								name: 'mcp__bench__fetch_page',
+								input: { url: 'https://x.com/menu' }
+							}
+						],
+						usage: u1
+					}
+				});
+				const fetched = tools.fetchPage('https://x.com/menu');
+				yield sdkMsg({
+					type: 'user',
+					message: {
+						content: [
+							{ type: 'tool_result', tool_use_id: 'tu_0', content: fetched.content[0].text }
+						]
+					}
+				});
+				// A NEW API message id (msg_2) adds its usage normally.
+				const u2 = { input_tokens: 7, output_tokens: 2 };
+				yield sdkMsg({
+					type: 'assistant',
+					message: { id: 'msg_2', content: [{ type: 'text', text: 'Submitting.' }], usage: u2 }
+				});
+				yield sdkMsg({
+					type: 'assistant',
+					message: {
+						id: 'msg_2',
+						content: [
+							{ type: 'tool_use', id: 'tu_1', name: 'mcp__bench__submit_menu', input: submission }
+						],
+						usage: u2
+					}
+				});
+				const submitted = tools.submit(submission);
+				yield sdkMsg({
+					type: 'user',
+					message: {
+						content: [
+							{ type: 'tool_result', tool_use_id: 'tu_1', content: submitted.content[0].text }
+						]
+					}
+				});
+			};
+			const result = await runClaudeAgent({
+				model: 'claude-test',
+				store,
+				entryUrl: 'https://x.com/',
+				maxToolCalls: 40,
+				transcript,
+				queryFn
+			});
+			expect(result.status).toBe('scored');
+			// Each message id counted ONCE: 10 + 7 in, 4 + 2 out — not doubled.
+			expect(result.promptTokens).toBe(17);
+			expect(result.completionTokens).toBe(6);
+			expect(result.toolCalls).toBe(2);
+			// The transcript carries exactly one response event per API message id.
+			const responseUsages = transcript
+				.filter((e) => e.type === 'response')
+				.map((e) => (e.usage as { input_tokens: number }).input_tokens);
+			expect(responseUsages).toEqual([10, 7]);
+		});
+	});
+
 	test('a run that never submits fails with a reason', async () => {
 		await withStoreAsync(async (store) => {
 			const transcript: TranscriptEvent[] = [];
@@ -273,6 +427,17 @@ describe('runClaudeAgent (injected queryFn)', () => {
 			expect(result.status).toBe('failed');
 			expect(result.failureReason).toContain('error_max_turns');
 			expect(result.totalCostUsd).toBe(0.001);
+		});
+	});
+});
+
+describe('buildClaudeOptions effort wiring', () => {
+	test('sets Options.effort when given, omits it otherwise', () => {
+		withStore((store) => {
+			const server = buildBenchMcpServer(store, newRunState());
+			const ac = new AbortController();
+			expect(buildClaudeOptions(server, 'claude-sonnet-5', 40, ac, 'xhigh').effort).toBe('xhigh');
+			expect('effort' in buildClaudeOptions(server, 'claude-sonnet-5', 40, ac)).toBe(false);
 		});
 	});
 });

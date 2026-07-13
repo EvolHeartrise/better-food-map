@@ -110,7 +110,9 @@ Deterministically scores a candidate menu (same shape as `gold/data.json`, but
 `policy_version` is optional) against the task's gold. NO fuzzy matching, NO LLM:
 candidate items match gold items only by exact `normalizeForSearch(name)`
 equality (each side matched at most once; a repeated candidate name matches on
-its first occurrence, the rest count as hallucinations). The JSON report goes to
+its first occurrence, the rest count as hallucinations). Name matching is
+paren-insensitive: parentheses are dropped before normalizing, so a variant like
+`Fresh Soup (bowl)` matches `Fresh Soup bowl` in either direction. The JSON report goes to
 stdout (pipe/save it); a short summary goes to stderr. Exit 0 on any successful
 scoring however bad the scores; exit 2 on a missing/invalid candidate or gold
 file. Metrics (recall and precision are always reported separately, never
@@ -168,6 +170,47 @@ never touches the real network — its two tools are served in-process:
   submission, consulting no snapshot or gold data; the raw submitted text is still
   preserved verbatim in the transcript.
 
+### Reasoning effort & temperature
+
+```bash
+# reasoning depth on either backend
+bun run bench:run bench/tasks/<slug> --model anthropic/claude-sonnet-5 --effort high
+bun run bench:run bench/tasks/<slug> --model claude-sonnet-5 --backend claude --effort xhigh
+
+# sampling temperature — OpenRouter backend only
+bun run bench:run bench/tasks/<slug> --model openai/gpt-5 --temperature 0.2
+```
+
+- **`--effort <level>`** sets the model's reasoning depth. Both backends accept
+  it, but their level sets differ, so `--effort` is validated against the chosen
+  backend (the error lists that backend's levels):
+  - **openrouter** — passed through as OpenRouter's top-level unified reasoning
+    parameter, `reasoning: { effort }`. Accepted:
+    `none | minimal | low | medium | high | xhigh | max`. Omitted entirely when
+    the flag is absent, so the provider default applies (`meta.effort_default`:
+    `provider-default`). For Anthropic models that default is **adaptive thinking
+    at effort `high`** (the Anthropic API default).
+  - **claude** — wired to the Agent SDK's `Options.effort` (`EffortLevel`).
+    Accepted: `low | medium | high | xhigh | max` (the SDK has no
+    `none`/`minimal`). Omitted when absent, so the **Claude Code harness default,
+    `xhigh`, applies** (`meta.effort_default`: `claude-code-default`). Note the
+    SDK's own documented default for `effort` is `high`; the Claude Code CLI
+    raises the effective default to `xhigh`.
+- **`--temperature <n>`** (a finite number) sets top-level `temperature` on the
+  **openrouter** request only, and is omitted when absent. It is **not** gated
+  per model client-side: it is passed straight through and the provider rejects
+  it where unsupported — current Anthropic models (**Sonnet 5, Opus 4.7+**)
+  **reject `temperature`/`top_p`/`top_k` with an HTTP 400**, which surfaces as the
+  usual upstream OpenRouter error. On the **claude** backend `--temperature`
+  exits 2: the Agent SDK exposes no sampling control and those models reject it
+  anyway.
+
+`meta.json` records both settings on **both** backends: `effort` (the requested
+level, or `null` when unset), `temperature` (the requested number, or `null` —
+always `null` on the claude backend), and `effort_default` (a short factual note
+of which default applied when `effort` is null: `provider-default` for
+openrouter, `claude-code-default` for claude).
+
 Options: `--max-tool-calls N` (default 40; on the Claude backend it maps to the
 SDK's `maxTurns`). The run aborts as failed if the model exhausts its budget,
 stops calling tools without submitting (OpenRouter path nudges once first), or
@@ -187,12 +230,37 @@ Each run writes `bench/runs/<task-slug>/<iso-timestamp>-<model-slug>/`:
 `candidate.json` (submitted extraction), `report.json` (`scoreCandidate` output),
 `transcript.jsonl` (one event per request/response and tool call/result, with
 per-request token + cache usage), and `meta.json`. `meta.json` records `model`,
-`backend`, timings, status, and token totals: `prompt_tokens`,
+`backend`, `effort` / `temperature` / `effort_default` (see above), timings,
+status, and token totals: `prompt_tokens`,
 `completion_tokens`, `total_tokens`, `cached_prompt_tokens` (prompt tokens served
 from a provider cache), `cache_write_tokens` (tokens written into a cache), and
 `total_cost_usd` when the provider surfaces it (the Claude backend). Cache fields
 are `0` when the provider reports nothing. `bench/` is gitignored, so runs stay
 out of git. Exit 0 on a scored run, 1 on a failed run, 2 on usage/config errors.
+
+**Run cost (openrouter backend only).** On the `openrouter` backend `meta.json`
+also carries two USD cost fields (absent on the Claude backend, which reports
+`total_cost_usd` instead):
+
+- `price` — the **REAL billed cost of the run in USD**: the sum of the per-request
+  `usage.cost` values OpenRouter returns when usage accounting is enabled
+  (`usage: { include: true }` is sent on every request; OpenRouter credits are
+  denominated in USD). Requests missing a cost are skipped; `price` is `null` when
+  no request carried cost info at all.
+- `price_cached` — the **HYPOTHETICAL cost of the same run under perfect prefix
+  caching**. Definition: the bench loop is append-only, so request _i_'s prompt is
+  request _i-1_'s prompt plus new tokens; assume every token of request _i_'s
+  prompt that was already in request _i-1_'s prompt is billed at the model's
+  cache-read rate, the remainder at the normal input rate, and completions at the
+  output rate; request 1 is fully uncached; cache-WRITE premiums are ignored
+  (idealized). It is computed from the per-request usage sequence plus the model's
+  per-token pricing, fetched once per run from OpenRouter's public models endpoint
+  (`GET /api/v1/models` → `pricing.prompt`, `pricing.completion`,
+  `pricing.input_cache_read`). `price_cached` is `null` when that pricing can't be
+  fetched or the model isn't found; a model with no `input_cache_read` rate falls
+  back to the prompt rate (no cache discount, noted on stderr). Note that OpenRouter's
+  `prompt_tokens` already INCLUDES the cached prefix (`cached_tokens` is a subset),
+  so each request's full prompt size is used directly as the prefix length.
 
 ## Authoring workflow
 

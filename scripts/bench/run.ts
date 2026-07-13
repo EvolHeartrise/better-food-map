@@ -9,12 +9,14 @@
  * with the same deterministic scorer as `bench:score`.
  *
  * Usage:
- *   bun run bench:run <task-dir> --model <openrouter-model-id> [--max-tool-calls N]
+ *   bun run bench:run <task-dir> --model <model-id>
+ *     [--backend openrouter|claude] [--effort <level>] [--temperature <n>] [--max-tool-calls N]
  *
  * Requires OPENROUTER_API_KEY in the environment. Writes a run directory under
  * bench/runs/<task-slug>/<iso-timestamp>-<model-slug>/ (bench/ is gitignored).
  * Exit 0 on a scored run, 1 on a failed run, 2 on usage/config errors.
  */
+import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import * as v from 'valibot';
@@ -34,6 +36,28 @@ const TEXT_CAP = 60_000;
 const DEFAULT_MAX_TOOL_CALLS = 40;
 const MAX_SUBMIT_ATTEMPTS = 3;
 const MAX_HTTP_RETRIES = 3;
+
+/**
+ * Reasoning-effort levels accepted per backend. OpenRouter's unified reasoning
+ * parameter (`reasoning: { effort }`) documents `none | minimal | low | medium |
+ * high | xhigh | max`; the Claude Agent SDK's `Options.effort` (EffortLevel)
+ * accepts `low | medium | high | xhigh | max` (no none/minimal). Each backend
+ * validates `--effort` against its own set, so the error names the right levels.
+ */
+export const OPENROUTER_EFFORT_LEVELS = [
+	'none',
+	'minimal',
+	'low',
+	'medium',
+	'high',
+	'xhigh',
+	'max'
+] as const;
+export const CLAUDE_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+
+export function effortLevelsFor(backend: Backend): readonly string[] {
+	return backend === 'claude' ? CLAUDE_EFFORT_LEVELS : OPENROUTER_EFFORT_LEVELS;
+}
 
 // --- OpenAI-compatible chat shapes (only the fields the harness reads) --------
 
@@ -75,6 +99,14 @@ export interface ChatUsage {
 	/** Anthropic-style cache accounting, when the provider reports it. */
 	cache_creation_input_tokens?: number;
 	cache_read_input_tokens?: number;
+	/**
+	 * REAL billed cost of THIS request in USD, surfaced by OpenRouter when usage
+	 * accounting is enabled (`usage: { include: true }`). OpenRouter credits are
+	 * denominated in USD, so this is dollars. `cost_details` breaks the same total
+	 * down (upstream inference cost); we read the top-level `cost` defensively.
+	 */
+	cost?: number;
+	cost_details?: { upstream_inference_cost?: number };
 }
 
 /** Cached-prompt / cache-write tokens read defensively from a usage object. */
@@ -82,6 +114,108 @@ export function readCacheTokens(usage: ChatUsage): { cached: number; write: numb
 	const cached = usage.prompt_tokens_details?.cached_tokens ?? usage.cache_read_input_tokens ?? 0;
 	const write = usage.cache_creation_input_tokens ?? 0;
 	return { cached, write };
+}
+
+// --- run cost accounting (openrouter backend) --------------------------------
+
+/**
+ * Per-token USD rates for one model, read from OpenRouter's public models list.
+ * `cacheRead` falls back to the prompt rate (no discount) when the model exposes
+ * no `input_cache_read` price.
+ */
+export interface ModelPricing {
+	/** USD per prompt (input) token. */
+	prompt: number;
+	/** USD per completion (output) token. */
+	completion: number;
+	/** USD per cache-read (cached prompt) token. */
+	cacheRead: number;
+}
+
+/**
+ * Sum the REAL billed cost of a run: the per-request `usage.cost` values
+ * OpenRouter returns (USD) when usage accounting is enabled. Returns null when
+ * NO request carried a numeric cost (so an absent cost is distinguishable from a
+ * genuine $0 run). Requests missing `cost` are skipped, not treated as zero.
+ */
+export function sumRealCost(usages: ChatUsage[]): number | null {
+	let sum = 0;
+	let seen = false;
+	for (const u of usages) {
+		if (typeof u.cost === 'number' && Number.isFinite(u.cost)) {
+			sum += u.cost;
+			seen = true;
+		}
+	}
+	return seen ? sum : null;
+}
+
+/**
+ * HYPOTHETICAL cost of the same run under PERFECT prefix caching.
+ *
+ * The bench loop is append-only: request i's prompt is request i-1's prompt plus
+ * new tokens. We assume every token of request i's prompt that was ALREADY in
+ * request i-1's prompt is billed at the model's cache-read rate, the remainder at
+ * the normal prompt (input) rate, and completions at the output rate. Request 1
+ * is fully uncached. Cache-WRITE premiums are ignored (idealized lower bound).
+ *
+ * `promptTotal` is the FULL prompt size of the request (OpenRouter's
+ * `prompt_tokens`, which INCLUDES any cached prefix — `cached_tokens` is a subset
+ * of it), so request i's cached portion is min(prev, curr) tokens and its fresh
+ * portion is max(0, curr - prev). Pure: pricing + the usage sequence only.
+ */
+export function estimateCachedPrice(
+	perRequestUsage: { promptTotal: number; completion: number }[],
+	pricing: ModelPricing
+): number {
+	let total = 0;
+	let prevPrompt = 0;
+	for (let i = 0; i < perRequestUsage.length; i += 1) {
+		const { promptTotal, completion } = perRequestUsage[i];
+		if (i === 0) {
+			total += promptTotal * pricing.prompt;
+		} else {
+			const cached = Math.min(prevPrompt, promptTotal);
+			const fresh = Math.max(0, promptTotal - prevPrompt);
+			total += cached * pricing.cacheRead + fresh * pricing.prompt;
+		}
+		total += completion * pricing.completion;
+		prevPrompt = promptTotal;
+	}
+	return total;
+}
+
+const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models';
+
+/**
+ * Fetch one model's per-token pricing from OpenRouter's public models endpoint.
+ * Returns null on ANY fetch/parse failure or a missing model (→ `price_cached`
+ * null); a missing `input_cache_read` is tolerated by falling back to the prompt
+ * rate (noted on stderr). CLI-only — never called from tests (it hits the net).
+ */
+async function fetchModelPricing(model: string): Promise<ModelPricing | null> {
+	let data: { data?: { id?: string; pricing?: Record<string, string | undefined> }[] };
+	try {
+		const res = await fetch(OPENROUTER_MODELS_URL);
+		if (!res.ok) return null;
+		data = (await res.json()) as typeof data;
+	} catch {
+		return null;
+	}
+	const p = data.data?.find((m) => m.id === model)?.pricing;
+	if (!p) return null;
+	const prompt = Number(p.prompt);
+	const completion = Number(p.completion);
+	if (!Number.isFinite(prompt) || !Number.isFinite(completion)) return null;
+	const cacheReadRaw = p.input_cache_read;
+	const cacheRead = Number(cacheReadRaw);
+	if (cacheReadRaw === undefined || !Number.isFinite(cacheRead)) {
+		console.error(
+			`note: model ${model} exposes no input_cache_read price — using the prompt rate for cached tokens (no cache discount)`
+		);
+		return { prompt, completion, cacheRead: prompt };
+	}
+	return { prompt, completion, cacheRead };
 }
 
 // --- Anthropic prompt-cache breakpoints (OpenRouter passes cache_control through) --
@@ -404,6 +538,12 @@ export interface RunResult {
 	cacheWriteTokens: number;
 	/** Provider-reported cost in USD, when surfaced (Claude backend). */
 	totalCostUsd?: number;
+	/**
+	 * The raw per-request usage sequence, in request order, as the loop saw it —
+	 * source for the openrouter run-cost accounting (real cost + cached-price
+	 * counterfactual). Optional so the Claude backend need not populate it.
+	 */
+	usages?: ChatUsage[];
 }
 
 function parseArguments(raw: string): { ok: true; value: unknown } | { ok: false; error: string } {
@@ -441,6 +581,7 @@ export async function runAgent(opts: {
 	let cachedPromptTokens = 0;
 	let cacheWriteTokens = 0;
 	let nudged = false;
+	const usages: ChatUsage[] = [];
 
 	const done = (
 		r: Omit<
@@ -452,6 +593,7 @@ export async function runAgent(opts: {
 			| 'totalTokens'
 			| 'cachedPromptTokens'
 			| 'cacheWriteTokens'
+			| 'usages'
 		>
 	): RunResult => ({
 		...r,
@@ -461,7 +603,8 @@ export async function runAgent(opts: {
 		completionTokens,
 		totalTokens,
 		cachedPromptTokens,
-		cacheWriteTokens
+		cacheWriteTokens,
+		usages
 	});
 
 	for (;;) {
@@ -473,6 +616,7 @@ export async function runAgent(opts: {
 		});
 		const response = await chat(messages);
 		const usage = response.usage ?? {};
+		usages.push(usage);
 		promptTokens += usage.prompt_tokens ?? 0;
 		completionTokens += usage.completion_tokens ?? 0;
 		totalTokens += usage.total_tokens ?? 0;
@@ -589,19 +733,49 @@ export async function runAgent(opts: {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-/** Real model driver: POST to OpenRouter, retrying 429/5xx with backoff. */
-export function openRouterChat(model: string, apiKey: string): ChatFn {
-	// Anthropic-routed models get prompt-cache breakpoints; other providers cache
-	// implicitly by prefix, so their requests stay byte-identical (no cache_control).
+/** Optional reasoning/sampling knobs applied to an OpenRouter request. */
+export interface OpenRouterRequestOpts {
+	/** OpenRouter unified reasoning effort — omitted (provider default) when unset. */
+	effort?: string;
+	/** Top-level sampling temperature — omitted when unset. */
+	temperature?: number;
+}
+
+/**
+ * Build the OpenRouter chat request body (pure — no network). Anthropic-routed
+ * models get prompt-cache breakpoints; other providers cache implicitly by
+ * prefix, so their requests stay byte-identical (no cache_control). `effort`
+ * (when set) rides OpenRouter's top-level unified reasoning parameter
+ * (`reasoning: { effort }`); `temperature` (when set) is passed through top-level
+ * and NOT gated per model — the provider rejects it where unsupported (e.g.
+ * Sonnet 5 400s), and that upstream error is surfaced by the caller.
+ */
+export function buildOpenRouterBody(
+	model: string,
+	messages: ChatMessage[],
+	opts: OpenRouterRequestOpts = {}
+): Record<string, unknown> {
 	const isAnthropic = model.startsWith('anthropic/');
+	const body: Record<string, unknown> = {
+		model,
+		messages: isAnthropic ? withAnthropicCache(messages) : messages,
+		tools: TOOLS,
+		tool_choice: 'auto',
+		usage: { include: true }
+	};
+	if (opts.effort !== undefined) body.reasoning = { effort: opts.effort };
+	if (opts.temperature !== undefined) body.temperature = opts.temperature;
+	return body;
+}
+
+/** Real model driver: POST to OpenRouter, retrying 429/5xx with backoff. */
+export function openRouterChat(
+	model: string,
+	apiKey: string,
+	opts: OpenRouterRequestOpts = {}
+): ChatFn {
 	return async (messages: ChatMessage[]): Promise<ChatResponse> => {
-		const body = JSON.stringify({
-			model,
-			messages: isAnthropic ? withAnthropicCache(messages) : messages,
-			tools: TOOLS,
-			tool_choice: 'auto',
-			usage: { include: true }
-		});
+		const body = JSON.stringify(buildOpenRouterBody(model, messages, opts));
 		let lastError = '';
 		for (let attempt = 0; attempt <= MAX_HTTP_RETRIES; attempt += 1) {
 			let res: Response;
@@ -647,6 +821,17 @@ export interface RunMeta {
 	backend: Backend;
 	task_dir: string;
 	entry_url: string;
+	/** Requested reasoning-effort level, or null when unset (backend default applied). */
+	effort: string | null;
+	/**
+	 * Short factual note of the default that applied when `effort` is null:
+	 * `provider-default` (openrouter) or `claude-code-default` (claude). Always
+	 * present so every run documents its reasoning depth. See the README for what
+	 * those defaults resolve to (Anthropic API: high adaptive; Claude Code: xhigh).
+	 */
+	effort_default: string;
+	/** Requested sampling temperature, or null when unset. */
+	temperature: number | null;
 	policy_version: string;
 	started_at: string;
 	duration_ms: number;
@@ -661,6 +846,18 @@ export interface RunMeta {
 	cache_write_tokens: number;
 	/** Provider-reported cost in USD, when surfaced (Claude backend). */
 	total_cost_usd?: number;
+	/**
+	 * REAL billed cost of the run in USD (openrouter backend only): the sum of
+	 * per-request `usage.cost` values. Null when no request carried cost info.
+	 * Absent (undefined) on the Claude backend, which reports `total_cost_usd`.
+	 */
+	price?: number | null;
+	/**
+	 * HYPOTHETICAL cost of the run in USD under PERFECT prefix caching (openrouter
+	 * backend only) — see `estimateCachedPrice`. Null when model pricing could not
+	 * be fetched. Absent (undefined) on the Claude backend.
+	 */
+	price_cached?: number | null;
 	status: 'scored' | 'failed';
 	failure_reason?: string;
 }
@@ -695,11 +892,15 @@ export interface CliArgs {
 	model: string;
 	maxToolCalls: number;
 	backend: Backend;
+	/** Reasoning-effort level, validated against the backend's set; undefined = backend default. */
+	effort?: string;
+	/** Sampling temperature (openrouter only); undefined = provider default. */
+	temperature?: number;
 }
 
 const USAGE =
 	'usage: bun run bench:run <task-dir> --model <model-id> ' +
-	'[--backend openrouter|claude] [--max-tool-calls N]';
+	'[--backend openrouter|claude] [--effort <level>] [--temperature <n>] [--max-tool-calls N]';
 
 /** Only the OpenRouter backend needs OPENROUTER_API_KEY; Claude uses the SDK login. */
 export function requiresOpenRouterKey(backend: Backend): boolean {
@@ -711,6 +912,10 @@ export function parseCli(argv: string[]): CliArgs | { error: string } {
 	let model: string | undefined;
 	let maxToolCalls = DEFAULT_MAX_TOOL_CALLS;
 	let backend: Backend = 'openrouter';
+	// Raw --effort/--temperature are captured here and validated AFTER the loop,
+	// since --backend may appear either before or after them on the command line.
+	let effortRaw: string | undefined;
+	let temperature: number | undefined;
 	for (let i = 0; i < argv.length; i += 1) {
 		const arg = argv[i];
 		if (arg === '--model') {
@@ -721,6 +926,15 @@ export function parseCli(argv: string[]): CliArgs | { error: string } {
 				return { error: `unknown backend: ${String(b)} (expected openrouter|claude)` };
 			}
 			backend = b;
+		} else if (arg === '--effort') {
+			effortRaw = argv[++i];
+			if (effortRaw === undefined) return { error: '--effort requires a level' };
+		} else if (arg === '--temperature') {
+			const raw = argv[++i];
+			const n = Number(raw);
+			if (raw === undefined || raw === '' || !Number.isFinite(n))
+				return { error: `--temperature must be a finite number (got ${String(raw)})` };
+			temperature = n;
 		} else if (arg === '--max-tool-calls') {
 			const n = Number(argv[++i]);
 			if (!Number.isInteger(n) || n <= 0)
@@ -736,22 +950,45 @@ export function parseCli(argv: string[]): CliArgs | { error: string } {
 	}
 	if (!taskDir) return { error: 'missing <task-dir>' };
 	if (!model) return { error: 'missing --model <model-id>' };
-	return { taskDir, model, maxToolCalls, backend };
+
+	// The Claude backend exposes no sampling control, and current Claude models
+	// (Sonnet 5 / Opus 4.7+) reject temperature/top_p outright — reject it here.
+	if (temperature !== undefined && backend === 'claude')
+		return {
+			error:
+				'--temperature is not supported with --backend claude (the SDK exposes no sampling control and current Claude models reject it)'
+		};
+
+	let effort: string | undefined;
+	if (effortRaw !== undefined) {
+		const levels = effortLevelsFor(backend);
+		if (!levels.includes(effortRaw))
+			return {
+				error: `--effort must be one of ${levels.join('|')} for the ${backend} backend (got ${effortRaw})`
+			};
+		effort = effortRaw;
+	}
+
+	return { taskDir, model, maxToolCalls, backend, effort, temperature };
 }
 
 /** Assemble a RunMeta from a completed (or fatally-failed) run. */
-function buildMeta(
+export function buildMeta(
 	cli: CliArgs,
 	manifest: BenchManifest,
 	policyVersion: string,
 	startedAt: Date,
-	result: RunResult
+	result: RunResult,
+	costs?: { price: number | null; price_cached: number | null }
 ): RunMeta {
 	return {
 		model: cli.model,
 		backend: cli.backend,
 		task_dir: cli.taskDir,
 		entry_url: manifest.entryUrl,
+		effort: cli.effort ?? null,
+		effort_default: cli.backend === 'claude' ? 'claude-code-default' : 'provider-default',
+		temperature: cli.temperature ?? null,
 		policy_version: policyVersion,
 		started_at: startedAt.toISOString(),
 		duration_ms: Date.now() - startedAt.getTime(),
@@ -763,9 +1000,39 @@ function buildMeta(
 		cached_prompt_tokens: result.cachedPromptTokens,
 		cache_write_tokens: result.cacheWriteTokens,
 		total_cost_usd: result.totalCostUsd,
+		// price/price_cached are openrouter-only — left ABSENT (undefined) on the
+		// Claude backend so its metas carry no null run-cost fields.
+		...(costs ? { price: costs.price, price_cached: costs.price_cached } : {}),
 		status: result.status,
 		failure_reason: result.failureReason
 	};
+}
+
+/**
+ * Openrouter run-cost accounting for a completed (or partially-run) result:
+ * `price` from the summed per-request `usage.cost`, `price_cached` from the
+ * cached-price counterfactual once model pricing is fetched (null when pricing
+ * is unavailable). CLI-only (fetches model pricing). Returns undefined for any
+ * non-openrouter backend so those metas omit the fields entirely.
+ */
+async function computeOpenRouterCosts(
+	cli: CliArgs,
+	result: RunResult
+): Promise<{ price: number | null; price_cached: number | null } | undefined> {
+	if (cli.backend !== 'openrouter') return undefined;
+	const usages = result.usages ?? [];
+	const price = sumRealCost(usages);
+	const pricing = await fetchModelPricing(cli.model);
+	const price_cached = pricing
+		? estimateCachedPrice(
+				usages.map((u) => ({
+					promptTotal: u.prompt_tokens ?? 0,
+					completion: u.completion_tokens ?? 0
+				})),
+				pricing
+			)
+		: null;
+	return { price, price_cached };
 }
 
 async function main(): Promise<number> {
@@ -826,11 +1093,16 @@ async function main(): Promise<number> {
 				store,
 				entryUrl: manifest.entryUrl,
 				maxToolCalls: cli.maxToolCalls,
+				// Validated against CLAUDE_EFFORT_LEVELS in parseCli, so this narrows safely.
+				effort: cli.effort as EffortLevel | undefined,
 				transcript
 			});
 		} else {
 			result = await runAgent({
-				chat: openRouterChat(cli.model, apiKey ?? ''),
+				chat: openRouterChat(cli.model, apiKey ?? '', {
+					effort: cli.effort,
+					temperature: cli.temperature
+				}),
 				store,
 				entryUrl: manifest.entryUrl,
 				maxToolCalls: cli.maxToolCalls,
@@ -838,7 +1110,7 @@ async function main(): Promise<number> {
 			});
 		}
 	} catch (e) {
-		const meta = buildMeta(cli, manifest, gold.policy_version, startedAt, {
+		const failed: RunResult = {
 			status: 'failed',
 			failureReason: String(e),
 			toolCalls: 0,
@@ -847,8 +1119,13 @@ async function main(): Promise<number> {
 			completionTokens: 0,
 			totalTokens: 0,
 			cachedPromptTokens: 0,
-			cacheWriteTokens: 0
-		});
+			cacheWriteTokens: 0,
+			usages: []
+		};
+		// A thrown run collected no usage, so price is null; keep the openrouter
+		// fields present (as null) rather than fetching pricing for an empty run.
+		const costs = cli.backend === 'openrouter' ? { price: null, price_cached: null } : undefined;
+		const meta = buildMeta(cli, manifest, gold.policy_version, startedAt, failed, costs);
 		writeRun(runDir, { meta, transcript });
 		console.error(`run failed: ${String(e)}`);
 		console.error(`run directory: ${runDir}`);
@@ -856,7 +1133,8 @@ async function main(): Promise<number> {
 	}
 
 	const report = result.candidate ? scoreCandidate(gold, result.candidate) : undefined;
-	const meta = buildMeta(cli, manifest, gold.policy_version, startedAt, result);
+	const costs = await computeOpenRouterCosts(cli, result);
+	const meta = buildMeta(cli, manifest, gold.policy_version, startedAt, result, costs);
 	writeRun(runDir, { meta, transcript, candidate: result.candidate, report });
 
 	if (report) console.error(formatSummary(report));

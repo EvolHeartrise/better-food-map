@@ -7,17 +7,28 @@ import { GoldSchema, type GoldMenu } from './lint';
 import { scoreCandidate } from './score';
 import { SnapshotStore } from './snapshot-store';
 import {
+	buildMeta,
+	buildOpenRouterBody,
 	capText,
+	estimateCachedPrice,
 	extractHrefs,
 	fetchPage,
 	modelSlug,
+	parseCli,
 	runAgent,
 	stripTrailingJunk,
+	sumRealCost,
 	validateSubmission,
 	type ChatFn,
+	type ChatMessage,
 	type ChatResponse,
+	type ChatUsage,
+	type CliArgs,
+	type ModelPricing,
+	type RunResult,
 	type TranscriptEvent
 } from './run';
+import type { BenchManifest } from './snapshot-store';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 
@@ -199,6 +210,49 @@ describe('stripTrailingJunk', () => {
 	test('never touches junk in the interior — only the tail is stripped', () => {
 		expect(stripTrailingJunk("a, b, c and 'd'")).toBe("a, b, c and 'd");
 		expect(stripTrailingJunk('yogurt, spices, chutneys')).toBe('yogurt, spices, chutneys');
+	});
+});
+
+describe('sumRealCost', () => {
+	test('sums per-request usage.cost values', () => {
+		const usages: ChatUsage[] = [{ cost: 0.0069415 }, { cost: 0.0043366 }, { cost: 0.0110536 }];
+		expect(sumRealCost(usages)).toBeCloseTo(0.0223317, 10);
+	});
+
+	test('returns null when no request carried a cost, skipping cost-less requests', () => {
+		expect(sumRealCost([{ prompt_tokens: 10 }, {}])).toBeNull();
+		// a cost-less request is skipped (not counted as 0), a $0 run is still a number
+		expect(sumRealCost([{ cost: 0.5 }, { prompt_tokens: 10 }])).toBeCloseTo(0.5, 10);
+		expect(sumRealCost([{ cost: 0 }])).toBe(0);
+	});
+});
+
+describe('estimateCachedPrice', () => {
+	// prompt $3/M, completion $15/M, cache-read $0.30/M (per-token USD).
+	const pricing: ModelPricing = { prompt: 3e-6, completion: 15e-6, cacheRead: 0.3e-6 };
+
+	test('bills the append-only prefix at the cache-read rate, the remainder at prompt rate', () => {
+		// 3 requests, promptTotal 1000/1500/2000, completion 100 each.
+		//   req1 (uncached): 1000*3e-6 + 100*15e-6                 = 0.00450
+		//   req2: cached 1000*0.3e-6 + fresh 500*3e-6 + 100*15e-6  = 0.00330
+		//   req3: cached 1500*0.3e-6 + fresh 500*3e-6 + 100*15e-6  = 0.00345
+		const seq = [
+			{ promptTotal: 1000, completion: 100 },
+			{ promptTotal: 1500, completion: 100 },
+			{ promptTotal: 2000, completion: 100 }
+		];
+		expect(estimateCachedPrice(seq, pricing)).toBeCloseTo(0.01125, 10);
+	});
+
+	test('a single request is fully uncached', () => {
+		expect(estimateCachedPrice([{ promptTotal: 1000, completion: 100 }], pricing)).toBeCloseTo(
+			0.0045,
+			10
+		);
+	});
+
+	test('an empty sequence costs nothing', () => {
+		expect(estimateCachedPrice([], pricing)).toBe(0);
 	});
 });
 
@@ -406,3 +460,172 @@ async function withStoreAsync(fn: (store: SnapshotStore) => Promise<void>): Prom
 		rmSync(dir, { recursive: true, force: true });
 	}
 }
+
+describe('parseCli --effort / --temperature', () => {
+	function ok(argv: string[]): CliArgs {
+		const cli = parseCli(argv);
+		if ('error' in cli) throw new Error(cli.error);
+		return cli;
+	}
+
+	test('effort/temperature are undefined by default', () => {
+		const cli = ok(['bench/tasks/x', '--model', 'anthropic/claude']);
+		expect(cli.effort).toBeUndefined();
+		expect(cli.temperature).toBeUndefined();
+	});
+
+	test('openrouter accepts its effort levels, including minimal/none', () => {
+		for (const level of ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']) {
+			expect(ok(['bench/tasks/x', '--model', 'anthropic/claude', '--effort', level]).effort).toBe(
+				level
+			);
+		}
+	});
+
+	test('rejects an unknown effort level, naming the backend levels', () => {
+		const cli = parseCli(['bench/tasks/x', '--model', 'm', '--effort', 'ludicrous']);
+		expect('error' in cli).toBe(true);
+		if ('error' in cli) {
+			expect(cli.error).toContain('--effort');
+			expect(cli.error).toContain('openrouter');
+		}
+	});
+
+	test('claude backend rejects minimal/none (not in EffortLevel) but accepts high/xhigh/max', () => {
+		const bad = parseCli([
+			'bench/tasks/x',
+			'--model',
+			'm',
+			'--backend',
+			'claude',
+			'--effort',
+			'minimal'
+		]);
+		expect('error' in bad).toBe(true);
+		if ('error' in bad) expect(bad.error).toContain('claude');
+		expect(
+			ok(['bench/tasks/x', '--model', 'm', '--backend', 'claude', '--effort', 'xhigh']).effort
+		).toBe('xhigh');
+	});
+
+	test('validates effort against the backend even when --backend comes after --effort', () => {
+		const cli = parseCli([
+			'bench/tasks/x',
+			'--model',
+			'm',
+			'--effort',
+			'none',
+			'--backend',
+			'claude'
+		]);
+		expect('error' in cli).toBe(true);
+		if ('error' in cli) expect(cli.error).toContain('claude');
+	});
+
+	test('parses a finite temperature and rejects a non-numeric one', () => {
+		expect(ok(['bench/tasks/x', '--model', 'm', '--temperature', '0.7']).temperature).toBe(0.7);
+		expect(ok(['bench/tasks/x', '--model', 'm', '--temperature', '0']).temperature).toBe(0);
+		for (const bad of ['abc', 'NaN', 'Infinity', '']) {
+			const cli = parseCli(['bench/tasks/x', '--model', 'm', '--temperature', bad]);
+			expect('error' in cli).toBe(true);
+			if ('error' in cli) expect(cli.error).toContain('--temperature');
+		}
+	});
+
+	test('temperature is rejected on the claude backend', () => {
+		const cli = parseCli([
+			'bench/tasks/x',
+			'--model',
+			'm',
+			'--backend',
+			'claude',
+			'--temperature',
+			'0.5'
+		]);
+		expect('error' in cli).toBe(true);
+		if ('error' in cli) expect(cli.error).toContain('--temperature');
+	});
+});
+
+describe('buildOpenRouterBody', () => {
+	const messages: ChatMessage[] = [{ role: 'user', content: 'hi' }];
+
+	test('omits reasoning and temperature when unset', () => {
+		const body = buildOpenRouterBody('openai/gpt-x', messages);
+		expect('reasoning' in body).toBe(false);
+		expect('temperature' in body).toBe(false);
+		expect(body.messages).toBe(messages); // non-anthropic: passed through untouched
+	});
+
+	test('sets the unified reasoning.effort field when effort is given', () => {
+		const body = buildOpenRouterBody('openai/gpt-x', messages, { effort: 'high' });
+		expect(body.reasoning).toEqual({ effort: 'high' });
+	});
+
+	test('passes temperature through top-level without gating per model', () => {
+		const body = buildOpenRouterBody('anthropic/claude-sonnet-5', messages, { temperature: 0.2 });
+		expect(body.temperature).toBe(0.2);
+	});
+
+	test('carries both when both are set', () => {
+		const body = buildOpenRouterBody('openai/gpt-x', messages, { effort: 'max', temperature: 1 });
+		expect(body.reasoning).toEqual({ effort: 'max' });
+		expect(body.temperature).toBe(1);
+	});
+});
+
+describe('buildMeta effort/temperature fields', () => {
+	const manifest = { entryUrl: 'https://x.com/' } as BenchManifest;
+	const result: RunResult = {
+		status: 'scored',
+		toolCalls: 1,
+		submitAttempts: 1,
+		promptTokens: 0,
+		completionTokens: 0,
+		totalTokens: 0,
+		cachedPromptTokens: 0,
+		cacheWriteTokens: 0,
+		usages: []
+	};
+	const base: CliArgs = {
+		taskDir: 'bench/tasks/x',
+		model: 'm',
+		maxToolCalls: 40,
+		backend: 'openrouter'
+	};
+
+	test('records requested values and provider-default when unset (openrouter)', () => {
+		const set = buildMeta(
+			{ ...base, effort: 'high', temperature: 0.3 },
+			manifest,
+			'2026-07-11',
+			new Date(),
+			result,
+			{ price: null, price_cached: null }
+		);
+		expect(set.effort).toBe('high');
+		expect(set.temperature).toBe(0.3);
+		expect(set.effort_default).toBe('provider-default');
+
+		const unset = buildMeta(base, manifest, '2026-07-11', new Date(), result, {
+			price: null,
+			price_cached: null
+		});
+		expect(unset.effort).toBeNull();
+		expect(unset.temperature).toBeNull();
+		expect(unset.effort_default).toBe('provider-default');
+	});
+
+	test('claude backend uses the claude-code-default note, temperature always null', () => {
+		const meta = buildMeta(
+			{ ...base, backend: 'claude', effort: 'xhigh' },
+			manifest,
+			'2026-07-11',
+			new Date(),
+			result
+		);
+		expect(meta.effort).toBe('xhigh');
+		expect(meta.temperature).toBeNull();
+		expect(meta.effort_default).toBe('claude-code-default');
+	});
+});
