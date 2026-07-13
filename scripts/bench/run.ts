@@ -566,6 +566,8 @@ const TOOLS = [
 export const SYSTEM_PROMPT = [
 	'You are extracting a restaurant’s FULL menu from a snapshot of its website, served to you through the fetch_page tool. You have no other access to the site.',
 	'',
+	'fetch_page returns the page’s text; `[image: …]` markers are the page’s own image alt text. Alt text is source text — a dish photo’s alt (e.g. "[image: Vegan Battered Cauliflower …]") is a valid source designation for the item it depicts. It is NOT menu prose: never use alt text as an item’s name or description.',
+	'',
 	'Rules:',
 	'- The menu must be EXHAUSTIVE: capture every item, in every section (appetizers, mains, sides, noodles/rice, drinks, desserts, kids, specials), and every size/variant the source itemizes. Do not submit a representative sample.',
 	'- The menu is routinely split across MULTIPLE pages or tabs (a separate drinks, dessert, brunch, lunch/dinner, or specials page). Follow the links returned by fetch_page and enumerate every menu-shaped page BEFORE you finish. A menu with zero drinks or zero desserts for a sit-down venue almost always means you missed a page.',

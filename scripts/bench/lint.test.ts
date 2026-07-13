@@ -29,6 +29,21 @@ describe('htmlToText / normalizeForSearch', () => {
 		expect(CORPUS).toContain('house patty & aioli');
 		expect(CORPUS).not.toContain('captcha_sdk');
 	});
+
+	test('preserves img alt text as [image: …], drops other attributes', () => {
+		const text = htmlToText(
+			'<img src="Vegan-Burger-300x300.jpg" srcset="Vegan-Burger-1024.jpg 1024w" ' +
+				'alt="Vegan Battered Cauliflower with Tamarind Chili Glaze"/>' +
+				'<img alt=\'Fish &amp; Chips\' src="x.jpg">' +
+				'<img alt="" src="decorative.jpg"><img src="no-alt.jpg">' +
+				'<a title="Vegan Menu" href="/menu">Menu</a>'
+		);
+		expect(text).toContain('[image: Vegan Battered Cauliflower with Tamarind Chili Glaze]');
+		expect(text).toContain('[image: Fish & Chips]');
+		expect(text).not.toContain('300x300'); // filenames/srcset stay stripped
+		expect(text).not.toContain('decorative');
+		expect(text).not.toContain('Vegan Menu'); // non-img attributes stay stripped
+	});
 });
 
 describe('lintGold', () => {
