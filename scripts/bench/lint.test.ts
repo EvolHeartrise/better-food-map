@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { htmlToText, lintGold, normalizeForSearch } from './lint';
+import { htmlToText, lintGold, normalizeForSearch, stripVariantSuffix } from './lint';
 
 const CORPUS = normalizeForSearch(
 	htmlToText(
@@ -101,5 +101,61 @@ describe('lintGold', () => {
 		const r = lintGold({ items: 'nope' }, CORPUS, RECORDED);
 		expect(r.errors.length).toBeGreaterThan(0);
 		expect(r.errors[0]).toStartWith('schema:');
+	});
+});
+
+describe('stripVariantSuffix', () => {
+	test('strips one trailing parenthetical to a non-empty base', () => {
+		expect(stripVariantSuffix('Fresh Soup! (bowl)')).toBe('Fresh Soup!');
+		expect(stripVariantSuffix('Sortie du Chai BC VQA (5 oz)')).toBe('Sortie du Chai BC VQA');
+	});
+	test('strips only the LAST group ("X (a) (b)" → "X (a)")', () => {
+		expect(stripVariantSuffix('X (a) (b)')).toBe('X (a)');
+	});
+	test('a mid-string parenthetical is not a trailing group', () => {
+		expect(stripVariantSuffix('Aloo kachori (Punjabi Style) 1pc')).toBeUndefined();
+	});
+	test('a name with no parenthetical, or one that is ONLY a parenthetical, returns undefined', () => {
+		expect(stripVariantSuffix('Fries')).toBeUndefined();
+		expect(stripVariantSuffix('(bowl)')).toBeUndefined();
+	});
+});
+
+describe('lintGold variant names', () => {
+	// Corpus carries the bare dish names and a mid-string parenthetical, but NOT
+	// the variant labels themselves (a source may itemize an unlabeled default).
+	const VARIANT_CORPUS = normalizeForSearch(
+		htmlToText('<p>Fresh Soup!</p><p>Aloo kachori (Punjabi Style) 1pc</p><p>Nested X (a)</p>')
+	);
+	const REC = new Set(['https://x.com/menu']);
+	const base = {
+		policy_version: '2026-07-11',
+		sources: ['https://x.com/menu'],
+		items: [{ name: 'PLACEHOLDER', description: null, tags: [], optional_tags: [], price: 1 }]
+	};
+	const withName = (name: string): typeof base => {
+		const g = structuredClone(base);
+		g.items[0].name = name;
+		return g;
+	};
+
+	test('variant name passes when only its base is in the corpus', () => {
+		expect(lintGold(withName('Fresh Soup! (bowl)'), VARIANT_CORPUS, REC).errors).toEqual([]);
+	});
+	test('a plain rewritten name (no base in corpus) still fails', () => {
+		const r = lintGold(withName('Creamy Tomato Bisque (bowl)'), VARIANT_CORPUS, REC);
+		expect(r.errors.join()).toContain('not found');
+	});
+	test('a mid-parenthetical name found verbatim in full passes via the full-name path', () => {
+		expect(
+			lintGold(withName('Aloo kachori (Punjabi Style) 1pc'), VARIANT_CORPUS, REC).errors
+		).toEqual([]);
+	});
+	test('stripping applies only once — "Nested X (a) (b)" passes on base "Nested X (a)"', () => {
+		expect(lintGold(withName('Nested X (a) (b)'), VARIANT_CORPUS, REC).errors).toEqual([]);
+	});
+	test('a name that is ONLY a parenthetical (empty base) fails', () => {
+		const r = lintGold(withName('(bowl)'), VARIANT_CORPUS, REC);
+		expect(r.errors.join()).toContain('not found');
 	});
 });

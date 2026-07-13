@@ -28,7 +28,8 @@ import {
 	htmlToText,
 	type LintResult,
 	lintGold,
-	normalizeForSearch
+	normalizeForSearch,
+	stripVariantSuffix
 } from './lint';
 import {
 	findEntry,
@@ -114,11 +115,16 @@ export function perItemHits(
 	items: readonly { name: string; description: string | null }[],
 	corpus: string
 ): ItemHit[] {
-	return items.map((item) => ({
-		nameFound: corpus.includes(normalizeForSearch(item.name)),
-		descFound:
-			item.description === null ? true : corpus.includes(normalizeForSearch(item.description))
-	}));
+	return items.map((item) => {
+		const base = stripVariantSuffix(item.name);
+		return {
+			nameFound:
+				corpus.includes(normalizeForSearch(item.name)) ||
+				(base !== undefined && corpus.includes(normalizeForSearch(base))),
+			descFound:
+				item.description === null ? true : corpus.includes(normalizeForSearch(item.description))
+		};
+	});
 }
 
 /**
@@ -500,6 +506,8 @@ let activeTab = 0;
 let saveTimer = null;
 
 const norm = (s) => (s||'').toLowerCase().replace(/\s+/g,' ').trim();
+// Mirror of lint.ts stripVariantSuffix: one TRAILING "(…)" group off, base or null.
+const stripVariant = (s) => { const b = (s||'').replace(/\s*\([^()]*\)$/, ''); return b.length > 0 && b !== s ? b : null; };
 const esc = (s) => s.replace(/[&<>]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 const escRe = (s) => s.replace(/[.*+?^\${}()|[\]\\]/g, '\\$&');
 
@@ -524,12 +532,16 @@ async function boot() {
 	updateProgress();
 }
 
-// first page index whose normalized text contains the (normalized) name, else -1
+// first page index whose normalized text contains the (normalized) name, else -1.
+// A variant name "Fresh Soup (bowl)" also matches on its base "Fresh Soup".
 function pageOf(name) {
 	const n = norm(name);
 	if (!n) return -1;
+	const base = stripVariant(name);
+	const nb = base ? norm(base) : null;
 	for (let i = 0; i < state.pages.length; i++) {
-		if (pageNorm.get(state.pages[i].url).includes(n)) return i;
+		const t = pageNorm.get(state.pages[i].url);
+		if (t.includes(n) || (nb && t.includes(nb))) return i;
 	}
 	return -1;
 }
@@ -547,19 +559,33 @@ function renderTabs() {
 	});
 }
 
-function renderLeft(highlight) {
-	const el = document.getElementById('pagetext');
-	const raw = pageText.get(state.pages[activeTab].url) || '';
-	if (!highlight) { el.innerHTML = esc(raw); return; }
-	const needle = esc(highlight).trim();
-	if (!needle) { el.innerHTML = esc(raw); return; }
-	const re = new RegExp(escRe(needle).replace(/(?:\\?\s)+/g, '\\s+'), 'gi');
+// Highlight the first match of the needle in the escaped page html; returns the
+// html with mark tags, or null when the needle matched nothing.
+function markInto(escaped, needle) {
+	const n = esc(needle).trim();
+	if (!n) return null;
+	const re = new RegExp(escRe(n).replace(/(?:\\?\s)+/g, '\\s+'), 'gi');
 	let first = true;
-	el.innerHTML = esc(raw).replace(re, (m) => {
+	let matched = false;
+	const out = escaped.replace(re, (m) => {
+		matched = true;
 		const id = first ? ' id="firsthit"' : '';
 		first = false;
 		return '<mark' + id + '>' + m + '</mark>';
 	});
+	return matched ? out : null;
+}
+
+function renderLeft(highlight) {
+	const el = document.getElementById('pagetext');
+	const raw = pageText.get(state.pages[activeTab].url) || '';
+	if (!highlight) { el.innerHTML = esc(raw); return; }
+	const escaped = esc(raw);
+	// Try the full name; when it has no hits, fall back to the variant base
+	// (mirrors the full-or-stripped-base rule in perItemHits / lintGold).
+	const base = stripVariant(highlight);
+	const marked = markInto(escaped, highlight) ?? (base ? markInto(escaped, base) : null);
+	el.innerHTML = marked ?? escaped;
 	const target = document.getElementById('firsthit');
 	if (target) target.scrollIntoView({ block: 'center' });
 }

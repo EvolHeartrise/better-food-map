@@ -25,6 +25,7 @@ import {
 	loadManifest,
 	normalizeUrl,
 	SnapshotStore,
+	type BenchManifest,
 	type SnapshotEntry
 } from './snapshot-store';
 
@@ -49,10 +50,82 @@ export interface ChatMessage {
 	tool_call_id?: string;
 }
 
+/** An OpenAI/OpenRouter content part — only text parts are produced here. */
+export interface MessageContentPart {
+	type: 'text';
+	text: string;
+	cache_control?: { type: 'ephemeral' };
+}
+
+/**
+ * An outbound message as sent to OpenRouter: identical to a ChatMessage except
+ * the Anthropic cache transform may rewrite `content` into an array of content
+ * parts to carry `cache_control` breakpoints (see `withAnthropicCache`).
+ */
+export interface OutboundMessage extends Omit<ChatMessage, 'content'> {
+	content?: string | null | MessageContentPart[];
+}
+
 export interface ChatUsage {
 	prompt_tokens?: number;
 	completion_tokens?: number;
 	total_tokens?: number;
+	/** OpenRouter surfaces cache-read tokens here for prompt-cached prefixes. */
+	prompt_tokens_details?: { cached_tokens?: number };
+	/** Anthropic-style cache accounting, when the provider reports it. */
+	cache_creation_input_tokens?: number;
+	cache_read_input_tokens?: number;
+}
+
+/** Cached-prompt / cache-write tokens read defensively from a usage object. */
+export function readCacheTokens(usage: ChatUsage): { cached: number; write: number } {
+	const cached = usage.prompt_tokens_details?.cached_tokens ?? usage.cache_read_input_tokens ?? 0;
+	const write = usage.cache_creation_input_tokens ?? 0;
+	return { cached, write };
+}
+
+// --- Anthropic prompt-cache breakpoints (OpenRouter passes cache_control through) --
+
+const EPHEMERAL = { type: 'ephemeral' } as const;
+
+/** One text part carrying the ephemeral cache breakpoint. */
+function cachedTextBlock(text: string): MessageContentPart[] {
+	return [{ type: 'text', text, cache_control: EPHEMERAL }];
+}
+
+/**
+ * Return a copy of `messages` with Anthropic prompt-cache breakpoints attached,
+ * WITHOUT mutating the caller's array or any of its message objects (the agent
+ * loop reuses the same array across turns, and the rolling breakpoint has to
+ * move each request). Places at most TWO breakpoints (Anthropic allows 4):
+ *
+ *  1. A STATIC breakpoint on the system message (its content becomes a single
+ *     cached text block) — the system prompt never changes, so this prefix is
+ *     cacheable every turn.
+ *  2. A ROLLING breakpoint on the LAST message that has text content (scanning
+ *     from the end, index >= 1 so it never collides with the system breakpoint).
+ *     We DO include tool-role messages here: OpenRouter documents cache_control
+ *     passthrough on array-of-parts content for Anthropic tool messages, and in
+ *     this loop the growing prefix ends on a tool result, so marking it is what
+ *     actually caches each turn's new suffix. A pure tool-call assistant turn
+ *     has null content and no text block, so it is skipped and the marker lands
+ *     on the nearest preceding text-bearing message — keeping the choice
+ *     deterministic and always on a real text block.
+ */
+export function withAnthropicCache(messages: ChatMessage[]): OutboundMessage[] {
+	const copy: OutboundMessage[] = messages.map((m) => ({ ...m }));
+	const sys = copy[0];
+	if (sys && sys.role === 'system' && typeof sys.content === 'string' && sys.content.length > 0) {
+		sys.content = cachedTextBlock(sys.content);
+	}
+	for (let i = copy.length - 1; i >= 1; i -= 1) {
+		const m = copy[i];
+		if (typeof m.content === 'string' && m.content.length > 0) {
+			m.content = cachedTextBlock(m.content);
+			break;
+		}
+	}
+	return copy;
 }
 
 export interface ChatResponse {
@@ -197,6 +270,18 @@ export type SubmitResult =
 	| { ok: true; candidate: v.InferOutput<typeof CandidateSchema> }
 	| { ok: false; issues: string[] };
 
+/**
+ * Deterministic tail cleanup of leaked list-delimiter junk on a validated
+ * candidate's descriptions — mutates in place. No snapshot/gold data consulted;
+ * every submission is treated identically. Shared by both backends so a
+ * successful submit is sanitized the same way regardless of how it arrived.
+ */
+export function applySubmitSanitation(candidate: v.InferOutput<typeof CandidateSchema>): void {
+	for (const item of candidate.items) {
+		if (item.description !== null) item.description = stripTrailingJunk(item.description);
+	}
+}
+
 /** Validate a submit_menu payload against the scorer's CandidateSchema. */
 export function validateSubmission(payload: unknown): SubmitResult {
 	const parsed = v.safeParse(CandidateSchema, payload);
@@ -278,13 +363,14 @@ const TOOLS = [
 	}
 ];
 
-const SYSTEM_PROMPT = [
+export const SYSTEM_PROMPT = [
 	'You are extracting a restaurant’s FULL menu from a snapshot of its website, served to you through the fetch_page tool. You have no other access to the site.',
 	'',
 	'Rules:',
 	'- The menu must be EXHAUSTIVE: capture every item, in every section (appetizers, mains, sides, noodles/rice, drinks, desserts, kids, specials), and every size/variant the source itemizes. Do not submit a representative sample.',
 	'- The menu is routinely split across MULTIPLE pages or tabs (a separate drinks, dessert, brunch, lunch/dinner, or specials page). Follow the links returned by fetch_page and enumerate every menu-shaped page BEFORE you finish. A menu with zero drinks or zero desserts for a sit-down venue almost always means you missed a page.',
 	'- Add-ons, modifiers, and upsell options attached to an item ("Extra Chutney (Red)", "Add Noodles", "Make it Vegan", size upgrades priced as +$N) are NOT menu items — do not submit them as items. Where relevant they belong in the parent item’s data (e.g. an on-request dietary option → the parent’s optional_tags).',
+	'- When the source itemizes ONE dish at MULTIPLE prices (sizes, serving formats), submit ONE item per variant, named `<dish name exactly as displayed> (<variant label>)` using the source’s OWN word for the variant ("bowl", "cup", "5 oz", "bottle"). The parenthetical is ONLY for a source-itemized price variant — never invent a qualifier, and a single-price item gets NO trailing parenthetical.',
 	'- The six dietary tags are vegan, vegetarian, gluten_free, dairy_free, nut_free, and halal. They are SOURCE-ASSERTED ONLY: apply a tag to an item only when the source explicitly designates it — through a dietary label/marker or in the item’s displayed name (e.g. "Vegan Burger"). A designation the source asserts for the WHOLE venue or menu (e.g. a "100% Pure Vegetarian" heading or an equivalent site-wide claim) counts as a source assertion for every item it covers — tag each such item accordingly even when the item itself carries no individual label. NEVER infer a tag from general knowledge of the dish. NEVER derive a free-of tag (gluten_free/nut_free/dairy_free) from the ABSENCE of an allergen symbol — an allergen legend marks presence, never freedom-from. A designation must use the actual free-of/dietary term: hedged or softened phrasings ("gluten-friendly", "plant-forward", "vegan-ish", "nut-conscious") are NOT designations and support NO tag, mandatory or optional — when a venue avoids the real term, respect that choice. ALWAYS assert exactly what the source labels, even when the label conflicts with the item’s ingredient information — never demote or drop a label because of ingredients, except when the item itself offers a matching "make it X" option (see optional_tags).',
 	'- optional_tags are designations that hold only on request (e.g. "can be made vegan"). A tag never appears in both tags and optional_tags. When the source offers an item as "can be made X" / "make it X" (a modifier or note), X goes in optional_tags, NOT tags — the source resolves its own contradiction there, so no warning is needed. When an item shows BOTH a dietary label X AND a matching "make it X" / "can be made X" option, the on-request signal wins: X goes in optional_tags, NOT tags. This source-internal contradiction is different from an ingredient conflict — an ingredient conflict never demotes a label and gets a `warning` instead.',
 	'- When a source label OBVIOUSLY conflicts with the item’s own listed ingredients (e.g. a "Vegan" label on an item whose description lists paneer/dairy), keep the tag AND set `warning` to a terse string noting the conflict; otherwise omit warning (or set it null).',
@@ -312,6 +398,12 @@ export interface RunResult {
 	promptTokens: number;
 	completionTokens: number;
 	totalTokens: number;
+	/** Prompt tokens served from a provider cache (0 when none reported). */
+	cachedPromptTokens: number;
+	/** Tokens written INTO a provider cache (0 when none reported). */
+	cacheWriteTokens: number;
+	/** Provider-reported cost in USD, when surfaced (Claude backend). */
+	totalCostUsd?: number;
 }
 
 function parseArguments(raw: string): { ok: true; value: unknown } | { ok: false; error: string } {
@@ -346,12 +438,20 @@ export async function runAgent(opts: {
 	let promptTokens = 0;
 	let completionTokens = 0;
 	let totalTokens = 0;
+	let cachedPromptTokens = 0;
+	let cacheWriteTokens = 0;
 	let nudged = false;
 
 	const done = (
 		r: Omit<
 			RunResult,
-			'toolCalls' | 'submitAttempts' | 'promptTokens' | 'completionTokens' | 'totalTokens'
+			| 'toolCalls'
+			| 'submitAttempts'
+			| 'promptTokens'
+			| 'completionTokens'
+			| 'totalTokens'
+			| 'cachedPromptTokens'
+			| 'cacheWriteTokens'
 		>
 	): RunResult => ({
 		...r,
@@ -359,7 +459,9 @@ export async function runAgent(opts: {
 		submitAttempts,
 		promptTokens,
 		completionTokens,
-		totalTokens
+		totalTokens,
+		cachedPromptTokens,
+		cacheWriteTokens
 	});
 
 	for (;;) {
@@ -374,6 +476,9 @@ export async function runAgent(opts: {
 		promptTokens += usage.prompt_tokens ?? 0;
 		completionTokens += usage.completion_tokens ?? 0;
 		totalTokens += usage.total_tokens ?? 0;
+		const cacheTokens = readCacheTokens(usage);
+		cachedPromptTokens += cacheTokens.cached;
+		cacheWriteTokens += cacheTokens.write;
 		const message = response.choices[0]?.message;
 		transcript.push({
 			type: 'response',
@@ -443,9 +548,7 @@ export async function runAgent(opts: {
 					// Deterministic tail cleanup of leaked list-delimiter junk on
 					// descriptions only — no snapshot/gold data consulted; the model's
 					// tool result and the raw transcript submission are left untouched.
-					for (const item of submission.candidate.items) {
-						if (item.description !== null) item.description = stripTrailingJunk(item.description);
-					}
+					applySubmitSanitation(submission.candidate);
 					return done({ status: 'scored', candidate: submission.candidate });
 				}
 				result = { ok: false, issues: submission.issues };
@@ -488,8 +591,17 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 /** Real model driver: POST to OpenRouter, retrying 429/5xx with backoff. */
 export function openRouterChat(model: string, apiKey: string): ChatFn {
+	// Anthropic-routed models get prompt-cache breakpoints; other providers cache
+	// implicitly by prefix, so their requests stay byte-identical (no cache_control).
+	const isAnthropic = model.startsWith('anthropic/');
 	return async (messages: ChatMessage[]): Promise<ChatResponse> => {
-		const body = JSON.stringify({ model, messages, tools: TOOLS, tool_choice: 'auto' });
+		const body = JSON.stringify({
+			model,
+			messages: isAnthropic ? withAnthropicCache(messages) : messages,
+			tools: TOOLS,
+			tool_choice: 'auto',
+			usage: { include: true }
+		});
 		let lastError = '';
 		for (let attempt = 0; attempt <= MAX_HTTP_RETRIES; attempt += 1) {
 			let res: Response;
@@ -528,8 +640,11 @@ export function modelSlug(model: string): string {
 	return model.replace(/[/:]/g, '-');
 }
 
+export type Backend = 'openrouter' | 'claude';
+
 export interface RunMeta {
 	model: string;
+	backend: Backend;
 	task_dir: string;
 	entry_url: string;
 	policy_version: string;
@@ -540,6 +655,12 @@ export interface RunMeta {
 	prompt_tokens: number;
 	completion_tokens: number;
 	total_tokens: number;
+	/** Prompt tokens served from a provider cache (0 when the provider reports none). */
+	cached_prompt_tokens: number;
+	/** Tokens written into a provider cache (0 when the provider reports none). */
+	cache_write_tokens: number;
+	/** Provider-reported cost in USD, when surfaced (Claude backend). */
+	total_cost_usd?: number;
 	status: 'scored' | 'failed';
 	failure_reason?: string;
 }
@@ -569,20 +690,37 @@ function writeRun(
 
 // --- CLI ----------------------------------------------------------------------
 
-interface CliArgs {
+export interface CliArgs {
 	taskDir: string;
 	model: string;
 	maxToolCalls: number;
+	backend: Backend;
 }
 
-function parseCli(argv: string[]): CliArgs | { error: string } {
+const USAGE =
+	'usage: bun run bench:run <task-dir> --model <model-id> ' +
+	'[--backend openrouter|claude] [--max-tool-calls N]';
+
+/** Only the OpenRouter backend needs OPENROUTER_API_KEY; Claude uses the SDK login. */
+export function requiresOpenRouterKey(backend: Backend): boolean {
+	return backend === 'openrouter';
+}
+
+export function parseCli(argv: string[]): CliArgs | { error: string } {
 	let taskDir: string | undefined;
 	let model: string | undefined;
 	let maxToolCalls = DEFAULT_MAX_TOOL_CALLS;
+	let backend: Backend = 'openrouter';
 	for (let i = 0; i < argv.length; i += 1) {
 		const arg = argv[i];
 		if (arg === '--model') {
 			model = argv[++i];
+		} else if (arg === '--backend') {
+			const b = argv[++i];
+			if (b !== 'openrouter' && b !== 'claude') {
+				return { error: `unknown backend: ${String(b)} (expected openrouter|claude)` };
+			}
+			backend = b;
 		} else if (arg === '--max-tool-calls') {
 			const n = Number(argv[++i]);
 			if (!Number.isInteger(n) || n <= 0)
@@ -597,23 +735,50 @@ function parseCli(argv: string[]): CliArgs | { error: string } {
 		}
 	}
 	if (!taskDir) return { error: 'missing <task-dir>' };
-	if (!model) return { error: 'missing --model <openrouter-model-id>' };
-	return { taskDir, model, maxToolCalls };
+	if (!model) return { error: 'missing --model <model-id>' };
+	return { taskDir, model, maxToolCalls, backend };
+}
+
+/** Assemble a RunMeta from a completed (or fatally-failed) run. */
+function buildMeta(
+	cli: CliArgs,
+	manifest: BenchManifest,
+	policyVersion: string,
+	startedAt: Date,
+	result: RunResult
+): RunMeta {
+	return {
+		model: cli.model,
+		backend: cli.backend,
+		task_dir: cli.taskDir,
+		entry_url: manifest.entryUrl,
+		policy_version: policyVersion,
+		started_at: startedAt.toISOString(),
+		duration_ms: Date.now() - startedAt.getTime(),
+		tool_calls: result.toolCalls,
+		submit_attempts: result.submitAttempts,
+		prompt_tokens: result.promptTokens,
+		completion_tokens: result.completionTokens,
+		total_tokens: result.totalTokens,
+		cached_prompt_tokens: result.cachedPromptTokens,
+		cache_write_tokens: result.cacheWriteTokens,
+		total_cost_usd: result.totalCostUsd,
+		status: result.status,
+		failure_reason: result.failureReason
+	};
 }
 
 async function main(): Promise<number> {
 	const cli = parseCli(process.argv.slice(2));
 	if ('error' in cli) {
 		console.error(`error: ${cli.error}`);
-		console.error(
-			'usage: bun run bench:run <task-dir> --model <openrouter-model-id> [--max-tool-calls N]'
-		);
+		console.error(USAGE);
 		return 2;
 	}
 
 	const apiKey = process.env.OPENROUTER_API_KEY;
-	if (!apiKey) {
-		console.error('error: OPENROUTER_API_KEY is not set');
+	if (requiresOpenRouterKey(cli.backend) && !apiKey) {
+		console.error('error: OPENROUTER_API_KEY is not set (required for the openrouter backend)');
 		return 2;
 	}
 
@@ -653,29 +818,37 @@ async function main(): Promise<number> {
 
 	let result: RunResult;
 	try {
-		result = await runAgent({
-			chat: openRouterChat(cli.model, apiKey),
-			store,
-			entryUrl: manifest.entryUrl,
-			maxToolCalls: cli.maxToolCalls,
-			transcript
-		});
+		if (cli.backend === 'claude') {
+			// Loaded lazily so the openrouter path never imports the Agent SDK.
+			const { runClaudeAgent } = await import('./run-claude');
+			result = await runClaudeAgent({
+				model: cli.model,
+				store,
+				entryUrl: manifest.entryUrl,
+				maxToolCalls: cli.maxToolCalls,
+				transcript
+			});
+		} else {
+			result = await runAgent({
+				chat: openRouterChat(cli.model, apiKey ?? ''),
+				store,
+				entryUrl: manifest.entryUrl,
+				maxToolCalls: cli.maxToolCalls,
+				transcript
+			});
+		}
 	} catch (e) {
-		const meta: RunMeta = {
-			model: cli.model,
-			task_dir: cli.taskDir,
-			entry_url: manifest.entryUrl,
-			policy_version: gold.policy_version,
-			started_at: startedAt.toISOString(),
-			duration_ms: Date.now() - startedAt.getTime(),
-			tool_calls: 0,
-			submit_attempts: 0,
-			prompt_tokens: 0,
-			completion_tokens: 0,
-			total_tokens: 0,
+		const meta = buildMeta(cli, manifest, gold.policy_version, startedAt, {
 			status: 'failed',
-			failure_reason: String(e)
-		};
+			failureReason: String(e),
+			toolCalls: 0,
+			submitAttempts: 0,
+			promptTokens: 0,
+			completionTokens: 0,
+			totalTokens: 0,
+			cachedPromptTokens: 0,
+			cacheWriteTokens: 0
+		});
 		writeRun(runDir, { meta, transcript });
 		console.error(`run failed: ${String(e)}`);
 		console.error(`run directory: ${runDir}`);
@@ -683,21 +856,7 @@ async function main(): Promise<number> {
 	}
 
 	const report = result.candidate ? scoreCandidate(gold, result.candidate) : undefined;
-	const meta: RunMeta = {
-		model: cli.model,
-		task_dir: cli.taskDir,
-		entry_url: manifest.entryUrl,
-		policy_version: gold.policy_version,
-		started_at: startedAt.toISOString(),
-		duration_ms: Date.now() - startedAt.getTime(),
-		tool_calls: result.toolCalls,
-		submit_attempts: result.submitAttempts,
-		prompt_tokens: result.promptTokens,
-		completion_tokens: result.completionTokens,
-		total_tokens: result.totalTokens,
-		status: result.status,
-		failure_reason: result.failureReason
-	};
+	const meta = buildMeta(cli, manifest, gold.policy_version, startedAt, result);
 	writeRun(runDir, { meta, transcript, candidate: result.candidate, report });
 
 	if (report) console.error(formatSummary(report));
