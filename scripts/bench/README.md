@@ -164,3 +164,93 @@ gitignored, so runs stay out of git. Exit 0 on a scored run, 1 on a failed run,
 3. Check `serve-misses.jsonl` and `/__report__`; re-record with `--url` for holes.
 4. Only when the snapshot browses clean, hand-author `gold/data.json`.
 5. `bun run bench:lint` until clean.
+
+## Authoring at scale
+
+Two tools speed up filling the bench without lowering the bar that gold is
+hand-verified.
+
+### `bench:new` — scaffold a task + track strata coverage
+
+```bash
+bun run bench:new <slug> <entry-url> --stratum <name>   # scaffold a task dir
+bun run bench:new --status                              # coverage matrix
+bun run bench:new --claim <slug> --stratum <name>       # claim an existing dir
+```
+
+The canonical strata are `single-page`, `multi-page`, `api-backed`, `pdf-menu`,
+`allergen-legend`, `closed-venue`, `bot-walled` — one per hard case the
+extractor has to handle. Scaffolding validates the slug (kebab-case), the entry
+URL, and the stratum, writes `task.json` (`{ slug, entry_url, stratum,
+created_at }`), and prints the next commands (`bench:record`, `bench:serve`,
+`bench:lint`). It does **not** crawl — recording is a separate step. It refuses
+to overwrite an existing task dir.
+
+`--status` prints which strata are filled (EMPTY markers for the gaps) and a
+per-task table: snapshot recorded, gold authored, draft pending, and item count.
+A task with no `task.json` (e.g. one recorded before this tooling existed) shows
+stratum `(unset)`; `--claim` back-fills its `task.json`. On CI, where `bench/` is
+gitignored and absent, `--status` prints a "no bench data" note and exits 0.
+
+### `bench:draft` — model-drafted gold for human review
+
+```bash
+OPENROUTER_API_KEY=sk-... bun run bench:draft <task-dir> \
+  --model <openrouter-model-id> [--max-tool-calls N] [--policy-version <v>] [--force]
+```
+
+Drives the **same** extraction loop as `bench:run` (identical tools, system
+prompt, and snapshot-served `fetch_page`) and writes the model's submission to
+`<task-dir>/gold/draft.json` — **never** to `gold/data.json`. A draft is machine
+output and must **never** be trusted as gold without a human pass. Re-drafting
+refuses to clobber an existing `draft.json` unless `--force`; drafting over an
+existing `gold/data.json` is allowed (useful for re-verification) and leaves the
+gold untouched. `--policy-version` stamps the draft (default `draft`); the human
+sets the real value when promoting.
+
+After writing, it prints a **REVIEW checklist** to stderr — this is where a
+reviewer starts. It reuses the gold linter against the task's own snapshot, so
+it surfaces zero-hit item names (hallucinations or snapshot holes), descriptions
+not found verbatim, and unrecorded sources, plus item / dietary-tag / warning
+counts and token usage. A transcript lands at `gold/draft-transcript.jsonl` so a
+bad draft is debuggable.
+
+**draft → review → promote:** `bench:draft` produces `draft.json` →
+a human works the REVIEW checklist in `bench:review` (below) until the badges
+clear → promotes to `gold/data.json`. The draft is a starting point, not an
+answer key.
+
+### `bench:review` — the gold-review UI
+
+```bash
+bun run bench:review <task-dir> [--port 8790] [--file draft|data]
+```
+
+A local, self-contained web UI (no build step, no external requests) that turns
+hand-reviewing a drafted gold into a glance instead of a text search. Defaults to
+`gold/draft.json` if it exists, else `gold/data.json` (exit 2 if neither);
+`--file` forces one. All human output is on stderr.
+
+Two panes. **LEFT:** every crawled page (from `manifest.pages`, menu-shaped first)
+as extracted, readable text — the same `htmlToText` view the linter and scorer
+compare against, so what you read is what gets checked (recorded HTML is never
+iframed). **RIGHT:** the item list from the reviewed file, every field editable —
+name, description, price (numeric or empty = `null`), the six dietary tags and
+`optional_tags` as checkboxes, and the `warning` note. Each item has a delete
+button and a "reviewed" toggle.
+
+**The core loop is the zero-hit badge.** Clicking an item highlights and scrolls
+to its (normalized) name in the left pane, auto-switching to the first tab that
+contains it; an item whose name appears NOWHERE in the snapshot gets a loud
+`NO HITS` badge — the draft's main failure mode is rewritten names, so you edit
+the name until the badge clears. Hit status recomputes live as you type. The
+header shows progress (reviewed n/total, zero-hit count), a save-state indicator,
+the editable `sources` list, and a **Promote** button.
+
+Edits autosave back to the reviewed file (`draft.json`/`data.json`), preserving
+its `policy_version` and writing the reviewed-name list to
+`gold/review-state.json` — review progress lives OUTSIDE the gold so the format
+stays lean. **Promote** (draft only) runs `lintGold` on the draft with the chosen
+`policy_version`: if any ERRORS remain (a zero-hit name is one) it refuses and
+lists them; otherwise it writes `gold/data.json`. It never deletes `draft.json` —
+you do that when satisfied. Finish with `bench:lint` until clean.
