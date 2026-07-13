@@ -45,6 +45,14 @@ bench/tasks/<venue-slug>/
   `dairy_free`, `nut_free`, `halal`) — course tags are deliberately NOT scored
   by this bench. Store tags minimally (e.g. `vegan` alone); the scorer expands
   the vegan → vegetarian + dairy_free implication on both sides before comparing.
+- When a source itemizes ONE dish at MULTIPLE prices (sizes/serving formats:
+  bowl/cup, 5 oz/9 oz/bottle), each variant is its own item named
+  `<dish name exactly as displayed> (<variant label, in the source's own word>)`
+  — e.g. `Fresh Soup (Bowl)`, `… BC VQA (5 oz)`. A single-price item gets NO
+  trailing parenthetical. The linter accepts a variant name when either the full
+  name or its stripped base (one trailing `(…)` removed) is in the snapshot, so
+  the base must be verbatim but the label itself is not corpus-checked. Add-ons
+  and upsells (`Add Noodles`, `Extra Chutney`) remain non-items.
 - `description` is the venue's own menu text verbatim, else `null`.
 - `warning` is an optional terse note flagging an OBVIOUS source contradiction
   (e.g. a "Vegan" label on an item whose description lists paneer): a non-empty
@@ -123,11 +131,27 @@ averaged together):
 ## Running a model against a task
 
 ```bash
+# OpenRouter backend (default) — any OpenAI-compatible model, billed to the key
 OPENROUTER_API_KEY=sk-... bun run bench:run bench/tasks/<slug> --model <openrouter-model-id>
+
+# Claude backend — a Claude model billed to your Claude Code SUBSCRIPTION
+bun run bench:run bench/tasks/<slug> --model claude-sonnet-5 --backend claude
 ```
 
-Drives an OpenAI-compatible tool-calling loop (via OpenRouter, non-streaming)
-against the task's frozen snapshot and scores what the model extracts. The model
+`--backend openrouter|claude` (default `openrouter`; exit 2 on an unknown value)
+picks how the same task is driven:
+
+- **`openrouter`** — an OpenAI-compatible tool-calling loop (non-streaming) via
+  OpenRouter. Requires `OPENROUTER_API_KEY` (exit 2 if unset).
+- **`claude`** — the SAME task run through the Claude Agent SDK
+  (`@anthropic-ai/claude-agent-sdk`). `--model` takes a Claude model id/alias
+  (e.g. `claude-sonnet-5`, `haiku`). It uses your logged-in Claude Code
+  credentials automatically, so the run **bills your Claude subscription** and
+  needs NO `OPENROUTER_API_KEY`. The model is locked to the same two in-process
+  tools and the byte-identical system prompt as the OpenRouter path — it has NO
+  Bash/Read/WebFetch/file access — so cross-backend scores stay comparable.
+
+Either backend scores what the model extracts against the task's gold. The model
 never touches the real network — its two tools are served in-process:
 
 - `fetch_page({ url })` — resolves the URL against the task's SnapshotStore
@@ -144,17 +168,31 @@ never touches the real network — its two tools are served in-process:
   submission, consulting no snapshot or gold data; the raw submitted text is still
   preserved verbatim in the transcript.
 
-Options: `--max-tool-calls N` (default 40). Requires `OPENROUTER_API_KEY` (exit 2
-if unset). The run aborts as failed if the model exhausts its tool-call budget,
-stops calling tools without submitting (nudged once first), or can't produce a
-valid submission.
+Options: `--max-tool-calls N` (default 40; on the Claude backend it maps to the
+SDK's `maxTurns`). The run aborts as failed if the model exhausts its budget,
+stops calling tools without submitting (OpenRouter path nudges once first), or
+can't produce a valid submission. On the Claude backend a valid submit ends the
+run by interrupting the streaming query (via an `AbortController`) and ignoring
+any further turns.
+
+**Prompt caching + cache observability.** On the OpenRouter backend, requests to
+`anthropic/*` models carry Anthropic prompt-cache breakpoints (`cache_control`):
+a static one on the system prompt and a rolling one on the last text-bearing
+message each turn, so the growing prefix is cache-read across turns. Non-Anthropic
+OpenRouter models are left byte-identical (they cache implicitly by prefix). Every
+request also sends `usage: { include: true }`, and the Claude backend reads usage
+straight from the SDK result — so both backends report cache accounting.
 
 Each run writes `bench/runs/<task-slug>/<iso-timestamp>-<model-slug>/`:
 `candidate.json` (submitted extraction), `report.json` (`scoreCandidate` output),
-`transcript.jsonl` (one event per API request/response and tool call/result, with
-token usage), and `meta.json` (model, tokens, timings, status). `bench/` is
-gitignored, so runs stay out of git. Exit 0 on a scored run, 1 on a failed run,
-2 on usage/config errors.
+`transcript.jsonl` (one event per request/response and tool call/result, with
+per-request token + cache usage), and `meta.json`. `meta.json` records `model`,
+`backend`, timings, status, and token totals: `prompt_tokens`,
+`completion_tokens`, `total_tokens`, `cached_prompt_tokens` (prompt tokens served
+from a provider cache), `cache_write_tokens` (tokens written into a cache), and
+`total_cost_usd` when the provider surfaces it (the Claude backend). Cache fields
+are `0` when the provider reports nothing. `bench/` is gitignored, so runs stay
+out of git. Exit 0 on a scored run, 1 on a failed run, 2 on usage/config errors.
 
 ## Authoring workflow
 

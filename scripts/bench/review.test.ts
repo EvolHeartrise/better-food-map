@@ -117,6 +117,22 @@ describe('perItemHits / state assembly', () => {
 			expect(hits[1].nameFound).toBe(false);
 		});
 	});
+
+	test('a variant name finds its base; a rewritten base does not', () => {
+		withTask(({ store }) => {
+			recordPage(store, 'https://x.com/menu', '<h1>Fresh Soup!</h1><p>Fries</p>');
+			const corpus = buildCorpus(store);
+			const hits = perItemHits(
+				[
+					{ name: 'Fresh Soup! (bowl)', description: null },
+					{ name: 'Creamy Bisque (bowl)', description: null }
+				],
+				corpus
+			);
+			expect(hits[0].nameFound).toBe(true);
+			expect(hits[1].nameFound).toBe(false);
+		});
+	});
 });
 
 describe('validateSave', () => {

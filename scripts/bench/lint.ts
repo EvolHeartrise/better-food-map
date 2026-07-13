@@ -80,6 +80,21 @@ export function normalizeForSearch(text: string): string {
 	return text.toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
+/**
+ * A variant item name is `<dish name as displayed> (<variant label>)` — one dish
+ * itemized at several prices (sizes/serving formats: "Fresh Soup (Bowl)",
+ * "… BC VQA (5 oz)"). Strip ONE trailing parenthetical group and return the base
+ * dish name when that leaves something non-empty, else undefined. Only a TRAILING
+ * group is stripped, so a mid-string parenthetical ("Aloo kachori (Punjabi Style)
+ * 1pc") is untouched, and stripping never applies twice ("X (a) (b)" → "X (a)").
+ * The base must still be verbatim in the snapshot; the variant label itself is not
+ * corpus-checked (a source may itemize an unlabeled default variant).
+ */
+export function stripVariantSuffix(name: string): string | undefined {
+	const base = name.replace(/\s*\([^()]*\)$/, '');
+	return base.length > 0 && base !== name ? base : undefined;
+}
+
 export interface LintResult {
 	errors: string[];
 	warnings: string[];
@@ -114,7 +129,10 @@ export function lintGold(goldRaw: unknown, corpus: string, recordedUrls: Set<str
 			errors.push(`${label}: tag(s) in both tags and optional_tags: ${optDup.join(', ')}`);
 		}
 
-		if (!corpus.includes(nameKey)) {
+		const base = stripVariantSuffix(item.name);
+		const nameFound =
+			corpus.includes(nameKey) || (base !== undefined && corpus.includes(normalizeForSearch(base)));
+		if (!nameFound) {
 			errors.push(`${label}: name not found anywhere in the snapshot (typo or snapshot hole)`);
 		}
 		if (item.description !== null && !corpus.includes(normalizeForSearch(item.description))) {

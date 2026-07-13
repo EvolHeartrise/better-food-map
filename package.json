@@ -51,6 +51,7 @@
 		"valibot": "^1.4.1"
 	},
 	"devDependencies": {
+		"@anthropic-ai/claude-agent-sdk": "^0.3.207",
 		"@capacitor/android": "^8.4.1",
 		"@capacitor/cli": "^8.4.1",
 		"@capacitor/ios": "^8.4.1",
@@ -79,6 +80,7 @@
 		"typescript": "^6.0.3",
 		"typescript-eslint": "^8.60.1",
 		"vite": "^8.0.16",
-		"wrangler": "^4.105.0"
+		"wrangler": "^4.105.0",
+		"zod": "^4.0.0"
 	}
 }
