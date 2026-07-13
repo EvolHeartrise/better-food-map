@@ -149,6 +149,51 @@ describe('scoreCandidate', () => {
 		expect(r.price_accuracy).toBe(1);
 	});
 
+	test('candidate matches gold variant name ignoring parentheses (both directions)', () => {
+		// gold has a parenthesized variant, candidate drops the parens
+		const g = structuredClone(baseGold);
+		g.items[1] = { ...g.items[1], name: 'Fresh Soup (bowl)' };
+		const c = structuredClone(baseGold);
+		c.items[1] = { ...c.items[1], name: 'Fresh Soup bowl' };
+		const r = scoreCandidate(gold(g), cand(c));
+		expect(r.matched).toBe(2);
+		expect(r.missed_items).toEqual([]);
+		expect(r.hallucinated_items).toEqual([]);
+
+		// reverse: gold drops the parens, candidate has them
+		const r2 = scoreCandidate(gold(c), cand(g));
+		expect(r2.matched).toBe(2);
+		expect(r2.missed_items).toEqual([]);
+		expect(r2.hallucinated_items).toEqual([]);
+	});
+
+	test('parentheses without surrounding spaces still match', () => {
+		const g = structuredClone(baseGold);
+		g.items[1] = { ...g.items[1], name: 'Soup(bowl)' };
+		const c = structuredClone(baseGold);
+		c.items[1] = { ...c.items[1], name: 'Soup (bowl)' };
+		const r = scoreCandidate(gold(g), cand(c));
+		expect(r.matched).toBe(2);
+		expect(r.missed_items).toEqual([]);
+		expect(r.hallucinated_items).toEqual([]);
+	});
+
+	test('candidate submitting both "X (a)" and "X a" yields one match + one hallucination', () => {
+		const g = structuredClone(baseGold);
+		g.items[1] = { ...g.items[1], name: 'Fresh Soup (bowl)' };
+		const c = structuredClone(baseGold);
+		c.items = [
+			c.items[0],
+			{ ...c.items[1], name: 'Fresh Soup (bowl)' },
+			{ ...c.items[1], name: 'Fresh Soup bowl', price: 99 }
+		];
+		const r = scoreCandidate(gold(g), cand(c));
+		expect(r.matched).toBe(2);
+		expect(r.candidate_items).toBe(3);
+		expect(r.hallucinated_items).toEqual(['Fresh Soup bowl']);
+		expect(r.missed_items).toEqual([]);
+	});
+
 	test('price and description null handling', () => {
 		const c = structuredClone(baseGold);
 		c.items[0].price = null; // gold has 14 → price miss

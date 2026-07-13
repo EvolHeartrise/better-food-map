@@ -18,6 +18,7 @@ import {
 	createSdkMcpServer,
 	query,
 	tool,
+	type EffortLevel,
 	type Options,
 	type SDKMessage
 } from '@anthropic-ai/claude-agent-sdk';
@@ -177,22 +178,41 @@ function stripMcpPrefix(name: string): string {
  * (with usage), each tool_use block → a `tool_call`, each tool_result block on
  * a user message → a `tool_result`, and the final result → a `note` carrying
  * usage + cost. Non-conversational SDK message types map to nothing.
+ *
+ * The SDK emits ONE SDKAssistantMessage per content block of a single API
+ * request (a text block, then a tool_use block, …), and every one of those
+ * events carries the SAME underlying API message (`msg.message.id`) and its
+ * SAME usage. Emitting a `response` event (which carries usage) for each would
+ * duplicate every request's usage line in the transcript and double-count
+ * tokens. Pass `seenMessageIds` to dedupe: the `response` event — the one that
+ * carries usage — is emitted only the FIRST time an API message id is seen,
+ * while every `tool_use` block still maps to its own `tool_call` (those never
+ * repeat across the per-block events). Omit the set for one-shot mapping.
  */
-export function mapSdkMessage(msg: SDKMessage): TranscriptEvent[] {
+export function mapSdkMessage(msg: SDKMessage, seenMessageIds?: Set<string>): TranscriptEvent[] {
 	const ts = new Date().toISOString();
 	const events: TranscriptEvent[] = [];
 	if (msg.type === 'assistant') {
+		const messageId = msg.message.id;
+		const firstSeen =
+			seenMessageIds === undefined ||
+			typeof messageId !== 'string' ||
+			!seenMessageIds.has(messageId);
+		if (seenMessageIds !== undefined && typeof messageId === 'string')
+			seenMessageIds.add(messageId);
 		const blocks = Array.isArray(msg.message.content) ? msg.message.content : [];
 		const text = blocks
 			.filter((b) => b.type === 'text')
 			.map((b) => (b.type === 'text' ? b.text : ''))
 			.join('');
-		events.push({
-			type: 'response',
-			ts,
-			usage: msg.message.usage,
-			message: { role: 'assistant', content: text.length > 0 ? text : null }
-		});
+		if (firstSeen) {
+			events.push({
+				type: 'response',
+				ts,
+				usage: msg.message.usage,
+				message: { role: 'assistant', content: text.length > 0 ? text : null }
+			});
+		}
 		for (const b of blocks) {
 			if (b.type === 'tool_use') {
 				events.push({
@@ -257,11 +277,16 @@ export function buildClaudeOptions(
 	server: ReturnType<typeof buildBenchMcpServer>,
 	model: string,
 	maxToolCalls: number,
-	abortController: AbortController
+	abortController: AbortController,
+	effort?: EffortLevel
 ): Options {
 	return {
 		model,
 		systemPrompt: SYSTEM_PROMPT,
+		// `effort` guides the SDK's adaptive-thinking depth. Omitted when unset so
+		// the Claude Code harness default (xhigh) applies; the SDK's own default is
+		// `high`. Levels: low|medium|high|xhigh|max (EffortLevel).
+		...(effort !== undefined ? { effort } : {}),
 		// A turn can carry several tool calls, so maxTurns is a loose upper bound
 		// on the same budget the OpenRouter backend spends as tool calls.
 		maxTurns: maxToolCalls,
@@ -283,6 +308,8 @@ export interface ClaudeAgentOpts {
 	store: SnapshotStore;
 	entryUrl: string;
 	maxToolCalls: number;
+	/** Reasoning-effort level → SDK `Options.effort`; undefined = harness default. */
+	effort?: EffortLevel;
 	transcript: TranscriptEvent[];
 	/** Test seam; defaults to the real SDK `query()`. */
 	queryFn?: QueryFn;
@@ -294,8 +321,9 @@ export interface ClaudeAgentOpts {
  * shared. On a valid submit we stop the streaming query via the
  * AbortController (the SDK loop does not end on a tool result) and ignore any
  * further turns — a deliberate choice: it forgoes the final `result` message's
- * usage/cost on a successful submit, but per-assistant-message usage is already
- * accumulated, so token counts are complete either way.
+ * usage/cost on a successful submit, but per-request usage is already
+ * accumulated (deduped by API message id), so token counts are complete either
+ * way.
  */
 export async function runClaudeAgent(opts: ClaudeAgentOpts): Promise<RunResult> {
 	const { model, store, entryUrl, maxToolCalls, transcript } = opts;
@@ -303,7 +331,7 @@ export async function runClaudeAgent(opts: ClaudeAgentOpts): Promise<RunResult> 
 	const state = newRunState();
 	const server = buildBenchMcpServer(store, state);
 	const abortController = new AbortController();
-	const options = buildClaudeOptions(server, model, maxToolCalls, abortController);
+	const options = buildClaudeOptions(server, model, maxToolCalls, abortController, opts.effort);
 	const prompt = `The restaurant’s website entry URL is: ${entryUrl}`;
 	// Same handlers the SDK server wraps, exposed via the seam for test drivers.
 	const tools: BenchToolHandlers = {
@@ -318,20 +346,25 @@ export async function runClaudeAgent(opts: ClaudeAgentOpts): Promise<RunResult> 
 	let cacheWriteTokens = 0;
 	let totalCostUsd: number | undefined;
 	let failureReason: string | undefined;
+	// Dedupe usage by API message id: the SDK emits one assistant event per
+	// content block, all sharing one message id + usage (see mapSdkMessage).
+	// Usage rides the (deduped) `response` event, so accumulating it there
+	// counts each API request's tokens exactly once.
+	const seenMessageIds = new Set<string>();
 
 	try {
 		for await (const msg of queryFn({ prompt, options, tools })) {
-			for (const ev of mapSdkMessage(msg)) {
+			for (const ev of mapSdkMessage(msg, seenMessageIds)) {
 				transcript.push(ev);
 				if (ev.type === 'tool_call') toolCalls += 1;
+				if (ev.type === 'response') {
+					promptTokens += usageField(ev.usage, 'input_tokens');
+					completionTokens += usageField(ev.usage, 'output_tokens');
+					cachedPromptTokens += usageField(ev.usage, 'cache_read_input_tokens');
+					cacheWriteTokens += usageField(ev.usage, 'cache_creation_input_tokens');
+				}
 			}
-			if (msg.type === 'assistant') {
-				const usage = msg.message.usage;
-				promptTokens += usageField(usage, 'input_tokens');
-				completionTokens += usageField(usage, 'output_tokens');
-				cachedPromptTokens += usageField(usage, 'cache_read_input_tokens');
-				cacheWriteTokens += usageField(usage, 'cache_creation_input_tokens');
-			} else if (msg.type === 'result') {
+			if (msg.type === 'result') {
 				// A natural end-of-run: prefer the authoritative result totals.
 				promptTokens = usageField(msg.usage, 'input_tokens') || promptTokens;
 				completionTokens = usageField(msg.usage, 'output_tokens') || completionTokens;
