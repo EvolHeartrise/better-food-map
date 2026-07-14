@@ -10,6 +10,13 @@
 	// `optional` tag ("can be made vegan") gets a dashed ring — reusing the dashed =
 	// optional convention the text pills used — and an "on request" accessible label.
 	//
+	// Each mark's hover/focus tooltip appends a source disclaimer (diet_source_note):
+	// dietary tags are the venue's OWN source-asserted claims (see the data policy in
+	// CLAUDE.md), not a verified guarantee we can stand behind — an aggregator can't
+	// vouch for a kitchen's cross-contamination — so allergy-sensitive users are told
+	// to confirm directly. The concise `aria-label` stays the diet name; the fuller
+	// disclaimer rides the tooltip (surfaced to screen readers via aria-describedby).
+	//
 	// Course tags (dessert / drink) carry no icon here; they still render as text pills
 	// elsewhere on the row. Only the six dietary ids are in ICONS, so any other tag id
 	// falls through and renders nothing.
@@ -54,13 +61,14 @@
 			{@const label = tag.optional
 				? m.diet_can_be_made({ diet: tagDisplayName(tag.id).toLowerCase() })
 				: tagDisplayName(tag.id)}
+			{@const tip = `${label} · ${m.diet_source_note()}`}
 			<li class="diet-icons__item">
 				<span
 					class="diet-icons__mark diet-icons__mark--{spec.tone}"
 					class:diet-icons__mark--optional={tag.optional}
 					role="img"
 					aria-label={label}
-					use:tooltip={label}
+					use:tooltip={tip}
 				>
 					<Icon size={15} />
 				</span>

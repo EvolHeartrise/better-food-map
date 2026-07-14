@@ -75,6 +75,7 @@
 	"diet_any": "Herhangi bir diyet",
 	"diet_filter_aria": "Diyet filtresi",
 	"diet_can_be_made": "{diet} yapılabilir",
+	"diet_source_note": "Mekânın kendi bilgilerine göre — alerji için doğrudan teyit edin",
 	"account_default_name": "Hesap",
 	"account_signed_in": "Giriş yapıldı",
 	"account_sign_out": "Çıkış yap",

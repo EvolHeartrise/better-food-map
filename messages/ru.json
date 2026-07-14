@@ -81,6 +81,7 @@
 	"diet_any": "Любая диета",
 	"diet_filter_aria": "Фильтр по диете",
 	"diet_can_be_made": "По запросу: {diet}",
+	"diet_source_note": "По данным самого заведения — при аллергии уточняйте напрямую",
 	"account_default_name": "Аккаунт",
 	"account_signed_in": "Вы вошли",
 	"account_sign_out": "Выйти",

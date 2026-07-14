@@ -87,6 +87,7 @@
 	"diet_any": "أي نظام غذائي",
 	"diet_filter_aria": "فلتر النظام الغذائي",
 	"diet_can_be_made": "يتوفر خيار {diet} عند الطلب",
+	"diet_source_note": "بناءً على معلومات المكان نفسه — تأكد مباشرةً بشأن الحساسية",
 	"account_default_name": "الحساب",
 	"account_signed_in": "تم تسجيل الدخول",
 	"account_sign_out": "تسجيل الخروج",

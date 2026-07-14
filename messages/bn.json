@@ -75,6 +75,7 @@
 	"diet_any": "যেকোনো ডায়েট",
 	"diet_filter_aria": "খাদ্যাভ্যাস ফিল্টার",
 	"diet_can_be_made": "{diet} হিসেবে বানানো যায়",
+	"diet_source_note": "স্থানটির নিজস্ব তথ্যের ভিত্তিতে — অ্যালার্জির জন্য সরাসরি নিশ্চিত করুন",
 	"account_default_name": "অ্যাকাউন্ট",
 	"account_signed_in": "সাইন ইন করা আছে",
 	"account_sign_out": "সাইন আউট",
