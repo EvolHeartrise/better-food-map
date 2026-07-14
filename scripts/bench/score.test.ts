@@ -52,6 +52,8 @@ describe('scoreCandidate', () => {
 		expect(r.missed_items).toEqual([]);
 		expect(r.hallucinated_items).toEqual([]);
 		expect(r.tag_false_positives).toEqual([]);
+		expect(r.price_mismatches).toEqual([]);
+		expect(r.description_mismatches).toEqual([]);
 		expect(r.matched).toBe(2);
 	});
 
@@ -201,6 +203,15 @@ describe('scoreCandidate', () => {
 		const r = scoreCandidate(gold(), cand(c));
 		expect(r.price_accuracy).toBe(0.5);
 		expect(r.description_accuracy).toBe(0.5);
+		expect(r.price_mismatches).toEqual([{ item: 'Vegan Burger', gold: 14, candidate: null }]);
+		expect(r.description_mismatches).toEqual([
+			{ item: 'Fries', gold: null, candidate: 'now has text' }
+		]);
+		// formatSummary lists each price/description mismatch as a `! …` line
+		const summary = formatSummary(r);
+		expect(summary).toContain('! price differs: "Vegan Burger" gold 14 vs candidate null');
+		expect(summary).toContain('! description differs: "Fries"');
+		expect(summary).toContain('cand: "now has text"');
 
 		// null === null counts correct
 		const bothNull = structuredClone(baseGold);

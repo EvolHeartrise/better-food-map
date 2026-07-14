@@ -84,9 +84,21 @@ export function htmlToText(html: string): string {
 		.replace(/&[a-z]+;|&#\d+;/gi, (e) => ENTITIES[e.toLowerCase()] ?? ' ');
 }
 
-/** Case- and whitespace-insensitive form used for corpus membership checks. */
+/**
+ * Case-, whitespace- and apostrophe-insensitive form used for corpus membership
+ * checks and for the scorer's name/description matching. The apostrophe family
+ * (’ ‘ ʼ ´ `) folds to a plain ASCII ' so a name like "Mac n’ Cheez" matches
+ * "Mac n' Cheez" — a model straightening the source's curly apostrophe (a
+ * detokenizer habit it can't reliably control) is typography, not an extraction
+ * error, so it must never split a match. Apostrophe style is never semantic, so
+ * folding it can only merge two spellings of the SAME name, never distinct items.
+ */
 export function normalizeForSearch(text: string): string {
-	return text.toLowerCase().replace(/\s+/g, ' ').trim();
+	return text
+		.replace(/[’‘ʼ´`]/g, "'")
+		.toLowerCase()
+		.replace(/\s+/g, ' ')
+		.trim();
 }
 
 /**
@@ -138,9 +150,20 @@ export function lintGold(goldRaw: unknown, corpus: string, recordedUrls: Set<str
 			errors.push(`${label}: tag(s) in both tags and optional_tags: ${optDup.join(', ')}`);
 		}
 
-		const base = stripVariantSuffix(item.name);
-		const nameFound =
-			corpus.includes(nameKey) || (base !== undefined && corpus.includes(normalizeForSearch(base)));
+		// Try the full name, then progressively strip trailing "(…)" groups: a name
+		// like "Stone Road … (5 oz glass) (Happy Hour)" carries TWO trailing groups
+		// (a size AND a Happy-Hour/daily-special context), so one strip is not enough
+		// — keep stripping until the base is in the corpus or nothing parenthetical
+		// remains. stripVariantSuffix returns undefined at the end (no trailing group
+		// or an empty base), which terminates the loop.
+		let nameFound = corpus.includes(nameKey);
+		for (
+			let base = stripVariantSuffix(item.name);
+			!nameFound && base !== undefined;
+			base = stripVariantSuffix(base)
+		) {
+			if (corpus.includes(normalizeForSearch(base))) nameFound = true;
+		}
 		if (!nameFound) {
 			errors.push(`${label}: name not found anywhere in the snapshot (typo or snapshot hole)`);
 		}

@@ -49,10 +49,30 @@ bench/tasks/<venue-slug>/
   bowl/cup, 5 oz/9 oz/bottle), each variant is its own item named
   `<dish name exactly as displayed> (<variant label, in the source's own word>)`
   — e.g. `Fresh Soup (Bowl)`, `… BC VQA (5 oz)`. A single-price item gets NO
-  trailing parenthetical. The linter accepts a variant name when either the full
-  name or its stripped base (one trailing `(…)` removed) is in the snapshot, so
-  the base must be verbatim but the label itself is not corpus-checked. Add-ons
-  and upsells (`Add Noodles`, `Extra Chutney`) remain non-items.
+  trailing parenthetical. Keep the FULL displayed name including any
+  origin/appellation qualifier on its line (`… Smooth Red, BC VQA`), and for a
+  size variant shown with vendor slang (`8oz halfer`, `16 oz sleeve`) use just
+  the measured volume (`(8 oz)`, `(16 oz)`). The linter accepts a variant name when either the full
+  name or its base with trailing `(…)` groups removed (stripped repeatedly, so a
+  `(size) (Happy Hour)` double suffix still resolves to the bare dish name) is in
+  the snapshot, so the base must be verbatim but the labels themselves are not
+  corpus-checked. Add-ons and upsells (`Add Noodles`, `Extra Chutney`) remain non-items.
+- A Happy Hour item is a source-designated price context: it is its own item,
+  distinct from any regular-menu version, carrying its Happy Hour price, with the
+  literal suffix ` (Happy Hour)` appended to the END of its name (e.g.
+  `Sweet-Chili Cauliflower (Happy Hour)`). When the item also has a size/serving
+  variant label, `(Happy Hour)` comes LAST, after it:
+  `Stone Road Red Blend (5 oz glass) (Happy Hour)`.
+- A day-of-week drink special (a "Daily Drink Specials" section) is the same idea:
+  its own item at the special price, with ` (<Day> Daily Special)` appended LAST
+  (e.g. `House Lemonade (Monday Daily Special)`,
+  `Stone Road Red White & Rose (5 oz) (Wednesday Daily Special)`). Dietary tags
+  are source-asserted, but a WHOLE-VENUE claim counts for every item: a venue
+  that presents itself as plant-based/vegan (even on an about page, not just the
+  menu) designates `vegan` for EVERY item on its menu, drinks included — so at
+  MeeT (a plant-based venue) every item, wine and beer too, carries `vegan`.
+- A named listing shown at a rotating / market price (`Rotating Taps`,
+  `Rotating Canned Kombucha`) IS an item — keep it with `price: null`.
 - `description` is the venue's own menu text verbatim, else `null`.
 - `warning` is an optional terse note flagging an OBVIOUS source contradiction
   (e.g. a "Vegan" label on an item whose description lists paneer): a non-empty

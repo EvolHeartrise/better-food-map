@@ -46,6 +46,23 @@ export interface TagFalsePositive {
 	implied_by?: string;
 }
 
+/** A matched pair whose price disagrees; gold/candidate hold the raw prices. */
+export interface PriceMismatch {
+	item: string;
+	gold: number | null;
+	candidate: number | null;
+}
+
+/**
+ * A matched pair whose description disagrees after normalization; gold/candidate
+ * hold the RAW description text (or null) so the summary can show what differs.
+ */
+export interface DescriptionMismatch {
+	item: string;
+	gold: string | null;
+	candidate: string | null;
+}
+
 export interface ScoreReport {
 	gold_items: number;
 	candidate_items: number;
@@ -60,7 +77,11 @@ export interface ScoreReport {
 	optional_tag_recall: number;
 	tag_false_positives: TagFalsePositive[];
 	price_accuracy: number;
+	/** Matched pairs whose price differs (candidate vs gold), sorted by item name. */
+	price_mismatches: PriceMismatch[];
 	description_accuracy: number;
+	/** Matched pairs whose description differs after normalization, sorted by item name. */
+	description_mismatches: DescriptionMismatch[];
 	/**
 	 * Presence-only agreement on the `warning` flag over matched pairs: a warning
 	 * is "present" iff it is a string, "absent" for null/undefined/missing. The
@@ -118,15 +139,22 @@ interface Pair {
 }
 
 /**
- * Name-matching key: paren-insensitive form of a name. Parentheses are
- * dropped BEFORE `normalizeForSearch` runs — each `(` / `)` becomes a space so
- * a variant like "Fresh Soup (Bowl)" keys identically to "Fresh Soup Bowl" (and
- * "Soup(bowl)" keys as "soup bowl", not "soupbowl") — then the existing
- * lowercase/whitespace-collapse handles the rest. This lets a candidate match a
- * gold variant name regardless of the source's parenthesization.
+ * Name-matching key: paren-insensitive form of a name, with whitespace collapsed
+ * away INSIDE each parenthetical so trivial spacing differences in a variant
+ * label never split a match. Within every balanced `(…)` group all whitespace is
+ * removed (`(5 oz glass)` and `(5oz glass)` both key to `5ozglass`; `(8 oz)` and
+ * `(8oz)` both to `8oz`), the group is bounded by spaces, and any stray unbalanced
+ * paren is dropped to a space; then `normalizeForSearch` lowercases and collapses
+ * the OUTSIDE whitespace. So "Fresh Soup (Bowl)" still keys identically to "Fresh
+ * Soup Bowl", "Soup(bowl)" keys as "soup bowl" (not "soupbowl"), and a candidate
+ * matches a gold variant regardless of the source's parenthesization OR its
+ * spacing inside the label. Whitespace BETWEEN words outside parens still matters.
  */
 export function nameMatchKey(name: string): string {
-	return normalizeForSearch(name.replace(/[()]/g, ' '));
+	const collapsed = name
+		.replace(/\(([^()]*)\)/g, (_m, inner: string) => ` ${inner.replace(/\s+/g, '')} `)
+		.replace(/[()]/g, ' ');
+	return normalizeForSearch(collapsed);
 }
 
 /**
@@ -251,15 +279,20 @@ export function scoreCandidate(gold: GoldMenu, candidate: CandidateMenu): ScoreR
 	let priceHits = 0;
 	let descHits = 0;
 	let warningHits = 0;
+	const priceMismatches: PriceMismatch[] = [];
+	const descriptionMismatches: DescriptionMismatch[] = [];
 	const missingWarnings: string[] = [];
 	const spuriousWarnings: string[] = [];
 	for (const { gold: g, candidate: c } of pairs) {
 		if (g.price === c.price) priceHits += 1;
+		else priceMismatches.push({ item: g.name, gold: g.price, candidate: c.price });
 		const descMatch =
 			g.description === null || c.description === null
 				? g.description === c.description
 				: normalizeForSearch(g.description) === normalizeForSearch(c.description);
 		if (descMatch) descHits += 1;
+		else
+			descriptionMismatches.push({ item: g.name, gold: g.description, candidate: c.description });
 
 		// Presence-only: content is never compared.
 		const goldHasWarning = typeof g.warning === 'string';
@@ -298,7 +331,9 @@ export function scoreCandidate(gold: GoldMenu, candidate: CandidateMenu): ScoreR
 			(a, b) => a.item.localeCompare(b.item) || a.tag.localeCompare(b.tag)
 		),
 		price_accuracy: ratio(priceHits, matched),
+		price_mismatches: priceMismatches.toSorted((a, b) => a.item.localeCompare(b.item)),
 		description_accuracy: ratio(descHits, matched),
+		description_mismatches: descriptionMismatches.toSorted((a, b) => a.item.localeCompare(b.item)),
 		warning_accuracy: ratio(warningHits, matched),
 		missing_warnings: missingWarnings.toSorted((a, b) => a.localeCompare(b)),
 		spurious_warnings: spuriousWarnings.toSorted((a, b) => a.localeCompare(b)),
@@ -312,6 +347,15 @@ function pct(n: number): string {
 	return `${(n * 100).toFixed(1)}%`;
 }
 
+function fmtPrice(p: number | null): string {
+	return p === null ? 'null' : String(p);
+}
+
+/** Quote a description (or mark it absent) so trailing/whitespace diffs are visible. */
+function fmtDesc(d: string | null): string {
+	return d === null ? '(none)' : JSON.stringify(d);
+}
+
 /** Short human-readable summary for stderr. */
 export function formatSummary(report: ScoreReport): string {
 	const lines = [
@@ -321,7 +365,8 @@ export function formatSummary(report: ScoreReport): string {
 		`tags       recall ${pct(report.tag_recall)}  precision ${pct(report.tag_precision)}` +
 			`  (${report.tag_false_positives.length} false-positive tag(s))`,
 		`opt.tags   recall ${pct(report.optional_tag_recall)}  precision ${pct(report.optional_tag_precision)}`,
-		`price      ${pct(report.price_accuracy)}   description ${pct(report.description_accuracy)}`,
+		`price      ${pct(report.price_accuracy)} (${report.price_mismatches.length} mismatched)   ` +
+			`description ${pct(report.description_accuracy)} (${report.description_mismatches.length} mismatched)`,
 		`warnings   ${pct(report.warning_accuracy)}` +
 			`  (${report.missing_warnings.length} missing, ${report.spurious_warnings.length} spurious)`,
 		`sources    recall ${pct(report.source_recall)}  precision ${pct(report.source_precision)}` +
@@ -332,6 +377,16 @@ export function formatSummary(report: ScoreReport): string {
 	for (const fp of report.tag_false_positives) {
 		const suffix = fp.implied_by === undefined ? '' : ` (implied by ${fp.implied_by})`;
 		lines.push(`  ! false-positive tag: "${fp.item}" asserts ${fp.tag}${suffix}`);
+	}
+	for (const m of report.price_mismatches) {
+		lines.push(
+			`  ! price differs: "${m.item}" gold ${fmtPrice(m.gold)} vs candidate ${fmtPrice(m.candidate)}`
+		);
+	}
+	for (const m of report.description_mismatches) {
+		lines.push(`  ! description differs: "${m.item}"`);
+		lines.push(`      gold: ${fmtDesc(m.gold)}`);
+		lines.push(`      cand: ${fmtDesc(m.candidate)}`);
 	}
 	for (const name of report.missing_warnings) {
 		lines.push(`  ! missing warning: "${name}" (gold flags it, candidate does not)`);
