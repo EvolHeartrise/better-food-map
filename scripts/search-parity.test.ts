@@ -180,7 +180,7 @@ test('diet queries: narrowing on the SAME item agrees through both halves', asyn
 	await expectParity(db, ids, 'burrito', 'vegan');
 	// Shared menu through the diet dimension, both branches.
 	await expectParity(db, ids, 'chow', 'vegan');
-	await expectParity(db, ids, '', 'gluten_free'); // nothing carries it → both empty
+	await expectParity(db, ids, '', 'gluten_friendly'); // nothing carries it → both empty
 });
 
 // The diet filter resolves the selected diet through the implication closure

@@ -142,7 +142,7 @@ test('dietMarkers maps only explicit yes/only diet tags', () => {
 		'vegetarian'
 	]);
 	expect(dietMarkers({ 'diet:vegan': 'no' })).toEqual([]);
-	expect(dietMarkers({ 'diet:gluten_free': 'yes' })).toEqual(['gluten_free']);
+	expect(dietMarkers({ 'diet:gluten_free': 'yes' })).toEqual(['gluten_friendly']);
 	expect(dietMarkers({ 'diet:lactose_free': 'yes' })).toEqual(['dairy_free']);
 	expect(dietMarkers({ cuisine: 'vegan' })).toEqual([]); // cuisine is not a diet marker
 });

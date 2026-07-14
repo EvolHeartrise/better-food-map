@@ -92,7 +92,7 @@ const SHOP_SET = new Set<string>(FOOD_SHOPS);
 const DIET_KEY_TO_TAG: Record<string, string> = {
 	'diet:vegan': 'vegan',
 	'diet:vegetarian': 'vegetarian',
-	'diet:gluten_free': 'gluten_free',
+	'diet:gluten_free': 'gluten_friendly',
 	'diet:lactose_free': 'dairy_free',
 	'diet:halal': 'halal'
 };

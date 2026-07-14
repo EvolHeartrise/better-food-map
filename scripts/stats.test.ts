@@ -26,7 +26,7 @@ const NO_DIETS = {
 	vegan: 0,
 	vegetarian: 0,
 	halal: 0,
-	gluten_free: 0,
+	gluten_friendly: 0,
 	dairy_free: 0,
 	nut_free: 0
 };
@@ -128,7 +128,7 @@ test('getStats counts dietary dishes through the diet-filter implication closure
 
 	// One venue whose menu exercises the closure: a vegan dish (which the write path
 	// stores as ONLY `vegan`, stripping the entailed vegetarian/dairy_free), a plainly
-	// vegetarian dish, a gluten-free dish, and an untagged one.
+	// vegetarian dish, a gluten-friendly dish, and an untagged one.
 	await insertLocations(db, [
 		venue({
 			name: 'Green Bowl',
@@ -138,7 +138,7 @@ test('getStats counts dietary dishes through the diet-filter implication closure
 			items: [
 				{ item_name: 'Tofu Bowl', price: 12, tags: ['vegan'] },
 				{ item_name: 'Cheese Pizza', price: 10, tags: ['vegetarian'] },
-				{ item_name: 'Rice Plate', price: 9, tags: ['gluten_free'] },
+				{ item_name: 'Rice Plate', price: 9, tags: ['gluten_friendly'] },
 				{ item_name: 'Steak', price: 20 }
 			]
 		})
@@ -149,7 +149,7 @@ test('getStats counts dietary dishes through the diet-filter implication closure
 		vegan: 1, // the tofu bowl
 		vegetarian: 2, // the vegetarian pizza + the vegan tofu bowl (vegan ⊃ vegetarian)
 		dairy_free: 1, // the vegan tofu bowl (vegan ⊃ dairy_free); the pizza has cheese
-		gluten_free: 1, // the rice plate
+		gluten_friendly: 1, // the rice plate
 		halal: 0,
 		nut_free: 0
 	});

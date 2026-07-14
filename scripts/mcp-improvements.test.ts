@@ -367,7 +367,7 @@ test('updateItems tag patches are per-set: one set never wipes the other', async
 			location_id: locId,
 			item_name: 'Thali',
 			tags: ['halal'],
-			optionalTags: ['gluten_free']
+			optionalTags: ['gluten_friendly']
 		}
 	]);
 
@@ -410,11 +410,11 @@ test('updateItems tag patches are per-set: one set never wipes the other', async
 	);
 
 	// Providing both sets is still a full replace.
-	await updateItems(db, [{ id, tags: ['vegetarian'], optionalTags: ['gluten_free'] }]);
+	await updateItems(db, [{ id, tags: ['vegetarian'], optionalTags: ['gluten_friendly'] }]);
 	expect(await byId()).toEqual(
 		new Map([
 			['vegetarian', false],
-			['gluten_free', true]
+			['gluten_friendly', true]
 		])
 	);
 });
@@ -545,7 +545,7 @@ test('updateItems merge ops edit tags without restating the set', async () => {
 			location_id: locId,
 			item_name: 'Burger',
 			tags: ['vegan', 'food'],
-			optionalTags: ['gluten_free']
+			optionalTags: ['gluten_friendly']
 		}
 	]);
 
@@ -559,12 +559,12 @@ test('updateItems merge ops edit tags without restating the set', async () => {
 			['vegan', false],
 			['food', false],
 			['halal', false],
-			['gluten_free', true]
+			['gluten_friendly', true]
 		])
 	);
 
 	// remove_tags unlinks from BOTH scopes without touching the rest.
-	const { warnings } = await updateItems(db, [{ id, removeTags: ['halal', 'gluten_free'] }]);
+	const { warnings } = await updateItems(db, [{ id, removeTags: ['halal', 'gluten_friendly'] }]);
 	expect(warnings).toEqual([]); // merge-op removals are explicit, never warned
 	expect(await byId()).toEqual(
 		new Map([
@@ -627,7 +627,7 @@ test('updateItems warns when a replace-path patch drops a dietary tag', async ()
 			location_id: locId,
 			item_name: 'Salad',
 			tags: ['food'],
-			optionalTags: ['gluten_free']
+			optionalTags: ['gluten_friendly']
 		}
 	]);
 
@@ -649,7 +649,7 @@ test('updateItems warns when a replace-path patch drops a dietary tag', async ()
 	// Dropping an OPTIONAL dietary tag by restating optional_tags also warns.
 	const dropped = await updateItems(db, [{ id: salad, optionalTags: [] }]);
 	expect(dropped.warnings).toHaveLength(1);
-	expect(dropped.warnings[0]).toContain('gluten_free');
+	expect(dropped.warnings[0]).toContain('gluten_friendly');
 
 	// Replacing vegan with vegetarian+dairy_free is NOT a drop — the implication
 	// closure already covered them, so nothing the filter matched is lost... but

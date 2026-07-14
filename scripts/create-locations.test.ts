@@ -239,9 +239,9 @@ test('insertLocations creates an independent venue and its own menu in one batch
 			phone: null,
 			website: null,
 			items: [
-				// gluten_free, not vegetarian: vegan entails vegetarian, so the write path
+				// gluten_friendly, not vegetarian: vegan entails vegetarian, so the write path
 				// would strip it (DIET_TAG_IMPLIES) — this pins the optional-flag wiring.
-				{ item_name: 'Oat Latte', price: 5, tags: ['vegan'], optionalTags: ['gluten_free'] },
+				{ item_name: 'Oat Latte', price: 5, tags: ['vegan'], optionalTags: ['gluten_friendly'] },
 				{ item_name: 'Croissant', price: 3 }
 			]
 		}
@@ -256,8 +256,8 @@ test('insertLocations creates an independent venue and its own menu in one batch
 	const latte = menu.find((i) => i.item_name === 'Oat Latte');
 	expect(latte?.price).toBe(5);
 	expect(latte?.tags.some((t) => t.id === 'vegan')).toBe(true);
-	// An optional dietary tag is stored with optional = true ("can be made gluten-free").
-	expect(latte?.tags.find((t) => t.id === 'gluten_free')?.optional).toBe(true);
+	// An optional dietary tag is stored with optional = true ("can be made gluten-friendly").
+	expect(latte?.tags.find((t) => t.id === 'gluten_friendly')?.optional).toBe(true);
 });
 
 test('insertLocations rejects inline items on a chain branch and writes nothing', async () => {
@@ -307,7 +307,7 @@ function venueWithItems(name: string, i: number, nItems: number) {
 			item_name: `Dish ${j}`,
 			price: 10,
 			tags: ['vegan' as const],
-			optionalTags: ['gluten_free' as const]
+			optionalTags: ['gluten_friendly' as const]
 		}))
 	};
 }
@@ -341,7 +341,7 @@ test('locationInsertStatementCount matches the statements insertLocations actual
 						item_name: 'Vegan Bowl',
 						price: 9,
 						tags: ['vegan' as const, 'vegetarian' as const],
-						optionalTags: ['dairy_free' as const, 'gluten_free' as const]
+						optionalTags: ['dairy_free' as const, 'gluten_friendly' as const]
 					}
 				]
 			}

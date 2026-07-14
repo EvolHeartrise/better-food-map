@@ -76,7 +76,7 @@ const DIET_SCHEMA_TYPE: Partial<Record<TagId, string>> = {
 	vegan: 'VeganDiet',
 	vegetarian: 'VegetarianDiet',
 	halal: 'HalalDiet',
-	gluten_free: 'GlutenFreeDiet',
+	gluten_friendly: 'GlutenFreeDiet',
 	dairy_free: 'LowLactoseDiet'
 };
 

@@ -26,6 +26,7 @@ import {
 } from '$lib/server/api-cors';
 import { LOCALE_COOKIE } from '$lib/server/locale-cookie';
 import { deleteExpiredSessions } from '$lib/server/db';
+import { legacyDietRedirectPath } from '$lib/browse';
 
 // betterfoodmaps.com is the canonical domain. The canonical www host, the
 // legacy bare domain betterfoodmap.com, and its www are also routed to this
@@ -46,6 +47,23 @@ const canonicalHost: Handle = async ({ event, resolve }) => {
 		return new Response(null, {
 			status: 301,
 			headers: { location: `https://${CANONICAL_HOST}${pathname}${search}` }
+		});
+	}
+	return resolve(event);
+};
+
+// 301 the browse tree's renamed per-diet URLs to their current slug. A dietary
+// tag rename (gluten_free → gluten_friendly, migration 0029) moves its browse
+// slug, but the old `…/gluten-free` pages are a live, indexed crawl surface
+// (#217); without this they'd 404 (the `diet` param matcher no longer accepts the
+// slug). Same-path, so it preserves country/region/city and the query string.
+// See legacyDietRedirectPath (and LEGACY_DIET_SLUGS) in $lib/browse.
+const legacyDietRedirect: Handle = async ({ event, resolve }) => {
+	const moved = legacyDietRedirectPath(event.url.pathname);
+	if (moved) {
+		return new Response(null, {
+			status: 301,
+			headers: { location: `${moved}${event.url.search}` }
 		});
 	}
 	return resolve(event);
@@ -358,11 +376,20 @@ const apiCors: Handle = async ({ event, resolve }) => {
 // installed by the time resolveLocale's step 2 reads the signed-in user's saved
 // locale from it (a signed-out request skips that read — the step is gated on a
 // session cookie). `localize` then establishes the per-request Paraglide locale
-// context around the app resolve. Both sit after `canonicalHost`, so a 301'd host
-// skips the auth + locale work entirely.
+// context around the app resolve. Both sit after `canonicalHost` and
+// `legacyDietRedirect`, so a 301'd host or renamed diet URL skips the auth +
+// locale work entirely. `legacyDietRedirect` runs right after the host redirect
+// (both are pure path/host 301s that need no session or locale).
 // `apiCors` sits innermost (after authenticate, so `locals.getSession` — the
 // bearer resolver for app requests — is installed before an /api/v1 route reads
 // it, and after localize so a JSON error string still resolves in the caller's
 // locale). securityHeaders stays outermost so its browser headers also land on
 // the /api/v1 CORS/preflight responses.
-export const handle = sequence(securityHeaders, canonicalHost, authenticate, localize, apiCors);
+export const handle = sequence(
+	securityHeaders,
+	canonicalHost,
+	legacyDietRedirect,
+	authenticate,
+	localize,
+	apiCors
+);

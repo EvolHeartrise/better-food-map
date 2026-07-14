@@ -36,7 +36,7 @@
 	// NAME *or* by an item name — a name match surfaces the whole menu, an item-only
 	// match surfaces just the matching items (see `matchedItems`). The dietary selector
 	// is a separate filter that always narrows the items shown (single-select: an item
-	// must carry the chosen tag — vegan, gluten_free, …). With either set, the SAME
+	// must carry the chosen tag — vegan, gluten_friendly, …). With either set, the SAME
 	// per-cell viewport fetch below narrows server-side to matching venues, so the
 	// search follows the map: panning searches the newly visible cells, and what
 	// renders is always "the matches in (and just around) the current view".

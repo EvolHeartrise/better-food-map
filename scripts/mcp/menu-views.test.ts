@@ -37,7 +37,7 @@ async function seedMenu(db: D1Like): Promise<MenuWithItems> {
 			description: 'A combo',
 			price: 10,
 			tags: ['vegan'],
-			optionalTags: ['gluten_free']
+			optionalTags: ['gluten_friendly']
 		},
 		{ menu_id: menuId, item_name: 'Plain Side' }
 	]);
@@ -53,7 +53,7 @@ test('itemNameView projects id/item_name/price/tag-ids, flagging optional tags',
 	expect(view.id).toBe(combo.id);
 	expect(view.item_name).toBe('Vegan Combo');
 	expect(view.price).toBe(10);
-	expect(view.tags.toSorted()).toEqual(['gluten_free (optional)', 'vegan']);
+	expect(view.tags.toSorted()).toEqual(['gluten_friendly (optional)', 'vegan']);
 	// The lean shape carries NO description / sources keys (that is the point of "names").
 	expect('description' in view).toBe(false);
 	expect('sources' in view).toBe(false);
@@ -66,8 +66,8 @@ test('menuItemsSummary counts items, prices and a per-tag histogram', async () =
 	const summary = menuItemsSummary(menu.items);
 	expect(summary.item_count).toBe(2);
 	expect(summary.items_with_price).toBe(1); // only Vegan Combo has a price
-	// Both a required (vegan) and an optional (gluten_free) tag are counted.
-	expect(summary.tag_counts).toEqual({ vegan: 1, gluten_free: 1 });
+	// Both a required (vegan) and an optional (gluten_friendly) tag are counted.
+	expect(summary.tag_counts).toEqual({ vegan: 1, gluten_friendly: 1 });
 });
 
 test('an empty menu summarizes to all-zero counts and an empty histogram', () => {

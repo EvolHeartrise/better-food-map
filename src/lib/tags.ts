@@ -12,7 +12,7 @@ import { m } from '$lib/paraglide/messages';
 export type TagId =
 	| 'vegan'
 	| 'vegetarian'
-	| 'gluten_free'
+	| 'gluten_friendly'
 	| 'dairy_free'
 	| 'nut_free'
 	| 'halal'
@@ -42,14 +42,14 @@ export interface Tag {
 // never created from the UI, and seeded into D1 by migrations/0001_init.sql
 // (renamed to (name, tag_type) by 0004); this array — not the DB row order — is the
 // authoritative display order. The dietary tags are grouped by kind: the positive
-// diets (vegan, vegetarian, halal) first, then the "-free" allergen-avoidance tags
-// (gluten/dairy/nut) — matching the green/orange split the icons use. This is the
-// WHOLE tag vocabulary: there are no data-created tags.
+// diets (vegan, vegetarian, halal) first, then the allergen-avoidance tags
+// (gluten-friendly, dairy-free, nut-free) — matching the green/orange split the
+// icons use. This is the WHOLE tag vocabulary: there are no data-created tags.
 export const TAGS: readonly Tag[] = [
 	{ id: 'vegan', name: 'Vegan', tag_type: 'dietary' },
 	{ id: 'vegetarian', name: 'Vegetarian', tag_type: 'dietary' },
 	{ id: 'halal', name: 'Halal', tag_type: 'dietary' },
-	{ id: 'gluten_free', name: 'Gluten-free', tag_type: 'dietary' },
+	{ id: 'gluten_friendly', name: 'Gluten-friendly', tag_type: 'dietary' },
 	{ id: 'dairy_free', name: 'Dairy-free', tag_type: 'dietary' },
 	{ id: 'nut_free', name: 'Nut-free', tag_type: 'dietary' },
 	{ id: 'food', name: 'Food', tag_type: 'course' },
@@ -119,7 +119,7 @@ const TAG_LABELS: Record<TagId, () => string> = {
 	vegan: m.tag_vegan,
 	vegetarian: m.tag_vegetarian,
 	halal: m.tag_halal,
-	gluten_free: m.tag_gluten_free,
+	gluten_friendly: m.tag_gluten_friendly,
 	dairy_free: m.tag_dairy_free,
 	nut_free: m.tag_nut_free,
 	food: m.tag_food,

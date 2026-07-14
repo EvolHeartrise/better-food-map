@@ -24,7 +24,7 @@ describe('catalog integrity', () => {
 describe('sanitizeDiet', () => {
 	test('passes through a valid diet id', () => {
 		expect(sanitizeDiet('vegan')).toBe('vegan');
-		expect(sanitizeDiet('gluten_free')).toBe('gluten_free');
+		expect(sanitizeDiet('gluten_friendly')).toBe('gluten_friendly');
 	});
 
 	test('maps null/undefined to null', () => {

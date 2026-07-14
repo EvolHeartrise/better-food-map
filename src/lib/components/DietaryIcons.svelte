@@ -6,7 +6,7 @@
 
 	// An item's DIETARY tags shown as small colored icons, sat to the right of the item
 	// name in the venue panel. Positive-diet tags (vegan / vegetarian / halal) read
-	// green; allergen-avoidance tags (dairy- / nut- / gluten-free) read orange. An
+	// green; allergen-avoidance tags (dairy-free / nut-free / gluten-friendly) read orange. An
 	// `optional` tag ("can be made vegan") gets a dashed ring — reusing the dashed =
 	// optional convention the text pills used — and an "on request" accessible label.
 	//

@@ -60,7 +60,11 @@
 		{ key: 'vegetarian', value: (s) => s.diets.vegetarian ?? 0, label: m.stat_vegetarian },
 		{ key: 'vegan', value: (s) => s.diets.vegan ?? 0, label: m.stat_vegan },
 		{ key: 'halal', value: (s) => s.diets.halal ?? 0, label: m.stat_halal },
-		{ key: 'gluten_free', value: (s) => s.diets.gluten_free ?? 0, label: m.stat_gluten_free },
+		{
+			key: 'gluten_friendly',
+			value: (s) => s.diets.gluten_friendly ?? 0,
+			label: m.stat_gluten_friendly
+		},
 		{ key: 'dairy_free', value: (s) => s.diets.dairy_free ?? 0, label: m.stat_dairy_free },
 		{ key: 'nut_free', value: (s) => s.diets.nut_free ?? 0, label: m.stat_nut_free }
 	];

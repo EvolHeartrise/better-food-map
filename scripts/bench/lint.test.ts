@@ -54,7 +54,7 @@ describe('lintGold', () => {
 	});
 
 	test('rejects tags outside the six-dietary vocabulary (incl. course tags and hyphens)', () => {
-		for (const bad of ['food', 'gluten-free', 'organic']) {
+		for (const bad of ['food', 'gluten-friendly', 'organic']) {
 			const gold = structuredClone(goodGold);
 			gold.items[0].tags = [bad];
 			expect(lintGold(gold, CORPUS, RECORDED).errors.length).toBeGreaterThan(0);

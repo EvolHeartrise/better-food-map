@@ -2,7 +2,7 @@
 
 An interactive map of food venues — [betterfoodmaps.com](https://betterfoodmaps.com).
 Browse restaurants, cafés and bakeries on a world map, search venues and menu
-items together, and filter every menu by diet (vegan, vegetarian, gluten-free,
+items together, and filter every menu by diet (vegan, vegetarian, gluten-friendly,
 dairy-free, nut-free, halal). Built with SvelteKit (Svelte 5) on Cloudflare
 Workers, with the data in Cloudflare D1 and the map rendered by MapLibre GL.
 

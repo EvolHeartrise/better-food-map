@@ -13,6 +13,7 @@ import {
 	cityPath,
 	dietCityPath,
 	mergeCitiesBySlug,
+	legacyDietRedirectPath,
 	DIETARY_TAGS
 } from '../src/lib/browse';
 import { regionLabel, countryLabel } from '../src/lib/address';
@@ -34,9 +35,9 @@ import { freshDb } from './test-d1';
 
 describe('diet slug ↔ tag id', () => {
 	test('maps underscores to hyphens and back, only for dietary tags', () => {
-		expect(dietSlug('gluten_free')).toBe('gluten-free');
+		expect(dietSlug('gluten_friendly')).toBe('gluten-friendly');
 		expect(dietSlug('vegan')).toBe('vegan');
-		expect(dietTagIdFromSlug('gluten-free')).toBe('gluten_free');
+		expect(dietTagIdFromSlug('gluten-friendly')).toBe('gluten_friendly');
 		expect(dietTagIdFromSlug('vegan')).toBe('vegan');
 		expect(dietTagIdFromSlug('nut-free')).toBe('nut_free');
 		// Not a dietary tag (course), or gibberish → null (so the matcher rejects it).
@@ -47,8 +48,20 @@ describe('diet slug ↔ tag id', () => {
 
 	test('DIETARY_TAGS is exactly the six dietary tags', () => {
 		expect(DIETARY_TAGS.map((t) => t.id).toSorted()).toEqual(
-			['dairy_free', 'gluten_free', 'halal', 'nut_free', 'vegan', 'vegetarian'].toSorted()
+			['dairy_free', 'gluten_friendly', 'halal', 'nut_free', 'vegan', 'vegetarian'].toSorted()
 		);
+	});
+
+	test('legacyDietRedirectPath 301-maps the renamed gluten-free slug, else null', () => {
+		// The gluten_free → gluten_friendly rename (migration 0029) moved the browse
+		// slug; old indexed URLs 301 to the new one, preserving country/region/city.
+		expect(legacyDietRedirectPath('/ca/on/toronto/gluten-free')).toBe(
+			'/ca/on/toronto/gluten-friendly'
+		);
+		// Current slugs and other diets are not redirects (return null → served normally).
+		expect(legacyDietRedirectPath('/ca/on/toronto/gluten-friendly')).toBeNull();
+		expect(legacyDietRedirectPath('/ca/on/toronto/vegan')).toBeNull();
+		expect(legacyDietRedirectPath('/places')).toBeNull();
 	});
 });
 
@@ -58,7 +71,9 @@ describe('browse path builders', () => {
 		expect(regionPath('CA', 'ON')).toBe('/ca/on');
 		expect(cityPath('CA', 'ON', 'North York')).toBe('/ca/on/north-york');
 		expect(citySlug('Saint-Jean-sur-Richelieu')).toBe('saint-jean-sur-richelieu');
-		expect(dietCityPath('CA', 'ON', 'Toronto', 'gluten_free')).toBe('/ca/on/toronto/gluten-free');
+		expect(dietCityPath('CA', 'ON', 'Toronto', 'gluten_friendly')).toBe(
+			'/ca/on/toronto/gluten-friendly'
+		);
 	});
 });
 

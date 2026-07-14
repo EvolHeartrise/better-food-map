@@ -8,7 +8,7 @@
 	import { m } from '$lib/paraglide/messages';
 
 	// The dietary selector: a single floating pill that filters the map to items a
-	// source has marked with ONE chosen diet (vegan, gluten-free, halal, …), or to
+	// source has marked with ONE chosen diet (vegan, gluten-friendly, halal, …), or to
 	// everything when none is chosen. Diet is the map's only menu filter, and it
 	// is single-select.
 	//

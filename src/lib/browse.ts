@@ -16,10 +16,36 @@ export const DIETARY_TAGS: readonly Tag[] = TAGS.filter((t) => t.tag_type === 'd
 
 /**
  * A dietary tag id as a URL slug: underscores become hyphens so the path reads
- * `…/gluten-free`, not `…/gluten_free`. The inverse of {@link dietTagIdFromSlug}.
+ * `…/gluten-friendly`, not `…/gluten_friendly`. The inverse of {@link dietTagIdFromSlug}.
  */
 export function dietSlug(tagId: string): string {
 	return tagId.replace(/_/g, '-');
+}
+
+/**
+ * Legacy diet slugs and the current slug each 301s to. When a dietary tag id is
+ * renamed its browse-tree slug moves, but the OLD per-diet URLs are a live crawl
+ * surface (#217) — indexed and linked — so the server permanently redirects them
+ * to the new slug rather than 404ing (the `diet` matcher rejects a slug that is
+ * no longer a tag). `gluten-free` → `gluten-friendly` is the gluten_free →
+ * gluten_friendly rename (migration 0029); an entry stays only while the old slug
+ * is still out in the wild.
+ */
+export const LEGACY_DIET_SLUGS: Readonly<Record<string, string>> = {
+	'gluten-free': 'gluten-friendly'
+};
+
+/**
+ * For a browse path whose trailing diet segment is a legacy slug, the same path
+ * with that segment rewritten to the current slug; null otherwise. The diet is
+ * always the LAST segment of a per-diet page ({@link dietCityPath}), so only the
+ * final segment is inspected. Backs the server's 301 of renamed diet URLs.
+ */
+export function legacyDietRedirectPath(pathname: string): string | null {
+	const slash = pathname.lastIndexOf('/');
+	if (slash < 0) return null;
+	const current = LEGACY_DIET_SLUGS[pathname.slice(slash + 1)];
+	return current ? pathname.slice(0, slash + 1) + current : null;
 }
 
 /**

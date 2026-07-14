@@ -1,7 +1,7 @@
 // The dietary-tag glyphs and their tone, shared by the item-level icon row
 // (DietaryIcons) and the diet filter selector (DietSelector) so the two can never
 // drift. Positive-diet tags (vegan/vegetarian/halal) read green; allergen-avoidance
-// tags (dairy-/nut-/gluten-free) read orange. Client-safe: no `$lib/server` import,
+// tags (dairy-free/nut-free/gluten-friendly) read orange. Client-safe: no `$lib/server` import,
 // mirroring how `$lib/tags` / `$lib/diet-profile` stay server-free.
 //
 // Icons are self-hosted: Lucide (ISC) for five of the six, plus the inlined
@@ -34,7 +34,7 @@ const DIETARY_ICONS: Partial<Record<TagId, DietIcon>> = {
 	halal: { icon: FoodHalal, tone: 'green' },
 	dairy_free: { icon: MilkOff, tone: 'orange' },
 	nut_free: { icon: NutOff, tone: 'orange' },
-	gluten_free: { icon: WheatOff, tone: 'orange' }
+	gluten_friendly: { icon: WheatOff, tone: 'orange' }
 };
 
 /** The icon + tone for a dietary tag id (possibly untrusted), or undefined if none. */

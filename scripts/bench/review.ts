@@ -498,7 +498,7 @@ const PAGE_HTML = String.raw`<!doctype html>
 	<section id="right"></section>
 </main>
 <script>
-const TAGS = ['vegan','vegetarian','gluten_free','dairy_free','nut_free','halal'];
+const TAGS = ['vegan','vegetarian','gluten_friendly','dairy_free','nut_free','halal'];
 let state = null;
 const pageText = new Map();   // url -> raw text
 const pageNorm = new Map();   // url -> normalized text

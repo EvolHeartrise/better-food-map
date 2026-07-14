@@ -14,7 +14,7 @@
  * Two SEO levers over the old "{name} - BetterFoodMaps" head (issue #222):
  *   • the TITLE leads with the city — "{name} – {city}, {region} | BetterFoodMaps"
  *     — a city being the #1 query modifier for a restaurant search;
- *   • the DESCRIPTION surfaces dietary coverage ("12 vegan and 8 gluten-free
+ *   • the DESCRIPTION surfaces dietary coverage ("12 vegan and 8 gluten-friendly
  *     menu items") — the diet-filtered query intent this map serves that a
  *     general map can't, derived from the menu already fetched for the panel.
  */
@@ -67,14 +67,14 @@ function joinList(parts: string[]): string {
 }
 
 /**
- * The dietary-coverage clause for a menu — e.g. "12 vegan and 8 gluten-free menu
+ * The dietary-coverage clause for a menu — e.g. "12 vegan and 8 gluten-friendly menu
  * items" — or null when no item carries any dietary tag (the description then
  * falls back to a plain item count).
  *
  * Counts items carrying each dietary tag id DIRECTLY, deliberately NOT through
  * the vegan ⊃ vegetarian ⊃ dairy-free implication closure the map's diet FILTER
  * uses (dietFilterTagIds). The description exists to surface DISTINCT diet axes
- * — so gluten-free shows alongside vegan, exactly as issue #222 intends — rather
+ * — so gluten-friendly shows alongside vegan, exactly as issue #222 intends — rather
  * than letting a vegan-heavy menu fill every slot with vegan plus its two
  * entailed diets and crowd out the allergen axes a searcher actually queries.
  * Lists the best-covered `limit` diets, strongest first (ties broken by display
@@ -98,7 +98,7 @@ export function dietaryCoverageClause(menu: HeadVenue['menu'], limit = 3): strin
 	// clause is a lone count of one ("1 vegan menu item").
 	const singular = covered.length === 1 && covered[0].count === 1;
 	// The clause's shape is message-driven so a locale can reorder it instead of
-	// inflecting the diet labels: English keeps "12 vegan and 8 gluten-free menu
+	// inflecting the diet labels: English keeps "12 vegan and 8 gluten-friendly menu
 	// items" (count-adjective-noun, pinned byte-for-byte by the head test), while
 	// French reads "Au menu : végétalien (12) et sans gluten (8)" — the per-diet
 	// part (head_coverage_diet) and the frame (head_coverage_clause) each localize;

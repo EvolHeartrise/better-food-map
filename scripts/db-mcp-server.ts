@@ -222,7 +222,7 @@ const TAG_POLICY =
 	`"Vegetarian Thali"). Never infer a dietary tag from the ingredient list or general knowledge of ` +
 	`the dish; when unsure, omit it. Allergen SYMBOL LEGENDS (◊/‡/*, "contains nuts", "contains ` +
 	`gluten") assert PRESENCE only — the absence of a symbol is NOT a free-of designation, so never ` +
-	`derive nut_free / gluten_free / dairy_free from an item merely lacking a symbol. (An explicit ` +
+	`derive nut_free / gluten_friendly / dairy_free from an item merely lacking a symbol. (An explicit ` +
 	`free-of designation ON the item — a "GF" marker, "nut-free" in its name or the source's own ` +
 	`free-of label — remains valid support; only symbol-ABSENCE is banned as evidence.) ` +
 	`Course tags (${courseTagIds.join(', ')}) are FACTUAL, not source-` +

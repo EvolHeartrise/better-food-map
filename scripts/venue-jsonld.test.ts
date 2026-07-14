@@ -157,7 +157,9 @@ describe('venueJsonLd hasMenu', () => {
 describe('venueJsonLd suitableForDiet', () => {
 	test('maps the five mappable dietary tags to their RestrictedDiet URLs', () => {
 		const node = venueJsonLd(
-			venue({ menu: [item({ tags: tags('vegetarian', 'halal', 'gluten_free', 'dairy_free') })] })
+			venue({
+				menu: [item({ tags: tags('vegetarian', 'halal', 'gluten_friendly', 'dairy_free') })]
+			})
 		);
 		const items = (node.hasMenu as { hasMenuItem: Record<string, unknown>[] }).hasMenuItem;
 		expect(items[0].suitableForDiet).toEqual([

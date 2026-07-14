@@ -50,10 +50,10 @@ describe('venueHeadMeta title', () => {
 describe('venueHeadMeta description', () => {
 	test('opens with name, category and place, then dietary coverage', () => {
 		const meta = venueHeadMeta(
-			venue({ menu: [...items(12, 'vegan'), ...items(8, 'gluten_free')] })
+			venue({ menu: [...items(12, 'vegan'), ...items(8, 'gluten_friendly')] })
 		);
 		expect(meta.description).toBe(
-			"Joe's Diner, restaurant in Guelph, ON. 12 vegan and 8 gluten-free menu items on BetterFoodMaps."
+			"Joe's Diner, restaurant in Guelph, ON. 12 vegan and 8 gluten-friendly menu items on BetterFoodMaps."
 		);
 	});
 
@@ -108,19 +108,21 @@ describe('dietaryCoverageClause', () => {
 	});
 
 	test('orders diets by coverage, strongest first', () => {
-		const menu = [...items(3, 'vegan'), ...items(9, 'gluten_free'), ...items(5, 'halal')];
-		expect(dietaryCoverageClause(menu)).toBe('9 gluten-free, 5 halal and 3 vegan menu items');
+		const menu = [...items(3, 'vegan'), ...items(9, 'gluten_friendly'), ...items(5, 'halal')];
+		expect(dietaryCoverageClause(menu)).toBe('9 gluten-friendly, 5 halal and 3 vegan menu items');
 	});
 
 	test('lists at most the top three diets', () => {
 		const menu = [
 			...items(6, 'vegan'),
 			...items(5, 'vegetarian'),
-			...items(4, 'gluten_free'),
+			...items(4, 'gluten_friendly'),
 			...items(3, 'dairy_free'),
 			...items(2, 'nut_free')
 		];
-		expect(dietaryCoverageClause(menu)).toBe('6 vegan, 5 vegetarian and 4 gluten-free menu items');
+		expect(dietaryCoverageClause(menu)).toBe(
+			'6 vegan, 5 vegetarian and 4 gluten-friendly menu items'
+		);
 	});
 
 	test('does not apply the vegan⊃vegetarian implication — counts explicit tags only', () => {
@@ -129,9 +131,9 @@ describe('dietaryCoverageClause', () => {
 		expect(dietaryCoverageClause(items(10, 'vegan'))).toBe('10 vegan menu items');
 	});
 
-	test('breaks count ties by display order (vegan before gluten-free)', () => {
-		expect(dietaryCoverageClause([...items(4, 'gluten_free'), ...items(4, 'vegan')])).toBe(
-			'4 vegan and 4 gluten-free menu items'
+	test('breaks count ties by display order (vegan before gluten-friendly)', () => {
+		expect(dietaryCoverageClause([...items(4, 'gluten_friendly'), ...items(4, 'vegan')])).toBe(
+			'4 vegan and 4 gluten-friendly menu items'
 		);
 	});
 
@@ -140,8 +142,8 @@ describe('dietaryCoverageClause', () => {
 	});
 
 	test('counts an item once per diet even with multiple dietary tags', () => {
-		expect(dietaryCoverageClause(items(3, 'vegan', 'gluten_free'))).toBe(
-			'3 vegan and 3 gluten-free menu items'
+		expect(dietaryCoverageClause(items(3, 'vegan', 'gluten_friendly'))).toBe(
+			'3 vegan and 3 gluten-friendly menu items'
 		);
 	});
 });
