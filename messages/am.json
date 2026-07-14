@@ -75,6 +75,7 @@
 	"diet_any": "ማንኛውም አመጋገብ",
 	"diet_filter_aria": "የአመጋገብ ማጣሪያ",
 	"diet_can_be_made": "{diet} ተደርጎ ሊዘጋጅ ይችላል",
+	"diet_source_note": "በምግብ ቤቱ በተሰጠ መረጃ ላይ የተመሠረተ — ለአለርጂ በቀጥታ ያረጋግጡ",
 	"account_default_name": "መለያ",
 	"account_signed_in": "ገብተዋል",
 	"account_sign_out": "ይውጡ",

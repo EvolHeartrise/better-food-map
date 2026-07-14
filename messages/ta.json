@@ -75,6 +75,7 @@
 	"diet_any": "எந்த உணவுமுறையும்",
 	"diet_filter_aria": "உணவுமுறை வடிப்பான்",
 	"diet_can_be_made": "கேட்டால் {diet} கிடைக்கும்",
+	"diet_source_note": "இடத்தின் சொந்த தகவலின் அடிப்படையில் — ஒவ்வாமைக்கு நேரடியாக உறுதிசெய்யவும்",
 	"account_default_name": "கணக்கு",
 	"account_signed_in": "உள்நுழைந்துள்ளீர்கள்",
 	"account_sign_out": "வெளியேறு",

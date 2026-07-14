@@ -75,6 +75,7 @@
 	"diet_any": "कोई भी डाइट",
 	"diet_filter_aria": "डाइट फ़िल्टर",
 	"diet_can_be_made": "अनुरोध पर {diet} बनाया जा सकता है",
+	"diet_source_note": "स्थान की अपनी जानकारी पर आधारित — एलर्जी के लिए सीधे पुष्टि करें",
 	"account_default_name": "खाता",
 	"account_signed_in": "साइन इन हैं",
 	"account_sign_out": "साइन आउट करें",

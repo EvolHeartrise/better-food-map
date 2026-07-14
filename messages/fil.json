@@ -75,6 +75,7 @@
 	"diet_any": "Anumang diyeta",
 	"diet_filter_aria": "Filter sa diyeta",
 	"diet_can_be_made": "Puwedeng gawing {diet}",
+	"diet_source_note": "Base sa sariling impormasyon ng lugar — kumpirmahin nang direkta para sa mga allergy",
 	"account_default_name": "Account",
 	"account_signed_in": "Naka-sign in",
 	"account_sign_out": "Mag-sign out",

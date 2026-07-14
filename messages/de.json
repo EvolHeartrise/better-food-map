@@ -75,6 +75,7 @@
 	"diet_any": "Alle Ernährungsweisen",
 	"diet_filter_aria": "Ernährungsfilter",
 	"diet_can_be_made": "Auf Wunsch {diet} möglich",
+	"diet_source_note": "Laut Angaben des Lokals — bei Allergien bitte direkt nachfragen",
 	"account_default_name": "Konto",
 	"account_signed_in": "Angemeldet",
 	"account_sign_out": "Abmelden",

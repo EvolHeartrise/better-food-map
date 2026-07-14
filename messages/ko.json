@@ -72,6 +72,7 @@
 	"diet_any": "모든 식단",
 	"diet_filter_aria": "식단 필터",
 	"diet_can_be_made": "요청 시 {diet} 가능",
+	"diet_source_note": "매장 제공 정보 기준 — 알레르기는 직접 확인하세요",
 	"account_default_name": "계정",
 	"account_signed_in": "로그인됨",
 	"account_sign_out": "로그아웃",
