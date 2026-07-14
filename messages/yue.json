@@ -72,6 +72,7 @@
 	"diet_any": "唔限飲食",
 	"diet_filter_aria": "飲食篩選",
 	"diet_can_be_made": "可以整做{diet}",
+	"diet_source_note": "根據場所自己提供嘅資料 — 過敏請直接向店家確認",
 	"account_default_name": "帳戶",
 	"account_signed_in": "已登入",
 	"account_sign_out": "登出",

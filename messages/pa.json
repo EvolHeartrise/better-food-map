@@ -75,6 +75,7 @@
 	"diet_any": "ਕੋਈ ਵੀ ਖੁਰਾਕ",
 	"diet_filter_aria": "ਖੁਰਾਕ ਫਿਲਟਰ",
 	"diet_can_be_made": "ਕਹਿਣ 'ਤੇ {diet} ਬਣ ਸਕਦਾ ਹੈ",
+	"diet_source_note": "ਥਾਂ ਦੀ ਆਪਣੀ ਜਾਣਕਾਰੀ ਦੇ ਆਧਾਰ 'ਤੇ — ਐਲਰਜੀ ਲਈ ਸਿੱਧਾ ਪੁਸ਼ਟੀ ਕਰੋ",
 	"account_default_name": "ਖਾਤਾ",
 	"account_signed_in": "ਸਾਈਨ ਇਨ ਕੀਤਾ ਹੋਇਆ",
 	"account_sign_out": "ਸਾਈਨ ਆਊਟ ਕਰੋ",

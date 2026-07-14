@@ -75,6 +75,7 @@
 	"diet_any": "هر رژیمی",
 	"diet_filter_aria": "فیلتر رژیم غذایی",
 	"diet_can_be_made": "قابل تهیه به‌صورت {diet}",
+	"diet_source_note": "بر اساس اطلاعات خود مجموعه — برای آلرژی مستقیماً تأیید کنید",
 	"account_default_name": "حساب کاربری",
 	"account_signed_in": "وارد شده‌اید",
 	"account_sign_out": "خروج",

@@ -72,6 +72,7 @@
 	"diet_any": "Mọi chế độ ăn",
 	"diet_filter_aria": "Bộ lọc chế độ ăn",
 	"diet_can_be_made": "Có thể làm {diet} theo yêu cầu",
+	"diet_source_note": "Dựa trên thông tin của quán — hãy xác nhận trực tiếp nếu bị dị ứng",
 	"account_default_name": "Tài khoản",
 	"account_signed_in": "Đã đăng nhập",
 	"account_sign_out": "Đăng xuất",

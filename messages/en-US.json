@@ -75,6 +75,7 @@
 	"diet_any": "Any diet",
 	"diet_filter_aria": "Dietary filter",
 	"diet_can_be_made": "Can be made {diet}",
+	"diet_source_note": "Based on the venue's own info — confirm directly for allergies",
 	"account_default_name": "Account",
 	"account_signed_in": "Signed in",
 	"account_sign_out": "Sign out",

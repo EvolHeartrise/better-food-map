@@ -78,6 +78,7 @@
 	"diet_any": "Tous les régimes",
 	"diet_filter_aria": "Filtrer par régime alimentaire",
 	"diet_can_be_made": "{diet} sur demande",
+	"diet_source_note": "D'après les informations de l'établissement — vérifiez directement en cas d'allergie",
 	"account_default_name": "Compte",
 	"account_signed_in": "Connecté",
 	"account_sign_out": "Se déconnecter",

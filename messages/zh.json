@@ -72,6 +72,7 @@
 	"diet_any": "不限饮食",
 	"diet_filter_aria": "饮食筛选",
 	"diet_can_be_made": "可做{diet}",
+	"diet_source_note": "根据商家自身提供的信息 — 过敏请直接向商家确认",
 	"account_default_name": "账户",
 	"account_signed_in": "已登录",
 	"account_sign_out": "退出登录",

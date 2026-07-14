@@ -78,6 +78,7 @@
 	"diet_any": "Qualquer dieta",
 	"diet_filter_aria": "Filtro de dieta",
 	"diet_can_be_made": "{diet} a pedido",
+	"diet_source_note": "Com base nas informações do próprio local — confirme diretamente em caso de alergia",
 	"account_default_name": "Conta",
 	"account_signed_in": "Sessão iniciada",
 	"account_sign_out": "Sair",

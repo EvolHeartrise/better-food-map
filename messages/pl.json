@@ -81,6 +81,7 @@
 	"diet_any": "Dowolna dieta",
 	"diet_filter_aria": "Filtr diety",
 	"diet_can_be_made": "Na życzenie: {diet}",
+	"diet_source_note": "Na podstawie informacji lokalu — w razie alergii potwierdź bezpośrednio",
 	"account_default_name": "Konto",
 	"account_signed_in": "Zalogowano",
 	"account_sign_out": "Wyloguj się",
