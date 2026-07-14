@@ -3,7 +3,7 @@
 	import { pushState, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import { MediaQuery } from 'svelte/reactivity';
-	import { getMapCells, getLocationData, getStats, getUserLocation } from '$lib/data.remote';
+	import { getMapCells, getLocationData, getUserLocation } from '$lib/data.remote';
 	import { ViewportData } from '$lib/viewport-data.svelte';
 	import { getCurrentUser, getLikes, setLocationLiked, setItemLiked } from '$lib/user.remote';
 	import { createOptimisticLikes } from '$lib/likes.svelte';
@@ -23,7 +23,6 @@
 	import { resolveLocation, type ResolvedLocation } from '$lib/resolve-location';
 	import { m } from '$lib/paraglide/messages';
 	import type { Item, Bounds } from '$lib/server/db';
-	import type { Map as MapLibreMap } from 'maplibre-gl';
 
 	// The visible map area, reported by <LocationMap> (debounced) as the user pans
 	// and zooms, plus once on load. Together with the applied search filter this
@@ -161,10 +160,10 @@
 		viewportStore.data.locations.map((loc) => resolveLocation(loc, viewportStore.data))
 	);
 
-	// --- Landing: zoomed-out globe + stats overlay ----------------------------
+	// --- Landing: zoomed-out globe + entry overlay ----------------------------
 	// The map is public and opens on the fully zoomed-out globe (WORLD_ZOOM). A landing
-	// overlay floats over it with our coverage totals and the entry buttons. The landing
-	// is driven by ZOOM, not a one-way dismissal: it shows whenever the map is zoomed out
+	// overlay floats over it with the entry buttons. The landing is driven by ZOOM, not
+	// a one-way dismissal: it shows whenever the map is zoomed out
 	// onto the globe with no location open, and it RETURNS if the user zooms back out (see
 	// `landing`, declared once `selectedId` is in scope).
 	const WORLD_ZOOM = 1.5;
@@ -180,33 +179,15 @@
 	// treated as zoomed-out until then (the map opens at WORLD_ZOOM).
 	let zoomLevel = $state<number | null>(null);
 
-	// The live MapLibre instance, handed up by <LocationMap> once loaded (null before
-	// then / after teardown). Passed to the landing overlay so it can position the
-	// coverage figures in the 3D space around the globe (projected through the map's
-	// own camera — see $lib/globe-space). The `maplibre-gl` import is type-only (erased
-	// at build), so it pulls no map code into this page's bundle.
-	let mapInstance = $state<MapLibreMap | null>(null);
-
-	// Coverage totals for the overlay, read non-suspending (`.current`) so the map
-	// paints immediately and the figures fill in when the count query resolves.
-	const statsResource = getStats();
-	const stats = $derived(statsResource.current ?? null);
-
-	// Hydration fallback (see refreshIfUnhydrated): when the SSR render raced the
-	// stats read and serialized no result, the client instance can stay pending
-	// forever, leaving the overlay on its placeholders — one refresh() fills it.
-	$effect(() => refreshIfUnhydrated(statsResource));
-
 	// The visitor's IP-detected location, resolved with a TOP-LEVEL AWAIT so it is
 	// genuinely part of the render: awaited during SSR it settles immediately (the
 	// lookup reads `request.cf` with no I/O) and the value serializes into the page,
 	// so the client hydrates with it and a "Start using" click needs no network at
 	// all. Merely CREATING the query instance is not enough — an instance nothing
-	// awaits or renders is neither fetched at hydration nor serialized (the same
-	// lesson as the stats fallback above), which is why this mirrors the awaited
-	// `user`/`landingData` pattern rather than holding an idle handle. The catch
-	// folds a failed lookup into the documented null return, so a network error at
-	// hydration can't take down the page render.
+	// awaits or renders is neither fetched at hydration nor serialized, which is why
+	// this mirrors the awaited `user`/`landingData` pattern rather than holding an idle
+	// handle. The catch folds a failed lookup into the documented null return, so a
+	// network error at hydration can't take down the page render.
 	const userLocation = $derived(await getUserLocation().catch(() => null));
 
 	// "Start using the map": fly to the visitor's IP-detected location at city zoom, which
@@ -746,7 +727,6 @@
 			onzoom={(z) => (zoomLevel = z)}
 			focus={focusTarget}
 			onviewchange={(bounds) => (viewport = bounds)}
-			onmap={(m) => (mapInstance = m)}
 		/>
 	</div>
 
@@ -772,11 +752,11 @@
 		/>
 	{/if}
 
-	<!-- The landing overlay: coverage stats + entry buttons, shown over the zoomed-out
-	     globe. It's zoom-driven (see `landing`): it appears whenever the map is zoomed
-	     out and returns if the visitor zooms back out. -->
+	<!-- The landing overlay: the entry buttons, shown over the zoomed-out globe. It's
+	     zoom-driven (see `landing`): it appears whenever the map is zoomed out and
+	     returns if the visitor zooms back out. -->
 	{#if landing}
-		<MapStatsOverlay {stats} map={mapInstance} onstart={startUsing} />
+		<MapStatsOverlay onstart={startUsing} />
 	{/if}
 
 	<!-- The search controls don't live in a panel: each is its own pill floating
