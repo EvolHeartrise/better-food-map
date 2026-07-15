@@ -100,8 +100,11 @@
 	// next reload. `own.rating` is the viewer's rating already counted in `summary`
 	// (unless their review is hidden, which the aggregate excludes); swap it for the
 	// current optimistic `rating`. A hidden own review never contributes either way.
-	const ownCounts = $derived(own != null && own.hidden_at == null);
-	const viewerCounts = $derived(rating > 0 && own?.hidden_at == null);
+	// The viewer's own review is in the aggregate unless it's hidden (a hidden review
+	// contributes to neither count nor average). A missing own review is "not hidden".
+	const ownHidden = $derived(own !== null && own.hidden_at !== null);
+	const ownCounts = $derived(own !== null && !ownHidden);
+	const viewerCounts = $derived(rating > 0 && !ownHidden);
 	const baseCount = $derived(summary.count - (ownCounts ? 1 : 0));
 	const baseSum = $derived(summary.average * summary.count - (ownCounts ? (own?.rating ?? 0) : 0));
 	const displayCount = $derived(baseCount + (viewerCounts ? 1 : 0));
@@ -147,7 +150,7 @@
 			body={own?.body ?? null}
 			canSave={rating > 0}
 			hasReview={own !== null}
-			hidden={own?.hidden_at != null}
+			hidden={ownHidden}
 			onSave={saveText}
 			onDelete={deleteReview}
 		/>
