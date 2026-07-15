@@ -94,21 +94,36 @@
 		await loadFirst(true);
 	}
 
+	// Fold the viewer's OWN optimistic rating into the server aggregate so the header
+	// count/average react instantly to a bare star tap — which flows through the page's
+	// rating queue, NOT this component, so `summary` alone would stay stale until the
+	// next reload. `own.rating` is the viewer's rating already counted in `summary`
+	// (unless their review is hidden, which the aggregate excludes); swap it for the
+	// current optimistic `rating`. A hidden own review never contributes either way.
+	const ownCounts = $derived(own != null && own.hidden_at == null);
+	const viewerCounts = $derived(rating > 0 && own?.hidden_at == null);
+	const baseCount = $derived(summary.count - (ownCounts ? 1 : 0));
+	const baseSum = $derived(summary.average * summary.count - (ownCounts ? (own?.rating ?? 0) : 0));
+	const displayCount = $derived(baseCount + (viewerCounts ? 1 : 0));
+	const displayAverage = $derived(
+		displayCount > 0 ? (baseSum + (viewerCounts ? rating : 0)) / displayCount : 0
+	);
+
 	const avgLabel = $derived(
 		new Intl.NumberFormat(getLocale(), {
 			minimumFractionDigits: 1,
 			maximumFractionDigits: 1
-		}).format(summary.average)
+		}).format(displayAverage)
 	);
-	const countLabel = $derived(new Intl.NumberFormat(getLocale()).format(summary.count));
+	const countLabel = $derived(new Intl.NumberFormat(getLocale()).format(displayCount));
 </script>
 
 <section class="rs" aria-label={m.reviews_heading()}>
 	<h3 class="rs__heading">{m.reviews_heading()}</h3>
 
-	{#if summary.count > 0}
+	{#if displayCount > 0}
 		<div class="rs__summary">
-			<StarRating value={summary.average} size={16} />
+			<StarRating value={displayAverage} size={16} />
 			<span class="rs__avg" aria-label={m.reviews_average_aria({ average: avgLabel })}>
 				{avgLabel}
 			</span>

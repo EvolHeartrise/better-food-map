@@ -1894,6 +1894,21 @@ export async function getReviews(
 	cursor?: string | null
 ): Promise<VenueReviews> {
 	const t = REVIEW_TABLES[target];
+
+	// A soft-deleted (permanently-closed) venue is dark on every other read
+	// (migration 0015); don't leak its reviews here either. An unknown or closed
+	// location reads as an empty payload, matching getLocationMapData. Items carry no
+	// closed flag, so this guard applies to the location target only.
+	if (target === 'location') {
+		const loc = await db
+			.prepare(`SELECT closed_at FROM locations WHERE id = ?`)
+			.bind(targetId)
+			.first<{ closed_at: number | null }>();
+		if (!loc || loc.closed_at !== null) {
+			return { summary: { count: 0, average: 0 }, reviews: [], own: null, nextCursor: null };
+		}
+	}
+
 	const cur = parseReviewCursor(cursor);
 
 	const summaryP = db
@@ -1986,19 +2001,27 @@ export async function reportReview(
 		.bind(reviewId)
 		.first<{ n: number }>();
 	if ((countRow?.n ?? 0) >= threshold) {
-		await db
+		// `admin_cleared = 0` makes a moderator's un-hide durable: a review a human has
+		// vindicated is never re-hidden by a fresh wave of reports. `.changes` (>0 only
+		// when a row was actually flipped) is what we report as newly-hidden.
+		const res = await db
 			.prepare(
 				`UPDATE ${t.reviews} SET hidden_at = ?, hidden_reason = 'auto:reports'
-				 WHERE id = ? AND hidden_at IS NULL`
+				 WHERE id = ? AND hidden_at IS NULL AND admin_cleared = 0`
 			)
 			.bind(now, reviewId)
 			.run();
-		return { hidden: true };
+		return { hidden: (res.meta?.changes ?? 0) > 0 };
 	}
 	return { hidden: false };
 }
 
-/** Admin: hides (sets `hidden_at`/`hidden_reason`) or un-hides (nulls both) a review. */
+/**
+ * Admin: hides (sets `hidden_at`/`hidden_reason`) or un-hides (nulls both) a review.
+ * An un-hide (hiddenAt === null) also latches `admin_cleared = 1` so the report
+ * auto-hide can never silently re-hide a review a moderator has vindicated; a hide
+ * leaves the flag as-is (MAX keeps any prior clear, harmless while hidden_at is set).
+ */
 export async function setReviewHidden(
 	db: D1Like,
 	target: ReviewTarget,
@@ -2007,9 +2030,12 @@ export async function setReviewHidden(
 	reason: string | null
 ): Promise<void> {
 	const t = REVIEW_TABLES[target];
+	const clearFlag = hiddenAt === null ? 1 : 0;
 	await db
-		.prepare(`UPDATE ${t.reviews} SET hidden_at = ?, hidden_reason = ? WHERE id = ?`)
-		.bind(hiddenAt, reason, reviewId)
+		.prepare(
+			`UPDATE ${t.reviews} SET hidden_at = ?, hidden_reason = ?, admin_cleared = MAX(admin_cleared, ?) WHERE id = ?`
+		)
+		.bind(hiddenAt, reason, clearFlag, reviewId)
 		.run();
 }
 

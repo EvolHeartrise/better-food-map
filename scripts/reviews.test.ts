@@ -22,7 +22,12 @@ import {
 	getLocationMapData,
 	REVIEW_AUTO_HIDE_THRESHOLD
 } from '../src/lib/server/db';
-import { insertLocations, insertFoods, type LocationInsert } from '../src/lib/server/db-write';
+import {
+	insertLocations,
+	insertFoods,
+	setLocationClosed,
+	type LocationInsert
+} from '../src/lib/server/db-write';
 import { freshDb } from './test-d1';
 
 /** A complete-address venue with sensible defaults; override per test. */
@@ -377,4 +382,64 @@ test('getLocationMapData score is the empty-prior 70, and a rating raises it', a
 	await mkUser(db, 'u1');
 	await setReview(db, 'location', 'rev1', 'u1', locId, 5, null, 100);
 	expect((await getLocationMapData(db, locId)).locations[0].score).toBeGreaterThan(70);
+});
+
+// ── Moderation durability & closed-venue guard ───────────────────────────────
+
+// A moderator's un-hide must be DURABLE: once admin_cleared latches, no fresh wave
+// of reports can silently re-hide the review (defends a vindicated review against a
+// harasser's sock-puppets). The report count keeps climbing but the auto-hide is
+// skipped, so reportReview returns {hidden:false} and the review stays public.
+test('an admin un-hide is durable against later reports', async () => {
+	const db = freshDb();
+	const [locId] = await insertLocations(db, [venue({ name: 'Vindicated Cafe' })]);
+	await mkUser(db, 'author');
+	await setReview(db, 'location', 'rev1', 'author', locId, 4, 'Genuinely great', 1000);
+
+	// Threshold distinct reporters auto-hide it.
+	for (let k = 0; k < REVIEW_AUTO_HIDE_THRESHOLD; k++) {
+		await mkUser(db, `rep${k}`);
+		await reportReview(db, 'location', `report-${k}`, 'rev1', `rep${k}`, null, 2000 + k);
+	}
+	expect((await getReviews(db, 'location', locId, null, 20)).summary.count).toBe(0);
+
+	// Admin vindicates it (un-hide) — latches admin_cleared.
+	await setReviewHidden(db, 'location', 'rev1', null, null);
+	expect((await getReviews(db, 'location', locId, null, 20)).reviews.map((r) => r.id)).toContain(
+		'rev1'
+	);
+
+	// A fresh wave of NEW distinct reporters must NOT re-hide it.
+	for (let k = 0; k < REVIEW_AUTO_HIDE_THRESHOLD + 1; k++) {
+		await mkUser(db, `late${k}`);
+		const res = await reportReview(
+			db,
+			'location',
+			`late-report-${k}`,
+			'rev1',
+			`late${k}`,
+			null,
+			5000 + k
+		);
+		expect(res.hidden).toBe(false);
+	}
+	expect((await getReviews(db, 'location', locId, null, 20)).reviews.map((r) => r.id)).toContain(
+		'rev1'
+	);
+});
+
+// A soft-closed (permanently-closed) venue is dark on every other read; getReviews
+// must not leak its reviews either — an id for a closed location reads as empty.
+test('getReviews returns empty for a soft-closed location', async () => {
+	const db = freshDb();
+	const [locId] = await insertLocations(db, [venue({ name: 'Closing Soon' })]);
+	await mkUser(db, 'u1');
+	await setReview(db, 'location', 'r1', 'u1', locId, 5, 'Loved it', 100);
+	expect((await getReviews(db, 'location', locId, null, 20)).summary.count).toBe(1);
+
+	await setLocationClosed(db, locId, 1_700_000_000_000, 'closed per owner');
+	const view = await getReviews(db, 'location', locId, null, 20);
+	expect(view.summary.count).toBe(0);
+	expect(view.reviews).toHaveLength(0);
+	expect(view.own).toBeNull();
 });

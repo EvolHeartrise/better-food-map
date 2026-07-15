@@ -63,6 +63,10 @@ CREATE INDEX IF NOT EXISTS idx_item_bookmarks_item_id ON item_bookmarks (item_id
 -- distinct users report it, or a manual admin hide — and excludes the row from BOTH
 -- the public list AND the aggregate; hidden_reason is a short note ('auto:reports' or
 -- an admin note). updated_at moves on every edit.
+-- `admin_cleared` is set once a moderator un-hides a review by hand: it makes that
+-- decision DURABLE by exempting the review from the report auto-hide, so a fresh wave
+-- of reports (e.g. a harasser's sock-puppets) can't silently re-hide what a human
+-- already vindicated. A manual admin hide still works regardless (it sets hidden_at).
 CREATE TABLE IF NOT EXISTS location_reviews (
 	id TEXT PRIMARY KEY,
 	user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -73,6 +77,7 @@ CREATE TABLE IF NOT EXISTS location_reviews (
 	updated_at INTEGER NOT NULL,
 	hidden_at INTEGER,
 	hidden_reason TEXT,
+	admin_cleared INTEGER NOT NULL DEFAULT 0,
 	UNIQUE (user_id, location_id)
 );
 CREATE INDEX IF NOT EXISTS idx_location_reviews_location_id ON location_reviews (location_id);
@@ -90,6 +95,7 @@ CREATE TABLE IF NOT EXISTS item_reviews (
 	updated_at INTEGER NOT NULL,
 	hidden_at INTEGER,
 	hidden_reason TEXT,
+	admin_cleared INTEGER NOT NULL DEFAULT 0,
 	UNIQUE (user_id, item_id)
 );
 CREATE INDEX IF NOT EXISTS idx_item_reviews_item_id ON item_reviews (item_id);
