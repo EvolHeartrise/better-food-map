@@ -151,9 +151,11 @@ passwords), implemented directly with [Arctic](https://arcticjs.dev):
   resolves it into `locals.user` on every request.
 - User-owned data lives in the tables added by
   `migrations/0007_users_likes_searches.sql` (`users`, `oauth_accounts`,
-  `sessions`, `liked_locations`, `liked_items` — the `search_history` table it
-  also created was dropped by migration 0014) plus `user_dietary_profile`
-  (migrations 0013/0014).
+  `sessions` — the `search_history` table it also created was dropped by migration
+  0014, and its `liked_locations`/`liked_items` were replaced by migration 0029's
+  bookmarks + ratings) plus `user_dietary_profile` (migrations 0013/0014) and the
+  review system (`migrations/0029_reviews.sql`: `location_bookmarks`,
+  `item_bookmarks`, `location_reviews`, `item_reviews`, and their report tables).
 
 It needs two secrets — `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` — from a
 Google Cloud **OAuth 2.0 Client** of type "Web application". Register these

@@ -78,7 +78,7 @@ test('repeated and concurrent calls share a single session read', async () => {
 	const sink = recordingSink();
 	const getSession = createLazySessionResolver(db, token, sink);
 
-	// Two concurrent callers (e.g. getCurrentUser and getLikes in one batched
+	// Two concurrent callers (e.g. getCurrentUser and getBookmarks in one batched
 	// request) plus a later sequential one.
 	const [a, b] = await Promise.all([getSession(), getSession()]);
 	const c = await getSession();

@@ -40,3 +40,23 @@ export async function requireUser(): Promise<User> {
 	if (!user) error(401, m.server_error_sign_in_required());
 	return user;
 }
+
+/**
+ * The signed-in user, but ONLY if they are a review moderator — else a 403. The
+ * allowlist is the comma-separated `ADMIN_USER_IDS` env var (a Worker secret in
+ * prod, `.dev.vars` locally); unset or absent means nobody is an admin, so every
+ * moderation action is refused. Gates the hide/un-hide review commands and the
+ * /admin/reviews route.
+ */
+export async function requireAdmin(): Promise<User> {
+	const user = await requireUser();
+	const raw = getRequestEvent().platform?.env?.ADMIN_USER_IDS ?? '';
+	const admins = raw
+		.split(',')
+		.map((s) => s.trim())
+		.filter((s) => s !== '');
+	// Dev-facing: a regular user never reaches a moderation action, so this stays an
+	// English literal (out of the message catalog, like the other internal errors).
+	if (!admins.includes(user.id)) error(403, 'Forbidden: not a review moderator.');
+	return user;
+}

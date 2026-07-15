@@ -6,7 +6,7 @@
 // already consume:
 //
 //   • `await getX()` / `getX().catch(fn)`  — thenable + catch (used by
-//     getCurrentUser/getLikes/getUserLocation/getLocationData);
+//     getCurrentUser/getBookmarks/getUserLocation/getLocationData);
 //   • `getX().current` (reactive, non-suspending) + `getX().refresh()` — used by
 //     getStats/getDiet, and by the auth flow to re-pull user/likes/diet.
 //

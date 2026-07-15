@@ -66,7 +66,7 @@ const canonicalHost: Handle = async ({ event, resolve }) => {
 // (not the guarded wrapper a `query` remote function sees), which is deliberate
 // — the refresh/clear is hook-level session upkeep that was merely deferred,
 // and it must still land even when the first consumer is a query like
-// getCurrentUser/getLikes, whose own `cookies.set` is forbidden. SvelteKit
+// getCurrentUser/getBookmarks, whose own `cookies.set` is forbidden. SvelteKit
 // collects cookies set any time before the response is constructed, so writes
 // from within SSR or a remote-endpoint request still reach Set-Cookie.
 const authenticate: Handle = async ({ event, resolve }) => {
