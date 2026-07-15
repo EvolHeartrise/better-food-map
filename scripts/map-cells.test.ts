@@ -15,8 +15,7 @@ import {
 	REP_ITEM_CAP,
 	getLocationMapData,
 	getMapCellsData,
-	setItemLike,
-	setLocationLike,
+	setBookmark,
 	type MapCellsData
 } from '../src/lib/server/db';
 import {
@@ -99,75 +98,92 @@ test('a representative level keeps the top REP_CELL_CAP importance-ranked venues
 	expect(clusterCell?.[1].length).toBe(REP_CELL_CAP);
 });
 
-test('likes break representative ties, probed per-candidate (not via a whole-table scan)', async () => {
+/**
+ * The exact discoverability score (locationScoreSql in db.ts) for a set of
+ * ratings + bookmarks, mirrored here so the assertions read against a named formula
+ * rather than magic constants: rating volume (×100) + a Bayesian average (prior 5
+ * ratings at mean 3.5, ×20) + bookmark count (×10). A venue with no ratings scores
+ * 70 (the prior alone) plus its bookmark weight.
+ */
+function expectedScore(opts: { ratings?: number[]; bookmarks?: number }): number {
+	const ratings = opts.ratings ?? [];
+	const n = ratings.length;
+	const sum = ratings.reduce((a, b) => a + b, 0);
+	const reviewTerm = n * 100 + Math.floor(((sum + 17.5) / (n + 5)) * 20);
+	return reviewTerm + 10 * (opts.bookmarks ?? 0);
+}
+
+test('bookmarks break representative ties, probed per-candidate (not via a whole-table scan)', async () => {
 	const db = freshDb();
-	const [unliked, liked] = await insertLocations(db, [
-		venue({ name: 'Aaa Unliked', latitude: 43.6, longitude: -79.4 }),
-		venue({ name: 'Zzz Liked', latitude: 43.61, longitude: -79.41 })
+	const [plain, saved] = await insertLocations(db, [
+		venue({ name: 'Aaa Plain', latitude: 43.6, longitude: -79.4 }),
+		venue({ name: 'Zzz Saved', latitude: 43.61, longitude: -79.41 })
 	]);
 	await db
 		.prepare(`INSERT INTO users (id, email_verified, created_at) VALUES (?, 0, 0)`)
 		.bind('u1')
 		.run();
-	await setLocationLike(db, 'u1', liked, true, 123);
+	await setBookmark(db, 'location', 'u1', saved, true, 123);
 
 	const { data } = await fetchViewport(db, { minLat: 40, maxLat: 50, minLng: -85, maxLng: -75 });
 	// Both share a cell and both fit under the cap; neither has a menu, so the
-	// liked one must RANK first (the likes-desc tie-break), ahead of the
-	// alphabetically-first unliked one — the rn order the cells record preserves.
+	// bookmarked one must RANK first (the score-desc tie-break), ahead of the
+	// alphabetically-first plain one — the rn order the cells record preserves.
 	const clusterCell = Object.values(data.cells).find((ids) => ids.length > 1);
-	expect(clusterCell).toEqual([liked, unliked]);
+	expect(clusterCell).toEqual([saved, plain]);
 });
 
-test('locations ship a like-derived score for the client-side label priority', async () => {
+test('locations ship a rating/bookmark-derived score for the client-side label priority', async () => {
 	const db = freshDb();
 	// Far enough apart (> 1° each axis) that each holds its own cell at this
 	// viewport's rep level, so both come back.
-	const [plain, liked] = await insertLocations(db, [
+	const [plain, saved] = await insertLocations(db, [
 		venue({ name: 'Plain Diner', latitude: 43.6, longitude: -79.4 }),
-		venue({ name: 'Liked Diner', latitude: 45.2, longitude: -77.1 })
+		venue({ name: 'Saved Diner', latitude: 45.2, longitude: -77.1 })
 	]);
 	for (const user of ['u1', 'u2']) {
 		await db
 			.prepare(`INSERT INTO users (id, email_verified, created_at) VALUES (?, 0, 0)`)
 			.bind(user)
 			.run();
-		await setLocationLike(db, user, liked, true, 123);
+		await setBookmark(db, 'location', user, saved, true, 123);
 	}
 
 	const { data } = await fetchViewport(db, { minLat: 40, maxLat: 50, minLng: -85, maxLng: -75 });
 	const byId = new Map(data.locations.map((l) => [l.id, l]));
-	expect(byId.get(liked)?.score).toBe(2);
-	expect(byId.get(plain)?.score).toBe(0);
+	expect(byId.get(saved)?.score).toBe(expectedScore({ bookmarks: 2 }));
+	expect(byId.get(plain)?.score).toBe(expectedScore({}));
+	// The bookmarked venue must out-rank the plain one for label priority.
+	expect(expectedScore({ bookmarks: 2 })).toBeGreaterThan(expectedScore({}));
 });
 
-// The cell read plumbs the ranking CTE's like counts through as `score` instead
-// of re-running the correlated COUNT per winner; this pins the plumbed-through
-// values to the exact like counts (what the subquery would have produced), at
-// both the rep and full levels, and that the by-id read — which has no
-// precomputed counts and still takes the subquery path — agrees.
-test('cell-path scores equal the like counts exactly, and the by-id read agrees', async () => {
+// The cell read plumbs the ranking CTE's per-candidate score through as `score`
+// instead of re-running the correlated subqueries per winner; this pins the
+// plumbed-through values to the exact locationScoreSql result at both the rep and
+// full levels, and checks that the by-id read — which has no precomputed scores and
+// still takes the subquery path — agrees.
+test('cell-path scores equal the by-id read exactly, at both levels', async () => {
 	const db = freshDb();
-	// Distinct cells at the viewport's rep level, with 0 / 1 / 3 likes.
+	// Distinct cells at the viewport's rep level, with 0 / 1 / 3 bookmarks.
 	const [zero, one, three] = await insertLocations(db, [
-		venue({ name: 'Zero Likes', latitude: 43.6, longitude: -79.4 }),
-		venue({ name: 'One Like', latitude: 45.2, longitude: -77.1 }),
-		venue({ name: 'Three Likes', latitude: 47.3, longitude: -81.9 })
+		venue({ name: 'Zero Saves', latitude: 43.6, longitude: -79.4 }),
+		venue({ name: 'One Save', latitude: 45.2, longitude: -77.1 }),
+		venue({ name: 'Three Saves', latitude: 47.3, longitude: -81.9 })
 	]);
-	const likes: [string, number][] = [
+	const saves: [string, number][] = [
 		[zero, 0],
 		[one, 1],
 		[three, 3]
 	];
 	let seq = 0;
-	for (const [loc, n] of likes) {
+	for (const [loc, n] of saves) {
 		for (let k = 0; k < n; k++) {
 			const user = `u${seq++}`;
 			await db
 				.prepare(`INSERT INTO users (id, email_verified, created_at) VALUES (?, 0, 0)`)
 				.bind(user)
 				.run();
-			await setLocationLike(db, user, loc, true, 123);
+			await setBookmark(db, 'location', user, loc, true, 123);
 		}
 	}
 
@@ -179,7 +195,7 @@ test('cell-path scores equal the like counts exactly, and the by-id read agrees'
 	});
 	expect(level).toBeGreaterThanOrEqual(MIN_REP_LEVEL);
 	const byId = new Map(data.locations.map((l) => [l.id, l.score]));
-	for (const [loc, n] of likes) expect(byId.get(loc)).toBe(n);
+	for (const [loc, n] of saves) expect(byId.get(loc)).toBe(expectedScore({ bookmarks: n }));
 
 	// Full level (FULL_CELL_CAP winners per cell) rides the same plumbing.
 	const cell = levelCell(0);
@@ -190,14 +206,14 @@ test('cell-path scores equal the like counts exactly, and the by-id read agrees'
 	];
 	const full = await getMapCellsData(db, 0, fullCells);
 	const fullById = new Map(full.locations.map((l) => [l.id, l.score]));
-	for (const [loc, n] of likes) expect(fullById.get(loc)).toBe(n);
+	for (const [loc, n] of saves) expect(fullById.get(loc)).toBe(expectedScore({ bookmarks: n }));
 
 	// The by-id detail read has no precomputed score map; its correlated-subquery
-	// path must return the same counts.
-	for (const [loc, n] of likes) {
+	// path must return the same scores.
+	for (const [loc, n] of saves) {
 		const detail = await getLocationMapData(db, loc);
 		expect(detail.locations).toHaveLength(1);
-		expect(detail.locations[0].score).toBe(n);
+		expect(detail.locations[0].score).toBe(expectedScore({ bookmarks: n }));
 	}
 });
 
@@ -592,18 +608,18 @@ test('the lean read caps a menu to REP_ITEM_CAP items, most-liked first, keeping
 	expect(detail.menus[menuId].length).toBe(12);
 	expect(detail.menuMeta[menuId].matchingItemCount).toBeUndefined();
 
-	// Liking the alphabetically-LAST item floats it into (and to the top of) the cut,
-	// displacing the tenth-by-name (Item 09).
+	// Bookmarking the alphabetically-LAST item floats it into (and to the top of) the
+	// cut, displacing the tenth-by-name (Item 09).
 	await db
 		.prepare(`INSERT INTO users (id, email_verified, created_at) VALUES (?, 0, 0)`)
 		.bind('u1')
 		.run();
-	await setItemLike(db, 'u1', itemIds[11], true, 1);
-	const { data: liked } = await fetchViewport(db, bounds);
-	expect(liked.menus[menuId].length).toBe(REP_ITEM_CAP);
-	expect(liked.menus[menuId][0].item_name).toBe('Item 11');
-	expect(liked.menus[menuId].map((i) => i.item_name)).not.toContain('Item 09');
-	expect(liked.menuMeta[menuId].matchingItemCount).toBe(12);
+	await setBookmark(db, 'item', 'u1', itemIds[11], true, 1);
+	const { data: saved } = await fetchViewport(db, bounds);
+	expect(saved.menus[menuId].length).toBe(REP_ITEM_CAP);
+	expect(saved.menus[menuId][0].item_name).toBe('Item 11');
+	expect(saved.menus[menuId].map((i) => i.item_name)).not.toContain('Item 09');
+	expect(saved.menuMeta[menuId].matchingItemCount).toBe(12);
 });
 
 test('a diet filter caps to the top MATCHING items and counts only matches', async () => {

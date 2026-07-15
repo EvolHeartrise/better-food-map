@@ -197,10 +197,10 @@ export interface MapLocation extends Location {
 	/**
 	 * Importance score the client's label declutter ranks by, so the pill that
 	 * survives a crowded screen cell is the venue users actually care about —
-	 * mirroring the likes term of the server's per-cell ranking
-	 * ({@link getMapCellsData}). Derived from the like count but deliberately
-	 * named opaquely on the wire: the payload is public, and this shouldn't
-	 * read as (or be relied on as) an exact like tally.
+	 * the same per-cell ranking term the server uses ({@link getMapCellsData}).
+	 * Derived from ratings + bookmarks ({@link locationScoreSql}) but deliberately
+	 * named opaquely on the wire: the payload is public, and this shouldn't read
+	 * as (or be relied on as) an exact tally of either.
 	 */
 	score: number;
 }
@@ -487,7 +487,7 @@ export const REP_ITEM_CAP = 10;
  * is the active dietary selector's implication closure ({@link dietFilterTagIds})
  * — empty for plain browse, in which case every item is a "match"; when set,
  * only items carrying one of those tags are kept. The kept set is then ranked by
- * item-like count (desc, name/id for determinism) and cut to `limit`. Passed
+ * item score ({@link itemScoreSql}, desc, name/id for determinism) and cut to `limit`. Passed
  * ONLY when there is no active free-text term: a text query matches per-VENUE
  * (name OR item, across a SHARED menu), so capping a shared menu's items could
  * drop the very item a branch matched on — the client re-filter would then hide
@@ -577,22 +577,22 @@ export async function getMapCellsData(
 		.prepare(
 			`WITH boxed AS (
 				SELECT l.id AS id, l.menu_id AS menu_id, l.name AS name,
-					(SELECT COUNT(*) FROM liked_locations lk WHERE lk.location_id = l.id) AS likes,
+					${locationScoreSql('l.id')} AS score,
 					(CAST((l.latitude + 90) / ? AS INTEGER) || ':' || CAST((l.longitude + 180) / ? AS INTEGER)) AS ck
 				FROM locations l
 				WHERE l.closed_at IS NULL AND l.latitude BETWEEN ? AND ? AND l.longitude BETWEEN ? AND ?
 					${membership === null ? '' : `AND (${membership.cond})`}
 			),
 			ranked AS (
-				SELECT id, ck, likes,
+				SELECT id, ck, score,
 					ROW_NUMBER() OVER (
 						PARTITION BY ck
-						ORDER BY (menu_id IS NOT NULL) DESC, likes DESC, name, id
+						ORDER BY (menu_id IS NOT NULL) DESC, score DESC, name, id
 					) AS rn
 				FROM boxed
 				WHERE ck IN (SELECT value FROM json_each(?))
 			)
-			SELECT id, ck, likes FROM ranked WHERE rn <= ? ORDER BY ck, rn`
+			SELECT id, ck, score FROM ranked WHERE rn <= ? ORDER BY ck, rn`
 		)
 		.bind(
 			cellDeg,
@@ -605,7 +605,7 @@ export async function getMapCellsData(
 			JSON.stringify(keys),
 			perCellCap
 		)
-		.all<{ id: string; ck: string; likes: number }>();
+		.all<{ id: string; ck: string; score: number }>();
 
 	// Every requested cell is present in the result — an empty one as [] — so
 	// callers can cache "known empty" rather than re-asking.
@@ -618,9 +618,9 @@ export async function getMapCellsData(
 	// The ids are already capped per cell above, so the trailing LIMIT is sized
 	// to pass them all through — MAP_RESULT_LIMIT would silently drop winners on
 	// a full-level batch and corrupt the per-cell membership.
-	// The ranking CTE above already computed every winner's like count; hand it
-	// through as the precomputed `score` so queryMapData skips re-running the
-	// identical correlated COUNT per winner (up to a full-level batch's worth of
+	// The ranking CTE above already computed every winner's score; hand it through
+	// as the precomputed `score` so queryMapData skips re-running the identical
+	// correlated subqueries per winner (up to a full-level batch's worth of
 	// redundant index probes on every cell-cache block miss).
 	const data = await queryMapData(
 		db,
@@ -628,7 +628,7 @@ export async function getMapCellsData(
 		[JSON.stringify(picked.map((row) => row.id))],
 		`ORDER BY name, id LIMIT ${picked.length}`,
 		false,
-		new Map(picked.map((row) => [row.id, row.likes])),
+		new Map(picked.map((row) => [row.id, row.score])),
 		itemCap
 	);
 	return { ...data, cells: byCell };
@@ -785,6 +785,45 @@ function searchMembership(filter: SearchFilter): { cond: string; params: string[
  */
 const DEFAULT_MAP_CAP = `ORDER BY name, id LIMIT ${MAP_RESULT_LIMIT}`;
 
+// Bayesian-average prior for the discoverability score (see locationScoreSql):
+// M synthetic prior ratings at mean C star. A venue with few real ratings is
+// pulled toward C, so a lone 5★ can't outrank a well-reviewed 4.6★; volume still
+// dominates the score overall, so popular places rank first as they did under the
+// old raw like count. PRIOR_SUM is folded (M×C) to keep the SQL a plain literal.
+const SCORE_PRIOR_COUNT = 5;
+const SCORE_PRIOR_SUM = 17.5; // M × C, C = 3.5
+
+/**
+ * The opaque per-LOCATION importance `score` the map's label declutter ranks by,
+ * as a SQL scalar expression over a location-id column (migration 0029 — replaces
+ * the old raw like count). Three additive, integer-valued terms:
+ *   • rating VOLUME (count × 100) — dominates, mirroring the old like-count spirit;
+ *   • rating QUALITY — a Bayesian average star (×20) nudges within a volume tier;
+ *   • BOOKMARK count (× 10) — a weak popularity floor so the map is populated even
+ *     before ratings accrue.
+ * Hidden reviews are excluded (moderation drops the row from the aggregate too).
+ * `col` is the SQL for the location id in the enclosing query (`locations.id`, `l.id`).
+ */
+function locationScoreSql(col: string): string {
+	return (
+		`((SELECT COUNT(*) * 100 + CAST((COALESCE(SUM(rating), 0) + ${SCORE_PRIOR_SUM})` +
+		` / (COUNT(*) + ${SCORE_PRIOR_COUNT}.0) * 20 AS INTEGER)` +
+		` FROM location_reviews r WHERE r.location_id = ${col} AND r.hidden_at IS NULL)` +
+		` + (SELECT COUNT(*) * 10 FROM location_bookmarks b WHERE b.location_id = ${col}))`
+	);
+}
+
+/** Item counterpart of {@link locationScoreSql}: ranks items within a menu by
+ *  rating volume + Bayesian quality + bookmark count (replaces the old like count). */
+function itemScoreSql(col: string): string {
+	return (
+		`((SELECT COUNT(*) * 100 + CAST((COALESCE(SUM(rating), 0) + ${SCORE_PRIOR_SUM})` +
+		` / (COUNT(*) + ${SCORE_PRIOR_COUNT}.0) * 20 AS INTEGER)` +
+		` FROM item_reviews r WHERE r.item_id = ${col} AND r.hidden_at IS NULL)` +
+		` + (SELECT COUNT(*) * 10 FROM item_bookmarks b WHERE b.item_id = ${col}))`
+	);
+}
+
 /**
  * Shared implementation of {@link getMapCellsData} / {@link getLocationMapData}.
  * `locFilter` is a predicate over the `locations` table
@@ -839,15 +878,13 @@ async function queryMapData(
 	// rows themselves. `closed_at IS NULL` hides soft-deleted (permanently-closed)
 	// venues from every map/detail/search read this powers (migration 0015). It
 	// carries no bind param, so the `.bind(...params)` alignment is untouched.
-	// `score` is the like count, aliased to its opaque wire name here so no later
-	// step needs to rename it. When the caller already computed the counts
+	// `score` is the discoverability score (locationScoreSql — rating volume +
+	// Bayesian quality + bookmark weight), already at its opaque wire name so no
+	// later step renames it. When the caller already computed the scores
 	// (getMapCellsData's ranking CTE probes them per candidate — `scores`), they
 	// attach in JS below; otherwise it's a correlated index probe per returned
 	// row (bounded by the cap, same shape as that ranking term).
-	const scoreSelect =
-		scores === undefined
-			? `, (SELECT COUNT(*) FROM liked_locations lk WHERE lk.location_id = locations.id) AS score`
-			: '';
+	const scoreSelect = scores === undefined ? `, ${locationScoreSql('locations.id')} AS score` : '';
 	const { results: locations } = await db
 		.prepare(
 			`SELECT ${LOCATION_FIELDS}${scoreSelect}
@@ -874,7 +911,7 @@ async function queryMapData(
 	// menu; so does any lean read with no cap): every item of the referenced
 	// menus, ordered by name. With an {@link ItemCap} (the lean viewport/search
 	// path) it instead keeps each menu's top `limit` items — filtered to the diet
-	// closure when set, then ranked by item-like count (desc, name/id to break
+	// closure when set, then ranked by item score (desc, name/id to break
 	// ties deterministically so the cut is order-stable and cache-pure) — and
 	// carries each menu's pre-cut match count through `COUNT(*) OVER` so the
 	// caller can surface "N of `limit`". `match_count` is identical on every row
@@ -890,7 +927,7 @@ async function queryMapData(
 					.prepare(
 						`WITH matched AS (
 							SELECT i.id AS id, i.menu_id AS menu_id, i.item_name AS item_name,
-								(SELECT COUNT(*) FROM liked_items li WHERE li.item_id = i.id) AS ilikes
+								${itemScoreSql('i.id')} AS iscore
 							FROM items i
 							WHERE i.menu_id IN (${inMenus})${
 								itemCap.dietTagIds.length === 0
@@ -902,7 +939,7 @@ async function queryMapData(
 						),
 						ranked AS (
 							SELECT id, menu_id, item_name,
-								ROW_NUMBER() OVER (PARTITION BY menu_id ORDER BY ilikes DESC, item_name, id) AS irn,
+								ROW_NUMBER() OVER (PARTITION BY menu_id ORDER BY iscore DESC, item_name, id) AS irn,
 								COUNT(*) OVER (PARTITION BY menu_id) AS match_count
 							FROM matched
 						)
@@ -1372,11 +1409,92 @@ export interface Session {
 	expires_at: number;
 }
 
-/** The ids a user has liked, newest first. */
-export interface UserLikes {
+/** The ids a user has bookmarked (saved), newest first. */
+export interface UserBookmarks {
 	locationIds: string[];
 	itemIds: string[];
 }
+
+/** Which family of tables a bookmark/review/report targets. */
+export type ReviewTarget = 'location' | 'item';
+
+/**
+ * A user's own rating value per target id (their private stars), keyed by target.
+ * Shown as "your N★" on the map/menu and used to pre-fill the review editor.
+ */
+export interface ViewerRatings {
+	locations: Record<string, number>;
+	items: Record<string, number>;
+}
+
+/** One publicly-attributed review (has text, not hidden), with its author's profile. */
+export interface PublicReview {
+	id: string;
+	rating: number;
+	body: string;
+	created_at: number;
+	author_name: string | null;
+	author_picture: string | null;
+}
+
+/** The viewer's OWN review of a target (any state — bare rating, hidden, or public). */
+export interface OwnReview {
+	id: string;
+	rating: number;
+	body: string | null;
+	created_at: number;
+	updated_at: number;
+	hidden_at: number | null;
+}
+
+/** The reviews payload for one open venue/item: aggregate + a page of public reviews. */
+export interface VenueReviews {
+	/** Over all non-hidden reviews (bare ratings included). */
+	summary: { count: number; average: number };
+	/** Public reviews (text, not hidden), newest first, excluding the viewer's own. */
+	reviews: PublicReview[];
+	/** The viewer's own review, surfaced separately so the editor pre-fills. */
+	own: OwnReview | null;
+	/** Keyset cursor for the next page, or null when exhausted. */
+	nextCursor: string | null;
+}
+
+/** One row of the moderation queue (reported or hidden reviews). */
+export interface ModerationReview {
+	id: string;
+	target_name: string;
+	rating: number;
+	body: string | null;
+	created_at: number;
+	hidden_at: number | null;
+	hidden_reason: string | null;
+	author_name: string | null;
+	report_count: number;
+}
+
+/** SQL table/column names per target. Fixed internal vocabulary (never user input),
+ *  so interpolating these into query text is safe. */
+const REVIEW_TABLES = {
+	location: {
+		reviews: 'location_reviews',
+		bookmarks: 'location_bookmarks',
+		reports: 'location_review_reports',
+		targets: 'locations',
+		nameCol: 'name',
+		col: 'location_id'
+	},
+	item: {
+		reviews: 'item_reviews',
+		bookmarks: 'item_bookmarks',
+		reports: 'item_review_reports',
+		targets: 'items',
+		nameCol: 'item_name',
+		col: 'item_id'
+	}
+} as const;
+
+/** How many distinct users must report a review before it auto-hides. */
+export const REVIEW_AUTO_HIDE_THRESHOLD = 3;
 
 /** The Google profile fields stored on a user, refreshed on each sign-in. */
 export interface OAuthProfile {
@@ -1635,15 +1753,19 @@ export async function deleteExpiredAppAuthCodes(db: D1Like, now: number): Promis
 	await db.prepare(`DELETE FROM app_auth_codes WHERE expires_at <= ?`).bind(now).run();
 }
 
-/** Returns a user's liked location and item ids, newest first. */
-export async function getUserLikes(db: D1Like, userId: string): Promise<UserLikes> {
+// ── Bookmarks ────────────────────────────────────────────────────────────────
+
+/** Returns a user's bookmarked (saved) location and item ids, newest first. */
+export async function getUserBookmarks(db: D1Like, userId: string): Promise<UserBookmarks> {
 	const [{ results: locs }, { results: items }] = await Promise.all([
 		db
-			.prepare(`SELECT location_id FROM liked_locations WHERE user_id = ? ORDER BY created_at DESC`)
+			.prepare(
+				`SELECT location_id FROM location_bookmarks WHERE user_id = ? ORDER BY created_at DESC`
+			)
 			.bind(userId)
 			.all<{ location_id: string }>(),
 		db
-			.prepare(`SELECT item_id FROM liked_items WHERE user_id = ? ORDER BY created_at DESC`)
+			.prepare(`SELECT item_id FROM item_bookmarks WHERE user_id = ? ORDER BY created_at DESC`)
 			.bind(userId)
 			.all<{ item_id: string }>()
 	]);
@@ -1653,48 +1775,292 @@ export async function getUserLikes(db: D1Like, userId: string): Promise<UserLike
 	};
 }
 
-/** Likes (or, when `liked` is false, unlikes) a location for a user. Idempotent. */
-export async function setLocationLike(
+/** Bookmarks (or, when `on` is false, un-bookmarks) a target for a user. Idempotent. */
+export async function setBookmark(
 	db: D1Like,
+	target: ReviewTarget,
 	userId: string,
-	locationId: string,
-	liked: boolean,
+	targetId: string,
+	on: boolean,
 	now: number
 ): Promise<void> {
-	if (liked) {
+	const t = REVIEW_TABLES[target];
+	if (on) {
 		await db
 			.prepare(
-				`INSERT OR IGNORE INTO liked_locations (user_id, location_id, created_at) VALUES (?, ?, ?)`
+				`INSERT OR IGNORE INTO ${t.bookmarks} (user_id, ${t.col}, created_at) VALUES (?, ?, ?)`
 			)
-			.bind(userId, locationId, now)
+			.bind(userId, targetId, now)
 			.run();
 	} else {
 		await db
-			.prepare(`DELETE FROM liked_locations WHERE user_id = ? AND location_id = ?`)
-			.bind(userId, locationId)
+			.prepare(`DELETE FROM ${t.bookmarks} WHERE user_id = ? AND ${t.col} = ?`)
+			.bind(userId, targetId)
 			.run();
 	}
 }
 
-/** Likes (or, when `liked` is false, unlikes) a menu item for a user. Idempotent. */
-export async function setItemLike(
+// ── Reviews (rating + optional text) ─────────────────────────────────────────
+
+/** The current user's own rating per target (their private stars), keyed by target. */
+export async function getViewerRatings(db: D1Like, userId: string): Promise<ViewerRatings> {
+	const [{ results: locs }, { results: items }] = await Promise.all([
+		db
+			.prepare(`SELECT location_id, rating FROM location_reviews WHERE user_id = ?`)
+			.bind(userId)
+			.all<{ location_id: string; rating: number }>(),
+		db
+			.prepare(`SELECT item_id, rating FROM item_reviews WHERE user_id = ?`)
+			.bind(userId)
+			.all<{ item_id: string; rating: number }>()
+	]);
+	const locations: Record<string, number> = {};
+	for (const r of locs) locations[r.location_id] = r.rating;
+	const itemsMap: Record<string, number> = {};
+	for (const r of items) itemsMap[r.item_id] = r.rating;
+	return { locations, items: itemsMap };
+}
+
+/**
+ * Upserts a user's review of a target: the rating (1..5) is always set. `body` is
+ * three-valued: a string sets the text, `null` clears it, and `undefined` LEAVES an
+ * existing review's text untouched (a bare star tap must never wipe a review; on a
+ * brand-new row `undefined` inserts null). One row per (user, target) via the UNIQUE
+ * key — a re-rating updates the same row, keeping its id/created_at and NOT touching
+ * hidden_at (an edit can't un-hide a moderated review). `id` is used only on insert.
+ */
+export async function setReview(
 	db: D1Like,
+	target: ReviewTarget,
+	id: string,
 	userId: string,
-	itemId: string,
-	liked: boolean,
+	targetId: string,
+	rating: number,
+	body: string | null | undefined,
 	now: number
 ): Promise<void> {
-	if (liked) {
-		await db
-			.prepare(`INSERT OR IGNORE INTO liked_items (user_id, item_id, created_at) VALUES (?, ?, ?)`)
-			.bind(userId, itemId, now)
-			.run();
-	} else {
-		await db
-			.prepare(`DELETE FROM liked_items WHERE user_id = ? AND item_id = ?`)
-			.bind(userId, itemId)
-			.run();
+	const t = REVIEW_TABLES[target];
+	// Only overwrite the body on conflict when the caller actually passed one; a
+	// rating-only upsert (body === undefined) preserves the existing text.
+	const bodyUpdate = body === undefined ? '' : ', body = excluded.body';
+	await db
+		.prepare(
+			`INSERT INTO ${t.reviews} (id, user_id, ${t.col}, rating, body, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)
+			 ON CONFLICT(user_id, ${t.col}) DO UPDATE SET
+			   rating = excluded.rating, updated_at = excluded.updated_at${bodyUpdate}`
+		)
+		.bind(id, userId, targetId, rating, body ?? null, now, now)
+		.run();
+}
+
+/** Deletes a user's review of a target (un-starring clears rating + any text). */
+export async function clearReview(
+	db: D1Like,
+	target: ReviewTarget,
+	userId: string,
+	targetId: string
+): Promise<void> {
+	const t = REVIEW_TABLES[target];
+	await db
+		.prepare(`DELETE FROM ${t.reviews} WHERE user_id = ? AND ${t.col} = ?`)
+		.bind(userId, targetId)
+		.run();
+}
+
+/** Decodes a `${created_at}:${id}` keyset cursor, or null if malformed/absent. */
+function parseReviewCursor(cursor: string | null | undefined): { at: number; id: string } | null {
+	if (!cursor) return null;
+	const sep = cursor.indexOf(':');
+	if (sep <= 0) return null;
+	const at = Number(cursor.slice(0, sep));
+	const id = cursor.slice(sep + 1);
+	if (!Number.isFinite(at) || id === '') return null;
+	return { at, id };
+}
+
+/**
+ * The reviews payload for one open target: the aggregate (count + average over all
+ * non-hidden reviews, bare ratings included), a keyset page of PUBLIC reviews (text,
+ * not hidden, newest first, excluding the viewer's own), and the viewer's own review
+ * surfaced separately so the editor pre-fills. `limit` bounds the public page.
+ */
+export async function getReviews(
+	db: D1Like,
+	target: ReviewTarget,
+	targetId: string,
+	viewerId: string | null,
+	limit: number,
+	cursor?: string | null
+): Promise<VenueReviews> {
+	const t = REVIEW_TABLES[target];
+
+	// A soft-deleted (permanently-closed) venue is dark on every other read
+	// (migration 0015); don't leak its reviews here either. An unknown or closed
+	// location reads as an empty payload, matching getLocationMapData. Items carry no
+	// closed flag, so this guard applies to the location target only.
+	if (target === 'location') {
+		const loc = await db
+			.prepare(`SELECT closed_at FROM locations WHERE id = ?`)
+			.bind(targetId)
+			.first<{ closed_at: number | null }>();
+		if (!loc || loc.closed_at !== null) {
+			return { summary: { count: 0, average: 0 }, reviews: [], own: null, nextCursor: null };
+		}
 	}
+
+	const cur = parseReviewCursor(cursor);
+
+	const summaryP = db
+		.prepare(
+			`SELECT COUNT(*) AS count, COALESCE(AVG(rating), 0) AS average
+			 FROM ${t.reviews} WHERE ${t.col} = ? AND hidden_at IS NULL`
+		)
+		.bind(targetId)
+		.first<{ count: number; average: number }>();
+
+	// Fetch limit+1 to know whether a further page exists. Row-value keyset
+	// (created_at, id) DESC gives a stable total order for pagination.
+	const params: (string | number)[] = [targetId];
+	let ownFilter = '';
+	if (viewerId) {
+		ownFilter = ` AND r.user_id <> ?`;
+		params.push(viewerId);
+	}
+	let keyset = '';
+	if (cur) {
+		keyset = ` AND (r.created_at, r.id) < (?, ?)`;
+		params.push(cur.at, cur.id);
+	}
+	params.push(limit + 1);
+	const publicP = db
+		.prepare(
+			`SELECT r.id, r.rating, r.body, r.created_at, u.name AS author_name, u.picture AS author_picture
+			 FROM ${t.reviews} r JOIN users u ON u.id = r.user_id
+			 WHERE r.${t.col} = ? AND r.hidden_at IS NULL AND r.body IS NOT NULL AND trim(r.body) <> ''${ownFilter}${keyset}
+			 ORDER BY r.created_at DESC, r.id DESC
+			 LIMIT ?`
+		)
+		.bind(...params)
+		.all<PublicReview>();
+
+	const ownP = viewerId
+		? db
+				.prepare(
+					`SELECT id, rating, body, created_at, updated_at, hidden_at
+					 FROM ${t.reviews} WHERE user_id = ? AND ${t.col} = ?`
+				)
+				.bind(viewerId, targetId)
+				.first<OwnReview>()
+		: Promise.resolve(null);
+
+	const [summary, publicRes, own] = await Promise.all([summaryP, publicP, ownP]);
+	const rows = publicRes.results;
+	const hasMore = rows.length > limit;
+	const page = hasMore ? rows.slice(0, limit) : rows;
+	const last = page[page.length - 1];
+	return {
+		summary: {
+			count: summary?.count ?? 0,
+			average: summary?.average ?? 0
+		},
+		reviews: page,
+		own: own ?? null,
+		nextCursor: hasMore && last ? `${last.created_at}:${last.id}` : null
+	};
+}
+
+// ── Moderation (reports / hide) ──────────────────────────────────────────────
+
+/**
+ * Records a report against a review and auto-hides it once
+ * {@link REVIEW_AUTO_HIDE_THRESHOLD} distinct users have reported it. Idempotent per
+ * reporter (UNIQUE(review_id, reporter)). Returns whether the review is now hidden.
+ * A bad `reviewId` FK-violates on insert — the caller maps that to a 400.
+ */
+export async function reportReview(
+	db: D1Like,
+	target: ReviewTarget,
+	reportId: string,
+	reviewId: string,
+	reporterId: string,
+	reason: string | null,
+	now: number,
+	threshold: number = REVIEW_AUTO_HIDE_THRESHOLD
+): Promise<{ hidden: boolean }> {
+	const t = REVIEW_TABLES[target];
+	await db
+		.prepare(
+			`INSERT OR IGNORE INTO ${t.reports} (id, review_id, reporter_user_id, reason, created_at)
+			 VALUES (?, ?, ?, ?, ?)`
+		)
+		.bind(reportId, reviewId, reporterId, reason, now)
+		.run();
+	const countRow = await db
+		.prepare(`SELECT COUNT(*) AS n FROM ${t.reports} WHERE review_id = ?`)
+		.bind(reviewId)
+		.first<{ n: number }>();
+	if ((countRow?.n ?? 0) >= threshold) {
+		// `admin_cleared = 0` makes a moderator's un-hide durable: a review a human has
+		// vindicated is never re-hidden by a fresh wave of reports. `.changes` (>0 only
+		// when a row was actually flipped) is what we report as newly-hidden.
+		const res = await db
+			.prepare(
+				`UPDATE ${t.reviews} SET hidden_at = ?, hidden_reason = 'auto:reports'
+				 WHERE id = ? AND hidden_at IS NULL AND admin_cleared = 0`
+			)
+			.bind(now, reviewId)
+			.run();
+		return { hidden: (res.meta?.changes ?? 0) > 0 };
+	}
+	return { hidden: false };
+}
+
+/**
+ * Admin: hides (sets `hidden_at`/`hidden_reason`) or un-hides (nulls both) a review.
+ * An un-hide (hiddenAt === null) also latches `admin_cleared = 1` so the report
+ * auto-hide can never silently re-hide a review a moderator has vindicated; a hide
+ * leaves the flag as-is (MAX keeps any prior clear, harmless while hidden_at is set).
+ */
+export async function setReviewHidden(
+	db: D1Like,
+	target: ReviewTarget,
+	reviewId: string,
+	hiddenAt: number | null,
+	reason: string | null
+): Promise<void> {
+	const t = REVIEW_TABLES[target];
+	const clearFlag = hiddenAt === null ? 1 : 0;
+	await db
+		.prepare(
+			`UPDATE ${t.reviews} SET hidden_at = ?, hidden_reason = ?, admin_cleared = MAX(admin_cleared, ?) WHERE id = ?`
+		)
+		.bind(hiddenAt, reason, clearFlag, reviewId)
+		.run();
+}
+
+/** Admin: reviews that are hidden or have at least one report, most-reported first. */
+export async function getModerationReviews(
+	db: D1Like,
+	target: ReviewTarget,
+	limit: number
+): Promise<ModerationReview[]> {
+	const t = REVIEW_TABLES[target];
+	const { results } = await db
+		.prepare(
+			`SELECT r.id, tg.${t.nameCol} AS target_name, r.rating, r.body, r.created_at,
+			        r.hidden_at, r.hidden_reason, u.name AS author_name,
+			        (SELECT COUNT(*) FROM ${t.reports} rp WHERE rp.review_id = r.id) AS report_count
+			 FROM ${t.reviews} r
+			 JOIN users u ON u.id = r.user_id
+			 JOIN ${t.targets} tg ON tg.id = r.${t.col}
+			 WHERE r.hidden_at IS NOT NULL OR EXISTS (SELECT 1 FROM ${t.reports} rp WHERE rp.review_id = r.id)
+			 ORDER BY report_count DESC, r.created_at DESC
+			 LIMIT ?`
+		)
+		.bind(limit)
+		.all<ModerationReview>();
+	return results;
 }
 
 // ---------------------------------------------------------------------------

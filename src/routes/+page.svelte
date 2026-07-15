@@ -5,8 +5,19 @@
 	import { MediaQuery } from 'svelte/reactivity';
 	import { getMapCells, getLocationData, getUserLocation } from '$lib/data.remote';
 	import { ViewportData } from '$lib/viewport-data.svelte';
-	import { getCurrentUser, getLikes, setLocationLiked, setItemLiked } from '$lib/user.remote';
-	import { createOptimisticLikes } from '$lib/likes.svelte';
+	import { getCurrentUser } from '$lib/user.remote';
+	import {
+		getBookmarks,
+		setLocationBookmarked,
+		setItemBookmarked,
+		getMyRatings,
+		setLocationReview,
+		clearLocationReview,
+		setItemReview,
+		clearItemReview
+	} from '$lib/review.remote';
+	import { createOptimisticBookmarks } from '$lib/bookmarks.svelte';
+	import { createOptimisticRatings } from '$lib/ratings.svelte';
 	import { refreshIfUnhydrated } from '$lib/remote-fallback.svelte';
 	import { getDiet, setDiet } from '$lib/profile.remote';
 	import LocationMap from '$lib/components/LocationMap.svelte';
@@ -673,32 +684,46 @@
 		if (selectedId) closeDetail();
 	}
 
-	// --- Account & likes -------------------------------------------------------
+	// --- Account, bookmarks & ratings ------------------------------------------
 	// The signed-in user (null when signed out) drives the account control and gates
-	// the like buttons. getLikes() itself returns empty lists when signed out, so it
-	// needn't wait on the user read. Both reads are OPTIONAL account extras over a
-	// public map, so — like the userLocation/landingData awaits above — a transient
-	// failure (a D1 hiccup on the session read) must degrade to the signed-out UI,
-	// never 500 the SSR render or break hydration for the whole page. The catches
+	// the bookmark/rating controls. getBookmarks()/getMyRatings() return empty shapes
+	// when signed out, so they needn't wait on the user read. All three reads are
+	// OPTIONAL account extras over a public map, so — like the userLocation/landingData
+	// awaits above — a transient failure (a D1 hiccup on the session read) must degrade
+	// to the signed-out UI, never 500 the SSR render or break hydration. The catches
 	// fold a failure into exactly the signed-out shapes the reads return themselves.
 	const user = $derived(await getCurrentUser().catch(() => null));
-	const serverLikes = $derived(
-		await getLikes().catch(() => ({ locationIds: [] as string[], itemIds: [] as string[] }))
+	const serverBookmarks = $derived(
+		await getBookmarks().catch(() => ({ locationIds: [] as string[], itemIds: [] as string[] }))
+	);
+	const serverRatings = $derived(
+		await getMyRatings().catch(() => ({
+			locations: {} as Record<string, number>,
+			items: {} as Record<string, number>
+		}))
 	);
 
-	// Optimistic like state ($lib/likes.svelte): a pending map of just-toggled ids
-	// layered over the server set, so a tap reflects instantly without waiting on
-	// the round trip (and reverts if it fails). The factory owns the pending maps,
-	// the overlay memos and the per-key write queue; the page hands it the reactive
-	// `serverLikes` (as a getter) and the two remote setters, and reads back the
-	// liked-id sets and toggle functions the detail card binds to.
-	const likes = createOptimisticLikes({
-		serverLikes: () => serverLikes,
-		setLocationLiked,
-		setItemLiked
+	// Optimistic bookmark state ($lib/bookmarks.svelte): a pending map of just-toggled
+	// ids layered over the server set, so a tap reflects instantly (and reverts if it
+	// fails). The factory owns the pending maps, overlay memos and per-key write queue.
+	const bookmarks = createOptimisticBookmarks({
+		serverBookmarks: () => serverBookmarks,
+		setLocationBookmarked,
+		setItemBookmarked
 	});
-	const likedLocationIds = $derived(likes.likedLocationIds);
-	const likedItemIds = $derived(likes.likedItemIds);
+	const bookmarkedLocationIds = $derived(bookmarks.bookmarkedLocationIds);
+	const bookmarkedItemIds = $derived(bookmarks.bookmarkedItemIds);
+
+	// Optimistic rating state ($lib/ratings.svelte): the same optimistic pattern, but
+	// value-carrying (a star tap sets 1–5, preserving any existing review text). The
+	// venue panel's ReviewsSection reads the aggregate + review list separately.
+	const ratings = createOptimisticRatings({
+		serverRatings: () => serverRatings,
+		setLocationReview,
+		clearLocationReview,
+		setItemReview,
+		clearItemReview
+	});
 </script>
 
 <svelte:window onkeydown={onWindowKeydown} />
@@ -739,10 +764,14 @@
 		<VenueDetail
 			location={selectedLocation}
 			{user}
-			{likedLocationIds}
-			{likedItemIds}
-			onToggleLocationLike={likes.toggleLocationLike}
-			onToggleItemLike={likes.toggleItemLike}
+			{bookmarkedLocationIds}
+			{bookmarkedItemIds}
+			onToggleLocationBookmark={bookmarks.toggleLocationBookmark}
+			onToggleItemBookmark={bookmarks.toggleItemBookmark}
+			locationRating={ratings.locationRating}
+			itemRating={ratings.itemRating}
+			onRateLocation={ratings.rateLocation}
+			onRateItem={ratings.rateItem}
 			onClose={closeDetail}
 			flyParams={panelFly}
 			narrow={narrowScreen.current}
