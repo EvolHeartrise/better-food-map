@@ -31,6 +31,7 @@ const abs = (p: string) => fileURLToPath(new URL(p, import.meta.url));
 const REMOTE_SHIMS: Record<string, string> = {
 	'$lib/data.remote': abs('./src/lib/app/data-api.ts'),
 	'$lib/user.remote': abs('./src/lib/app/user-api.ts'),
+	'$lib/review.remote': abs('./src/lib/app/review-api.ts'),
 	'$lib/profile.remote': abs('./src/lib/app/profile-api.ts'),
 	'$lib/locale.remote': abs('./src/lib/app/locale-api.ts')
 };

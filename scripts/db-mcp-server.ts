@@ -2237,9 +2237,9 @@ const tools = [
 		description:
 			'HARD-delete one or more location rows in a single batch (1-100 ids), mirroring the batched ' +
 			"update_locations. Each delete cascades that row's per-item overrides and any user " +
-			"LIKES (liked_locations), and deletes the venue's PRIVATE menu — with its items and sources — " +
+			"BOOKMARKS and REVIEWS (location_bookmarks, location_reviews), and deletes the venue's PRIVATE menu — with its items and sources — " +
 			'when no other location references it (a shared brand menu is never touched). PREFER close_location for a real ' +
-			'venue that has permanently closed — that preserves the likes and keeps the record for analysis; ' +
+			'venue that has permanently closed — that preserves the bookmarks/reviews and keeps the record for analysis; ' +
 			'reserve delete for mistaken/duplicate rows that should never have existed. Ids matching no row ' +
 			'come back in `not_found_ids`. Returns { deleted, deleted_ids, not_found_ids } (deleted = count ' +
 			'actually removed).',

@@ -52,6 +52,12 @@ declare global {
 				DB: D1Database;
 				GOOGLE_CLIENT_ID?: string;
 				GOOGLE_CLIENT_SECRET?: string;
+				/**
+				 * Comma-separated user ids allowed to moderate reviews (hide/un-hide) —
+				 * checked by requireAdmin ($lib/server/context). A Worker secret in
+				 * production, `.dev.vars` locally; unset means "no admins".
+				 */
+				ADMIN_USER_IDS?: string;
 			};
 			cf?: CfProperties;
 			ctx?: ExecutionContext;

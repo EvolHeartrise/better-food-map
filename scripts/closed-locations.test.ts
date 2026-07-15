@@ -1,13 +1,14 @@
 // Exercises the permanently-closed soft-delete (migration 0015): a closed venue is
-// hidden from every display/browse read, yet its row — and its user likes — survive,
-// and it still blocks both re-creation and (via the unfiltered dedup read) re-listing.
+// hidden from every display/browse read, yet its row — and its user bookmarks —
+// survive, and it still blocks both re-creation and (via the unfiltered dedup read)
+// re-listing.
 import { test, expect } from 'bun:test';
 import {
 	getLocationMapData,
 	getStats,
 	getLocationSlugFields,
-	setLocationLike,
-	getUserLikes
+	setBookmark,
+	getUserBookmarks
 } from '../src/lib/server/db';
 import {
 	insertLocations,
@@ -83,7 +84,7 @@ test('a born-closed location is hidden from reads but still blocks re-creation',
 	expect(existing.get(coordinateKey(49.21, -123.11))?.id).toBe(closedId);
 });
 
-test('soft-closing a live venue keeps its likes, then reopening restores it', async () => {
+test('soft-closing a live venue keeps its bookmarks, then reopening restores it', async () => {
 	const db = freshDb();
 	const [id] = await insertLocations(db, [
 		venue({ name: 'Likeable Cafe', latitude: 49.25, longitude: -123.15 })
@@ -92,12 +93,12 @@ test('soft-closing a live venue keeps its likes, then reopening restores it', as
 		.prepare(`INSERT INTO users (id, email_verified, created_at) VALUES (?, 0, 0)`)
 		.bind('u1')
 		.run();
-	await setLocationLike(db, 'u1', id, true, 123);
+	await setBookmark(db, 'location', 'u1', id, true, 123);
 
-	// Live: visible everywhere and liked.
+	// Live: visible everywhere and bookmarked.
 	expect(await getLocationById(db, id)).not.toBeNull();
 	expect((await getStats(db)).locations).toBe(1);
-	expect((await getUserLikes(db, 'u1')).locationIds).toEqual([id]);
+	expect((await getUserBookmarks(db, 'u1')).locationIds).toEqual([id]);
 
 	// Close it with a cited reason (evidence lives in the reason text — provenance is menu-level).
 	const closed = await setLocationClosed(
@@ -114,18 +115,18 @@ test('soft-closing a live venue keeps its likes, then reopening restores it', as
 	expect(await getLocationSlugFields(db, id)).toMatchObject({ id, closed: true });
 	expect((await getLocationMapData(db, id)).locations).toHaveLength(0);
 	expect((await getStats(db)).locations).toBe(0);
-	// ...but the like row survived (the whole point vs a hard delete).
-	expect((await getUserLikes(db, 'u1')).locationIds).toEqual([id]);
+	// ...but the bookmark row survived (the whole point vs a hard delete).
+	expect((await getUserBookmarks(db, 'u1')).locationIds).toEqual([id]);
 	// ...and it still blocks re-creation at its coordinates.
 	const existing = await existingLocationsAtCoords(db, [{ latitude: 49.25, longitude: -123.15 }]);
 	expect(existing.get(coordinateKey(49.25, -123.15))?.id).toBe(id);
 
-	// Reopen: back on the map, likes intact.
+	// Reopen: back on the map, bookmarks intact.
 	expect(await setLocationClosed(db, id, null, null)).toBe(true);
 	expect(await getLocationById(db, id)).not.toBeNull();
 	expect(await getLocationSlugFields(db, id)).toMatchObject({ id, closed: false });
 	expect((await getStats(db)).locations).toBe(1);
-	expect((await getUserLikes(db, 'u1')).locationIds).toEqual([id]);
+	expect((await getUserBookmarks(db, 'u1')).locationIds).toEqual([id]);
 });
 
 test('setLocationClosed reports not-found for an unknown id', async () => {

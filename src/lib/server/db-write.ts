@@ -858,9 +858,10 @@ export async function deleteLocation(db: D1Like, id: string): Promise<boolean> {
 
 /**
  * Soft-deletes (or reopens) an existing location by flipping its `closed_at`/
- * `closed_reason`, WITHOUT touching the row's likes or menu — the reason a
+ * `closed_reason`, WITHOUT touching the row's bookmarks/reviews or menu — the reason a
  * permanently-closed venue is marked rather than {@link deleteLocation}'d (a delete
- * would cascade `liked_locations` away; see migration 0015). Pass `closedAt = null`
+ * would cascade `location_bookmarks`/`location_reviews` away; see migrations 0015 and
+ * 0029). Pass `closedAt = null`
  * (and `reason = null`) to reopen. The closure evidence is captured in `reason`
  * (provenance is menu-level now, so there is no per-location source to append).
  * Returns false when no location has that id. For a venue NOT yet on the map, use

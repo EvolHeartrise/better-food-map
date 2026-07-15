@@ -24,7 +24,8 @@ import type { User } from '$lib/server/db';
 import { API_ORIGIN } from './platform';
 import { apiPost } from './api-client';
 import { setToken } from './token-store';
-import { getCurrentUser, getLikes } from './user-api';
+import { getCurrentUser } from './user-api';
+import { getBookmarks, getMyRatings } from './review-api';
 import { getDiet } from './profile-api';
 
 const CALLBACK_SCHEME = 'betterfoodmaps:';
@@ -60,7 +61,10 @@ function refreshSession(): void {
 	void getCurrentUser()
 		.refresh()
 		.catch(() => {});
-	void getLikes()
+	void getBookmarks()
+		.refresh()
+		.catch(() => {});
+	void getMyRatings()
 		.refresh()
 		.catch(() => {});
 	void getDiet()

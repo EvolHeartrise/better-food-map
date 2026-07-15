@@ -1,10 +1,13 @@
-// Per-key serialization for optimistic like writes (src/routes/+page.svelte).
+// Per-key serialization for optimistic user writes — bookmarks AND ratings
+// (src/lib/bookmarks.svelte, src/lib/ratings.svelte). Value-agnostic: it only
+// orders `send`/`revert` thunks, so the same queue serves a boolean bookmark
+// toggle and a 1..5 rating set alike.
 //
-// A like toggle is optimistic UI over a fire-and-forget command, and two rapid
-// taps on the same heart used to race: nothing ordered the two commands, so an
-// unlike DELETE could land on the server before the like INSERT it was meant
-// to undo, persisting the opposite of what the UI shows — and a failed earlier
-// toggle's revert could clobber a LATER toggle's optimistic state.
+// An optimistic write is fire-and-forget UI over a server command, and two rapid
+// taps on the same control used to race: nothing ordered the two commands, so a
+// later write could land on the server before an earlier one it was meant to
+// supersede, persisting the opposite of what the UI shows — and a failed earlier
+// write's revert could clobber a LATER write's optimistic state.
 //
 // This queue fixes both, client-side and per key (one key per liked thing):
 //   • SERIALIZED — each enqueued write waits for the previous write on the same
@@ -16,8 +19,8 @@
 //     the LATEST toggle for its key, so an old failure can't stomp the
 //     optimistic state a newer tap just set.
 //
-// Plain non-reactive plumbing, a pure module so scripts/like-queue.test.ts can
-// exercise the ordering guarantees directly.
+// Plain non-reactive plumbing, a pure module so scripts/optimistic-queue.test.ts
+// can exercise the ordering guarantees directly.
 
 interface QueueEntry {
 	/** The settled-or-pending tail of the write chain for this key. */
@@ -26,7 +29,7 @@ interface QueueEntry {
 	gen: number;
 }
 
-export interface LikeQueue {
+export interface OptimisticQueue {
 	/**
 	 * Queue one optimistic write for `key`. `send` performs the server command
 	 * (capturing the desired state at tap time); `revert` undoes the tap's
@@ -36,7 +39,7 @@ export interface LikeQueue {
 	enqueue(key: string, send: () => Promise<unknown>, revert: () => void): void;
 }
 
-export function createLikeQueue(): LikeQueue {
+export function createOptimisticQueue(): OptimisticQueue {
 	const queues = new Map<string, QueueEntry>();
 
 	function enqueue(key: string, send: () => Promise<unknown>, revert: () => void): void {

@@ -3,7 +3,9 @@
 	import DietaryIcons from '$lib/components/DietaryIcons.svelte';
 	import DirectionsModal from '$lib/components/DirectionsModal.svelte';
 	import SourcesModal from '$lib/components/SourcesModal.svelte';
-	import LikeButton from '$lib/components/LikeButton.svelte';
+	import BookmarkButton from '$lib/components/BookmarkButton.svelte';
+	import StarRating from '$lib/components/StarRating.svelte';
+	import ReviewsSection from '$lib/components/ReviewsSection.svelte';
 	import { categoryLabel } from '$lib/category';
 	import { tagDisplayName } from '$lib/tags';
 	import { safeHttpUrl } from '$lib/safe-url';
@@ -35,10 +37,14 @@
 	let {
 		location,
 		user,
-		likedLocationIds,
-		likedItemIds,
-		onToggleLocationLike,
-		onToggleItemLike,
+		bookmarkedLocationIds,
+		bookmarkedItemIds,
+		onToggleLocationBookmark,
+		onToggleItemBookmark,
+		locationRating,
+		itemRating,
+		onRateLocation,
+		onRateItem,
 		onClose,
 		flyParams,
 		narrow = false,
@@ -48,10 +54,16 @@
 	}: {
 		location: ResolvedLocation<Item>;
 		user: User | null;
-		likedLocationIds: ReadonlySet<string>;
-		likedItemIds: ReadonlySet<string>;
-		onToggleLocationLike: (id: string) => void;
-		onToggleItemLike: (id: string) => void;
+		bookmarkedLocationIds: ReadonlySet<string>;
+		bookmarkedItemIds: ReadonlySet<string>;
+		onToggleLocationBookmark: (id: string) => void;
+		onToggleItemBookmark: (id: string) => void;
+		/** The viewer's own rating for a location id (0 = none). Reactive getter. */
+		locationRating: (id: string) => number;
+		/** The viewer's own rating for a menu item id (0 = none). Reactive getter. */
+		itemRating: (id: string) => number;
+		onRateLocation: (id: string, rating: number) => void;
+		onRateItem: (id: string, rating: number) => void;
 		onClose: () => void;
 		flyParams: FlyParams;
 		// On a phone (`narrow`) the panel is a full-screen sheet the user can swipe
@@ -349,11 +361,11 @@
 			<span class="badge">{label}</span>
 		{/if}
 		{#if user}
-			<span class="placecard__like">
-				<LikeButton
-					liked={likedLocationIds.has(loc.id)}
-					onToggle={() => onToggleLocationLike(loc.id)}
-					label={likedLocationIds.has(loc.id) ? m.venue_unlike() : m.venue_like()}
+			<span class="placecard__bookmark">
+				<BookmarkButton
+					saved={bookmarkedLocationIds.has(loc.id)}
+					onToggle={() => onToggleLocationBookmark(loc.id)}
+					label={bookmarkedLocationIds.has(loc.id) ? m.venue_unbookmark() : m.venue_bookmark()}
 					size={18}
 				/>
 			</span>
@@ -519,11 +531,20 @@
 								</span>
 							{/if}
 							{#if user}
-								<span class="placecard__item-like">
-									<LikeButton
-										liked={likedItemIds.has(menuItem.id)}
-										onToggle={() => onToggleItemLike(menuItem.id)}
-										label={likedItemIds.has(menuItem.id) ? m.item_unlike() : m.item_like()}
+								<span class="placecard__item-actions">
+									<StarRating
+										value={itemRating(menuItem.id)}
+										onRate={(n) => onRateItem(menuItem.id, n)}
+										size={14}
+										groupLabel={m.rating_your_label()}
+										starLabel={(n) => m.rating_star_aria({ n })}
+									/>
+									<BookmarkButton
+										saved={bookmarkedItemIds.has(menuItem.id)}
+										onToggle={() => onToggleItemBookmark(menuItem.id)}
+										label={bookmarkedItemIds.has(menuItem.id)
+											? m.item_unbookmark()
+											: m.item_bookmark()}
 										size={14}
 									/>
 								</span>
@@ -536,6 +557,13 @@
 				{/each}
 			</ul>
 		{/if}
+
+		<ReviewsSection
+			locationId={loc.id}
+			signedIn={user !== null}
+			rating={locationRating(loc.id)}
+			onRate={(n) => onRateLocation(loc.id, n)}
+		/>
 	</div>
 
 	{#if loc.menu.length === 0}
@@ -656,7 +684,7 @@
 		font-size: 1.1rem;
 	}
 
-	.placecard__like {
+	.placecard__bookmark {
 		display: inline-flex;
 	}
 
@@ -733,11 +761,14 @@
 		overflow-wrap: anywhere;
 	}
 
-	/* The per-item like heart on a menu row. Centred on the row's height (the line
-	   aligns on baselines, which a button doesn't share) so the row stays one line. */
-	.placecard__item-like {
+	/* The per-item rating stars + bookmark on a menu row. Centred on the row's height
+	   (the line aligns on baselines, which a button doesn't share) so the row stays
+	   aligned. */
+	.placecard__item-actions {
 		display: inline-flex;
+		align-items: center;
 		align-self: center;
+		gap: 0.15rem;
 	}
 
 	.placecard__item-price {

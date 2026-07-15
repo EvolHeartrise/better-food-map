@@ -1,5 +1,5 @@
 /// <reference types="bun-types" />
-// Ordering guarantees of the optimistic like-write queue ($lib/like-queue),
+// Ordering guarantees of the optimistic write queue ($lib/optimistic-queue),
 // the client-side fix for the like-toggle write races on the map page
 // (src/routes/+page.svelte): two rapid taps on one heart used to race their
 // commands to D1 (the unlike DELETE could land before the like INSERT it was
@@ -11,7 +11,7 @@
 //   • a failed write reverts only while it is still the latest (GUARDED REVERT);
 //   • keys are independent — one key's slow write never blocks another's.
 import { test, expect, describe } from 'bun:test';
-import { createLikeQueue } from '../src/lib/like-queue';
+import { createOptimisticQueue } from '../src/lib/optimistic-queue';
 
 /** A send whose settlement the test controls, recording when it was called. */
 function controlledSend(calls: string[], name: string) {
@@ -39,9 +39,9 @@ function instantSend(calls: string[], name: string) {
 /** Let queued microtasks drain (the queue chains plain promises). */
 const settle = () => new Promise<void>((res) => setTimeout(res, 0));
 
-describe('createLikeQueue', () => {
+describe('createOptimisticQueue', () => {
 	test('a second write on the same key waits for the first to settle', async () => {
-		const q = createLikeQueue();
+		const q = createOptimisticQueue();
 		const calls: string[] = [];
 		const a = controlledSend(calls, 'a');
 
@@ -61,7 +61,7 @@ describe('createLikeQueue', () => {
 	});
 
 	test('a write superseded before sending is skipped (latest wins)', async () => {
-		const q = createLikeQueue();
+		const q = createOptimisticQueue();
 		const calls: string[] = [];
 		// Both enqueued in the same tick: by the time the microtask chain runs the
 		// first task, it is already superseded and must never send.
@@ -72,7 +72,7 @@ describe('createLikeQueue', () => {
 	});
 
 	test('a failed write reverts only while still the latest', async () => {
-		const q = createLikeQueue();
+		const q = createOptimisticQueue();
 		const calls: string[] = [];
 		const reverts: string[] = [];
 		const a = controlledSend(calls, 'a');
@@ -89,7 +89,7 @@ describe('createLikeQueue', () => {
 	});
 
 	test('a failed write that is still the latest does revert', async () => {
-		const q = createLikeQueue();
+		const q = createOptimisticQueue();
 		const reverts: string[] = [];
 		q.enqueue(
 			'k',
@@ -101,7 +101,7 @@ describe('createLikeQueue', () => {
 	});
 
 	test('keys are independent — a slow write on one key never blocks another', async () => {
-		const q = createLikeQueue();
+		const q = createOptimisticQueue();
 		const calls: string[] = [];
 		const slow = controlledSend(calls, 'slow');
 		q.enqueue('k1', slow.send, () => {});
@@ -112,7 +112,7 @@ describe('createLikeQueue', () => {
 	});
 
 	test('a drained key starts fresh — later writes still send and serialize', async () => {
-		const q = createLikeQueue();
+		const q = createOptimisticQueue();
 		const calls: string[] = [];
 		q.enqueue('k', instantSend(calls, 'a'), () => {});
 		await settle();
