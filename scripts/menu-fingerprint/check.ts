@@ -36,6 +36,9 @@ function daysSince(today: string, iso: string): number {
 	return Math.floor((Date.parse(today) - Date.parse(iso)) / 86_400_000);
 }
 
+/** Oldest a row's conditional-GET validators may get before a full re-fetch is forced. */
+const REVALIDATE_DAYS = 30;
+
 export async function runCheck(opts: {
 	limit: number;
 	scan: number;
@@ -65,6 +68,8 @@ export async function runCheck(opts: {
 
 			// Full-refresh floor: hash-stability cannot see nav-added pages or our
 			// own past extraction errors, so verification age forces a real pass.
+			// (Null last_verified is defensive only — migration 0012 backfilled and
+			// its triggers forbid it — but a null must obviously refresh.)
 			if (menu.last_verified === null) {
 				flag('never_verified');
 				continue;
@@ -87,12 +92,29 @@ export async function runCheck(opts: {
 			}
 
 			const outcomes: FetchOutcome[] = await Promise.all(
-				rows.map((row) => fingerprintUrl(row, rendered))
+				rows.map((row) => {
+					// A lying validator (etag reuse across deploys, CDN-stale
+					// Last-Modified) would let 304s coast on unseen content forever;
+					// periodically force an unconditional fetch so a 304 can never
+					// outrun REVALIDATE_DAYS.
+					const stale =
+						row.checked_at !== undefined && daysSince(opts.today, row.checked_at) > REVALIDATE_DAYS;
+					return fingerprintUrl(
+						stale ? { ...row, etag: null, last_modified: null } : row,
+						rendered
+					);
+				})
 			);
 			const decision = decideMenu(rows, new Map(outcomes.map((o) => [o.url, o])));
 			if (decision.verdict === 'unchanged') {
-				await touchStableRows(db, menu.menu_id, outcomes, opts.today);
-				await stampLastChecked(db, menu.menu_id, opts.today);
+				// A failed stamp is only lost bookkeeping — the menu re-checks (and
+				// mostly 304s) next run — so it must not abort the rest of the sweep.
+				try {
+					await touchStableRows(db, menu.menu_id, outcomes, opts.today);
+					await stampLastChecked(db, menu.menu_id, opts.today);
+				} catch (e) {
+					console.error(`  warning: failed to stamp ${menu.menu_name}: ${String(e)}`);
+				}
 				unchanged.push(menu);
 				console.error(`  ✓ ${menu.menu_name}: unchanged (${rows.length} url(s))`);
 			} else {
@@ -114,7 +136,11 @@ export async function runCheck(opts: {
 
 function intFlag(args: string[], name: string, fallback: number): number {
 	const i = args.indexOf(name);
-	if (i === -1 || i + 1 >= args.length) return fallback;
+	if (i === -1) return fallback;
+	if (i + 1 >= args.length) {
+		console.error(`${name} expects a value`);
+		process.exit(1);
+	}
 	const n = Number(args[i + 1]);
 	if (!Number.isInteger(n) || n <= 0) {
 		console.error(`${name} expects a positive integer, got "${args[i + 1]}"`);
@@ -141,5 +167,13 @@ if (import.meta.main) {
 		`scanned ${report.scanned}: ${report.needs_refresh.length} need refresh, ` +
 			`${report.unchanged.length} unchanged (stamped), ${report.recently_checked.length} recently checked`
 	);
+	if (report.scan_exhausted) {
+		// Stable menus keep their staleness rank (last_verified never advances on
+		// an unchanged check), so they occupy the scan window every run — a
+		// changed menu just past it is only reachable by widening the window.
+		console.error(
+			`note: scan window exhausted below --limit; raise --scan (${opts.scan}) to look deeper into the backlog`
+		);
+	}
 	console.log(JSON.stringify(report, null, '\t'));
 }

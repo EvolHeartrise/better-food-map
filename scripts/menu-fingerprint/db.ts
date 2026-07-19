@@ -66,7 +66,8 @@ export async function watchRowsFor(
 	const placeholders = menuIds.map(() => '?').join(',');
 	const { results } = await db
 		.prepare(
-			`SELECT menu_id, url, kind, content_hash, signal_hash, etag, last_modified, fetch_status
+			`SELECT menu_id, url, kind, content_hash, signal_hash, etag, last_modified, fetch_status,
+				checked_at
 			 FROM menu_watch_urls WHERE menu_id IN (${placeholders}) ORDER BY menu_id, url`
 		)
 		.bind(...menuIds)

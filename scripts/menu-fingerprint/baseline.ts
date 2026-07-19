@@ -16,10 +16,14 @@
 //
 // Each url is fetched once and classified by response content-type
 // (json → feed, pdf → pdf, else html). An html page that comes back
-// bot-walled or too thin to be real is retried through headless Chromium and
-// promoted to kind 'rendered' when the post-JS text is usable. Rows that
-// still fail are recorded with their failure status — visible, and keeping
-// the menu on the agent path (fail open).
+// bot-walled, too thin to be real, OR carrying no price signal is retried
+// through headless Chromium and promoted to kind 'rendered' when the post-JS
+// text is usable — the no-signal case is load-bearing: a client-rendered or
+// iframe menu leaves the raw HTML as a nav/footer shell whose visible text is
+// plausibly long yet never changes when the menu does, so trusting it would
+// bake in a permanent false "unchanged". Rows that still fail are recorded
+// with their failure status — visible, and keeping the menu on the agent path
+// (fail open).
 //
 // The write REPLACES the menu's previous watch set atomically.
 
@@ -32,10 +36,20 @@ import {
 	RenderedFetcher
 } from './fetcher';
 import { menuMeta, openDb, replaceWatchRows, type BaselineRow } from './db';
-import { deriveWatchUrls, MAX_WATCH_URLS } from './urls';
+import { deriveWatchUrls, MAX_WATCH_URLS, sanitizeUrls } from './urls';
 
 function statusForHttp(status: number): 'blocked' | 'http_error' {
 	return status === 403 || status === 429 || status === 503 ? 'blocked' : 'http_error';
+}
+
+/**
+ * An html row is only trusted as-is when it fetched clean AND shows a price
+ * signal. No signal on a 200 page is the SPA-shell/iframe tell (menu arrives
+ * post-JS; the shell text hashes stable forever) — those retry via Chromium.
+ * Exported for tests.
+ */
+export function needsRenderedPromotion(row: BaselineRow): boolean {
+	return row.kind === 'html' && (row.fetch_status !== 'ok' || row.signal_hash === null);
 }
 
 async function baselineUrl(url: string, rendered: RenderedFetcher): Promise<BaselineRow> {
@@ -50,13 +64,22 @@ async function baselineUrl(url: string, rendered: RenderedFetcher): Promise<Base
 		const outcome = await outcomeFromBytes({ url, kind, etag: null, last_modified: null }, raw);
 		row = fromOutcome(url, kind, outcome);
 	}
-	// Bot-walled or empty-shell html: the real page may only exist post-JS.
-	if (row.kind === 'html' && row.fetch_status !== 'ok') {
+	if (needsRenderedPromotion(row)) {
 		const viaChromium = await fingerprintUrl(
 			{ url, kind: 'rendered', etag: null, last_modified: null },
 			rendered
 		);
+		// The rendered text (all frames) is a superset of the raw shell, so an
+		// ok rendered row always dominates — even without a price signal it at
+		// least hashes the content the raw HTML can't see.
 		if (viaChromium.fetch_status === 'ok') return fromOutcome(url, 'rendered', viaChromium);
+		if (row.fetch_status === 'ok') {
+			console.error(
+				`    warning: ${url} shows no price signal and Chromium retry failed ` +
+					`(${viaChromium.fetch_status}) — if this menu is JS/iframe-rendered, its html ` +
+					`fingerprint may not cover it; curate with --urls if so`
+			);
+		}
 	}
 	return row;
 }
@@ -88,16 +111,29 @@ function fromOutcome(url: string, kind: BaselineRow['kind'], o: FetchOutcome): B
 if (import.meta.main) {
 	const args = process.argv.slice(2);
 	const urlsFlag = args.indexOf('--urls');
-	const menuIds = (urlsFlag === -1 ? args : args.slice(0, urlsFlag)).filter(
-		(a) => !a.startsWith('--')
-	);
-	const explicitUrls = urlsFlag === -1 ? null : args.slice(urlsFlag + 1);
-	if (menuIds.length === 0) {
+	const menuIds = urlsFlag === -1 ? args : args.slice(0, urlsFlag);
+	// Unknown flags error out rather than being filtered: silently dropping
+	// `--limit` would leave its VALUE parsed as a menu id.
+	const strayFlag = menuIds.find((a) => a.startsWith('--'));
+	if (strayFlag || menuIds.length === 0) {
+		if (strayFlag) console.error(`unknown flag ${strayFlag} (only --urls is supported)`);
 		console.error('usage: bun run menu:baseline <menu_id> [<menu_id> …] [--urls <url> …]');
 		process.exit(1);
 	}
-	if (explicitUrls !== null && (menuIds.length !== 1 || explicitUrls.length === 0)) {
+	const rawUrls = urlsFlag === -1 ? null : args.slice(urlsFlag + 1);
+	const explicitUrls = rawUrls === null ? null : sanitizeUrls(rawUrls);
+	if (rawUrls !== null && (menuIds.length !== 1 || rawUrls.length === 0)) {
 		console.error('--urls needs exactly one menu_id and at least one url');
+		process.exit(1);
+	}
+	if (explicitUrls !== null && explicitUrls.length < (rawUrls?.length ?? 0)) {
+		console.error(
+			`note: ${(rawUrls?.length ?? 0) - explicitUrls.length} of the given urls dropped ` +
+				`(invalid/duplicate/over the ${MAX_WATCH_URLS}-url cap)`
+		);
+	}
+	if (explicitUrls !== null && explicitUrls.length === 0) {
+		console.error('--urls: none of the given urls are valid http(s) urls');
 		process.exit(1);
 	}
 

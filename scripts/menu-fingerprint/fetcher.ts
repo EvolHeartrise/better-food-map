@@ -3,10 +3,12 @@
 //
 // Fetch semantics per kind:
 //   feed      plain fetch; body must parse as JSON or the row degenerates.
-//   pdf       plain fetch; hash the pdftotext-extracted text. Without a
-//             working pdftotext the bytes are hashed instead — the "bytes:"
-//             prefix can never equal a "text:" baseline, so that environment
-//             fails open into the agent path rather than lying.
+//   pdf       plain fetch; hash the pdftotext-extracted text. When extraction
+//             is unavailable OR yields degenerate text (an image-only scanned
+//             menu) the BYTES are hashed instead — empty text would hash
+//             identical across genuinely different scans, and the "bytes:"
+//             prefix can never equal a "text:" baseline, so both cases fail
+//             open into the agent path rather than lying.
 //   html      plain fetch; hash the visible text of the raw response.
 //   rendered  headless Chromium (the bench recorder's binary), post-JS
 //             innerText — for pages whose raw HTML is an empty shell.
@@ -87,9 +89,16 @@ export async function pdfToText(bytes: Uint8Array): Promise<string | null> {
 			stdout: 'pipe',
 			stderr: 'ignore'
 		});
-		const text = await new Response(proc.stdout).text();
-		const code = await proc.exited;
-		return code === 0 ? text : null;
+		// A pathological PDF can hang pdftotext; FETCH_TIMEOUT_MS only covers the
+		// network, so the extraction gets its own deadline.
+		const timer = setTimeout(() => proc.kill(), FETCH_TIMEOUT_MS);
+		try {
+			const text = await new Response(proc.stdout).text();
+			const code = await proc.exited;
+			return code === 0 ? text : null;
+		} finally {
+			clearTimeout(timer);
+		}
 	} catch {
 		return null;
 	}
@@ -108,13 +117,18 @@ export function looksLikePdf(bytes: Uint8Array): boolean {
  */
 export class RenderedFetcher {
 	private browser: Browser | undefined;
-	private context: BrowserContext | undefined;
+	// Launch memoized as a PROMISE: concurrent fetch() calls (check.ts
+	// Promise.alls a menu's rows) must share one launch — a second concurrent
+	// ensure() racing past an `if (this.context)` guard would leak a browser
+	// whose connection keeps the bun process alive forever.
+	private ready: Promise<BrowserContext> | undefined;
 
-	private async ensure(): Promise<BrowserContext> {
-		if (this.context) return this.context;
-		this.browser = await chromium.launch({ executablePath: findChromium(), headless: true });
-		this.context = await this.browser.newContext({ userAgent: USER_AGENT });
-		return this.context;
+	private ensure(): Promise<BrowserContext> {
+		this.ready ??= (async () => {
+			this.browser = await chromium.launch({ executablePath: findChromium(), headless: true });
+			return this.browser.newContext({ userAgent: USER_AGENT });
+		})();
+		return this.ready;
 	}
 
 	/** Post-JS page text; throws when Chromium is unavailable (caller maps to http_error). */
@@ -125,17 +139,25 @@ export class RenderedFetcher {
 			const response = await page.goto(url, { timeout: FETCH_TIMEOUT_MS, waitUntil: 'load' });
 			await settle(page, 1_500);
 			const title = await page.title().catch(() => '');
-			const text = await page.evaluate(() => document.body?.innerText ?? '').catch(() => '');
-			return { status: response?.status() ?? 0, title, text };
+			// innerText across ALL frames, not just the main one: menus served
+			// through an ordering-widget iframe are invisible to the top document's
+			// body — hashing only that shell would report "unchanged" forever.
+			const texts = await Promise.all(
+				page
+					.frames()
+					.map((frame) => frame.evaluate(() => document.body?.innerText ?? '').catch(() => ''))
+			);
+			return { status: response?.status() ?? 0, title, text: texts.filter(Boolean).join('\n') };
 		} finally {
 			await page.close().catch(() => {});
 		}
 	}
 
 	async close(): Promise<void> {
-		await this.context?.close().catch(() => {});
+		const context = await this.ready?.catch(() => undefined);
+		await context?.close().catch(() => {});
 		await this.browser?.close().catch(() => {});
-		this.context = undefined;
+		this.ready = undefined;
 		this.browser = undefined;
 	}
 }
@@ -245,8 +267,7 @@ export async function outcomeFromBytes(
 		const text = await pdfToText(bytes);
 		return outcome(input, {
 			fetch_status: 'ok',
-			content_hash:
-				text === null ? contentHash('bytes', bytes) : contentHash('text', normalizeTextLines(text)),
+			content_hash: pdfContentHash(bytes, text),
 			...validators
 		});
 	}
@@ -254,6 +275,20 @@ export async function outcomeFromBytes(
 	// kind 'html'
 	const html = new TextDecoder().decode(bytes);
 	return textOutcome(input, raw.status, htmlTitle(html), visibleText(html), validators);
+}
+
+/**
+ * Hash choice for a fetched PDF. Extracted text is only trusted when it is
+ * SUBSTANTIAL: an image-only (scanned) menu extracts to empty/near-empty text,
+ * which would hash identically across genuinely different scans — the false
+ * "unchanged" this gate must never produce. Thin-or-missing text falls back to
+ * hashing the bytes, where a re-uploaded scan always reads as changed (byte
+ * churn on regeneration is a false "changed" — the cheap, fail-open direction).
+ */
+export function pdfContentHash(bytes: Uint8Array, text: string | null): string {
+	if (text === null) return contentHash('bytes', bytes);
+	const normalized = normalizeTextLines(text);
+	return isDegenerate(normalized) ? contentHash('bytes', bytes) : contentHash('text', normalized);
 }
 
 /** Plain text (pdftotext output, innerText) → the line shape visibleText yields. */

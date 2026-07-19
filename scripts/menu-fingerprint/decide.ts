@@ -29,6 +29,8 @@ export interface WatchRow {
 	etag: string | null;
 	last_modified: string | null;
 	fetch_status: FetchStatus;
+	/** When the row last fetched/compared; check.ts uses it to cap how long 304s may coast. */
+	checked_at?: string;
 }
 
 export interface FetchOutcome {

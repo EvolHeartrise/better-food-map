@@ -61,30 +61,32 @@ const VOLATILE_KEY_FRAGMENTS = [
 	'servertime'
 ];
 
-// A string VALUE that is an ISO datetime WITH a time component is volatile
-// metadata (generated-at stamps) regardless of key. Bare dates ("2026-07-18")
-// are kept — a promo end date is content.
-const ISO_DATETIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/;
-
 function isVolatileKey(key: string): boolean {
 	const k = key.toLowerCase();
 	return VOLATILE_KEY_FRAGMENTS.some((f) => k.includes(f));
 }
 
-/** Recursively drops volatile keys/values; arrays keep their order (feed order is content). */
+/**
+ * Recursively drops volatile keys; arrays keep their order (feed order is
+ * content). Only SCALAR values are ever dropped: a fragment collision on a
+ * container key ("sessions" as a menu's daypart grouping, "cachedItems") must
+ * never delete a whole subtree of real menu data — a change confined to it
+ * would hash invisible, the one failure mode this gate must not have. A
+ * volatile-named container is left intact and merely recursed into, which at
+ * worst keeps some churn (false "changed" — the cheap direction).
+ */
 export function stripVolatile(value: unknown): unknown {
 	if (Array.isArray(value)) return value.map(stripVolatile);
 	if (value !== null && typeof value === 'object') {
 		const out: Record<string, unknown> = {};
 		for (const key of Object.keys(value as Record<string, unknown>)) {
-			if (isVolatileKey(key)) continue;
 			const v = (value as Record<string, unknown>)[key];
-			if (typeof v === 'string' && ISO_DATETIME.test(v)) continue;
+			const isScalar = v === null || typeof v !== 'object';
+			if (isScalar && isVolatileKey(key)) continue;
 			out[key] = stripVolatile(v);
 		}
 		return out;
 	}
-	if (typeof value === 'string' && ISO_DATETIME.test(value)) return null;
 	return value;
 }
 
@@ -174,25 +176,52 @@ export function htmlTitle(html: string): string {
 // version strings, hence the lookarounds barring a third decimal segment.
 const PRICE_TOKEN = /[$£€]\s?\d{1,4}(?:[.,]\d{2})?|(?<![\d.,])\d{1,4}[.,]\d{2}(?![.,]?\d)(?!\s*%)/;
 
+// Lines carrying dietary/allergen designations are menu signal even without a
+// price: this project's most policy-sensitive data is exactly these markers,
+// so a legend or "(v)" change must never hide behind price-line stability.
+const DIETARY_TOKEN =
+	/\b(?:vegan|vegetarian|gluten[\s-]?free|dairy[\s-]?free|nut[\s-]?free|halal|allergen|allergy|allergies|contains)\b/i;
+
 /**
- * The sorted multiset of text lines carrying a price token. A restaurant
- * homepage's "hours this week" banner or review-count widget changes weekly;
- * its price list does not — so for html/rendered pages this is compared in
- * preference to the full-text hash. Sorting makes the signal order-insensitive
- * (menu sections get reshuffled cosmetically more often than repriced).
+ * The menu-shaped subset of a page's text, as a sorted multiset of lines. A
+ * restaurant homepage's "hours this week" banner or review-count widget
+ * changes weekly; its menu body does not — so for html/rendered pages this is
+ * compared in preference to the full-text hash. Included lines:
+ *   • every line carrying a price token,
+ *   • each price line's immediate neighbours — menus routinely split an item
+ *     across lines ("Pad Thai" / "16.95"), so a rename or description edit on
+ *     the adjacent line must move the signal even though the price didn't,
+ *   • every line carrying a dietary/allergen designation, anywhere on the page.
+ * Sorting makes the signal order-insensitive (menu sections get reshuffled
+ * cosmetically more often than repriced).
  *
- * Returns null when fewer than MIN_PRICE_LINES lines qualify: one or two
+ * Returns null when fewer than MIN_PRICE_LINES price lines qualify: one or two
  * incidental decimals are too thin a signal to gate on, so comparison falls
- * back to the full content hash. A description-only edit on a price line's
- * page is invisible to this signal — that class of change rides the periodic
+ * back to the full content hash. Known blind spot: a change 2+ lines away from
+ * every price line and carrying no dietary token (a reshuffled unpriced
+ * tasting-menu blurb) is invisible — that class rides the periodic
  * full-refresh floor instead (see check.ts --max-age-days).
  */
 export const MIN_PRICE_LINES = 3;
 
 export function priceSignal(text: string): string | null {
-	const lines = text.split('\n').filter((line) => PRICE_TOKEN.test(line));
-	if (lines.length < MIN_PRICE_LINES) return null;
-	return lines.toSorted().join('\n');
+	const lines = text.split('\n');
+	const priceLineCount = lines.filter((line) => PRICE_TOKEN.test(line)).length;
+	if (priceLineCount < MIN_PRICE_LINES) return null;
+	const include = new Set<number>();
+	for (let i = 0; i < lines.length; i++) {
+		if (PRICE_TOKEN.test(lines[i])) {
+			if (i > 0) include.add(i - 1);
+			include.add(i);
+			if (i + 1 < lines.length) include.add(i + 1);
+		} else if (DIETARY_TOKEN.test(lines[i])) {
+			include.add(i);
+		}
+	}
+	return [...include]
+		.map((i) => lines[i])
+		.toSorted()
+		.join('\n');
 }
 
 // ---------------------------------------------------------------------------

@@ -39,11 +39,19 @@ url is normalized by `kind` before hashing (`normalize.ts`):
 | `html`     | visible text only — tags, scripts, styles, attributes, comments gone |
 | `rendered` | post-JS `innerText` via headless Chromium (bench recorder's binary)  |
 
-For html/rendered pages a second **price-line signal** (the sorted multiset of
-text lines carrying a price token) is compared in preference to the full text
-hash when both sides have one — banners/hours/review widgets churn weekly, the
-price list doesn't. Hashes are prefixed by pipeline (`feed:`/`text:`/`bytes:`)
-so different pipelines can never compare equal by accident.
+For html/rendered pages a second **menu signal** — the sorted multiset of
+price-bearing lines, their immediate neighbour lines (menus split items across
+lines: "Pad Thai" / "16.95"), and every dietary/allergen-marker line — is
+compared in preference to the full text hash when both sides have one:
+banners/hours/review widgets churn weekly, the menu body doesn't. Hashes are
+prefixed by pipeline (`feed:`/`text:`/`bytes:`) so different pipelines can
+never compare equal by accident. Two guards close the "stable shell" holes: a
+200 html page with **no** price signal is promoted to the rendered tier at
+baseline (an SPA/iframe menu leaves the raw HTML as a nav/footer shell that
+would hash stable forever — and the rendered tier reads `innerText` across
+**all frames**, so iframe menus are covered), and a PDF whose extracted text
+is empty/thin (a scanned image menu) falls back to **byte** hashing, where a
+re-uploaded scan always reads as changed.
 
 ## Fail-open guarantees
 
@@ -61,6 +69,19 @@ The gate can only ever _save_ agent work, never silently skip a real change:
 - A check sweep never overwrites baseline hashes/validators except on rows
   that compared stable (persisting a new etag on a changed row would let the
   next conditional GET 304 against content we never accepted).
+- Conditional GETs can't coast forever: rows whose validators are older than
+  30 days re-fetch unconditionally, so a lying etag/Last-Modified is bounded.
+
+## Known blind spots (they ride the `--max-age-days` floor)
+
+- On a noisy html/rendered page where the signal comparison is in effect, a
+  change **2+ lines away from every price line** that carries no
+  dietary/allergen token (e.g. a reshuffled unpriced tasting-menu blurb) does
+  not move the signal.
+- A source that serves different content per visitor/geo may hash stable from
+  this vantage while changing elsewhere.
+  The floor guarantees a real agent pass at most `--max-age-days` (180) after
+  the last verification regardless of hash stability.
 
 ## Files
 
