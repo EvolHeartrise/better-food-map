@@ -92,7 +92,7 @@ export function prioritize(urls: string[]): string[] {
 	return urls.toSorted((a, b) => Number(MENU_HINT.test(b)) - Number(MENU_HINT.test(a)));
 }
 
-async function settle(page: Page, extraWaitMs: number): Promise<void> {
+export async function settle(page: Page, extraWaitMs: number): Promise<void> {
 	await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
 	// nudge lazy-loaded sections (common on restaurant sites)
 	await page

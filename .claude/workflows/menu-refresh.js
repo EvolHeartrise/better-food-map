@@ -3,7 +3,7 @@ export const meta = {
 	description:
 		'Refresh stale menus: re-extract from banked sources, risk-routed verification, tiered auto-apply',
 	whenToUse:
-		'Periodic menu-staleness drain. Invoke with args: { today: "YYYY-MM-DD", limit?: number (default 10), menus?: [...], model?: "sonnet" }. If `menus` is omitted, a selection agent picks the `limit` stalest menus itself (list_menus, last_verified ascending, never-verified first — pure staleness, chains NOT weighted up); pass `menus` [{ menu_id, menu_name, brand_id?, last_verified, item_count, location_count }] to hand-pick the batch instead. All subagents run on Sonnet 5. Auto-applies: new items, price/description updates, zero-like stale deletions, sources + refresh_notes. STAGES for user review (returned, never written): liked-item deletions, dietary-tag changes on existing items, suspected closures.',
+		'Periodic menu-staleness drain. BEFORE invoking, run the deterministic source-change gate: `bun run menu:check --limit N` (scripts/menu-fingerprint/) fingerprints the stalest menus’ watch urls, stamps hash-stable ones as checked (no agent needed), and prints the menus that actually changed — pass its `needs_refresh` rows as the `menus` arg so agent tokens are spent only where the source moved. AFTER the workflow completes, re-baseline every refreshed menu: `bun run menu:baseline <menu_id> …` (ids in the report’s `baseline_next` field). Invoke with args: { today: "YYYY-MM-DD", limit?: number (default 10), menus?: [...], model?: "sonnet" }. If `menus` is omitted, a selection agent picks the `limit` stalest menus itself (list_menus, last_verified ascending, never-verified first — pure staleness, chains NOT weighted up); pass `menus` [{ menu_id, menu_name, brand_id?, last_verified, item_count, location_count }] to hand-pick the batch instead. All subagents run on Sonnet 5. Auto-applies: new items, price/description updates, zero-like stale deletions, sources + refresh_notes. STAGES for user review (returned, never written): liked-item deletions, dietary-tag changes on existing items, suspected closures.',
 	phases: [
 		{
 			title: 'Select',
@@ -556,7 +556,17 @@ const report = {
 	blocked: done
 		.filter((r) => r.outcome === 'blocked')
 		.map((r) => ({ menu: r.menu, detail: r.detail })),
-	failed: batch.length - done.length + done.filter((r) => r.outcome === 'extract_failed').length
+	failed: batch.length - done.length + done.filter((r) => r.outcome === 'extract_failed').length,
+	// Source-change gate re-baseline (scripts/menu-fingerprint/): every menu that
+	// was refreshed needs fresh fingerprints so the next `bun run menu:check` can
+	// prove it unchanged. The orchestrator runs this AFTER the workflow.
+	baseline_next:
+		done.filter((r) => r.outcome === 'refreshed').length > 0
+			? `bun run menu:baseline ${done
+					.filter((r) => r.outcome === 'refreshed')
+					.map((r) => r.menu.menu_id)
+					.join(' ')}`
+			: null
 };
 log(
 	`Done: ${report.refreshed.length} refreshed, ${report.staged_closures.length} closure(s) staged, ${report.incomplete.length} incomplete, ${report.blocked.length} blocked, ${report.failed} failed`
