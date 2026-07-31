@@ -20,6 +20,7 @@
 		"format": "oxfmt",
 		"format:check": "oxfmt --check",
 		"deploy": "bun run build && wrangler deploy",
+		"bench:blacklist": "bun run scripts/bench/blacklist.ts",
 		"bench:draft": "bun run scripts/bench/draft.ts",
 		"bench:lint": "bun run scripts/bench/lint.ts",
 		"bench:new": "bun run scripts/bench/new.ts",
