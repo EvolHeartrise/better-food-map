@@ -1,0 +1,32 @@
+{
+	"entries": [
+		{
+			"model": "openai/gpt-5.6-luna",
+			"effort": "none",
+			"reason": "Tag recall collapses without reasoning: 54.7% mean, 0.2% on meetonmain — the whole-venue vegan rule never fires. Item recall is fine (92.7%) but the dietary tags are the point.",
+			"added": "2026-07-31",
+			"evidence": "4-task sweep 2026-07-31 (n=1/level); see bench/runs/*/2026-07-31T18:5*"
+		},
+		{
+			"model": "openai/gpt-5.6-luna",
+			"effort": "minimal",
+			"reason": "Truncates long menus: submitted 64/180 items on meetonmain (35.6% item recall). Cheapest and fastest level but unusable on multi-page venues.",
+			"added": "2026-07-31",
+			"evidence": "4-task sweep 2026-07-31 (n=1/level); see bench/runs/*/2026-07-31T18:5*"
+		},
+		{
+			"model": "openai/gpt-5.6-luna",
+			"effort": "low",
+			"reason": "Tag recall 62.7% mean, 21.5% on meetonmain; item recall 61.7% there. Strictly dominated by xhigh at ~3x the cost.",
+			"added": "2026-07-31",
+			"evidence": "4-task sweep 2026-07-31 (n=1/level); see bench/runs/*/2026-07-31T18:5*"
+		},
+		{
+			"model": "openai/gpt-5.6-luna",
+			"effort": "medium",
+			"reason": "Worst tag precision of the sweep (93.1% mean, 72.2% on woodenspoon — inferred vegetarian tags) and item recall 85.8%. No axis where it wins.",
+			"added": "2026-07-31",
+			"evidence": "4-task sweep 2026-07-31 (n=1/level); see bench/runs/*/2026-07-31T18:5*"
+		}
+	]
+}

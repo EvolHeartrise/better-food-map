@@ -270,6 +270,22 @@ from a provider cache), `cache_write_tokens` (tokens written into a cache), and
 are `0` when the provider reports nothing. `bench/` is gitignored, so runs stay
 out of git. Exit 0 on a scored run, 1 on a failed run, 2 on usage/config errors.
 
+**Wall-clock.** Every run — scored OR failed — records two durations on
+`meta.json`, and prints both to stderr as a `wall-clock …` line under the score
+summary:
+
+- `duration_ms` (from `started_at`) — the **agent run**: from just before the
+  first model request through scoring. This is the number to compare across
+  models; it excludes bench setup.
+- `wall_clock_ms` (from `invoked_at`, the process-start instant) — the **TOTAL**
+  wall-clock of the whole `bench:run` invocation: manifest/gold load, the one-off
+  `GET /api/v1/models` pricing fetch, the agent run, and scoring. Always
+  `>= duration_ms`; the gap is bench overhead, not model time.
+
+Both are plain elapsed wall-clock. Tool calls are served in-process from the
+snapshot, so a model's time is essentially its own latency — but note
+`duration_ms` still includes the (small) local `fetch_page` time.
+
 **Run cost (openrouter backend only).** On the `openrouter` backend `meta.json`
 also carries two USD cost fields (absent on the Claude backend, which reports
 `total_cost_usd` instead):
@@ -302,6 +318,55 @@ also carries two USD cost fields (absent on the Claude backend, which reports
 3. Check `serve-misses.jsonl` and `/__report__`; re-record with `--url` for holes.
 4. Only when the snapshot browses clean, hand-author `gold/data.json`.
 5. `bun run bench:lint` until clean.
+
+## Pruning the test matrix (`bench:blacklist`)
+
+As the bench grows, the cost of a full sweep is (models × configs × tasks). The
+blacklist is how that matrix gets narrowed: a record of model/config combinations
+already TESTED and judged not worth testing again, so the same verdict is never
+re-purchased.
+
+```bash
+bun run bench:blacklist                                  # list entries
+bun run bench:blacklist --add --model <id> [--effort <level>] [--backend <b>] \
+                        --reason <text> [--evidence <text>]
+bun run bench:blacklist --remove --model <id> [--effort <level>] [--backend <b>]
+bun run bench:blacklist --check  --model <id> [--effort <level>]   # exit 0 allowed, 1 blocked
+```
+
+`bench:run` and `bench:draft` consult it **first** — before the API-key check,
+before the models fetch, before any chat request — so a blacklisted run costs
+nothing. They **exit 3** (not 2) and print the entry's reason, date, and
+evidence: a sweep driver can treat 3 as "deliberately skipped" and keep going,
+while 2 still means "you misconfigured this."
+
+Entries live in **`scripts/bench/blacklist.json`**, deliberately NOT under
+`bench/` — that directory is gitignored, and these verdicts are durable knowledge
+that has to survive a machine change and be reviewable in a diff. Each entry is:
+
+| field      | meaning                                                                                                   |
+| ---------- | --------------------------------------------------------------------------------------------------------- |
+| `model`    | model id as passed to `--model` (matched case-insensitively)                                              |
+| `effort`   | a level name, `default` (only runs passing no `--effort`), or `*`/omitted (every level, default included) |
+| `backend`  | `openrouter` \| `claude`; omitted covers both                                                             |
+| `reason`   | **required** — why it was ruled out. A verdict without its why rots into superstition                     |
+| `added`    | `YYYY-MM-DD`, so an old verdict against a since-updated model is visible as stale                         |
+| `evidence` | optional pointer to the runs that justified it                                                            |
+
+Note `effort: none` and `effort: default` are **different scopes**: `none` is an
+explicit reasoning level, `default` is "no `--effort` flag passed". Blacklisting
+one does not block the other. To rule a model out entirely, omit `--effort`.
+
+Two escape hatches, because a blacklist you cannot override is a trap — models
+get updated and old verdicts expire:
+
+- `--ignore-blacklist` on `bench:run`/`bench:draft` runs the combination anyway
+  (it prints a note that it is overriding).
+- `--remove` drops the entry for good.
+
+A malformed `blacklist.json` is a hard error rather than an empty list —
+silently ignoring a corrupt file would re-enable exactly the spending it exists
+to prevent.
 
 ## Authoring at scale
 

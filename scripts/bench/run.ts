@@ -14,12 +14,20 @@
  *
  * Requires OPENROUTER_API_KEY in the environment. Writes a run directory under
  * bench/runs/<task-slug>/<iso-timestamp>-<model-slug>/ (bench/ is gitignored).
- * Exit 0 on a scored run, 1 on a failed run, 2 on usage/config errors.
+ * Exit 0 on a scored run, 1 on a failed run, 2 on usage/config errors, 3 when the
+ * model/config is blacklisted (see blacklist.ts) and the run was skipped unspent.
  */
 import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import * as v from 'valibot';
+import {
+	describeEntry,
+	findBlock,
+	formatBlocked,
+	loadBlacklist,
+	type BlacklistEntry
+} from './blacklist';
 import { DIETARY_TAGS, GoldSchema, htmlToText, type GoldMenu } from './lint';
 import { CandidateSchema, formatSummary, scoreCandidate, type ScoreReport } from './score';
 import {
@@ -906,7 +914,20 @@ export interface RunMeta {
 	temperature: number | null;
 	policy_version: string;
 	started_at: string;
+	/**
+	 * Wall-clock of the AGENT RUN itself: from just before the first model request
+	 * to just after scoring. Excludes CLI setup (manifest/gold load, the one-off
+	 * OpenRouter models fetch), so it is the number to compare across models.
+	 */
 	duration_ms: number;
+	/**
+	 * TOTAL wall-clock of the whole `bench:run` invocation, from process start to
+	 * the completed meta — setup, the agent run, and scoring. Always >=
+	 * `duration_ms`; the gap is bench overhead, not model time.
+	 */
+	wall_clock_ms: number;
+	/** ISO timestamp of process start — the origin `wall_clock_ms` is measured from. */
+	invoked_at: string;
 	tool_calls: number;
 	submit_attempts: number;
 	prompt_tokens: number;
@@ -968,11 +989,14 @@ export interface CliArgs {
 	effort?: string;
 	/** Sampling temperature (openrouter only); undefined = provider default. */
 	temperature?: number;
+	/** Run a blacklisted model/config anyway (deliberate re-test). */
+	ignoreBlacklist?: boolean;
 }
 
 const USAGE =
 	'usage: bun run bench:run <task-dir> --model <model-id> ' +
-	'[--backend openrouter|claude] [--effort <level>] [--temperature <n>] [--max-tool-calls N]';
+	'[--backend openrouter|claude] [--effort <level>] [--temperature <n>] [--max-tool-calls N] ' +
+	'[--ignore-blacklist]';
 
 /** Only the OpenRouter backend needs OPENROUTER_API_KEY; Claude uses the SDK login. */
 export function requiresOpenRouterKey(backend: Backend): boolean {
@@ -988,6 +1012,7 @@ export function parseCli(argv: string[]): CliArgs | { error: string } {
 	// since --backend may appear either before or after them on the command line.
 	let effortRaw: string | undefined;
 	let temperature: number | undefined;
+	let ignoreBlacklist = false;
 	for (let i = 0; i < argv.length; i += 1) {
 		const arg = argv[i];
 		if (arg === '--model') {
@@ -1012,6 +1037,8 @@ export function parseCli(argv: string[]): CliArgs | { error: string } {
 			if (!Number.isInteger(n) || n <= 0)
 				return { error: '--max-tool-calls must be a positive integer' };
 			maxToolCalls = n;
+		} else if (arg === '--ignore-blacklist') {
+			ignoreBlacklist = true;
 		} else if (arg.startsWith('--')) {
 			return { error: `unknown option: ${arg}` };
 		} else if (taskDir === undefined) {
@@ -1041,7 +1068,7 @@ export function parseCli(argv: string[]): CliArgs | { error: string } {
 		effort = effortRaw;
 	}
 
-	return { taskDir, model, maxToolCalls, backend, effort, temperature };
+	return { taskDir, model, maxToolCalls, backend, effort, temperature, ignoreBlacklist };
 }
 
 /** Assemble a RunMeta from a completed (or fatally-failed) run. */
@@ -1051,7 +1078,9 @@ export function buildMeta(
 	policyVersion: string,
 	startedAt: Date,
 	result: RunResult,
-	costs?: { price: number | null; price_cached: number | null }
+	costs?: { price: number | null; price_cached: number | null },
+	/** Process-start instant; defaults to `startedAt` so a run with no setup phase reads equal. */
+	invokedAt: Date = startedAt
 ): RunMeta {
 	return {
 		model: cli.model,
@@ -1064,6 +1093,8 @@ export function buildMeta(
 		policy_version: policyVersion,
 		started_at: startedAt.toISOString(),
 		duration_ms: Date.now() - startedAt.getTime(),
+		wall_clock_ms: Date.now() - invokedAt.getTime(),
+		invoked_at: invokedAt.toISOString(),
 		tool_calls: result.toolCalls,
 		submit_attempts: result.submitAttempts,
 		prompt_tokens: result.promptTokens,
@@ -1109,12 +1140,53 @@ function computeOpenRouterCosts(
 	return { price, price_cached };
 }
 
+/** The stderr wall-clock line: total invocation time, with the agent run broken out. */
+export function formatWallClock(meta: Pick<RunMeta, 'wall_clock_ms' | 'duration_ms'>): string {
+	return (
+		`wall-clock ${formatDuration(meta.wall_clock_ms)} total ` +
+		`(${formatDuration(meta.duration_ms)} in the agent run)`
+	);
+}
+
+/** `1m 04s` / `12.3s` — wall-clock for humans. */
+export function formatDuration(ms: number): string {
+	if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+	const totalSeconds = Math.round(ms / 1000);
+	return `${Math.floor(totalSeconds / 60)}m ${String(totalSeconds % 60).padStart(2, '0')}s`;
+}
+
 async function main(): Promise<number> {
+	// Origin for wall_clock_ms — taken before ANY work so setup counts too.
+	const invokedAt = new Date();
 	const cli = parseCli(process.argv.slice(2));
 	if ('error' in cli) {
 		console.error(`error: ${cli.error}`);
 		console.error(USAGE);
 		return 2;
+	}
+
+	// Blacklist FIRST: a configuration already ruled out must cost nothing — no
+	// key check, no models fetch, no chat request. Exit 3 (not 2) so a sweep can
+	// tell "deliberately skipped" from "misconfigured" and keep going.
+	let blocked: BlacklistEntry | undefined;
+	try {
+		blocked = findBlock(loadBlacklist(), {
+			model: cli.model,
+			effort: cli.effort,
+			backend: cli.backend
+		});
+	} catch (e) {
+		console.error(`error: ${String(e)}`);
+		return 2;
+	}
+	if (blocked && !cli.ignoreBlacklist) {
+		console.error(formatBlocked(blocked, '--ignore-blacklist'));
+		return 3;
+	}
+	if (blocked) {
+		console.error(
+			`note: ${describeEntry(blocked)} is blacklisted — running anyway per --ignore-blacklist`
+		);
 	}
 
 	const apiKey = process.env.OPENROUTER_API_KEY;
@@ -1225,20 +1297,22 @@ async function main(): Promise<number> {
 		// A thrown run collected no usage, so price is null; keep the openrouter
 		// fields present (as null) rather than fetching pricing for an empty run.
 		const costs = cli.backend === 'openrouter' ? { price: null, price_cached: null } : undefined;
-		const meta = buildMeta(cli, manifest, gold.policy_version, startedAt, failed, costs);
+		const meta = buildMeta(cli, manifest, gold.policy_version, startedAt, failed, costs, invokedAt);
 		writeRun(runDir, { meta, transcript });
 		console.error(`run failed: ${String(e)}`);
+		console.error(formatWallClock(meta));
 		console.error(`run directory: ${runDir}`);
 		return 1;
 	}
 
 	const report = result.candidate ? scoreCandidate(gold, result.candidate) : undefined;
 	const costs = computeOpenRouterCosts(cli, result, modelInfo);
-	const meta = buildMeta(cli, manifest, gold.policy_version, startedAt, result, costs);
+	const meta = buildMeta(cli, manifest, gold.policy_version, startedAt, result, costs, invokedAt);
 	writeRun(runDir, { meta, transcript, candidate: result.candidate, report });
 
 	if (report) console.error(formatSummary(report));
 	else console.error(`run failed: ${result.failureReason ?? 'unknown'}`);
+	console.error(formatWallClock(meta));
 	console.error(`run directory: ${runDir}`);
 	return result.status === 'scored' ? 0 : 1;
 }
