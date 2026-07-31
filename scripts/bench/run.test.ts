@@ -13,6 +13,8 @@ import {
 	estimateCachedPrice,
 	extractHrefs,
 	fetchPage,
+	formatDuration,
+	formatWallClock,
 	modelSlug,
 	parseCli,
 	runAgent,
@@ -624,6 +626,22 @@ describe('buildOpenRouterBody', () => {
 	});
 });
 
+describe('formatDuration / formatWallClock', () => {
+	test('sub-minute reads in seconds, longer in m/s', () => {
+		expect(formatDuration(0)).toBe('0.0s');
+		expect(formatDuration(12_340)).toBe('12.3s');
+		expect(formatDuration(59_900)).toBe('59.9s');
+		expect(formatDuration(64_000)).toBe('1m 04s');
+		expect(formatDuration(3_600_000)).toBe('60m 00s');
+	});
+
+	test('the stderr line reports the total and breaks out the agent run', () => {
+		expect(formatWallClock({ wall_clock_ms: 75_000, duration_ms: 64_000 })).toBe(
+			'wall-clock 1m 15s total (1m 04s in the agent run)'
+		);
+	});
+});
+
 describe('buildMeta effort/temperature fields', () => {
 	const manifest = { entryUrl: 'https://x.com/' } as BenchManifest;
 	const result: RunResult = {
@@ -664,6 +682,27 @@ describe('buildMeta effort/temperature fields', () => {
 		expect(unset.effort).toBeNull();
 		expect(unset.temperature).toBeNull();
 		expect(unset.effort_default).toBe('provider-default');
+	});
+
+	test('wall_clock_ms spans process start, duration_ms only the agent run', () => {
+		const invokedAt = new Date(Date.now() - 5_000);
+		const startedAt = new Date(Date.now() - 2_000);
+		const meta = buildMeta(base, manifest, '2026-07-11', startedAt, result, undefined, invokedAt);
+
+		expect(meta.invoked_at).toBe(invokedAt.toISOString());
+		expect(meta.started_at).toBe(startedAt.toISOString());
+		// Setup time (invoked → started) is inside wall_clock_ms but outside duration_ms.
+		expect(meta.wall_clock_ms).toBeGreaterThanOrEqual(5_000);
+		expect(meta.duration_ms).toBeGreaterThanOrEqual(2_000);
+		expect(meta.duration_ms).toBeLessThan(5_000);
+		expect(meta.wall_clock_ms).toBeGreaterThan(meta.duration_ms);
+	});
+
+	test('wall_clock_ms falls back to the run start when no process start is passed', () => {
+		const startedAt = new Date(Date.now() - 3_000);
+		const meta = buildMeta(base, manifest, '2026-07-11', startedAt, result);
+		expect(meta.invoked_at).toBe(startedAt.toISOString());
+		expect(meta.wall_clock_ms).toBe(meta.duration_ms);
 	});
 
 	test('claude backend uses the claude-code-default note, temperature always null', () => {
