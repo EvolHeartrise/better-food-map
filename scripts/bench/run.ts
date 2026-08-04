@@ -196,6 +196,50 @@ export function estimateCachedPrice(
 const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models';
 
 /**
+ * Quantization tiers OpenRouter recognises for `provider.quantizations`.
+ * Validated client-side so a typo (`fp-8`) fails before spending, rather than
+ * silently widening routing back to every endpoint.
+ */
+export const QUANTIZATION_LEVELS = [
+	'int4',
+	'int8',
+	'fp4',
+	'fp6',
+	'fp8',
+	'fp16',
+	'bf16',
+	'fp32',
+	'unknown'
+] as const;
+
+/**
+ * Map provider name → quantization for one model, from OpenRouter's public
+ * endpoints list. Best-effort: returns an empty map on any failure, since a
+ * network blip must never fail a completed run — the provider names are still
+ * recorded either way.
+ */
+export async function fetchProviderQuantizations(model: string): Promise<Record<string, string>> {
+	try {
+		const res = await fetch(`https://openrouter.ai/api/v1/models/${model}/endpoints`, {
+			headers: { Accept: 'application/json' }
+		});
+		if (!res.ok) return {};
+		const body = (await res.json()) as {
+			data?: { endpoints?: { provider_name?: unknown; quantization?: unknown }[] };
+		};
+		const out: Record<string, string> = {};
+		for (const e of body.data?.endpoints ?? []) {
+			if (typeof e.provider_name === 'string' && typeof e.quantization === 'string') {
+				out[e.provider_name] = e.quantization;
+			}
+		}
+		return out;
+	} catch {
+		return {};
+	}
+}
+
+/**
  * One model's entry from OpenRouter's public models endpoint, reduced to the two
  * fields the harness reads: per-token `pricing` (null when the price fields are
  * missing/unparseable) and the `supportedParameters` allowlist (null when the
@@ -339,6 +383,15 @@ export function withAnthropicCache(messages: ChatMessage[]): OutboundMessage[] {
 export interface ChatResponse {
 	choices: { message: ChatMessage }[];
 	usage?: ChatUsage;
+	/**
+	 * Which upstream provider OpenRouter actually routed this request to
+	 * (e.g. `DeepInfra`, `Fireworks`). OpenRouter picks per request — cheapest
+	 * first by default — and providers differ in BOTH price and quantization, so
+	 * without this a run's numbers can't be attributed to the model alone.
+	 */
+	provider?: string;
+	/** OpenRouter generation id — the handle for a later `/api/v1/generation` lookup. */
+	id?: string;
 }
 
 /** Injected model driver: given the running message list, return one response. */
@@ -624,6 +677,34 @@ export interface RunResult {
 	 * counterfactual). Optional so the Claude backend need not populate it.
 	 */
 	usages?: ChatUsage[];
+	/**
+	 * Distinct upstream providers OpenRouter routed to, in first-seen order.
+	 * Empty when the backend reports none (the Claude backend never does).
+	 * More than one entry means the run was re-routed mid-flight.
+	 */
+	providers?: string[];
+}
+
+/**
+ * Make an assistant turn safe to send back in the next request.
+ *
+ * A model can return a turn with NEITHER `content` nor `tool_calls` — typically
+ * a reasoning-only turn, where the visible content is null. Echoing that
+ * verbatim is invalid under the OpenAI schema ("content or tool_calls must be
+ * set"), but providers disagree on enforcement: DeepInfra accepts it, GMICloud
+ * rejects the whole request with a 400. That made the harness's behaviour depend
+ * on which endpoint OpenRouter happened to route to.
+ *
+ * Normalizing the null to an empty string keeps the turn schema-valid on every
+ * provider and changes nothing semantically — an empty assistant turn carries no
+ * content either way. The TRANSCRIPT still records the original message verbatim,
+ * so what the model actually returned is never lost.
+ */
+export function normalizeAssistantMessage(message: ChatMessage): ChatMessage {
+	const hasToolCalls = (message.tool_calls?.length ?? 0) > 0;
+	const hasContent = typeof message.content === 'string' && message.content.length > 0;
+	if (hasToolCalls || hasContent) return message;
+	return { ...message, content: '' };
 }
 
 function parseArguments(raw: string): { ok: true; value: unknown } | { ok: false; error: string } {
@@ -662,6 +743,8 @@ export async function runAgent(opts: {
 	let cacheWriteTokens = 0;
 	let nudged = false;
 	const usages: ChatUsage[] = [];
+	/** Distinct upstream providers seen, in first-seen order. */
+	const providers: string[] = [];
 
 	const done = (
 		r: Omit<
@@ -674,6 +757,7 @@ export async function runAgent(opts: {
 			| 'cachedPromptTokens'
 			| 'cacheWriteTokens'
 			| 'usages'
+			| 'providers'
 		>
 	): RunResult => ({
 		...r,
@@ -684,7 +768,8 @@ export async function runAgent(opts: {
 		totalTokens,
 		cachedPromptTokens,
 		cacheWriteTokens,
-		usages
+		usages,
+		providers
 	});
 
 	for (;;) {
@@ -704,16 +789,23 @@ export async function runAgent(opts: {
 		cachedPromptTokens += cacheTokens.cached;
 		cacheWriteTokens += cacheTokens.write;
 		const message = response.choices[0]?.message;
+		if (response.provider !== undefined && !providers.includes(response.provider)) {
+			providers.push(response.provider);
+		}
 		transcript.push({
 			type: 'response',
 			ts: new Date().toISOString(),
 			usage,
+			// Recorded per request, not just per run: OpenRouter can re-route
+			// mid-run, so a run is not guaranteed to be one provider throughout.
+			provider: response.provider ?? null,
+			response_id: response.id ?? null,
 			message: message ?? null
 		});
 		if (!message) {
 			return done({ status: 'failed', failureReason: 'model returned no message' });
 		}
-		messages.push(message);
+		messages.push(normalizeAssistantMessage(message));
 
 		const toolCallList = message.tool_calls ?? [];
 		if (toolCallList.length === 0) {
@@ -819,6 +911,12 @@ export interface OpenRouterRequestOpts {
 	effort?: string;
 	/** Top-level sampling temperature — omitted when unset. */
 	temperature?: number;
+	/**
+	 * Restrict routing to endpoints at these quantizations (OpenRouter
+	 * `provider.quantizations`). Omitted = OpenRouter's default routing, which is
+	 * cheapest-first and therefore biased toward the MOST quantized endpoint.
+	 */
+	quantizations?: string[];
 }
 
 /**
@@ -845,6 +943,12 @@ export function buildOpenRouterBody(
 	};
 	if (opts.effort !== undefined) body.reasoning = { effort: opts.effort };
 	if (opts.temperature !== undefined) body.temperature = opts.temperature;
+	// Pin routing to a quantization tier. allow_fallbacks:false is deliberate —
+	// a silent fallback to a different tier would reintroduce exactly the
+	// confound the pin exists to remove; better to fail the request loudly.
+	if (opts.quantizations !== undefined && opts.quantizations.length > 0) {
+		body.provider = { quantizations: opts.quantizations, allow_fallbacks: false };
+	}
 	return body;
 }
 
@@ -912,6 +1016,24 @@ export interface RunMeta {
 	effort_default: string;
 	/** Requested sampling temperature, or null when unset. */
 	temperature: number | null;
+	/**
+	 * Quantization tiers routing was PINNED to (`--quantization`), or null for
+	 * OpenRouter's default routing — which is cheapest-first and therefore biased
+	 * toward the most-quantized endpoint. Null does NOT mean "unquantized".
+	 */
+	quantization_requested: string[] | null;
+	/**
+	 * Upstream providers that ACTUALLY served this run, in first-seen order.
+	 * More than one entry means OpenRouter re-routed mid-run. Empty on the Claude
+	 * backend, and on any run whose provider the API did not report.
+	 */
+	providers: string[];
+	/**
+	 * `providers` resolved to their quantization tiers, from OpenRouter's
+	 * endpoints list at run time (e.g. `{"DeepInfra":"fp4"}`). Empty when the
+	 * lookup failed — absence is a lookup gap, never evidence of no quantization.
+	 */
+	provider_quantizations: Record<string, string>;
 	policy_version: string;
 	started_at: string;
 	/**
@@ -991,12 +1113,14 @@ export interface CliArgs {
 	temperature?: number;
 	/** Run a blacklisted model/config anyway (deliberate re-test). */
 	ignoreBlacklist?: boolean;
+	/** Pin routing to these quantization tiers (openrouter only); undefined = default routing. */
+	quantizations?: string[];
 }
 
 const USAGE =
 	'usage: bun run bench:run <task-dir> --model <model-id> ' +
 	'[--backend openrouter|claude] [--effort <level>] [--temperature <n>] [--max-tool-calls N] ' +
-	'[--ignore-blacklist]';
+	'[--quantization <fp8[,bf16]>] [--ignore-blacklist]';
 
 /** Only the OpenRouter backend needs OPENROUTER_API_KEY; Claude uses the SDK login. */
 export function requiresOpenRouterKey(backend: Backend): boolean {
@@ -1013,6 +1137,7 @@ export function parseCli(argv: string[]): CliArgs | { error: string } {
 	let effortRaw: string | undefined;
 	let temperature: number | undefined;
 	let ignoreBlacklist = false;
+	let quantizations: string[] | undefined;
 	for (let i = 0; i < argv.length; i += 1) {
 		const arg = argv[i];
 		if (arg === '--model') {
@@ -1037,6 +1162,17 @@ export function parseCli(argv: string[]): CliArgs | { error: string } {
 			if (!Number.isInteger(n) || n <= 0)
 				return { error: '--max-tool-calls must be a positive integer' };
 			maxToolCalls = n;
+		} else if (arg === '--quantization') {
+			const raw = argv[++i];
+			if (raw === undefined || raw === '') return { error: '--quantization requires a value' };
+			const levels = raw.split(',').map((s) => s.trim());
+			const bad = levels.find((l) => !(QUANTIZATION_LEVELS as readonly string[]).includes(l));
+			if (bad !== undefined) {
+				return {
+					error: `--quantization must be one of ${QUANTIZATION_LEVELS.join('|')} (got ${bad})`
+				};
+			}
+			quantizations = levels;
 		} else if (arg === '--ignore-blacklist') {
 			ignoreBlacklist = true;
 		} else if (arg.startsWith('--')) {
@@ -1049,6 +1185,13 @@ export function parseCli(argv: string[]): CliArgs | { error: string } {
 	}
 	if (!taskDir) return { error: 'missing <task-dir>' };
 	if (!model) return { error: 'missing --model <model-id>' };
+
+	// Provider routing is an OpenRouter concept; the Agent SDK has no equivalent.
+	if (quantizations !== undefined && backend === 'claude') {
+		return {
+			error: '--quantization is not supported with --backend claude (no provider routing)'
+		};
+	}
 
 	// The Claude backend exposes no sampling control, and current Claude models
 	// (Sonnet 5 / Opus 4.7+) reject temperature/top_p outright — reject it here.
@@ -1068,7 +1211,16 @@ export function parseCli(argv: string[]): CliArgs | { error: string } {
 		effort = effortRaw;
 	}
 
-	return { taskDir, model, maxToolCalls, backend, effort, temperature, ignoreBlacklist };
+	return {
+		taskDir,
+		model,
+		maxToolCalls,
+		backend,
+		effort,
+		temperature,
+		ignoreBlacklist,
+		quantizations
+	};
 }
 
 /** Assemble a RunMeta from a completed (or fatally-failed) run. */
@@ -1080,8 +1232,11 @@ export function buildMeta(
 	result: RunResult,
 	costs?: { price: number | null; price_cached: number | null },
 	/** Process-start instant; defaults to `startedAt` so a run with no setup phase reads equal. */
-	invokedAt: Date = startedAt
+	invokedAt: Date = startedAt,
+	/** provider → quantization, resolved after the run; empty when unavailable. */
+	providerQuantizations: Record<string, string> = {}
 ): RunMeta {
+	const providers = result.providers ?? [];
 	return {
 		model: cli.model,
 		backend: cli.backend,
@@ -1090,6 +1245,12 @@ export function buildMeta(
 		effort: cli.effort ?? null,
 		effort_default: cli.backend === 'claude' ? 'claude-code-default' : 'provider-default',
 		temperature: cli.temperature ?? null,
+		quantization_requested: cli.quantizations ?? null,
+		providers,
+		// Only the providers this run actually used — not the whole endpoint table.
+		provider_quantizations: Object.fromEntries(
+			providers.filter((p) => p in providerQuantizations).map((p) => [p, providerQuantizations[p]])
+		),
 		policy_version: policyVersion,
 		started_at: startedAt.toISOString(),
 		duration_ms: Date.now() - startedAt.getTime(),
@@ -1138,6 +1299,25 @@ function computeOpenRouterCosts(
 			)
 		: null;
 	return { price, price_cached };
+}
+
+/**
+ * The stderr provenance line: who actually served the run and at what
+ * quantization. Printed on every openrouter run — the quantization tier is part
+ * of what was measured, so a score reported without it is unattributable.
+ */
+export function formatProvenance(meta: RunMeta): string | undefined {
+	if (meta.providers.length === 0) return undefined;
+	const parts = meta.providers.map((p) => {
+		const q = meta.provider_quantizations[p];
+		return q === undefined ? `${p} (quantization unknown)` : `${p} @ ${q}`;
+	});
+	const pin =
+		meta.quantization_requested === null
+			? ' [unpinned — OpenRouter default routing]'
+			: ` [pinned: ${meta.quantization_requested.join(',')}]`;
+	const reroute = meta.providers.length > 1 ? '  ** RE-ROUTED MID-RUN **' : '';
+	return `served by  ${parts.join(', ')}${pin}${reroute}`;
 }
 
 /** The stderr wall-clock line: total invocation time, with the agent run broken out. */
@@ -1273,7 +1453,8 @@ async function main(): Promise<number> {
 			result = await runAgent({
 				chat: openRouterChat(cli.model, apiKey ?? '', {
 					effort: cli.effort,
-					temperature: cli.temperature
+					temperature: cli.temperature,
+					quantizations: cli.quantizations
 				}),
 				store,
 				entryUrl: manifest.entryUrl,
@@ -1307,11 +1488,28 @@ async function main(): Promise<number> {
 
 	const report = result.candidate ? scoreCandidate(gold, result.candidate) : undefined;
 	const costs = computeOpenRouterCosts(cli, result, modelInfo);
-	const meta = buildMeta(cli, manifest, gold.policy_version, startedAt, result, costs, invokedAt);
+	// Resolve the providers this run used to their quantization tiers. Only worth
+	// a request when the run actually reported providers; best-effort throughout.
+	const providerQuants =
+		cli.backend === 'openrouter' && (result.providers?.length ?? 0) > 0
+			? await fetchProviderQuantizations(cli.model)
+			: {};
+	const meta = buildMeta(
+		cli,
+		manifest,
+		gold.policy_version,
+		startedAt,
+		result,
+		costs,
+		invokedAt,
+		providerQuants
+	);
 	writeRun(runDir, { meta, transcript, candidate: result.candidate, report });
 
 	if (report) console.error(formatSummary(report));
 	else console.error(`run failed: ${result.failureReason ?? 'unknown'}`);
+	const provenance = formatProvenance(meta);
+	if (provenance) console.error(provenance);
 	console.error(formatWallClock(meta));
 	console.error(`run directory: ${runDir}`);
 	return result.status === 'scored' ? 0 : 1;
