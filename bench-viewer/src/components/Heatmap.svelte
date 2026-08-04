@@ -5,8 +5,10 @@
 	 * Sequential single-hue ramp (light → dark = worse → better), never a rainbow.
 	 * Every cell also carries its printed value, so colour is a scanning aid
 	 * rather than the only encoding — the grid doubles as its own table view.
-	 * An absent cell (that config never ran that task) is drawn as empty, which
-	 * is a different fact from a zero score and must never look like one.
+	 *
+	 * Three distinct empty states, because collapsing them tells lies: a value,
+	 * a dash (never ran), and a dash with "!" (ran, produced no score). None of
+	 * them is a zero.
 	 */
 	import { UNKNOWN } from '../lib/format';
 
@@ -19,7 +21,10 @@
 	}: {
 		rows: { key: string; label: string; note?: string }[];
 		columns: string[];
-		value: (rowKey: string, column: string) => { value: number | null; n: number } | null;
+		value: (
+			rowKey: string,
+			column: string
+		) => { value: number | null; n: number; failed: number } | null;
 		format: (value: number) => string;
 		onselect?: (rowKey: string, column: string) => void;
 	} = $props();
@@ -52,16 +57,24 @@
 		return lo === hi ? { lo: lo - 0.01, hi } : { lo, hi };
 	});
 
-	function fill(cellValue: number): string {
+	function stepIndex(cellValue: number): number {
 		const t = (cellValue - observed.lo) / (observed.hi - observed.lo || 1);
-		const index = Math.min(STEPS.length - 1, Math.max(0, Math.round(t * (STEPS.length - 1))));
-		return STEPS[index];
+		return Math.min(STEPS.length - 1, Math.max(0, Math.round(t * (STEPS.length - 1))));
 	}
 
-	/** Ink that clears contrast on its own fill: the darkest two steps take white. */
+	function fill(cellValue: number): string {
+		return STEPS[stepIndex(cellValue)];
+	}
+
+	/**
+	 * Ink that clears contrast on its own fill. Keyed to the SAME bin index the
+	 * fill uses, not to a separate threshold: a `t > 0.6` cut put white text on
+	 * step 4 (#3987e5) at 3.64:1, under the 4.5:1 AA floor for this size, while
+	 * the identical fill elsewhere got black. White is correct from step 4 of 0-5
+	 * (5.39:1 on #256abf and darker); black wins below it (5.41:1 on #3987e5).
+	 */
 	function ink(cellValue: number): string {
-		const t = (cellValue - observed.lo) / (observed.hi - observed.lo || 1);
-		return t > 0.6 ? '#ffffff' : '#0b0b0b';
+		return stepIndex(cellValue) >= 4 ? '#ffffff' : '#0b0b0b';
 	}
 </script>
 
@@ -95,6 +108,16 @@
 									{format(cell.value)}
 									{#if cell.n > 1}<span class="n">n{cell.n}</span>{/if}
 								</button>
+							</td>
+						{:else if cell}
+							<!-- Ran, but produced no score. A DIFFERENT fact from "never ran",
+							     and one this grid used to label as "never run". -->
+							<td class="cell">
+								<span
+									class="absent"
+									title="Ran {cell.n} time(s), {cell.failed} failed — no score produced"
+									>{UNKNOWN}<span class="ran">!</span></span
+								>
 							</td>
 						{:else}
 							<td class="cell"><span class="absent" title="never run">{UNKNOWN}</span></td>
@@ -165,6 +188,13 @@
 	.absent {
 		color: var(--text-muted);
 		font-size: 12px;
+	}
+
+	/* Marks "ran but produced no score" apart from "never ran" without colour. */
+	.ran {
+		color: var(--critical);
+		font-weight: 700;
+		margin-left: 2px;
 	}
 
 	.legend {

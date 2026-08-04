@@ -34,7 +34,7 @@ import {
 	type MetricKey,
 	type RunFilter
 } from './analyze/aggregate';
-import { deriveRun, nameFidelityFor } from './analyze/derive';
+import { analyzeNameFidelity, deriveRun } from './analyze/derive';
 import { cellRow, runRow } from './analyze/export';
 import {
 	DEFAULT_RUNS_DIR,
@@ -83,12 +83,20 @@ export function parseArgs(argv: readonly string[]): ArgsResult {
 	};
 	for (let i = 0; i < argv.length; i++) {
 		const flag = argv[i];
-		const value = argv[i + 1];
+		// A value that is itself a flag means the user forgot one: `--runs-dir
+		// --rebuild` would otherwise silently set runsDir to "--rebuild" and report
+		// "0 runs" with exit 0.
+		const raw = argv[i + 1];
+		const value = raw !== undefined && raw.startsWith('--') ? undefined : raw;
 		switch (flag) {
 			case '--port': {
+				// Number() would accept "0x1F90" and " 80 "; a port is decimal digits.
+				if (!value || !/^\d+$/.test(value)) {
+					return { ok: false, error: '--port must be a decimal port number' };
+				}
 				const port = Number(value);
-				if (!Number.isInteger(port) || port < 1 || port > 65535) {
-					return { ok: false, error: '--port must be a valid port number' };
+				if (port < 1 || port > 65535) {
+					return { ok: false, error: '--port must be between 1 and 65535' };
 				}
 				args.port = port;
 				i++;
@@ -255,13 +263,39 @@ function runDetail(run: RunRecord, tasksDir: string): Record<string, unknown> {
 	const events = loadTranscript(run.dir);
 	const fetched = fetchedUrls(events);
 	const { gold } = loadGold(taskDir);
-	const candidate = loadCandidate(run.dir) as { items?: unknown[] } | null;
+	const candidate = loadCandidate(run.dir) as { items?: { name?: string }[] } | null;
+	const rescore = rescoreRun(run, tasksDir);
+
+	// The full item lists sharpen the duplicate guard in the fidelity overlay.
+	const context = {
+		goldNames: gold?.items?.map((item) => item.name),
+		candidateNames: Array.isArray(candidate?.items)
+			? candidate.items
+					.map((item) => item?.name)
+					.filter((name): name is string => typeof name === 'string')
+			: undefined
+	};
+
+	/**
+	 * Both variants, computed here rather than in the browser: the overlay lives
+	 * in the tested module, and the viewer must never render the frozen fidelity
+	 * beside rescored numbers — that would show two different golds in one tab.
+	 */
+	const fidelityFor = (report: typeof run.report) =>
+		report
+			? analyzeNameFidelity(
+					Array.isArray(report.missed_items) ? report.missed_items : [],
+					Array.isArray(report.hallucinated_items) ? report.hallucinated_items : [],
+					context
+				)
+			: null;
 
 	return {
 		run,
 		derived: deriveRun(run),
-		name_fidelity: nameFidelityFor(run),
-		rescore: rescoreRun(run, tasksDir),
+		name_fidelity: fidelityFor(run.report),
+		name_fidelity_current: fidelityFor(rescore.current),
+		rescore,
 		page_coverage: pageCoverage(loadManifest(taskDir), fetched),
 		fetched_urls: fetched,
 		timeline: buildTimeline(events),
@@ -307,6 +341,15 @@ export function resolveAsset(distDir: string, pathname: string): string | null {
 	return target;
 }
 
+/** mtime of a single file, or 0 when it doesn't exist. */
+function mtimeOf(path: string): number {
+	try {
+		return statSync(path).mtimeMs;
+	} catch {
+		return 0;
+	}
+}
+
 /** Newest mtime under a directory tree, or 0 when it doesn't exist. */
 function newestMtime(dir: string): number {
 	if (!existsSync(dir)) return 0;
@@ -333,12 +376,21 @@ export function ensureBuilt(options: { force: boolean; enabled: boolean }): bool
 		return false;
 	}
 	const distIndex = join(DIST_DIR, 'index.html');
-	const stale = newestMtime(join(VIEWER_ROOT, 'src')) > newestMtime(DIST_DIR);
+	// Every build INPUT, not just src/: index.html is Vite's entry (it holds the
+	// script tag and the mount point) and vite.config.ts carries the Svelte
+	// compiler options. Watching only src/ meant editing either one served a stale
+	// bundle forever, with nothing on screen to say so.
+	const newestSource = Math.max(
+		newestMtime(join(VIEWER_ROOT, 'src')),
+		mtimeOf(join(VIEWER_ROOT, 'index.html')),
+		mtimeOf(join(VIEWER_ROOT, 'vite.config.ts'))
+	);
+	const stale = newestSource > newestMtime(DIST_DIR);
 	const needsBuild = options.force || !existsSync(distIndex) || stale;
 
 	if (!needsBuild) return true;
 	if (!options.enabled) {
-		console.error('UI bundle is stale and --no-build was passed — serving the API only');
+		console.error('UI bundle is stale and --no-build was passed — serving what is on disk');
 		return existsSync(distIndex);
 	}
 
@@ -347,21 +399,57 @@ export function ensureBuilt(options: { force: boolean; enabled: boolean }): bool
 		cwd: VIEWER_ROOT,
 		stdio: ['ignore', 'inherit', 'inherit']
 	});
-	if (result.status !== 0) {
-		console.error('viewer UI build failed — serving the API only');
-		return false;
+	if (result.status === 0) return true;
+
+	// A failed rebuild is not a reason to throw away a bundle that already works:
+	// serving 503 while dist/index.html sits there is simply false.
+	if (existsSync(distIndex)) {
+		console.error('viewer UI build failed — serving the PREVIOUS (stale) bundle');
+		return true;
 	}
-	return true;
+	console.error('viewer UI build failed and no previous bundle exists — serving the API only');
+	return false;
 }
 
 // --- server -------------------------------------------------------------------
 
+/**
+ * Only requests addressed to this machine by name are served.
+ *
+ * Binding to 127.0.0.1 does NOT make the server unreachable from a browser: a
+ * page on any site can point a hostname at 127.0.0.1 (DNS rebinding) and then
+ * read every response same-origin, because nothing here requires credentials.
+ * Checking the Host header closes that, and costs one comparison.
+ */
+export function isAllowedHost(hostHeader: string | null): boolean {
+	if (!hostHeader) return false;
+	// Strip the port; handle bracketed IPv6.
+	const host = hostHeader.startsWith('[')
+		? hostHeader.slice(0, hostHeader.indexOf(']') + 1)
+		: hostHeader.split(':')[0];
+	return host === '127.0.0.1' || host === 'localhost' || host === '[::1]' || host === '::1';
+}
+
 export function createHandler(args: ViewerArgs, hasUi: boolean) {
 	const cache = new IndexCache(args.runsDir);
 
-	return (request: Request): Response => {
+	/**
+	 * Every request goes through this, so an unexpected throw becomes a small JSON
+	 * error instead of Bun's fallback page — which is 67 KB of SOURCE LINES and
+	 * absolute filesystem paths. `report.json` and `manifest.json` are read
+	 * unvalidated, so a schema-drifted file really can throw deep inside a
+	 * derivation, and one bad run must not take the endpoint (or leak the repo).
+	 */
+	const handle = (request: Request): Response => {
 		const url = new URL(request.url);
 		const { pathname } = url;
+
+		if (!isAllowedHost(request.headers.get('host'))) {
+			return new Response('forbidden: this server only answers to localhost\n', {
+				status: 403,
+				headers: { 'content-type': 'text/plain; charset=utf-8' }
+			});
+		}
 
 		if (pathname.startsWith('/api/')) {
 			const index = cache.get();
@@ -423,6 +511,16 @@ export function createHandler(args: ViewerArgs, hasUi: boolean) {
 		return new Response(readFileSync(indexPath), {
 			headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }
 		});
+	};
+
+	return (request: Request): Response => {
+		try {
+			return handle(request);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			console.error(`request failed: ${new URL(request.url).pathname}: ${message}`);
+			return json({ error: message }, 500);
+		}
 	};
 }
 

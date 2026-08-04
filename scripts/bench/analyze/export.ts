@@ -46,7 +46,10 @@ export function parseArgs(argv: readonly string[]): ArgsResult {
 
 	for (let i = 0; i < argv.length; i++) {
 		const flag = argv[i];
-		const value = argv[i + 1];
+		// A value that is itself a flag means the user forgot one. Without this,
+		// `--out --format` writes a 200 KB file literally named "--format".
+		const raw = argv[i + 1];
+		const value = raw !== undefined && raw.startsWith('--') ? undefined : raw;
 		switch (flag) {
 			case '--rows':
 				if (value !== 'runs' && value !== 'cells')
@@ -134,6 +137,9 @@ export function cellRow(cell: Cell): Record<string, string | number | null> {
 		failure_rate: cell.failure_rate,
 		tasks: cell.tasks.join('+'),
 		n_tasks: cell.tasks.length,
+		scored_tasks: cell.scored_tasks.join('+'),
+		n_scored_tasks: cell.scored_tasks.length,
+		unattributed_runs: cell.unattributed_runs,
 		policy_versions: cell.policy_versions.join('+'),
 		policy_conflict_tasks: cell.policy_conflicts.map((conflict) => conflict.task).join('+'),
 		mixed_provenance: cell.provenances.length > 1 ? 1 : 0,
@@ -176,7 +182,7 @@ export function toCsv(rows: readonly Record<string, string | number | null>[]): 
 	const escape = (value: string | number | null | undefined): string => {
 		if (value === null || value === undefined) return '';
 		const text = String(value);
-		return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+		return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 	};
 	return [
 		columns.join(','),
@@ -209,7 +215,14 @@ async function main(argv: string[]): Promise<number> {
 	const output = args.format === 'csv' ? toCsv(rows) : JSON.stringify(rows, null, '\t');
 
 	if (args.out) {
-		writeFileSync(args.out, output.endsWith('\n') ? output : `${output}\n`);
+		try {
+			writeFileSync(args.out, output.endsWith('\n') ? output : `${output}\n`);
+		} catch (error) {
+			console.error(
+				`could not write ${args.out}: ${error instanceof Error ? error.message : String(error)}`
+			);
+			return 2;
+		}
 		console.error(`wrote ${rows.length} ${args.rows} row(s) to ${args.out}`);
 	} else {
 		// stdout is DATA here (matching bench:score), so it must not go through

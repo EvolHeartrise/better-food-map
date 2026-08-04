@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { BenchManifest } from '../snapshot-store';
-import { buildTimeline, fetchedUrls, isMenuShaped, pageCoverage, toolCallUrl } from './transcript';
+import { buildTimeline, fetchedUrls, hasMenuWord, pageCoverage, toolCallUrl } from './transcript';
 
 function manifest(urls: string[]): BenchManifest {
 	return {
@@ -86,29 +86,29 @@ describe('fetchedUrls', () => {
 	});
 });
 
-describe('isMenuShaped', () => {
+describe('hasMenuWord (a sort hint, never a denominator)', () => {
 	test('matches menu words as whole path tokens', () => {
-		expect(isMenuShaped('https://v.com/menu')).toBe(true);
-		expect(isMenuShaped('https://v.com/drink-menu/')).toBe(true);
-		expect(isMenuShaped('https://v.com/meet-brunch')).toBe(true);
-		expect(isMenuShaped('https://v.com/happy-hour-menu/')).toBe(true);
+		expect(hasMenuWord('https://v.com/menu')).toBe(true);
+		expect(hasMenuWord('https://v.com/drink-menu/')).toBe(true);
+		expect(hasMenuWord('https://v.com/meet-brunch')).toBe(true);
+		expect(hasMenuWord('https://v.com/happy-hour-menu/')).toBe(true);
 	});
 
 	test('does not substring-match a menu word inside another word', () => {
 		// Real case from the corpus: /locations/eaton-centre was being reported as
 		// an unopened MENU page because "eaton" contains "eat".
-		expect(isMenuShaped('https://www.newyorkfries.com/locations/eaton-centre')).toBe(false);
-		expect(isMenuShaped('https://v.com/theatre')).toBe(false);
-		expect(isMenuShaped('https://v.com/reorder-history')).toBe(false);
+		expect(hasMenuWord('https://www.newyorkfries.com/locations/eaton-centre')).toBe(false);
+		expect(hasMenuWord('https://v.com/theatre')).toBe(false);
+		expect(hasMenuWord('https://v.com/reorder-history')).toBe(false);
 	});
 
 	test('a query string is not part of the path', () => {
-		expect(isMenuShaped('https://v.com/about?ref=menu')).toBe(false);
+		expect(hasMenuWord('https://v.com/about?ref=menu')).toBe(false);
 	});
 
 	test('a malformed url falls back to raw tokenizing rather than throwing', () => {
-		expect(() => isMenuShaped('not a url')).not.toThrow();
-		expect(isMenuShaped('/menu')).toBe(true);
+		expect(() => hasMenuWord('not a url')).not.toThrow();
+		expect(hasMenuWord('/menu')).toBe(true);
 	});
 });
 
@@ -127,12 +127,10 @@ describe('pageCoverage', () => {
 		expect(coverage?.ratio).toBeCloseTo(0.5);
 	});
 
-	test('an unopened drinks page is surfaced as a menu blind spot', () => {
+	test('an unopened drinks page is surfaced in the blind-spot list', () => {
 		// The classic exhaustiveness failure: a whole drinks page never opened.
 		const coverage = pageCoverage(pages, ['https://v.com/', 'https://v.com/menu']);
-		expect(coverage?.menu_unvisited).toEqual(['https://v.com/drinks']);
-		expect(coverage?.menu_available).toBe(2);
-		expect(coverage?.menu_visited).toBe(1);
+		expect(coverage?.unvisited).toContain('https://v.com/drinks');
 	});
 
 	test('menu-shaped pages sort ahead of the rest in unvisited', () => {
@@ -154,6 +152,29 @@ describe('pageCoverage', () => {
 
 	test('a malformed fetched url is skipped rather than throwing', () => {
 		expect(() => pageCoverage(pages, ['not a url'])).not.toThrow();
+	});
+
+	test('a menu page with no menu word still counts as unvisited', () => {
+		// New York Fries serves its menu from /fries, /poutine, /dips. A ratio built
+		// on the word list scored a run that opened only /menu at a perfect 100%
+		// while it skipped all of those, so no such ratio is published: the exact
+		// visited/available number and the full unvisited list are what remain.
+		const nyf = manifest([
+			'https://v.com/menu',
+			'https://v.com/fries',
+			'https://v.com/poutine',
+			'https://v.com/dips'
+		]);
+		const coverage = pageCoverage(nyf, ['https://v.com/menu']);
+		expect(coverage?.visited).toBe(1);
+		expect(coverage?.available).toBe(4);
+		expect(coverage?.ratio).toBeCloseTo(0.25);
+		expect(coverage?.unvisited).toEqual([
+			'https://v.com/dips',
+			'https://v.com/fries',
+			'https://v.com/poutine'
+		]);
+		expect(coverage).not.toHaveProperty('menu_ratio');
 	});
 
 	test('no manifest means no coverage claim', () => {

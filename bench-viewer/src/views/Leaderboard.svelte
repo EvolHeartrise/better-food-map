@@ -39,7 +39,8 @@
 		filters.tasks.length > 0 ? filters.tasks.length : (await fetchOverview()).counts.tasks
 	);
 
-	function sortValue(cell: CellRow, key: string): number | string {
+	/** Null means UNKNOWN — never a value, so it never participates in the order. */
+	function sortValue(cell: CellRow, key: string): number | string | null {
 		switch (key) {
 			case 'config':
 				return cell.key;
@@ -48,13 +49,13 @@
 			case 'failures':
 				return cell.failure_rate;
 			case 'unsafe':
-				return cell.unsafe_tag_claims_total;
+				return cell.stats.unsafe_tag_claims.n === 0 ? null : cell.unsafe_tag_claims_total;
 			case 'cost':
-				return cell.stats.cost_usd.mean ?? Number.NEGATIVE_INFINITY;
+				return cell.stats.cost_usd.mean;
 			case 'duration':
-				return cell.stats.duration_ms.mean ?? Number.NEGATIVE_INFINITY;
+				return cell.stats.duration_ms.mean;
 			default:
-				return cell.metrics[key as MetricKey]?.mean ?? Number.NEGATIVE_INFINITY;
+				return cell.metrics[key as MetricKey]?.mean ?? null;
 		}
 	}
 
@@ -63,6 +64,12 @@
 		rows.sort((a, b) => {
 			const left = sortValue(a, sortKey);
 			const right = sortValue(b, sortKey);
+			// Unknowns sink in BOTH directions. Sorting them as -Infinity put a cell
+			// whose cost was never reported at the top of a cheapest-first list,
+			// where its position asserted it was the cheapest thing on the board.
+			if (left === null && right === null) return a.key.localeCompare(b.key);
+			if (left === null) return 1;
+			if (right === null) return -1;
 			const comparison =
 				typeof left === 'string' || typeof right === 'string'
 					? String(left).localeCompare(String(right))
@@ -71,6 +78,11 @@
 		});
 		return rows;
 	});
+
+	function ariaSort(key: string): 'ascending' | 'descending' | 'none' {
+		if (sortKey !== key) return 'none';
+		return sortDesc ? 'descending' : 'ascending';
+	}
 
 	function toggleSort(key: string): void {
 		if (sortKey === key) sortDesc = !sortDesc;
@@ -108,19 +120,42 @@
 			<table>
 				<thead>
 					<tr>
-						<th class="sortable left" onclick={() => toggleSort('config')}>Configuration</th>
-						<th class="sortable" onclick={() => toggleSort('n')} title="runs · tasks covered">n</th>
+						<!-- Real <button>s inside the cells: a click handler on a <th> is
+						     unreachable by keyboard and announces no sort state. -->
+						<th class="left" aria-sort={ariaSort('config')}>
+							<button class="sortable" onclick={() => toggleSort('config')}>Configuration</button>
+						</th>
+						<th aria-sort={ariaSort('n')}>
+							<button
+								class="sortable"
+								onclick={() => toggleSort('n')}
+								title="scored runs (of all runs) · tasks scored">n</button
+							>
+						</th>
 						{#each COLUMNS as column (column)}
-							<th class="sortable" onclick={() => toggleSort(column)}>{metricLabel(column)}</th>
+							<th aria-sort={ariaSort(column)}>
+								<button class="sortable" onclick={() => toggleSort(column)}
+									>{metricLabel(column)}</button
+								>
+							</th>
 						{/each}
-						<th
-							class="sortable"
-							onclick={() => toggleSort('unsafe')}
-							title="Dietary tags the candidate asserted that gold does not support">Unsafe tags</th
-						>
-						<th class="sortable" onclick={() => toggleSort('cost')}>Cost</th>
-						<th class="sortable" onclick={() => toggleSort('duration')}>Time</th>
-						<th class="sortable" onclick={() => toggleSort('failures')}>Fail</th>
+						<th aria-sort={ariaSort('unsafe')}>
+							<button
+								class="sortable"
+								onclick={() => toggleSort('unsafe')}
+								title="Dietary tags the candidate asserted that gold does not support"
+								>Unsafe tags</button
+							>
+						</th>
+						<th aria-sort={ariaSort('cost')}>
+							<button class="sortable" onclick={() => toggleSort('cost')}>Cost</button>
+						</th>
+						<th aria-sort={ariaSort('duration')}>
+							<button class="sortable" onclick={() => toggleSort('duration')}>Time</button>
+						</th>
+						<th aria-sort={ariaSort('failures')}>
+							<button class="sortable" onclick={() => toggleSort('failures')}>Fail</button>
+						</th>
 					</tr>
 				</thead>
 				<tbody>
@@ -129,6 +164,16 @@
 							class="clickable"
 							class:expanded={expanded === cell.key}
 							onclick={() => (expanded = expanded === cell.key ? null : cell.key)}
+							onkeydown={(event) => {
+								if (event.key === 'Enter' || event.key === ' ') {
+									event.preventDefault();
+									expanded = expanded === cell.key ? null : cell.key;
+								}
+							}}
+							tabindex="0"
+							role="button"
+							aria-expanded={expanded === cell.key}
+							aria-label="{cell.model} {cell.effort}: show details"
 						>
 							<td class="left">
 								<div class="config">{cell.model}</div>
@@ -137,9 +182,12 @@
 									{cell.backend}
 								</div>
 							</td>
-							<td>
-								<span class="num">{cell.n_runs}</span>
-								<span class="muted small">/{cell.n_tasks}t</span>
+							<td
+								title="{cell.n_scored} scored of {cell.n_runs} run(s), across {cell.n_scored_tasks} task(s)"
+							>
+								<span class="num">{cell.n_scored}</span>
+								{#if cell.n_failed > 0}<span class="muted small">/{cell.n_runs}</span>{/if}
+								<span class="muted small">·{cell.n_scored_tasks}t</span>
 							</td>
 							{#each COLUMNS as column (column)}
 								{@const stat = cell.metrics[column]}
@@ -152,7 +200,15 @@
 								</td>
 							{/each}
 							<td class:danger={cell.unsafe_tag_claims_total > 0}>
-								{cell.unsafe_tag_claims_total}
+								{#if cell.stats.unsafe_tag_claims.n === 0}
+									<span
+										class="muted"
+										title="No run in this cell produced a report, so nothing is known about its dietary claims."
+										>—</span
+									>
+								{:else}
+									{cell.unsafe_tag_claims_total}
+								{/if}
 							</td>
 							<td>{usd(cell.stats.cost_usd.mean)}</td>
 							<td>{duration(cell.stats.duration_ms.mean)}</td>
@@ -172,18 +228,18 @@
 												title="One run. Nothing here separates skill from sampling noise."
 											/>
 										{/if}
-										{#if totalTasks > 0 && cell.n_tasks < totalTasks}
+										{#if totalTasks > 0 && cell.n_scored_tasks < totalTasks}
 											<Badge
 												tone="warn"
-												label="{cell.n_tasks}/{totalTasks} tasks"
-												title="This cell did not run every task in the current slice, so its average is not comparable to a full-coverage cell."
+												label="{cell.n_scored_tasks}/{totalTasks} tasks scored"
+												title="This cell did not produce a score on every task in the current slice, so its average is not comparable to a full-coverage cell."
 											/>
 										{/if}
-										{#if cell.provenances.some((entry) => entry.includes('unknown'))}
+										{#if cell.unattributed_runs > 0}
 											<Badge
 												tone="warn"
-												label="provenance unknown"
-												title="No provider was recorded, so this score cannot be attributed to a specific endpoint or quantization."
+												label="provenance not recorded"
+												title="No provider or quantization tier was recorded, so this score cannot be attributed to a specific endpoint."
 											/>
 										{/if}
 										{#if cell.rerouted === 1}

@@ -78,7 +78,13 @@ export function fetchRun(runId: string): Promise<RunDetail> {
 let overviewPromise: Promise<Overview> | null = null;
 
 export function fetchOverview(): Promise<Overview> {
-	overviewPromise ??= get<Overview>('/api/overview');
+	// A REJECTED promise must not be memoized: `??=` cached the failure forever,
+	// so one transient 500 bricked the dashboard and the error boundary's "Try
+	// again" re-awaited the same rejection without issuing a request.
+	overviewPromise ??= get<Overview>('/api/overview').catch((error: unknown) => {
+		overviewPromise = null;
+		throw error;
+	});
 	return overviewPromise;
 }
 

@@ -37,7 +37,13 @@
 	let plotted = $derived(plottableCells(cells, xValue, filters.metric));
 
 	// Cells missing an axis are excluded and counted, never plotted at zero.
+	// Broken out by CAUSE: the note used to blame a missing cost for every
+	// exclusion, including cells dropped because no run in them scored at all.
+	let excludedNoScore = $derived(
+		cells.filter((cell) => cell.metrics[filters.metric].mean === null).length
+	);
 	let excluded = $derived(cells.length - plotted.length);
+	let excludedNoAxis = $derived(excluded - excludedNoScore);
 
 	let frontier = $derived(computeFrontier(plotted));
 
@@ -92,9 +98,13 @@
 
 		{#if excluded > 0}
 			<p class="muted small note">
-				{excluded} cell{excluded === 1 ? '' : 's'} omitted: no {xAxis === 'duration'
-					? 'duration'
-					: 'cost'} was reported. Omitted, not plotted at zero — an unreported cost is unknown, not free.
+				{excluded} cell{excluded === 1 ? '' : 's'} omitted{#if excludedNoAxis > 0}: {excludedNoAxis}
+					with no {xAxis === 'duration' ? 'duration' : 'cost'} reported{/if}{#if excludedNoScore > 0}{excludedNoAxis >
+					0
+						? ','
+						: ':'}
+					{excludedNoScore} with no {metricLabel(filters.metric).toLowerCase()} to plot{/if}.
+				Omitted, never plotted at zero — unreported is unknown, not free and not worst.
 			</p>
 		{/if}
 	</div>

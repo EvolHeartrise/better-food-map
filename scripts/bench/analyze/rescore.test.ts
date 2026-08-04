@@ -46,9 +46,22 @@ describe('reportsDiffer', () => {
 	test('a changed gold size differs even at equal ratios', () => {
 		expect(reportsDiffer(report(), report({ gold_items: 12 }))).toBe(true);
 	});
-	test('diagnostic lists alone are not treated as a score change', () => {
-		// Only aggregate numbers decide staleness; a reworded warning is editorial.
-		expect(reportsDiffer(report(), report({ missed_items: ['Fries'] }))).toBe(false);
+	test('a changed item list IS a change — it drives the fidelity panel', () => {
+		expect(reportsDiffer(report(), report({ missed_items: ['Fries'] }))).toBe(true);
+	});
+
+	test('a changed unsafe-tag claim IS a change — it drives a leaderboard column', () => {
+		// Scalars alone missed this: a gold edit could flip which dietary claims are
+		// unsupported while every published ratio stayed put.
+		expect(
+			reportsDiffer(report(), report({ tag_false_positives: [{ item: 'Fries', tag: 'vegan' }] }))
+		).toBe(true);
+	});
+
+	test('list ORDER alone is not a change', () => {
+		expect(
+			reportsDiffer(report({ missed_items: ['a', 'b'] }), report({ missed_items: ['b', 'a'] }))
+		).toBe(false);
 	});
 });
 

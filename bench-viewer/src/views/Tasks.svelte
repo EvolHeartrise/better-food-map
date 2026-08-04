@@ -27,6 +27,10 @@
 				'backend',
 				'effort',
 				'quantization',
+				// Provenance splits cells on the leaderboard, so it must split rows
+				// here too — otherwise this grid silently merges two endpoints the
+				// leaderboard keeps apart.
+				'provenance',
 				'task'
 			])
 		).cells
@@ -51,7 +55,11 @@
 	let spreadBars = $derived(
 		discrimination
 			.toSorted((a, b) => (b.sd ?? 0) - (a.sd ?? 0))
-			.map((task) => ({ label: task.task, value: task.sd, note: `${task.n_cells} cells` }))
+			.map((task) => ({
+				label: task.task,
+				value: task.sd,
+				note: `${task.n_scored_cells} scored cells`
+			}))
 	);
 </script>
 
@@ -79,7 +87,9 @@
 					<thead>
 						<tr>
 							<th class="left">Task</th>
-							<th>Cells</th>
+							<th title="configuration cells that produced a score, of all that ran this task"
+								>Scored cells</th
+							>
 							<th>Best</th>
 							<th>Worst</th>
 							<th>Range</th>
@@ -90,7 +100,11 @@
 						{#each discrimination as task (task.task)}
 							<tr>
 								<td class="left">{task.task}</td>
-								<td>{task.n_cells}</td>
+								<td>
+									{task.n_scored_cells}{#if task.n_scored_cells !== task.n_cells}<span
+											class="muted small">/{task.n_cells}</span
+										>{/if}
+								</td>
 								<td>{pct(task.best, 0)}</td>
 								<td>{pct(task.worst, 0)}</td>
 								<td>{pct(task.range, 1)}</td>
@@ -112,8 +126,9 @@
 	<div class="card">
 		<h2>Configuration × task</h2>
 		<p class="muted small">
-			{metricLabel(filters.metric)} per intersection. An empty cell means that configuration never ran
-			that task — not a zero. Click a cell to filter the leaderboard to its task.
+			{metricLabel(filters.metric)} per intersection. A plain dash means that configuration never ran
+			that task; a dash with <strong>!</strong> means it ran and produced no score. Neither is a zero.
+			Click a cell to filter the leaderboard to its task.
 		</p>
 		<div class="heat">
 			<Heatmap

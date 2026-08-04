@@ -554,9 +554,20 @@ how two cards quietly end up describing different data):
   renamed" from "never found" — a fidelity bug and a coverage bug need different
   fixes. This is a DIAGNOSTIC OVERLAY: it never changes a scored number.
 - **Page-discovery coverage.** The `fetch_page` sequence versus the pages the
-  snapshot recorded. A model can score well on items while never opening the
-  drinks page; that is luck, and this is where it shows. Off-manifest fetches
-  (the ordering API) are reported separately, never penalized.
+  snapshot recorded, as an exact `visited / available` plus the list of pages
+  never opened. A model can score well on items while never opening a whole menu
+  page; that is luck, and the unvisited list is where it shows. Off-manifest
+  fetches (the ordering API) are reported separately, never penalized.
+
+  There is deliberately **no menu-page ratio**. Recognizing a menu page from its
+  URL needs world knowledge a word list does not have — New York Fries serves its
+  menu from `/fries`, `/poutine`, `/premiumdogs` and `/dips`, and Wooden Spoon
+  from `/daily-features/`. A ratio built on menu words scored a run that opened
+  only `/menu`, and skipped all five real menu pages, at a perfect 100%. The word
+  list survives only as a sort hint that floats likely-relevant entries to the top
+  of the unvisited list, where a miss costs a reader one extra line instead of
+  producing a false number.
+
 - **Rescore against current gold.** `report.json` is frozen at run time, so a
   later gold edit silently invalidates it. The run detail re-runs
   `scoreCandidate` over the stored `candidate.json` against today's gold and
@@ -583,14 +594,31 @@ number:
   so runs served at different quantizations never share a cell.
   `quantization_requested: null` renders as "unpinned (cheapest-first)", never as
   "unquantized".
-- **Averaging mode is explicit.** `macro` weights every task equally; `micro`
-  pools raw counts, so a 180-item menu outweighs a 26-item one. Micro is exact
-  for item recall/precision and the per-pair accuracies; the tag metrics have no
-  published denominators, so pooling them is a `matched`-weighted approximation
-  and is flagged with `~`.
+- **Averaging mode is explicit.** `macro` weights every task equally and is exact
+  for every metric. `micro` pools raw counts, so a 180-item menu outweighs a
+  26-item one — and it is only offered where the report carries the counts to
+  pool with: item recall/precision and the per-pair accuracies. The tag and
+  source metrics publish a ratio without its denominator, so micro reports **no
+  value** for them rather than a weighted guess. (An earlier version did guess,
+  weighting by `matched` and labelling it "approximate". Measured against the
+  truth recomputed from the stored candidates, micro `tag_recall` was off by up
+  to 0.25 and inverted 5% of pairwise cell comparisons — it reordered the top of
+  the leaderboard. `source_recall` was optimistic in every cell by up to 0.18,
+  because its real denominator is a per-task source count of 2–3 that has nothing
+  to do with item count.)
 - **Gold conflicts are flagged where they matter.** Different tasks naturally
   carry different `policy_version`s — that is not a conflict. Two versions of the
-  SAME task's gold in one cell is, and it is badged.
+  SAME task's gold is, and it is badged both on a cell and in the A/B compare
+  view. Note this compares version STRINGS, so it cannot see an edit made under a
+  constant version (much of the corpus sits at `draft`); rescore-on-read is the
+  reliable detector, since it re-runs the scorer rather than trusting a label.
+
+- **Three empty states, never conflated.** A value; "never ran" (no runs at that
+  intersection); and "ran, produced no score" (every run failed). Only the first
+  is a number, and the last two are different facts — a task where half the
+  configurations crashed must not read as "everything aces it, retire the task",
+  which is why `taskDiscrimination` reports `n_scored_cells` beside `n_cells` and
+  computes every statistic over the former.
 
 ### Layout
 

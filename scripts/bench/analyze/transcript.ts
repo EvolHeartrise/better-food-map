@@ -108,15 +108,25 @@ export function fetchedUrls(events: readonly Record<string, unknown>[]): string[
 }
 
 /**
- * Menu-shaped URL words.
+ * Menu-shaped URL words — an ORDERING HINT ONLY, never a denominator.
  *
- * The recorder matches the same vocabulary as a loose SUBSTRING regex, which is
- * right for its job (prioritizing a crawl — a false positive just reorders a
- * queue). It is wrong here: this classification drives a "menu page never
- * opened" claim, and substring matching turns
- * `/locations/eaton-centre` into a missed menu page because "eaton" contains
- * "eat". So match whole path TOKENS instead — `/drink-menu/` tokenizes to
- * `drink`,`menu` and still hits, while `eaton` never equals `eat`.
+ * There is no reliable way to tell a menu page from its URL. New York Fries
+ * serves its menu from `/fries`, `/poutine`, `/premiumdogs` and `/dips`, and
+ * Wooden Spoon puts its daily menu at `/daily-features/`: recognizing those
+ * needs world knowledge that a word list does not have. An earlier version of
+ * this module reported a `menu_ratio` built on this vocabulary, which scored a
+ * run that opened only `/menu` — and skipped all five real New York Fries menu
+ * pages — at a perfect 100%. That is a confidently WRONG number, which is worse
+ * than no number, so the ratio is gone.
+ *
+ * What survives is exact: `visited / available` over every recorded page, plus
+ * the list of pages never opened. This vocabulary only sorts that list, so the
+ * likely-relevant entries surface first. A miss here costs a reader one extra
+ * line to scan; it can no longer produce a false claim.
+ *
+ * Whole-token matching (not the recorder's substring regex) is still the right
+ * call for sorting: substring matching put `/locations/eaton-centre` at the top
+ * of the list because "eaton" contains "eat".
  */
 const MENU_WORDS = new Set([
 	'menu',
@@ -150,8 +160,11 @@ const MENU_WORDS = new Set([
 	'allergens'
 ]);
 
-/** True when any token of the URL's path is a menu word. */
-export function isMenuShaped(url: string): boolean {
+/**
+ * True when a token of the URL's path is a menu word. A SORT HINT — see the
+ * note above: a false negative here is routine and harmless by design.
+ */
+export function hasMenuWord(url: string): boolean {
 	let path: string;
 	try {
 		path = new URL(url).pathname;
@@ -169,15 +182,18 @@ export interface PageCoverage {
 	available: number;
 	/** Recorded pages the model actually fetched. */
 	visited: number;
+	/**
+	 * `visited / available`. Exact, but NOT a quality score: a venue's recorded
+	 * pages include its privacy policy and careers page, which a good extraction
+	 * has no reason to open. The actionable output is `unvisited`, not this ratio.
+	 */
 	ratio: number;
-	/** Recorded but never fetched, menu-shaped ones first — the likely blind spots. */
+	/**
+	 * Recorded pages never fetched — the blind-spot list. Sorted with
+	 * menu-word URLs first as a reading hint only (see `hasMenuWord`); a page
+	 * without a menu word can still be a menu page, so read the whole list.
+	 */
 	unvisited: string[];
-	/** Menu-shaped subset, the number that actually matters for exhaustiveness. */
-	menu_available: number;
-	menu_visited: number;
-	menu_ratio: number;
-	/** Menu-shaped pages the model never opened. */
-	menu_unvisited: string[];
 	/** Fetches that hit nothing in the recorded page list (APIs, assets, guesses). */
 	off_manifest: string[];
 }
@@ -214,9 +230,6 @@ export function pageCoverage(
 
 	const visited = available.filter((page) => fetchedNorm.has(page.norm));
 	const unvisited = available.filter((page) => !fetchedNorm.has(page.norm));
-	const menuPages = available.filter((page) => isMenuShaped(page.url));
-	const menuVisited = menuPages.filter((page) => fetchedNorm.has(page.norm));
-	const menuUnvisited = menuPages.filter((page) => !fetchedNorm.has(page.norm));
 
 	const availableNorms = new Set(available.map((page) => page.norm));
 	const offManifest = fetched.filter((url) => {
@@ -225,8 +238,8 @@ export function pageCoverage(
 	});
 
 	const sortMenuFirst = (a: { url: string }, b: { url: string }) => {
-		const aMenu = isMenuShaped(a.url) ? 0 : 1;
-		const bMenu = isMenuShaped(b.url) ? 0 : 1;
+		const aMenu = hasMenuWord(a.url) ? 0 : 1;
+		const bMenu = hasMenuWord(b.url) ? 0 : 1;
 		return aMenu - bMenu || a.url.localeCompare(b.url);
 	};
 
@@ -235,10 +248,6 @@ export function pageCoverage(
 		visited: visited.length,
 		ratio: available.length === 0 ? 1 : visited.length / available.length,
 		unvisited: unvisited.toSorted(sortMenuFirst).map((page) => page.url),
-		menu_available: menuPages.length,
-		menu_visited: menuVisited.length,
-		menu_ratio: menuPages.length === 0 ? 1 : menuVisited.length / menuPages.length,
-		menu_unvisited: menuUnvisited.map((page) => page.url).toSorted(),
 		off_manifest: [...new Set(offManifest)].toSorted()
 	};
 }

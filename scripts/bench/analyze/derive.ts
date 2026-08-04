@@ -162,6 +162,11 @@ export function levenshtein(a: string, b: string): number {
 	return prev[b.length];
 }
 
+/** Digit runs in a key — `5 oz` vs `9 oz` are different items, not a typo. */
+function digitSignature(key: string): string {
+	return (key.match(/\d+/g) ?? []).join(',');
+}
+
 /**
  * Split a report's misses and hallucinations into "same item, rewritten name"
  * versus the real thing.
@@ -172,54 +177,120 @@ export function levenshtein(a: string, b: string): number {
  * problems: a rewritten name is a fidelity bug in the extraction, a true miss is
  * a coverage bug in the navigation. Reading them as one number hides which.
  *
- * Pairing is greedy over (distance, then name) so it is deterministic, and each
- * side is consumed at most once.
+ * Two guards keep the overlay from inventing renames, both from real corpus
+ * cases where a naive edit-distance pairing lied:
+ *
+ * - **A duplicate submission is not a rename.** New York Fries gold carries both
+ *   `Bacon Double Cheese` (a poutine) and `Bacon Double Cheese Dog`. A model that
+ *   emitted `BACON DOUBLE CHEESE` twice had its second copy counted as a
+ *   hallucination by the scorer; pairing it with the *Dog* made three genuinely
+ *   un-extracted gold items disappear from `true_misses`. So a candidate whose
+ *   key exactly matches ANY gold item on the menu can never be read as a rename
+ *   of a different one, and vice versa.
+ * - **Different numbers mean different items.** `… (5 oz)` and `… (9 oz glass)`
+ *   sit 0.125 apart — well inside the threshold — but are separate menu items by
+ *   the bench's own variant convention. Pairing requires an identical digit
+ *   signature.
+ *
+ * Pairing is greedy over (ratio, distance, name) so it is deterministic, and
+ * each OCCURRENCE is consumed at most once — tracked by index, not by name, so a
+ * repeated name does not vanish from the residual buckets.
+ *
+ * `goldNames`/`candidateNames` are the FULL item lists when available; they are
+ * what the duplicate guard consults. Passing only the unmatched lists still
+ * works, it just weakens that guard.
  */
 export function analyzeNameFidelity(
 	missedItems: readonly string[],
-	hallucinatedItems: readonly string[]
+	hallucinatedItems: readonly string[],
+	context?: { goldNames?: readonly string[]; candidateNames?: readonly string[] }
 ): NameFidelity {
 	const missKeys = missedItems.map((name) => ({ name, key: nameMatchKey(name) }));
 	const hallKeys = hallucinatedItems.map((name) => ({ name, key: nameMatchKey(name) }));
 
-	const candidates: RenamedItem[] = [];
-	for (const miss of missKeys) {
-		for (const hall of hallKeys) {
+	// Every key present on either side, so an exact duplicate of a DIFFERENT item
+	// is recognizable as such rather than read as a rename.
+	const goldKeys = new Set((context?.goldNames ?? missedItems).map((name) => nameMatchKey(name)));
+	const candidateKeys = new Set(
+		(context?.candidateNames ?? hallucinatedItems).map((name) => nameMatchKey(name))
+	);
+
+	interface Pairing extends RenamedItem {
+		missIndex: number;
+		hallIndex: number;
+	}
+
+	const pairings: Pairing[] = [];
+	for (const [missIndex, miss] of missKeys.entries()) {
+		for (const [hallIndex, hall] of hallKeys.entries()) {
+			if (miss.key === hall.key) continue; // the scorer would have matched these
+			// A name that exists verbatim elsewhere on either menu is a duplicate,
+			// not a rewrite of this item.
+			if (goldKeys.has(hall.key) || candidateKeys.has(miss.key)) continue;
+			if (digitSignature(miss.key) !== digitSignature(hall.key)) continue;
+
 			const distance = levenshtein(miss.key, hall.key);
 			const longest = Math.max(miss.key.length, hall.key.length);
 			const ratio = longest === 0 ? 0 : distance / longest;
-			if (ratio <= RENAME_RATIO_THRESHOLD) {
-				candidates.push({ gold: miss.name, candidate: hall.name, distance, ratio });
-			}
+			if (ratio > RENAME_RATIO_THRESHOLD) continue;
+			pairings.push({
+				gold: miss.name,
+				candidate: hall.name,
+				distance,
+				ratio,
+				missIndex,
+				hallIndex
+			});
 		}
 	}
-	candidates.sort(
+	pairings.sort(
 		(a, b) =>
 			a.ratio - b.ratio ||
 			a.distance - b.distance ||
 			a.gold.localeCompare(b.gold) ||
-			a.candidate.localeCompare(b.candidate)
+			a.candidate.localeCompare(b.candidate) ||
+			a.missIndex - b.missIndex ||
+			a.hallIndex - b.hallIndex
 	);
 
-	const usedGold = new Set<string>();
-	const usedCandidate = new Set<string>();
+	// Indices, not names: a repeated hallucinated name has several occurrences and
+	// pairing one must not consume the rest.
+	const usedMiss = new Set<number>();
+	const usedHall = new Set<number>();
 	const renamed: RenamedItem[] = [];
-	for (const pair of candidates) {
-		if (usedGold.has(pair.gold) || usedCandidate.has(pair.candidate)) continue;
-		usedGold.add(pair.gold);
-		usedCandidate.add(pair.candidate);
-		renamed.push(pair);
+	for (const pair of pairings) {
+		if (usedMiss.has(pair.missIndex) || usedHall.has(pair.hallIndex)) continue;
+		usedMiss.add(pair.missIndex);
+		usedHall.add(pair.hallIndex);
+		renamed.push({
+			gold: pair.gold,
+			candidate: pair.candidate,
+			distance: pair.distance,
+			ratio: pair.ratio
+		});
 	}
 
 	return {
 		renamed,
-		true_misses: missedItems.filter((name) => !usedGold.has(name)),
-		true_hallucinations: hallucinatedItems.filter((name) => !usedCandidate.has(name))
+		true_misses: missedItems.filter((_name, index) => !usedMiss.has(index)),
+		true_hallucinations: hallucinatedItems.filter((_name, index) => !usedHall.has(index))
 	};
 }
 
-/** Convenience: the fidelity overlay for a run, or null when it has no report. */
-export function nameFidelityFor(run: RunRecord): NameFidelity | null {
+/**
+ * Convenience: the fidelity overlay for a run, or null when it has no report.
+ *
+ * `goldNames`/`candidateNames` (the full item lists, which the viewer already
+ * loads) sharpen the duplicate guard; omitting them still works.
+ */
+export function nameFidelityFor(
+	run: RunRecord,
+	context?: { goldNames?: readonly string[]; candidateNames?: readonly string[] }
+): NameFidelity | null {
 	if (!run.report) return null;
-	return analyzeNameFidelity(run.report.missed_items ?? [], run.report.hallucinated_items ?? []);
+	const missed = Array.isArray(run.report.missed_items) ? run.report.missed_items : [];
+	const hallucinated = Array.isArray(run.report.hallucinated_items)
+		? run.report.hallucinated_items
+		: [];
+	return analyzeNameFidelity(missed, hallucinated, context);
 }

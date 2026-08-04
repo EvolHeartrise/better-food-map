@@ -19,7 +19,7 @@
  * A run dir that cannot be read never throws: it lands in `problems` so one
  * corrupt directory can't blind the whole index.
  */
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ScoreReport } from '../score';
 
@@ -256,12 +256,28 @@ export function loadRunIndex(runsDir: string = DEFAULT_RUNS_DIR): RunIndex {
 				if (typeof meta !== 'object' || meta === null || Array.isArray(meta)) {
 					throw new Error('meta.json is not an object');
 				}
-				// A failed run writes no report — that is expected, not a problem.
+				// A failed run writes no report — ABSENT is expected and not a problem.
+				// A report that exists but will not parse is a different thing entirely:
+				// swallowing it indexed the run as `scored` with no report, so it padded
+				// every cell's n_runs/n_scored while contributing to no metric, and
+				// nothing anywhere said the file was broken.
+				const reportPath = join(dir, 'report.json');
 				let report: ScoreReport | null = null;
-				try {
-					report = readJson(join(dir, 'report.json')) as ScoreReport;
-				} catch {
-					report = null;
+				if (existsSync(reportPath)) {
+					try {
+						const parsed = readJson(reportPath);
+						if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+							throw new Error('report.json is not an object');
+						}
+						report = parsed as ScoreReport;
+					} catch (error) {
+						index.problems.push({
+							dir,
+							error: `report.json unreadable: ${
+								error instanceof Error ? error.message : String(error)
+							}`
+						});
+					}
 				}
 				index.runs.push(
 					toRunRecord({

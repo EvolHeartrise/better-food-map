@@ -159,9 +159,56 @@ describe('analyzeNameFidelity', () => {
 		expect(result.true_hallucinations).toEqual([]);
 	});
 
-	test('pairing is paren-insensitive, matching the scorer key', () => {
+	test('identical match keys are not a "rename" — the scorer would have matched them', () => {
 		const result = analyzeNameFidelity(['Fresh Soup (Bowl)'], ['Fresh Soup Bowl']);
+		expect(result.renamed).toEqual([]);
+		expect(result.true_misses).toEqual(['Fresh Soup (Bowl)']);
+		expect(result.true_hallucinations).toEqual(['Fresh Soup Bowl']);
+	});
+
+	test('a repeated hallucinated name is not swallowed by one pairing', () => {
+		// Real case: a meetonmain run repeated "PHILIPS TILT LAGER (Happy Hour)".
+		// Tracking used names (not occurrences) deleted every copy from the residual
+		// bucket, so items were reported nowhere at all.
+		const result = analyzeNameFidelity(
+			['Chili Cheese Dog'],
+			['Chili Cheese Dogg', 'Chili Cheese Dogg']
+		);
 		expect(result.renamed).toHaveLength(1);
-		expect(result.renamed[0].distance).toBe(0);
+		expect(result.true_hallucinations).toEqual(['Chili Cheese Dogg']);
+		expect(result.renamed.length + result.true_hallucinations.length).toBe(2);
+	});
+
+	test('a duplicate of a DIFFERENT gold item is not read as a rename', () => {
+		// Real case: newyorkfries gold has both "Bacon Double Cheese" (a poutine)
+		// and "Bacon Double Cheese Dog". A model emitted "BACON DOUBLE CHEESE"
+		// twice; pairing the extra copy with the Dog hid genuinely missed items.
+		const result = analyzeNameFidelity(['Bacon Double Cheese Dog'], ['BACON DOUBLE CHEESE'], {
+			goldNames: ['Bacon Double Cheese', 'Bacon Double Cheese Dog'],
+			candidateNames: ['Bacon Double Cheese', 'BACON DOUBLE CHEESE']
+		});
+		expect(result.renamed).toEqual([]);
+		expect(result.true_misses).toEqual(['Bacon Double Cheese Dog']);
+		expect(result.true_hallucinations).toEqual(['BACON DOUBLE CHEESE']);
+	});
+
+	test('size variants are different items, not typos', () => {
+		// "(5 oz)" vs "(9 oz glass)" sit 0.125 apart — inside the threshold — but
+		// the bench's variant convention makes them separate menu items.
+		const result = analyzeNameFidelity(
+			['Stone Road Smooth Red, BC VQA (9 oz glass)'],
+			['Stone Road Smooth Red, BC VQA (5 oz)']
+		);
+		expect(result.renamed).toEqual([]);
+		expect(result.true_misses).toHaveLength(1);
+		expect(result.true_hallucinations).toHaveLength(1);
+	});
+
+	test('every miss and hallucination is accounted for exactly once', () => {
+		const missed = ['Alpha Dog', 'Beta Fries', 'Gamma Poutine'];
+		const hallucinated = ['Alpha Dogg', 'Delta Shake', 'Delta Shake'];
+		const result = analyzeNameFidelity(missed, hallucinated);
+		expect(result.renamed.length + result.true_misses.length).toBe(missed.length);
+		expect(result.renamed.length + result.true_hallucinations.length).toBe(hallucinated.length);
 	});
 });

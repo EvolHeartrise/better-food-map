@@ -44,9 +44,21 @@ export type AverageMode = 'macro' | 'micro';
  * `item_recall`/`item_precision` are reconstructible (matched / gold_items /
  * candidate_items are all reported). The per-pair accuracies are means over
  * `matched` pairs, so weighting by `matched` reproduces the pooled mean exactly.
- * The tag metrics are the gap: the report publishes the ratios but not their tag
- * denominators, so pooling them is a `matched`-weighted APPROXIMATION and is
- * flagged as such rather than presented as a pooled truth.
+ *
+ * Everything else — the four tag metrics and the two source metrics — publishes
+ * a ratio without its denominator, so there is nothing to pool. An earlier
+ * version weighted them by `matched` and flagged the result "approximate". That
+ * was not an approximation: measured against the true pooled values recomputed
+ * from the stored candidates, micro `tag_recall` was off by up to 0.25 (2–3x
+ * overstatement) and INVERTED 5% of pairwise cell comparisons, changing the top
+ * of the leaderboard. `source_recall` was optimistic in every cell by up to
+ * 0.18, because its real denominator is a per-task source count of 2–3 that has
+ * no relation to item count at all — so weighting by `matched` let a 180-item
+ * menu dominate a metric it has no larger stake in.
+ *
+ * A wrong number wearing a "~" reads as rounding noise. These now report `null`
+ * under micro with `unpoolable: true`, and the reader is pointed at macro, which
+ * is exact for every metric.
  */
 const MICRO_EXACT: ReadonlySet<MetricKey> = new Set<MetricKey>([
 	'item_recall',
@@ -67,10 +79,11 @@ export interface Stat {
 	/** Runs that contributed a value. */
 	n: number;
 	/**
-	 * Set when the mean is a weighted approximation rather than a true pooled
-	 * ratio (micro mode, tag/source metrics). Never set in macro mode.
+	 * Set in micro mode when the metric cannot be pooled from what `report.json`
+	 * carries, so `mean` is null by construction rather than for lack of data.
+	 * Use macro for these. Never set in macro mode.
 	 */
-	approx?: boolean;
+	unpoolable?: boolean;
 }
 
 const EMPTY_STAT: Stat = { mean: null, sd: null, median: null, min: null, max: null, n: 0 };
@@ -124,12 +137,30 @@ function scoredReports(runs: readonly RunRecord[]): { run: RunRecord; report: Sc
 }
 
 /**
+ * A count field from a report, or null when it is absent or not a number.
+ *
+ * `report.json` is read unvalidated and the corpus already contains schema
+ * drift (six runs predate `price_mismatches`). Reading an absent count as 0
+ * would silently fabricate a ratio — a report missing `gold_items` would pool to
+ * a PERFECT item_recall — so a run with an unusable count is dropped from the
+ * pool instead, exactly like the absent-vs-zero rule everywhere else.
+ */
+function countField(report: ScoreReport, key: 'matched' | 'gold_items' | 'candidate_items') {
+	const value = report[key];
+	return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/**
  * Aggregate one metric over a set of runs.
  *
  * Macro: mean per task, then mean of task means — so a cell that ran one task
  * ten times and another once doesn't let the first task dictate the number.
- * Micro: pooled over raw counts where the report supports it (see MICRO_EXACT),
- * `matched`-weighted otherwise and flagged `approx`.
+ * Macro is exact for every metric.
+ *
+ * Micro: pooled over raw counts, and ONLY where the report carries the counts to
+ * pool with (see MICRO_EXACT). For the tag and source metrics it returns null
+ * with `unpoolable: true` rather than a weighted guess — see the note on
+ * MICRO_EXACT for the measured damage that guess did.
  */
 export function aggregateMetric(
 	runs: readonly RunRecord[],
@@ -154,30 +185,60 @@ export function aggregateMetric(
 		return stat;
 	}
 
-	// micro
+	// --- micro ---
+	if (!MICRO_EXACT.has(key)) {
+		// The report publishes this ratio without its denominator. Nothing here can
+		// pool it; say so instead of inventing a weight.
+		stat.mean = null;
+		stat.unpoolable = true;
+		return stat;
+	}
+
 	if (key === 'item_recall' || key === 'item_precision') {
 		const denomKey = key === 'item_recall' ? 'gold_items' : 'candidate_items';
 		let matched = 0;
 		let denom = 0;
+		let pooled = 0;
 		for (const { report } of entries) {
-			matched += report.matched ?? 0;
-			denom += report[denomKey] ?? 0;
+			const hit = countField(report, 'matched');
+			const total = countField(report, denomKey);
+			if (hit === null || total === null) continue;
+			matched += hit;
+			denom += total;
+			pooled++;
+		}
+		if (pooled === 0) {
+			stat.mean = null;
+			return stat;
 		}
 		// 0/0 is a perfect ratio here for the same reason the scorer says so:
 		// nothing was asserted, so nothing is missing or wrong.
 		stat.mean = denom === 0 ? 1 : matched / denom;
+		stat.n = pooled;
 		return stat;
 	}
 
+	// Per-pair accuracies are means over `matched` pairs, so weighting by matched
+	// reproduces the pooled mean EXACTLY.
 	let weighted = 0;
 	let weight = 0;
+	let pooled = 0;
 	for (const { report } of entries) {
-		const w = report.matched ?? 0;
+		const w = countField(report, 'matched');
+		if (w === null) continue;
 		weighted += (metricValue(report, key) as number) * w;
 		weight += w;
+		pooled++;
 	}
-	stat.mean = weight === 0 ? null : weighted / weight;
-	if (!MICRO_EXACT.has(key)) stat.approx = true;
+	if (pooled === 0) {
+		stat.mean = null;
+		return stat;
+	}
+	// Every contributing run matched zero pairs: there is nothing to weight, so
+	// fall back to the unweighted mean rather than reporting null while macro
+	// would have reported a value.
+	stat.mean = weight === 0 ? mean(values) : weighted / weight;
+	stat.n = pooled;
 	return stat;
 }
 
@@ -199,12 +260,16 @@ export type Dimension = (typeof DIMENSIONS)[number];
 /**
  * Default grouping. `provenance` is in by default on purpose: OpenRouter routes
  * to endpoints that differ in quantization, so merging them would report a
- * number that describes no actual endpoint.
+ * number that describes no actual endpoint. `temperature` is in for the same
+ * reason — `bench:run --temperature` is a real sampling change, and nothing
+ * would badge two temperatures silently sharing a cell. (Every run in the
+ * current corpus has `temperature: null`, so this changes no existing grouping.)
  */
 export const DEFAULT_DIMENSIONS: Dimension[] = [
 	'model',
 	'backend',
 	'effort',
+	'temperature',
 	'quantization',
 	'provenance'
 ];
@@ -246,6 +311,12 @@ export interface Cell {
 	n_failed: number;
 	/** Tasks this cell covers, sorted. A cell covering fewer tasks is less comparable. */
 	tasks: string[];
+	/**
+	 * Tasks where at least one run produced a report. This — not `tasks` — is what
+	 * a coverage claim may be built on: a task whose only run crashed was attempted,
+	 * not covered, and counting it let a 3-task mean present itself as 4/4.
+	 */
+	scored_tasks: string[];
 	/** Distinct gold policy versions among the runs, for display. */
 	policy_versions: string[];
 	/**
@@ -262,6 +333,12 @@ export interface Cell {
 	provenances: string[];
 	/** True when any run in the cell was re-routed mid-flight. */
 	rerouted: boolean;
+	/**
+	 * Runs whose upstream provider was never recorded (`providers` absent, or an
+	 * empty list the backend reported). Their scores cannot be attributed to an
+	 * endpoint. An explicit count, so the UI never has to pattern-match a label.
+	 */
+	unattributed_runs: number;
 	metrics: Record<MetricKey, Stat>;
 	cost_usd: Stat;
 	/** Counterfactual cost under perfect prefix caching (openrouter runs only). */
@@ -306,7 +383,11 @@ export function buildCells(
 
 	const groups = new Map<string, RunRecord[]>();
 	for (const run of runs) {
-		const key = dimensions.map((dimension) => dimensionValue(run, dimension)).join(' | ');
+		// NUL as the separator, not ' | ': a dimension value containing the display
+		// separator would otherwise let two different configurations collide into
+		// one cell, and `dims` is taken from the first run, so the other's config
+		// would be misreported.
+		const key = dimensions.map((dimension) => dimensionValue(run, dimension)).join('\u0000');
 		const list = groups.get(key) ?? [];
 		list.push(run);
 		groups.set(key, list);
@@ -331,12 +412,18 @@ export function buildCells(
 			n_scored: cellRuns.length - nFailed,
 			n_failed: nFailed,
 			tasks: [...new Set(cellRuns.map((run) => run.task))].toSorted(),
+			scored_tasks: [
+				...new Set(cellRuns.filter((run) => run.report !== null).map((run) => run.task))
+			].toSorted(),
 			policy_versions: [
 				...new Set(cellRuns.map((run) => run.policy_version ?? 'unknown'))
 			].toSorted(),
 			policy_conflicts: policyConflicts(cellRuns),
 			provenances: [...new Set(derived.map((d) => d.provenance))].toSorted(),
 			rerouted: derived.some((d) => d.rerouted),
+			unattributed_runs: cellRuns.filter(
+				(run) => run.providers === null || run.providers.length === 0
+			).length,
 			metrics,
 			cost_usd: describe(nonNull(derived.map((d) => d.cost_usd))),
 			price_cached: describe(nonNull(cellRuns.map((run) => run.price_cached))),
@@ -354,47 +441,26 @@ export function buildCells(
 	return cells.toSorted((a, b) => a.key.localeCompare(b.key));
 }
 
-// --- frontier -----------------------------------------------------------------
-
-export interface FrontierPoint<T> {
-	item: T;
-	/** Minimized axis (cost, latency). */
-	x: number;
-	/** Maximized axis (a quality metric). */
-	y: number;
-}
-
-/**
- * Pareto frontier: points no other point beats on BOTH axes (cheaper/faster and
- * better). Ties are kept — two configs at identical (x, y) are equally optimal
- * and dropping one would silently pick a winner.
- */
-export function paretoFrontier<T>(points: readonly FrontierPoint<T>[]): FrontierPoint<T>[] {
-	return points.filter(
-		(point) =>
-			!points.some(
-				(other) =>
-					other !== point &&
-					other.x <= point.x &&
-					other.y >= point.y &&
-					(other.x < point.x || other.y > point.y)
-			)
-	);
-}
-
 // --- task discrimination ------------------------------------------------------
 
 export interface TaskDiscrimination {
 	task: string;
 	metric: MetricKey;
-	/** Distinct config cells that ran this task. */
+	/** Distinct config cells that ran this task, INCLUDING ones that only failed. */
 	n_cells: number;
-	/** Spread of cell means — the task's power to separate configurations. */
+	/**
+	 * Cells that actually produced a score. Every statistic below is computed over
+	 * these, not over `n_cells`: a task where half the configurations crashed
+	 * would otherwise read as "no spread, everything at ceiling — retire it",
+	 * which is the opposite of what happened.
+	 */
+	n_scored_cells: number;
+	/** Spread of scored cell means — the task's power to separate configurations. */
 	sd: number | null;
 	range: number | null;
 	best: number | null;
 	worst: number | null;
-	/** Share of cells scoring >= 0.999 — a task at ceiling has stopped discriminating. */
+	/** Share of SCORED cells at >= 0.999 — a task at ceiling has stopped discriminating. */
 	ceiling_share: number | null;
 }
 
@@ -422,6 +488,7 @@ export function taskDiscrimination(
 			task,
 			metric,
 			n_cells: cells.length,
+			n_scored_cells: means.length,
 			sd: stdev(means),
 			range: means.length === 0 ? null : Math.max(...means) - Math.min(...means),
 			best: means.length === 0 ? null : Math.max(...means),

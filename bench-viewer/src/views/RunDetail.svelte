@@ -47,6 +47,17 @@
 		useCurrentGold ? (detail?.rescore.current ?? null) : (detail?.run.report ?? null)
 	);
 
+	/**
+	 * Matched to whichever report is on screen. Rendering the run's frozen
+	 * fidelity beside rescored dangerous-claims and mismatches put two different
+	 * golds in one tab, unlabelled — in the exact feature that exists to tell them
+	 * apart. Both variants come from the server, so the tested implementation is
+	 * the one that runs.
+	 */
+	let fidelity = $derived(
+		useCurrentGold ? (detail?.name_fidelity_current ?? null) : (detail?.name_fidelity ?? null)
+	);
+
 	let providerLabel = $derived.by(() => {
 		const run = detail?.run;
 		if (!run) return '';
@@ -198,14 +209,21 @@
 
 		{#if tab === 'items' && report}
 			<div class="card">
-				<h2>Name fidelity</h2>
+				<h2>
+					Name fidelity
+					<span class="muted small"
+						>· against {useCurrentGold
+							? `current gold (${detail.rescore.current_policy_version ?? '?'})`
+							: `gold as scored (${run.policy_version ?? 'unknown'})`}</span
+					>
+				</h2>
 				<p class="muted small">
 					The scorer matches names exactly, so a rewritten name costs one miss AND one
 					hallucination. These are the same failures, split by what actually went wrong.
 				</p>
 
-				{#if detail.name_fidelity && detail.name_fidelity.renamed.length > 0}
-					<h3>Found but renamed ({detail.name_fidelity.renamed.length})</h3>
+				{#if fidelity && fidelity.renamed.length > 0}
+					<h3>Found but renamed ({fidelity.renamed.length})</h3>
 					<div class="scroll-x">
 						<table>
 							<thead>
@@ -215,7 +233,7 @@
 								>
 							</thead>
 							<tbody>
-								{#each detail.name_fidelity.renamed as pair (pair.gold)}
+								{#each fidelity.renamed as pair, index (index)}
 									<tr>
 										<td class="left">{pair.gold}</td>
 										<td class="left">{pair.candidate}</td>
@@ -233,7 +251,7 @@
 							Never found ({detail.name_fidelity?.true_misses.length ?? report.missed_items.length})
 						</h3>
 						<ul class="list">
-							{#each detail.name_fidelity?.true_misses ?? report.missed_items as item (item)}
+							{#each fidelity?.true_misses ?? report.missed_items as item, index (index)}
 								<li>{item}</li>
 							{:else}
 								<li class="muted">None</li>
@@ -246,7 +264,7 @@
 								report.hallucinated_items.length})
 						</h3>
 						<ul class="list">
-							{#each detail.name_fidelity?.true_hallucinations ?? report.hallucinated_items as item (item)}
+							{#each fidelity?.true_hallucinations ?? report.hallucinated_items as item, index (index)}
 								<li>{item}</li>
 							{:else}
 								<li class="muted">None</li>
@@ -274,7 +292,7 @@
 								>
 							</thead>
 							<tbody>
-								{#each report.tag_false_positives as claim (claim.item + claim.tag)}
+								{#each report.tag_false_positives as claim, index (index)}
 									<tr>
 										<td class="left">{claim.item}</td>
 										<td class="left">{claim.tag}</td>
@@ -300,7 +318,7 @@
 									<tr><th class="left">Item</th><th>Gold</th><th>Candidate</th></tr>
 								</thead>
 								<tbody>
-									{#each report.price_mismatches as mismatch (mismatch.item)}
+									{#each report.price_mismatches as mismatch, index (index)}
 										<tr>
 											<td class="left">{mismatch.item}</td>
 											<td>{mismatch.gold ?? '—'}</td>
@@ -313,7 +331,7 @@
 					{/if}
 					{#if report.description_mismatches?.length}
 						<h3>Description ({report.description_mismatches.length})</h3>
-						{#each report.description_mismatches as mismatch (mismatch.item)}
+						{#each report.description_mismatches as mismatch, index (index)}
 							<div class="diff">
 								<div class="diff-item">{mismatch.item}</div>
 								<div class="diff-side">

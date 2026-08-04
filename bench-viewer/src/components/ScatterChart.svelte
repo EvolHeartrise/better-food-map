@@ -37,8 +37,12 @@
 
 	// A log x-axis is what makes a cost frontier readable — runs here span three
 	// orders of magnitude — but log(0) is undefined, so a free/zero-cost point
-	// would silently vanish. Fall back to linear when any x is non-positive.
-	let useLog = $derived(logX && points.every((point) => point.x > 0));
+	// would silently vanish. Fall back to linear when any x is non-positive, and
+	// with NO points at all: `[].every(…)` is vacuously true, which used to leave
+	// a log axis over the placeholder domain [0, 1] and send the tick loop below
+	// to `Math.log10(0) === -Infinity`, incrementing forever. That hung the tab on
+	// any filter combination that selected nothing.
+	let useLog = $derived(logX && points.length > 0 && points.every((point) => point.x > 0));
 
 	let xDomain = $derived.by(() => {
 		const values = points.map((point) => point.x);
@@ -80,8 +84,13 @@
 		if (!useLog) {
 			return Array.from({ length: 5 }, (_unused, i) => lo + ((hi - lo) * i) / 4);
 		}
+		// Belt and braces beside the `useLog` guard: a non-finite exponent here
+		// would loop forever, so bail to the endpoints instead.
+		const first = Math.floor(Math.log10(lo));
+		const last = Math.ceil(Math.log10(hi));
+		if (!Number.isFinite(first) || !Number.isFinite(last)) return [lo, hi];
 		const ticks: number[] = [];
-		for (let exp = Math.floor(Math.log10(lo)); exp <= Math.ceil(Math.log10(hi)); exp++) {
+		for (let exp = first; exp <= last; exp++) {
 			const value = 10 ** exp;
 			if (value >= lo && value <= hi) ticks.push(value);
 		}
@@ -123,14 +132,30 @@
 	}
 
 	let placedLabels = $derived.by<PlacedLabel[]>(() => {
-		const boxes: { x0: number; x1: number; y0: number; y1: number }[] = [];
+		// Seeded with every DOT, not just previously-placed labels. Labels carry a
+		// surface-coloured stroke so they read over the grid, which also means they
+		// erase any mark they land on — a label that hides another configuration's
+		// point is deleting data to describe data.
+		const boxes = points.map((point) => {
+			const cx = scaleX(point.x);
+			const cy = scaleY(point.y);
+			const r = point.frontier ? 7.5 : 6.5; // mark radius + its 2px surface ring
+			// `owner` exempts a point's own mark: a label sits beside the dot it
+			// names, so overlapping THAT one is the whole idea.
+			return { x0: cx - r, x1: cx + r, y0: cy - r, y1: cy + r, owner: point.id };
+		});
 		const placed: PlacedLabel[] = [];
 		const left = PAD.left;
 		const right = WIDTH - PAD.right;
 
-		const overlaps = (box: (typeof boxes)[number]) =>
+		const overlaps = (box: { x0: number; x1: number; y0: number; y1: number }, owner: string) =>
 			boxes.some(
-				(other) => box.x0 < other.x1 && box.x1 > other.x0 && box.y0 < other.y1 && box.y1 > other.y0
+				(other) =>
+					other.owner !== owner &&
+					box.x0 < other.x1 &&
+					box.x1 > other.x0 &&
+					box.y0 < other.y1 &&
+					box.y1 > other.y0
 			);
 
 		for (const point of points.filter((entry) => entry.frontier).toSorted((a, b) => a.x - b.x)) {
@@ -159,8 +184,9 @@
 					y0: baseline - LABEL_HEIGHT,
 					y1: baseline + 2
 				};
-				if (overlaps(box)) continue;
-				boxes.push(box);
+				if (overlaps(box, point.id)) continue;
+				// A placed label blocks every later one, including its own point's.
+				boxes.push({ ...box, owner: `label:${point.id}` });
 				placed.push({ id: point.id, text: point.label, x: cx, y: baseline, anchor });
 				break;
 			}

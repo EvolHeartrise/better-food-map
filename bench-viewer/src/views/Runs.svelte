@@ -80,7 +80,19 @@
 				</thead>
 				<tbody>
 					{#each visible as run (run.run_id)}
-						<tr class="clickable" onclick={() => router.go('run', { id: run.run_id })}>
+						<tr
+							class="clickable"
+							onclick={() => router.go('run', { id: run.run_id })}
+							onkeydown={(event) => {
+								if (event.key === 'Enter' || event.key === ' ') {
+									event.preventDefault();
+									router.go('run', { id: run.run_id });
+								}
+							}}
+							tabindex="0"
+							role="button"
+							aria-label="Open run {run.run_id}"
+						>
 							<td class="left mono">{timestamp(run.started_at)}</td>
 							<td class="left">{run.task}</td>
 							<td class="left">{run.model}</td>

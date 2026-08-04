@@ -31,6 +31,15 @@
 
 	let sameTask = $derived(a !== null && b !== null && a.run.task === b.run.task);
 
+	/**
+	 * Two runs of the same task scored against different gold versions are not
+	 * comparable — their frozen reports answer different questions. The aggregated
+	 * views badge this; the one view that IS an explicit head-to-head must too.
+	 */
+	let goldConflict = $derived(
+		sameTask && a !== null && b !== null && a.run.policy_version !== b.run.policy_version
+	);
+
 	let diff = $derived(
 		a && b && sameTask ? diffRuns(a.candidate_items, b.candidate_items, a.gold_items) : null
 	);
@@ -77,6 +86,15 @@
 							<td class="left mono">{timestamp(b.run.started_at)}</td>
 						</tr>
 						<tr>
+							<td class="left muted">Gold</td>
+							<td class="left" class:conflict={goldConflict}>
+								{a.run.policy_version ?? 'unknown'}
+							</td>
+							<td class="left" class:conflict={goldConflict}>
+								{b.run.policy_version ?? 'unknown'}
+							</td>
+						</tr>
+						<tr>
 							<td class="left muted">Provenance</td>
 							<td class="left">{a.derived.provenance}</td>
 							<td class="left">{b.derived.provenance}</td>
@@ -103,6 +121,18 @@
 				</table>
 			</div>
 		</div>
+
+		{#if goldConflict}
+			<div class="card">
+				<p class="danger">
+					These runs were scored against DIFFERENT versions of {a.run.task}'s gold ({a.run
+						.policy_version ?? 'unknown'} vs {b.run.policy_version ?? 'unknown'}). Their frozen
+					reports answer different questions, so the metric table above is not a like-for-like
+					comparison — open each run and use "Score against current gold" to compare them on equal
+					terms.
+				</p>
+			</div>
+		{/if}
 
 		{#if !sameTask}
 			<div class="card">
@@ -205,6 +235,11 @@
 	h3 {
 		margin: 14px 0 4px;
 		color: var(--text-secondary);
+	}
+
+	.conflict {
+		color: var(--critical);
+		font-weight: 600;
 	}
 
 	.better {

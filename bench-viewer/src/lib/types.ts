@@ -110,6 +110,11 @@ export interface CellRow {
 	failure_rate: number;
 	tasks: string;
 	n_tasks: number;
+	scored_tasks: string;
+	/** Tasks that produced a score — the only honest basis for a coverage claim. */
+	n_scored_tasks: number;
+	/** Runs whose provider was never recorded, so their score is unattributable. */
+	unattributed_runs: number;
 	policy_versions: string;
 	policy_conflict_tasks: string;
 	policy_conflicts: { task: string; versions: string[] }[];
@@ -140,11 +145,19 @@ export interface TaskDiscrimination {
 	task: string;
 	metric: MetricKey;
 	n_cells: number;
+	/** Cells that produced a score — every statistic below is over these. */
+	n_scored_cells: number;
 	sd: number | null;
 	range: number | null;
 	best: number | null;
 	worst: number | null;
 	ceiling_share: number | null;
+}
+
+export interface NameFidelity {
+	renamed: { gold: string; candidate: string; distance: number; ratio: number }[];
+	true_misses: string[];
+	true_hallucinations: string[];
 }
 
 export interface MenuItem {
@@ -223,11 +236,10 @@ export interface RunDetail {
 		rerouted: boolean;
 		provenance: string;
 	};
-	name_fidelity: {
-		renamed: { gold: string; candidate: string; distance: number; ratio: number }[];
-		true_misses: string[];
-		true_hallucinations: string[];
-	} | null;
+	/** Overlay for the report AS SCORED at run time. */
+	name_fidelity: NameFidelity | null;
+	/** Overlay for the same submission against CURRENT gold; null when unavailable. */
+	name_fidelity_current: NameFidelity | null;
 	rescore: {
 		run_id: string;
 		as_scored: ScoreReport | null;

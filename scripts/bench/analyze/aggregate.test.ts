@@ -7,7 +7,6 @@ import {
 	dimensionValue,
 	filterRuns,
 	median,
-	paretoFrontier,
 	stdev,
 	taskDiscrimination
 } from './aggregate';
@@ -112,12 +111,49 @@ describe('aggregateMetric', () => {
 		expect(stat.approx).toBeUndefined();
 	});
 
-	test('tag metrics are flagged approximate under micro', () => {
-		// The report publishes tag ratios but not their denominators, so pooling
-		// them can only be an approximation — and must say so.
-		const runs = [run('a', {}, report({ tag_recall: 0.5 }))];
-		expect(aggregateMetric(runs, 'tag_recall', 'micro').approx).toBe(true);
-		expect(aggregateMetric(runs, 'tag_recall', 'macro').approx).toBeUndefined();
+	test('tag and source metrics report NO micro value rather than a wrong one', () => {
+		// The report publishes these ratios without their denominators. Weighting
+		// them by `matched` was measured against the truth at up to 0.25 error and
+		// inverted 5% of pairwise cell comparisons, so no value is published now.
+		const hi = { tag_recall: 1, tag_precision: 1, source_recall: 1, source_precision: 1 };
+		const lo = { tag_recall: 0, tag_precision: 0, source_recall: 0, source_precision: 0 };
+		const runs = [
+			run('a', {}, report({ matched: 90, ...hi })),
+			run('b', {}, report({ matched: 10, ...lo }))
+		];
+		for (const metric of [
+			'tag_recall',
+			'tag_precision',
+			'source_recall',
+			'source_precision'
+		] as const) {
+			const micro = aggregateMetric(runs, metric, 'micro');
+			expect(micro.mean).toBeNull();
+			expect(micro.unpoolable).toBe(true);
+			// Macro is exact and still answers.
+			const macro = aggregateMetric(runs, metric, 'macro');
+			expect(macro.mean).toBeCloseTo(0.5);
+			expect(macro.unpoolable).toBeUndefined();
+		}
+	});
+
+	test('an absent count drops a run from the pool instead of counting as zero', () => {
+		// report.json is read unvalidated and the corpus already has schema drift.
+		// Reading a missing gold_items as 0 would pool to a PERFECT recall.
+		const broken = report({ matched: 5 });
+		delete (broken as Partial<ScoreReport>).gold_items;
+		const runs = [run('a', {}, broken), run('b', {}, report({ matched: 5, gold_items: 10 }))];
+		const stat = aggregateMetric(runs, 'item_recall', 'micro');
+		expect(stat.mean).toBeCloseTo(0.5);
+		expect(stat.n).toBe(1);
+	});
+
+	test('micro falls back to the plain mean when nothing matched', () => {
+		// Otherwise micro reports null where macro reports a value, for runs the
+		// scorer scored perfectly well under its own 0/0 convention.
+		const runs = [run('a', {}, report({ matched: 0, price_accuracy: 1 }))];
+		expect(aggregateMetric(runs, 'price_accuracy', 'micro').mean).toBe(1);
+		expect(aggregateMetric(runs, 'price_accuracy', 'macro').mean).toBe(1);
 	});
 
 	test('spread is reported from per-run values in both modes', () => {
@@ -219,34 +255,23 @@ describe('buildCells', () => {
 		expect(cells[0].unsafe_tag_claims_total).toBe(2);
 	});
 
+	test('different sampling temperatures never share a cell', () => {
+		const runs = [run('a', { temperature: 0 }), run('a', { temperature: 1 })];
+		expect(buildCells(runs)).toHaveLength(2);
+	});
+
+	test('a dimension value containing the display separator cannot collide', () => {
+		const runs = [
+			run('a', { model: 'm | openrouter', backend: 'x' }),
+			run('a', { model: 'm', backend: 'openrouter | x' })
+		];
+		expect(buildCells(runs, { dimensions: ['model', 'backend'] })).toHaveLength(2);
+	});
+
 	test('custom dimensions regroup', () => {
 		const runs = [run('a', { model: 'x' }), run('b', { model: 'x' })];
 		expect(buildCells(runs, { dimensions: ['model', 'task'] })).toHaveLength(2);
 		expect(buildCells(runs, { dimensions: ['model'] })).toHaveLength(1);
-	});
-});
-
-describe('paretoFrontier', () => {
-	test('keeps only points nothing beats on both axes', () => {
-		const points = [
-			{ item: 'cheap-bad', x: 1, y: 0.5 },
-			{ item: 'cheap-good', x: 1, y: 0.9 },
-			{ item: 'dear-good', x: 5, y: 0.95 },
-			{ item: 'dear-bad', x: 5, y: 0.6 }
-		];
-		expect(
-			paretoFrontier(points)
-				.map((point) => point.item)
-				.toSorted()
-		).toEqual(['cheap-good', 'dear-good']);
-	});
-
-	test('exact ties are both kept — neither dominates', () => {
-		const points = [
-			{ item: 'a', x: 1, y: 1 },
-			{ item: 'b', x: 1, y: 1 }
-		];
-		expect(paretoFrontier(points)).toHaveLength(2);
 	});
 });
 
@@ -257,6 +282,16 @@ describe('taskDiscrimination', () => {
 		expect(task.task).toBe('easy');
 		expect(task.ceiling_share).toBe(1);
 		expect(task.sd).toBe(0);
+		expect(task.n_scored_cells).toBe(2);
+	});
+
+	test('cells that only failed are excluded from the stats and counted separately', () => {
+		// Otherwise a task where half the configurations crashed reads as
+		// "everything aces it, retire this task" — the opposite of the truth.
+		const runs = [run('t', { model: 'x' }), run('t', { model: 'y' }, null)];
+		const [task] = taskDiscrimination(runs, 'item_recall');
+		expect(task.n_cells).toBe(2);
+		expect(task.n_scored_cells).toBe(1);
 	});
 
 	test('a task that separates configs shows spread', () => {
