@@ -1,0 +1,26 @@
+{
+	// Standalone from the root tsconfig on purpose: the viewer is a plain
+	// Vite + Svelte SPA with no SvelteKit ambient types, no Cloudflare Workers
+	// globals, and no Paraglide output. Sharing the root config would drag all
+	// three in. It exists as its own project so eslint's typescript projectService
+	// can resolve these components (the repo lints `**/*.svelte`) and so
+	// `svelte-check` can type-check them.
+	"compilerOptions": {
+		"target": "ES2022",
+		"module": "ESNext",
+		"moduleResolution": "bundler",
+		"lib": ["ES2022", "DOM", "DOM.Iterable"],
+		"types": ["svelte", "vite/client"],
+		"strict": true,
+		"noEmit": true,
+		"allowJs": true,
+		"checkJs": true,
+		"esModuleInterop": true,
+		"skipLibCheck": true,
+		"resolveJsonModule": true,
+		"isolatedModules": true,
+		"verbatimModuleSyntax": true,
+		"forceConsistentCasingInFileNames": true
+	},
+	"include": ["src/**/*.ts", "src/**/*.svelte", "vite.config.ts"]
+}
