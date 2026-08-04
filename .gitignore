@@ -43,3 +43,6 @@ data/
 
 # Menu-extraction bench data (snapshots ~60MB/venue; deliberately not in git — see scripts/bench/README.md)
 /bench/
+
+# Bench analytics viewer bundle (built on demand by `bun run bench:viewer`)
+/bench-viewer/dist

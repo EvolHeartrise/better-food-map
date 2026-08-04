@@ -1,0 +1,468 @@
+/**
+ * Bench analytics viewer — local dashboard over `bench/runs`.
+ *
+ * Serves a read-only JSON API plus the built Svelte SPA in `bench-viewer/`.
+ * Everything it reports comes from `scripts/bench/analyze/*`, the same modules
+ * `bench:export` uses, so a number on screen always equals the number in a CSV.
+ *
+ * Usage:
+ *   bun run bench:viewer [--port 8792] [--runs-dir <dir>] [--tasks-dir <dir>]
+ *                        [--rebuild] [--no-build]
+ *
+ * The SPA is built with Vite on demand: if `bench-viewer/dist` is missing or
+ * older than any file under `bench-viewer/src`, it is rebuilt before serving
+ * (`--rebuild` forces, `--no-build` skips). That keeps the tool a single
+ * command with no separate dev server to remember.
+ *
+ * Binds 127.0.0.1 only. This reads unpublished bench data and has no auth, so
+ * it must never be reachable off the machine. All human output is on stderr;
+ * exit 2 on a usage error.
+ */
+import { spawnSync } from 'node:child_process';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, normalize, resolve, sep } from 'node:path';
+import {
+	buildCells,
+	DEFAULT_DIMENSIONS,
+	DIMENSIONS,
+	filterRuns,
+	METRIC_KEYS,
+	taskDiscrimination,
+	type AverageMode,
+	type Cell,
+	type Dimension,
+	type MetricKey,
+	type RunFilter
+} from './analyze/aggregate';
+import { deriveRun, nameFidelityFor } from './analyze/derive';
+import { cellRow, runRow } from './analyze/export';
+import {
+	DEFAULT_RUNS_DIR,
+	loadCandidate,
+	loadRunIndex,
+	loadTranscript,
+	type RunIndex,
+	type RunRecord
+} from './analyze/record';
+import {
+	clearGoldCache,
+	DEFAULT_TASKS_DIR,
+	loadGold,
+	rescoreRun,
+	taskDirFor
+} from './analyze/rescore';
+import { buildTimeline, fetchedUrls, pageCoverage } from './analyze/transcript';
+import { loadManifest } from './snapshot-store';
+
+const VIEWER_ROOT = 'bench-viewer';
+const DIST_DIR = join(VIEWER_ROOT, 'dist');
+
+// --- CLI ----------------------------------------------------------------------
+
+export interface ViewerArgs {
+	port: number;
+	runsDir: string;
+	tasksDir: string;
+	rebuild: boolean;
+	build: boolean;
+}
+
+export type ArgsResult = { ok: true; args: ViewerArgs } | { ok: false; error: string };
+
+const USAGE =
+	'usage: bun run bench:viewer [--port 8792] [--runs-dir <dir>] [--tasks-dir <dir>] ' +
+	'[--rebuild] [--no-build]';
+
+export function parseArgs(argv: readonly string[]): ArgsResult {
+	const args: ViewerArgs = {
+		port: 8792,
+		runsDir: DEFAULT_RUNS_DIR,
+		tasksDir: DEFAULT_TASKS_DIR,
+		rebuild: false,
+		build: true
+	};
+	for (let i = 0; i < argv.length; i++) {
+		const flag = argv[i];
+		const value = argv[i + 1];
+		switch (flag) {
+			case '--port': {
+				const port = Number(value);
+				if (!Number.isInteger(port) || port < 1 || port > 65535) {
+					return { ok: false, error: '--port must be a valid port number' };
+				}
+				args.port = port;
+				i++;
+				break;
+			}
+			case '--runs-dir':
+				if (!value) return { ok: false, error: '--runs-dir needs a path' };
+				args.runsDir = value;
+				i++;
+				break;
+			case '--tasks-dir':
+				if (!value) return { ok: false, error: '--tasks-dir needs a path' };
+				args.tasksDir = value;
+				i++;
+				break;
+			case '--rebuild':
+				args.rebuild = true;
+				break;
+			case '--no-build':
+				args.build = false;
+				break;
+			default:
+				return { ok: false, error: `unknown argument: ${flag}` };
+		}
+	}
+	return { ok: true, args };
+}
+
+// --- index cache --------------------------------------------------------------
+
+/**
+ * Re-scan at most this often. The index is ~300 small JSON reads, so a short TTL
+ * keeps a page load cheap while still picking up a sweep that finished seconds
+ * ago — no file watcher needed, and none wanted: a recursive watch over
+ * `bench/tasks` would watch a ~289 MB snapshot tree to learn nothing.
+ */
+const INDEX_TTL_MS = 2000;
+
+class IndexCache {
+	private cached: RunIndex | null = null;
+	private at = 0;
+
+	constructor(
+		private readonly runsDir: string,
+		private readonly now: () => number = () => Date.now()
+	) {}
+
+	get(): RunIndex {
+		const now = this.now();
+		if (!this.cached || now - this.at > INDEX_TTL_MS) {
+			this.cached = loadRunIndex(this.runsDir);
+			// Gold can change under us too (a bench:review promote), and rescoring
+			// reads it — so the two caches expire together or rescores go stale.
+			clearGoldCache();
+			this.at = now;
+		}
+		return this.cached;
+	}
+}
+
+// --- request helpers ----------------------------------------------------------
+
+function json(body: unknown, status = 200): Response {
+	return new Response(JSON.stringify(body), {
+		status,
+		headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }
+	});
+}
+
+/** Repeated query params (`?task=a&task=b`) as a list; empty means "no filter". */
+function list(url: URL, key: string): string[] {
+	return url.searchParams.getAll(key).filter((value) => value.length > 0);
+}
+
+export function parseMode(raw: string | null): AverageMode {
+	return raw === 'micro' ? 'micro' : 'macro';
+}
+
+export function parseMetric(raw: string | null): MetricKey {
+	return (METRIC_KEYS as readonly string[]).includes(raw ?? '')
+		? (raw as MetricKey)
+		: 'item_recall';
+}
+
+/** Validate a requested grouping, falling back to the default on anything unknown. */
+export function parseDimensions(raw: string | null): Dimension[] {
+	if (!raw) return DEFAULT_DIMENSIONS;
+	const wanted = raw
+		.split(',')
+		.map((part) => part.trim())
+		.filter((part) => (DIMENSIONS as readonly string[]).includes(part)) as Dimension[];
+	return wanted.length > 0 ? wanted : DEFAULT_DIMENSIONS;
+}
+
+export function filterFromQuery(url: URL): RunFilter {
+	return {
+		tasks: list(url, 'task'),
+		models: list(url, 'model'),
+		backends: list(url, 'backend'),
+		efforts: list(url, 'effort'),
+		policyVersions: list(url, 'policy_version'),
+		includeFailed: url.searchParams.get('include_failed') !== '0',
+		since: url.searchParams.get('since') ?? undefined,
+		until: url.searchParams.get('until') ?? undefined
+	};
+}
+
+/** Cells minus their run objects — the client only needs ids to drill down. */
+function serializeCell(cell: Cell): Record<string, unknown> {
+	return {
+		...cellRow(cell),
+		metrics: cell.metrics,
+		policy_conflicts: cell.policy_conflicts,
+		provenances: cell.provenances,
+		run_ids: cell.runs.map((run) => run.run_id),
+		stats: {
+			cost_usd: cell.cost_usd,
+			price_cached: cell.price_cached,
+			duration_ms: cell.duration_ms,
+			total_tokens: cell.total_tokens,
+			cache_hit_rate: cell.cache_hit_rate,
+			output_tok_per_s: cell.output_tok_per_s,
+			unsafe_tag_claims: cell.unsafe_tag_claims
+		}
+	};
+}
+
+function uniqueSorted(values: readonly string[]): string[] {
+	return [...new Set(values)].toSorted();
+}
+
+/** Facets for the filter UI, derived from the corpus rather than hardcoded. */
+function overview(index: RunIndex, runsDir: string, tasksDir: string): Record<string, unknown> {
+	const runs = index.runs;
+	return {
+		runs_dir: runsDir,
+		tasks_dir: tasksDir,
+		counts: {
+			runs: runs.length,
+			scored: runs.filter((run) => run.status === 'scored').length,
+			failed: runs.filter((run) => run.status === 'failed').length,
+			tasks: uniqueSorted(runs.map((run) => run.task)).length,
+			models: uniqueSorted(runs.map((run) => run.model)).length
+		},
+		facets: {
+			tasks: uniqueSorted(runs.map((run) => run.task)),
+			models: uniqueSorted(runs.map((run) => run.model)),
+			backends: uniqueSorted(runs.map((run) => run.backend)),
+			efforts: uniqueSorted(
+				runs.map((run) => run.effort ?? `default(${run.effort_default ?? 'unknown'})`)
+			),
+			policy_versions: uniqueSorted(runs.map((run) => run.policy_version ?? 'unknown')),
+			metrics: [...METRIC_KEYS],
+			dimensions: [...DIMENSIONS]
+		},
+		problems: index.problems,
+		/** Runs whose provenance was never recorded — they cannot be attributed. */
+		unattributed_runs: runs.filter((run) => run.providers === null).length
+	};
+}
+
+function runDetail(run: RunRecord, tasksDir: string): Record<string, unknown> {
+	const taskDir = taskDirFor(run, tasksDir);
+	const events = loadTranscript(run.dir);
+	const fetched = fetchedUrls(events);
+	const { gold } = loadGold(taskDir);
+	const candidate = loadCandidate(run.dir) as { items?: unknown[] } | null;
+
+	return {
+		run,
+		derived: deriveRun(run),
+		name_fidelity: nameFidelityFor(run),
+		rescore: rescoreRun(run, tasksDir),
+		page_coverage: pageCoverage(loadManifest(taskDir), fetched),
+		fetched_urls: fetched,
+		timeline: buildTimeline(events),
+		gold_items: gold?.items ?? null,
+		candidate_items: Array.isArray(candidate?.items) ? candidate.items : null
+	};
+}
+
+// --- static assets ------------------------------------------------------------
+
+const CONTENT_TYPES: Record<string, string> = {
+	'.html': 'text/html; charset=utf-8',
+	'.js': 'text/javascript; charset=utf-8',
+	'.css': 'text/css; charset=utf-8',
+	'.json': 'application/json; charset=utf-8',
+	'.svg': 'image/svg+xml',
+	'.ico': 'image/x-icon',
+	'.woff2': 'font/woff2'
+};
+
+function contentType(path: string): string {
+	const dot = path.lastIndexOf('.');
+	return (dot === -1 ? undefined : CONTENT_TYPES[path.slice(dot)]) ?? 'application/octet-stream';
+}
+
+/**
+ * Resolve a URL path inside `dist`, refusing anything that escapes it.
+ * Exported for testing: path traversal on a localhost tool is still a bug.
+ */
+export function resolveAsset(distDir: string, pathname: string): string | null {
+	const decoded = (() => {
+		try {
+			return decodeURIComponent(pathname);
+		} catch {
+			return null;
+		}
+	})();
+	if (decoded === null || decoded.includes('\0')) return null;
+
+	const root = resolve(distDir);
+	const target = resolve(root, `.${normalize(decoded)}`);
+	if (target !== root && !target.startsWith(root + sep)) return null;
+	return target;
+}
+
+/** Newest mtime under a directory tree, or 0 when it doesn't exist. */
+function newestMtime(dir: string): number {
+	if (!existsSync(dir)) return 0;
+	let newest = 0;
+	const walk = (current: string): void => {
+		for (const entry of readdirSync(current, { withFileTypes: true })) {
+			const path = join(current, entry.name);
+			if (entry.isDirectory()) walk(path);
+			else newest = Math.max(newest, statSync(path).mtimeMs);
+		}
+	};
+	walk(dir);
+	return newest;
+}
+
+/**
+ * Build the SPA if `dist` is missing or stale. Returns false when the build
+ * failed, so the caller can serve the API and say plainly that the UI is absent
+ * rather than serving a blank page.
+ */
+export function ensureBuilt(options: { force: boolean; enabled: boolean }): boolean {
+	if (!existsSync(VIEWER_ROOT)) {
+		console.error(`no ${VIEWER_ROOT}/ directory — serving the API only`);
+		return false;
+	}
+	const distIndex = join(DIST_DIR, 'index.html');
+	const stale = newestMtime(join(VIEWER_ROOT, 'src')) > newestMtime(DIST_DIR);
+	const needsBuild = options.force || !existsSync(distIndex) || stale;
+
+	if (!needsBuild) return true;
+	if (!options.enabled) {
+		console.error('UI bundle is stale and --no-build was passed — serving the API only');
+		return existsSync(distIndex);
+	}
+
+	console.error('building the viewer UI…');
+	const result = spawnSync('bunx', ['--bun', 'vite', 'build'], {
+		cwd: VIEWER_ROOT,
+		stdio: ['ignore', 'inherit', 'inherit']
+	});
+	if (result.status !== 0) {
+		console.error('viewer UI build failed — serving the API only');
+		return false;
+	}
+	return true;
+}
+
+// --- server -------------------------------------------------------------------
+
+export function createHandler(args: ViewerArgs, hasUi: boolean) {
+	const cache = new IndexCache(args.runsDir);
+
+	return (request: Request): Response => {
+		const url = new URL(request.url);
+		const { pathname } = url;
+
+		if (pathname.startsWith('/api/')) {
+			const index = cache.get();
+			const runs = filterRuns(index.runs, filterFromQuery(url));
+
+			switch (pathname) {
+				case '/api/overview':
+					return json(overview(index, args.runsDir, args.tasksDir));
+
+				case '/api/runs':
+					return json({ runs: runs.map((run) => runRow(run)) });
+
+				case '/api/cells': {
+					const mode = parseMode(url.searchParams.get('mode'));
+					const dimensions = parseDimensions(url.searchParams.get('dims'));
+					const cells = buildCells(runs, { dimensions, mode });
+					return json({ mode, dimensions, cells: cells.map((cell) => serializeCell(cell)) });
+				}
+
+				case '/api/discrimination': {
+					const mode = parseMode(url.searchParams.get('mode'));
+					const metric = parseMetric(url.searchParams.get('metric'));
+					return json({
+						metric,
+						mode,
+						tasks: taskDiscrimination(runs, metric, { mode })
+					});
+				}
+
+				case '/api/run': {
+					const id = url.searchParams.get('id');
+					const run = index.runs.find((entry) => entry.run_id === id);
+					if (!run) return json({ error: `no such run: ${id}` }, 404);
+					return json(runDetail(run, args.tasksDir));
+				}
+
+				default:
+					return json({ error: `no such endpoint: ${pathname}` }, 404);
+			}
+		}
+
+		if (!hasUi) {
+			return new Response('The viewer UI is not built. The JSON API is live at /api/overview.\n', {
+				status: 503,
+				headers: { 'content-type': 'text/plain; charset=utf-8' }
+			});
+		}
+
+		// SPA: serve the asset when it exists, index.html otherwise so client-side
+		// routes deep-link correctly.
+		const assetPath = resolveAsset(DIST_DIR, pathname);
+		if (assetPath && existsSync(assetPath) && statSync(assetPath).isFile()) {
+			return new Response(readFileSync(assetPath), {
+				headers: { 'content-type': contentType(assetPath), 'cache-control': 'no-store' }
+			});
+		}
+		const indexPath = join(DIST_DIR, 'index.html');
+		if (!existsSync(indexPath)) return new Response('not found', { status: 404 });
+		return new Response(readFileSync(indexPath), {
+			headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }
+		});
+	};
+}
+
+function main(argv: string[]): number {
+	const parsed = parseArgs(argv);
+	if (!parsed.ok) {
+		console.error(parsed.error);
+		console.error(USAGE);
+		return 2;
+	}
+	const { args } = parsed;
+
+	const index = loadRunIndex(args.runsDir);
+	if (index.runs.length === 0) {
+		console.error(
+			`no bench runs under ${args.runsDir}. bench/ is gitignored, so this is expected on a ` +
+				'fresh clone — record a task and run bench:run to populate it.'
+		);
+	}
+	for (const problem of index.problems) {
+		console.error(`skipped ${problem.dir}: ${problem.error}`);
+	}
+
+	const hasUi = ensureBuilt({ force: args.rebuild, enabled: args.build });
+
+	Bun.serve({
+		port: args.port,
+		hostname: '127.0.0.1',
+		fetch: createHandler(args, hasUi)
+	});
+
+	console.error(
+		`bench viewer on http://127.0.0.1:${args.port} — ${index.runs.length} run(s) from ${args.runsDir}`
+	);
+	return 0;
+}
+
+if (import.meta.main) {
+	// A non-zero code is a startup failure; 0 means Bun.serve is now listening and
+	// the process should stay up, so only failures exit.
+	const code = main(process.argv.slice(2));
+	if (code !== 0) process.exit(code);
+}

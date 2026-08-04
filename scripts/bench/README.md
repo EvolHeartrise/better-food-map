@@ -505,3 +505,107 @@ stays lean. **Promote** (draft only) runs `lintGold` on the draft with the chose
 `policy_version`: if any ERRORS remain (a zero-hit name is one) it refuses and
 lists them; otherwise it writes `gold/data.json`. It never deletes `draft.json` —
 you do that when satisfied. Finish with `bench:lint` until clean.
+
+## Analyzing results (`bench:viewer`, `bench:export`)
+
+Everything above PRODUCES runs. These two consume them: they read
+`bench/runs/**/{meta,report,candidate}.json` (plus `transcript.jsonl` on demand)
+and turn 150+ loose run directories into something answerable.
+
+```bash
+bun run bench:viewer                      # dashboard on http://127.0.0.1:8792
+bun run bench:export --rows cells --format csv --mode macro > cells.csv
+bun run bench:export --rows runs > runs.json
+```
+
+Both read through the SAME modules (`scripts/bench/analyze/`), so a number on
+screen always equals the number in a CSV. Neither ever writes to `bench/` — the
+corpus is written only by `bench:run` and the authoring tools, and an analytics
+tool that could edit its own evidence is a way to lose it.
+
+### `bench:viewer`
+
+A local Vite + Svelte SPA (`bench-viewer/`) served by `Bun.serve`, bound to
+**127.0.0.1 only** — it exposes unpublished bench data and has no auth. The UI
+bundle builds on demand when it is missing or older than its sources
+(`--rebuild` forces, `--no-build` skips and serves the JSON API alone). Options:
+`--port` (8792), `--runs-dir`, `--tasks-dir`.
+
+Five views, all rendering against ONE shared filter slice (a per-view filter is
+how two cards quietly end up describing different data):
+
+- **Leaderboard** — one row per configuration cell, the scorer's metric vector as
+  sortable columns. Expanding a row shows its provenance, gold versions and runs.
+- **Frontier** — quality against cost or latency, Pareto frontier direct-labelled.
+  The cost axis toggles between REAL billed cost and the `price_cached`
+  perfect-prefix-cache counterfactual.
+- **Tasks** — which venues still separate configurations, and which are at
+  ceiling, plus a configuration × task heatmap.
+- **Runs / Run detail** — every run, drilling into its full report, the
+  name-fidelity split, page-discovery coverage and the turn timeline.
+- **Compare** — two runs on the same task, diffed item by item.
+
+### What the analysis layer adds beyond `report.json`
+
+- **Name fidelity.** The scorer matches names exactly (by design — fuzzy matching
+  would let a model paraphrase its way to a good score), so one dropped
+  apostrophe costs a miss AND a hallucination. The run detail pairs unmatched
+  gold against unmatched candidate names by edit distance and splits "found but
+  renamed" from "never found" — a fidelity bug and a coverage bug need different
+  fixes. This is a DIAGNOSTIC OVERLAY: it never changes a scored number.
+- **Page-discovery coverage.** The `fetch_page` sequence versus the pages the
+  snapshot recorded. A model can score well on items while never opening the
+  drinks page; that is luck, and this is where it shows. Off-manifest fetches
+  (the ordering API) are reported separately, never penalized.
+- **Rescore against current gold.** `report.json` is frozen at run time, so a
+  later gold edit silently invalidates it. The run detail re-runs
+  `scoreCandidate` over the stored `candidate.json` against today's gold and
+  shows both numbers. It never rewrites `report.json` — that frozen report IS the
+  historical record.
+- **Unsafe tag claims.** `tag_false_positives.length` promoted to a first-class
+  column: dietary tags the candidate asserted that gold does not support are the
+  failure the data policy cares most about.
+
+### Rules the aggregation obeys
+
+These are not preferences; violating any of them produces a confidently wrong
+number:
+
+- **No composite index.** The scorer keeps recall and precision apart because
+  they fail differently (a hallucinated free-of tag is a safety problem; a missed
+  tag is a completeness problem). Nothing averages them into one score. Ranking
+  is whichever column you sort by, and `n` sits beside every rank.
+- **Absent is not zero.** Runs predate fields — 128 of the current 156 have no
+  `providers`, 10 have no `wall_clock_ms` — so every optional value is
+  `T | null`, and the UI renders unknown as an em dash. A failed run has no
+  report and scores nothing; it is never counted as 0%.
+- **Provenance splits cells.** A score measures model × provider × quantization,
+  so runs served at different quantizations never share a cell.
+  `quantization_requested: null` renders as "unpinned (cheapest-first)", never as
+  "unquantized".
+- **Averaging mode is explicit.** `macro` weights every task equally; `micro`
+  pools raw counts, so a 180-item menu outweighs a 26-item one. Micro is exact
+  for item recall/precision and the per-pair accuracies; the tag metrics have no
+  published denominators, so pooling them is a `matched`-weighted approximation
+  and is flagged with `~`.
+- **Gold conflicts are flagged where they matter.** Different tasks naturally
+  carry different `policy_version`s — that is not a conflict. Two versions of the
+  SAME task's gold in one cell is, and it is badged.
+
+### Layout
+
+```
+scripts/bench/analyze/     pure, tested, no UI (runs under `bun test scripts`)
+  record.ts     walk bench/runs -> RunRecord[]  (absent-vs-zero discipline)
+  derive.ts     per-run derived metrics + the name-fidelity overlay
+  aggregate.ts  cells, macro/micro averaging, spread, Pareto, task discrimination
+  rescore.ts    re-run scoreCandidate against current gold (read-only)
+  transcript.ts turn timeline + page-discovery coverage
+  export.ts     the bench:export CLI
+scripts/bench/viewer.ts    Bun.serve JSON API + static host for the SPA
+bench-viewer/              the Svelte SPA (own tsconfig; dist/ is gitignored)
+```
+
+The viewer is deliberately NOT part of the main SvelteKit app: that app is
+Cloudflare-bound and routes every user-facing string through the Paraglide
+catalog across 27 locales, which an internal dashboard has no business paying.
