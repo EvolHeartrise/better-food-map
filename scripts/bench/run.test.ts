@@ -14,8 +14,10 @@ import {
 	extractHrefs,
 	fetchPage,
 	formatDuration,
+	formatProvenance,
 	formatWallClock,
 	modelSlug,
+	normalizeAssistantMessage,
 	parseCli,
 	runAgent,
 	stripTrailingJunk,
@@ -28,6 +30,7 @@ import {
 	type ChatUsage,
 	type CliArgs,
 	type ModelPricing,
+	type RunMeta,
 	type RunResult,
 	type TranscriptEvent
 } from './run';
@@ -623,6 +626,178 @@ describe('buildOpenRouterBody', () => {
 		const body = buildOpenRouterBody('openai/gpt-x', messages, { effort: 'max', temperature: 1 });
 		expect(body.reasoning).toEqual({ effort: 'max' });
 		expect(body.temperature).toBe(1);
+	});
+});
+
+describe('normalizeAssistantMessage', () => {
+	test('fills empty content so a reasoning-only turn stays schema-valid', () => {
+		// GMICloud 400s on {content: null, no tool_calls}; DeepInfra accepts it.
+		expect(normalizeAssistantMessage({ role: 'assistant', content: null })).toEqual({
+			role: 'assistant',
+			content: ''
+		});
+		expect(normalizeAssistantMessage({ role: 'assistant' })).toEqual({
+			role: 'assistant',
+			content: ''
+		});
+		expect(normalizeAssistantMessage({ role: 'assistant', content: '', tool_calls: [] })).toEqual({
+			role: 'assistant',
+			content: '',
+			tool_calls: []
+		});
+	});
+
+	test('leaves a turn with content or tool_calls untouched', () => {
+		const withText = { role: 'assistant' as const, content: 'hi' };
+		expect(normalizeAssistantMessage(withText)).toBe(withText);
+		const withCalls = {
+			role: 'assistant' as const,
+			content: null,
+			tool_calls: [{ id: 'c', type: 'function', function: { name: 'f', arguments: '{}' } }]
+		};
+		expect(normalizeAssistantMessage(withCalls)).toBe(withCalls);
+	});
+});
+
+describe('quantization pinning', () => {
+	const messages: ChatMessage[] = [{ role: 'user', content: 'hi' }];
+
+	test('omits provider routing entirely when unpinned', () => {
+		expect(buildOpenRouterBody('m', messages, {}).provider).toBeUndefined();
+		expect(buildOpenRouterBody('m', messages, { quantizations: [] }).provider).toBeUndefined();
+	});
+
+	test('pins quantizations and disables fallbacks so the tier cannot silently widen', () => {
+		expect(buildOpenRouterBody('m', messages, { quantizations: ['fp8'] }).provider).toEqual({
+			quantizations: ['fp8'],
+			allow_fallbacks: false
+		});
+	});
+
+	test('parseCli accepts a single level and a comma list, rejecting typos', () => {
+		const one = parseCli(['t', '--model', 'm', '--quantization', 'fp8']);
+		expect((one as CliArgs).quantizations).toEqual(['fp8']);
+		const many = parseCli(['t', '--model', 'm', '--quantization', 'fp8, bf16']);
+		expect((many as CliArgs).quantizations).toEqual(['fp8', 'bf16']);
+		expect(parseCli(['t', '--model', 'm', '--quantization', 'fp-8'])).toHaveProperty('error');
+		expect(parseCli(['t', '--model', 'm', '--quantization'])).toEqual({
+			error: '--quantization requires a value'
+		});
+	});
+
+	test('rejected on the claude backend, which has no provider routing', () => {
+		expect(parseCli(['t', '--model', 'm', '--backend', 'claude', '--quantization', 'fp8'])).toEqual(
+			{
+				error: '--quantization is not supported with --backend claude (no provider routing)'
+			}
+		);
+	});
+});
+
+describe('provider capture + formatProvenance', () => {
+	const store = new SnapshotStore(mkdtempSync(join(tmpdir(), 'bench-prov-')));
+
+	test('runAgent records distinct providers in first-seen order', async () => {
+		const submit = {
+			sources: ['https://x.com/menu'],
+			items: [{ name: 'A', description: null, tags: [], optional_tags: [], price: 1 }]
+		};
+		const chat: ChatFn = scriptedChat([
+			{ ...toolCallResponse('fetch_page', { url: 'https://x.com/a' }), provider: 'DeepInfra' },
+			{ ...toolCallResponse('fetch_page', { url: 'https://x.com/b' }), provider: 'DeepInfra' },
+			{ ...toolCallResponse('submit_menu', submit), provider: 'Fireworks' }
+		]);
+		const result = await runAgent({
+			chat,
+			store,
+			entryUrl: 'https://x.com/',
+			maxToolCalls: 10,
+			transcript: []
+		});
+		// Deduped, order preserved — two entries means a mid-run re-route.
+		expect(result.providers).toEqual(['DeepInfra', 'Fireworks']);
+	});
+
+	const base = {
+		providers: ['DeepInfra'],
+		provider_quantizations: { DeepInfra: 'fp4' },
+		quantization_requested: null
+	} as unknown as RunMeta;
+
+	test('names the provider, its quantization, and flags unpinned routing', () => {
+		expect(formatProvenance(base)).toBe(
+			'served by  DeepInfra @ fp4 [unpinned — OpenRouter default routing]'
+		);
+	});
+
+	test('shows the pin when one was requested', () => {
+		expect(formatProvenance({ ...base, quantization_requested: ['fp8'] })).toContain(
+			'[pinned: fp8]'
+		);
+	});
+
+	test('a missing quantization reads as unknown, never as unquantized', () => {
+		expect(formatProvenance({ ...base, provider_quantizations: {} })).toContain(
+			'DeepInfra (quantization unknown)'
+		);
+	});
+
+	test('loudly flags a mid-run re-route', () => {
+		expect(
+			formatProvenance({
+				...base,
+				providers: ['DeepInfra', 'Fireworks'],
+				provider_quantizations: { DeepInfra: 'fp4', Fireworks: 'unknown' }
+			})
+		).toContain('RE-ROUTED MID-RUN');
+	});
+
+	test('returns undefined when no provider was reported (e.g. claude backend)', () => {
+		expect(formatProvenance({ ...base, providers: [] })).toBeUndefined();
+	});
+});
+
+describe('buildMeta provenance fields', () => {
+	const manifest = { entryUrl: 'https://x.com/' } as BenchManifest;
+	const cli: CliArgs = {
+		taskDir: 'bench/tasks/x',
+		model: 'm',
+		maxToolCalls: 40,
+		backend: 'openrouter',
+		quantizations: ['fp8']
+	};
+	const result: RunResult = {
+		status: 'scored',
+		toolCalls: 1,
+		submitAttempts: 1,
+		promptTokens: 0,
+		completionTokens: 0,
+		totalTokens: 0,
+		cachedPromptTokens: 0,
+		cacheWriteTokens: 0,
+		usages: [],
+		providers: ['DeepInfra']
+	};
+
+	test('records the pin, the providers used, and only their quantizations', () => {
+		const meta = buildMeta(cli, manifest, 'p', new Date(), result, undefined, undefined, {
+			DeepInfra: 'fp4',
+			Fireworks: 'unknown'
+		});
+		expect(meta.quantization_requested).toEqual(['fp8']);
+		expect(meta.providers).toEqual(['DeepInfra']);
+		// Only providers this run actually used — not the whole endpoint table.
+		expect(meta.provider_quantizations).toEqual({ DeepInfra: 'fp4' });
+	});
+
+	test('unpinned + no providers reported degrades to null/empty, not a guess', () => {
+		const meta = buildMeta({ ...cli, quantizations: undefined }, manifest, 'p', new Date(), {
+			...result,
+			providers: undefined
+		});
+		expect(meta.quantization_requested).toBeNull();
+		expect(meta.providers).toEqual([]);
+		expect(meta.provider_quantizations).toEqual({});
 	});
 });
 

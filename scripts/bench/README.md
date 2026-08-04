@@ -270,6 +270,51 @@ from a provider cache), `cache_write_tokens` (tokens written into a cache), and
 are `0` when the provider reports nothing. `bench/` is gitignored, so runs stay
 out of git. Exit 0 on a scored run, 1 on a failed run, 2 on usage/config errors.
 
+**Provider & quantization provenance (openrouter).** OpenRouter routes each
+request to one of many upstream providers, and those providers differ in price
+**and in quantization** — `deepseek/deepseek-v4-flash-0731`, for example, is
+served by 18 endpoints spanning fp4, fp8 and `unknown`. Default routing is
+cheapest-first, which biases toward the MOST quantized endpoint. A score reported
+without this is unattributable: it measures model × provider × quantization, not
+the model.
+
+So every run records who actually served it:
+
+- **`transcript.jsonl`** — per response event, `provider` and `response_id`
+  (OpenRouter's generation id, the handle for a later `/api/v1/generation`
+  lookup). Per REQUEST, because OpenRouter can re-route mid-run.
+- **`meta.json`** — `providers` (distinct, first-seen order),
+  `provider_quantizations` (those providers resolved to tiers, e.g.
+  `{"DeepInfra":"fp4"}`), and `quantization_requested` (the pin, or `null`).
+- **stderr** — `served by  GMICloud @ fp8 [pinned: fp8]`, with a loud
+  `** RE-ROUTED MID-RUN **` when more than one provider served a single run.
+
+`quantization_requested: null` means **unpinned**, i.e. cheapest-first routing —
+it does NOT mean unquantized. Likewise an absent entry in
+`provider_quantizations` is a lookup gap, never evidence of no quantization.
+
+To pin routing to a tier:
+
+```bash
+bun run bench:run bench/tasks/<slug> --model <id> --effort high --quantization fp8
+bun run bench:run bench/tasks/<slug> --model <id> --quantization fp8,bf16
+```
+
+`--quantization` takes a comma-separated list validated against OpenRouter's
+tiers (`int4 int8 fp4 fp6 fp8 fp16 bf16 fp32 unknown`; a typo exits 2 before
+spending) and is sent as `provider.quantizations` with **`allow_fallbacks:
+false`** — a silent fallback to another tier would reintroduce exactly the
+confound the pin removes, so the request fails loudly instead. It is
+openrouter-only (exit 2 with `--backend claude`, which has no provider routing).
+
+**Assistant-turn normalization.** A model may return a turn with neither
+`content` nor `tool_calls` (a reasoning-only turn). Echoing that back verbatim is
+invalid under the OpenAI schema, and providers disagree on enforcement —
+DeepInfra accepts it, GMICloud 400s the whole request — which made harness
+behaviour depend on routing. Such a turn has its `content` normalized to `''`
+before being sent back; the transcript still records the model's original message
+verbatim.
+
 **Wall-clock.** Every run — scored OR failed — records two durations on
 `meta.json`, and prints both to stderr as a `wall-clock …` line under the score
 summary:
