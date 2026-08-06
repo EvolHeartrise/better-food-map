@@ -37,6 +37,7 @@ import {
 	hideBlacklisted,
 	loadBlacklistSafe,
 	modelStates,
+	scopeCoverage,
 	statusFor,
 	toInfo,
 	type Blacklist
@@ -308,6 +309,31 @@ function uniqueSorted(values: readonly string[]): string[] {
 }
 
 /**
+ * The blacklist register, in one shape.
+ *
+ * Shared by `/api/blacklist`, the write replies and the `blacklist` block of
+ * `/api/overview` so all four cannot drift — a "writable" that disagreed between
+ * the register and the overview would show Remove buttons that 403.
+ */
+function blacklistPayload(
+	args: ViewerArgs,
+	blacklist: Blacklist,
+	blacklistError: string | null,
+	runs: readonly RunRecord[]
+): Record<string, unknown> {
+	return {
+		path: args.blacklistPath,
+		/** Null unless the file is unreadable — then the UI says so, never "empty". */
+		error: blacklistError,
+		writable: !args.readOnly && blacklistError === null,
+		entries: blacklist.entries.map((entry) => toInfo(entry, runs)),
+		model_states: modelStates(runs, blacklist),
+		/** Runs the default view hides. Reported so the hiding is never silent. */
+		n_blocked_runs: runs.length - hideBlacklisted(runs, blacklist).length
+	};
+}
+
+/**
  * Facets for the filter UI, derived from the corpus rather than hardcoded.
  *
  * Deliberately computed over the WHOLE index, blacklist hiding included: the
@@ -324,16 +350,7 @@ function overview(
 	return {
 		runs_dir: args.runsDir,
 		tasks_dir: args.tasksDir,
-		blacklist: {
-			path: args.blacklistPath,
-			/** Null unless the file is unreadable — then the UI says so, never "empty". */
-			error: blacklistError,
-			writable: !args.readOnly && blacklistError === null,
-			entries: blacklist.entries.map((entry) => toInfo(entry)),
-			model_states: modelStates(runs, blacklist),
-			/** Runs the default view hides. Reported so the hiding is never silent. */
-			n_blocked_runs: runs.length - hideBlacklisted(runs, blacklist).length
-		},
+		blacklist: blacklistPayload(args, blacklist, blacklistError, runs),
 		counts: {
 			runs: runs.length,
 			scored: runs.filter((run) => run.status === 'scored').length,
@@ -641,8 +658,12 @@ async function handleBlacklistWrite(
 		return json({ error: `${request.method} not allowed on /api/blacklist` }, 405);
 	}
 
-	const { list: blacklist, error: blacklistError } = blacklistCache.get();
-	const refusal = writeRefusal(request, { readOnly: args.readOnly, blacklistError });
+	// Cheap refusals first, off the cached read — no reason to buffer a body we
+	// are going to reject for being read-only or cross-origin.
+	const refusal = writeRefusal(request, {
+		readOnly: args.readOnly,
+		blacklistError: blacklistCache.get().error
+	});
 	if (refusal !== null) return json({ error: refusal }, 403);
 
 	let body: BlacklistWriteBody;
@@ -658,6 +679,30 @@ async function handleBlacklistWrite(
 	const scope = parseScope(body);
 	if (!scope.ok) return json({ error: scope.error }, 400);
 
+	/**
+	 * Everything from here to `saveBlacklist` is SYNCHRONOUS, over a FRESH read.
+	 * Both properties are load-bearing and neither is incidental:
+	 *
+	 * - **Fresh**, because the cached copy is up to 2s stale and this is a
+	 *   read-modify-write of the whole file. Serializing a 2-second-old snapshot
+	 *   silently deletes any verdict `bench:blacklist --add` recorded in another
+	 *   terminal in the meantime — the very workflow the cache TTL exists to
+	 *   support — and reports success while doing it.
+	 * - **Synchronous**, because an `await` between the read and the write is a
+	 *   window for a second request to interleave. Two concurrent POSTs with slow
+	 *   bodies both returned 200 with an `added` payload while only the later
+	 *   entry reached disk. With no await in the critical section the event loop
+	 *   cannot interleave, so no lock is needed.
+	 */
+	const fresh = loadBlacklistSafe(args.blacklistPath);
+	if (fresh.error !== null) {
+		// It parsed a moment ago and does not now: something else is mid-write, or
+		// wrote garbage. Either way this request must not serialize over it.
+		blacklistCache.invalidate();
+		return json({ error: `refusing to write over an unreadable blacklist: ${fresh.error}` }, 409);
+	}
+	const blacklist = fresh.list;
+
 	if (request.method === 'DELETE') {
 		const { list: next, removed } = removeEntries(blacklist, scope.entry);
 		if (removed.length === 0) {
@@ -667,8 +712,7 @@ async function handleBlacklistWrite(
 		blacklistCache.invalidate();
 		return json({
 			removed: removed.map((entry) => toInfo(entry)),
-			entries: next.entries.map((entry) => toInfo(entry)),
-			model_states: modelStates(indexCache.get().runs, next)
+			...blacklistPayload(args, next, null, indexCache.get().runs)
 		});
 	}
 
@@ -691,8 +735,7 @@ async function handleBlacklistWrite(
 	blacklistCache.invalidate();
 	return json({
 		added: toInfo(entry),
-		entries: result.list.entries.map((e) => toInfo(e)),
-		model_states: modelStates(indexCache.get().runs, result.list)
+		...blacklistPayload(args, result.list, null, indexCache.get().runs)
 	});
 }
 
@@ -737,12 +780,48 @@ export function createHandler(args: ViewerArgs, hasUi: boolean) {
 					return json(overview(index, args, blacklist, blacklistError));
 
 				case '/api/blacklist':
+					return json(blacklistPayload(args, blacklist, blacklistError, index.runs));
+
+				/**
+				 * What a proposed verdict would retire, before it is recorded. The
+				 * blacklist's scope is (model, effort, backend) while the leaderboard
+				 * splits rows on provenance and quantization too, so one verdict can
+				 * cover several rows — the form shows this so nobody retires twice what
+				 * they were looking at.
+				 */
+				case '/api/blacklist/scope': {
+					const model = url.searchParams.get('model');
+					if (!model) return json({ error: 'model is required' }, 400);
+					const rawEffort = url.searchParams.get('effort');
+					const rawBackend = url.searchParams.get('backend');
+					return json(
+						scopeCoverage(index.runs, {
+							model,
+							effort: rawEffort === null || rawEffort === '*' ? undefined : rawEffort,
+							backend: rawBackend === null || rawBackend === '' ? undefined : rawBackend
+						})
+					);
+				}
+
+				/**
+				 * How big the CURRENT slice is and how much of it the blacklist hid.
+				 * The filter bar renders above every view and must state the narrowing
+				 * IT performs; the corpus-wide count on `/api/overview` answers a
+				 * different question and over-states whenever a filter is active.
+				 */
+				case '/api/slice':
 					return json({
-						path: args.blacklistPath,
-						error: blacklistError,
-						writable: !args.readOnly && blacklistError === null,
-						entries: blacklist.entries.map((entry) => toInfo(entry)),
-						model_states: modelStates(index.runs, blacklist)
+						n_matching: matching.length,
+						n_visible: runs.length,
+						hidden_blacklisted: hidden,
+						/**
+						 * Blacklisted runs in this slice, INDEPENDENT of the toggle —
+						 * `hidden_blacklisted` is 0 by construction while they are shown, so
+						 * the control would read "showing blacklisted (0 runs)". This is the
+						 * number that means the same thing in both states.
+						 */
+						n_blacklisted: matching.length - hideBlacklisted(matching, blacklist).length,
+						include_blacklisted: includeBlacklisted
 					});
 
 				case '/api/runs':

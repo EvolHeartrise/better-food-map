@@ -8,6 +8,8 @@ import {
 	loadBlacklistSafe,
 	modelStates,
 	runConfig,
+	runsCoveredBy,
+	scopeCoverage,
 	statusFor,
 	toInfo,
 	type Blacklist
@@ -206,6 +208,68 @@ describe('toInfo', () => {
 		const info = toInfo({ model: 'm', reason: REASON, added: '2026-07-31' });
 		expect(info.backend).toBeNull();
 		expect(info.evidence).toBeNull();
+	});
+
+	test('coverage is null without a corpus and a real count with one', () => {
+		// Null is UNKNOWN. 0 is a live verdict that happens to hide nothing today —
+		// a different fact, and the UI badges only the second.
+		const entry = { model: 'a/one', effort: 'max', reason: REASON, added: '2026-07-31' };
+		expect(toInfo(entry).n_runs_covered).toBeNull();
+		expect(toInfo(entry, []).n_runs_covered).toBe(0);
+		expect(
+			toInfo(entry, [run({ model: 'a/one', effort: 'max' }), run({ model: 'a/one' })])
+				.n_runs_covered
+		).toBe(1);
+	});
+});
+
+describe('runsCoveredBy', () => {
+	test('counts what the ENTRY covers, not what the model has', () => {
+		// The bug this exists to prevent: a verdict on grok@max was badged "no runs
+		// in the corpus" because the model-level map only lists BLOCKED models, so
+		// ten grok runs at other levels left no key behind.
+		const runs = [
+			run({ model: 'x-ai/grok-4.5', effort: 'high' }),
+			run({ model: 'x-ai/grok-4.5', effort: 'low' })
+		];
+		const atMax = { model: 'x-ai/grok-4.5', effort: 'max', reason: REASON, added: '2026-07-31' };
+		expect(runsCoveredBy(runs, atMax)).toBe(0);
+		expect(modelStates(runs, list(atMax))['x-ai/grok-4.5']).toBeUndefined();
+
+		const allLevels = { model: 'x-ai/grok-4.5', reason: REASON, added: '2026-07-31' };
+		expect(runsCoveredBy(runs, allLevels)).toBe(2);
+	});
+});
+
+describe('scopeCoverage', () => {
+	test('reports every leaderboard row a scope would retire, not just one', () => {
+		// The blacklist has no provenance axis but the leaderboard splits on it, so
+		// one verdict can retire two rows. The form shows this before recording.
+		const runs = [
+			run({ effort: 'high', quantization_requested: ['fp8'], providers: ['GMICloud'] }),
+			run({ effort: 'high', quantization_requested: null, providers: null, task: 'other' })
+		];
+		const coverage = scopeCoverage(runs, { model: 'openai/gpt-5.6-luna', effort: 'high' });
+		expect(coverage.n_runs).toBe(2);
+		expect(coverage.n_configs).toBe(2);
+		expect(coverage.tasks).toEqual(['other', 'task']);
+	});
+
+	test('a scope covering one row reports exactly one config', () => {
+		const coverage = scopeCoverage([run({ effort: 'high' })], {
+			model: 'openai/gpt-5.6-luna',
+			effort: 'high'
+		});
+		expect(coverage.n_configs).toBe(1);
+	});
+
+	test('a scope matching nothing is zero across the board, never a throw', () => {
+		expect(scopeCoverage([run()], { model: 'nobody/here' })).toEqual({
+			n_runs: 0,
+			n_configs: 0,
+			configs: [],
+			tasks: []
+		});
 	});
 });
 

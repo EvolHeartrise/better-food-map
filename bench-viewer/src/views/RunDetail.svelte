@@ -42,15 +42,22 @@
 	let tab = $state<'scores' | 'items' | 'navigation' | 'transcript'>('scores');
 	let useCurrentGold = $state(false);
 	let retiring = $state(false);
+	let restoring = $state(false);
 	let editError = $state<string | null>(null);
 
 	let detail = $derived(await fetchRunOrNull(router.param('id'), filters.revision));
 	let overview = $derived(await fetchOverview(filters.revision));
 	let canEdit = $derived(overview.blacklist.writable);
 
+	/**
+	 * Guarded against a second click while in flight: the server 404s a repeat
+	 * DELETE, so a double-click would remove the verdict and then paint "no entry
+	 * matching …" in red — reading as a failure when it in fact succeeded.
+	 */
 	async function restore(): Promise<void> {
 		const entry = detail?.blacklist;
-		if (!entry) return;
+		if (!entry || restoring) return;
+		restoring = true;
 		editError = null;
 		try {
 			await removeBlacklistEntry({
@@ -61,6 +68,8 @@
 			refreshData();
 		} catch (caught) {
 			editError = caught instanceof Error ? caught.message : String(caught);
+		} finally {
+			restoring = false;
 		}
 	}
 
@@ -158,8 +167,9 @@
 						{#if canEdit}
 							<button
 								class="chip"
+								disabled={restoring}
 								title="Drop this verdict — bench:run will buy this configuration again."
-								onclick={restore}>Un-blacklist</button
+								onclick={restore}>{restoring ? 'Removing…' : 'Un-blacklist'}</button
 							>
 						{/if}
 					</div>
@@ -177,7 +187,6 @@
 							efforts={overview.facets.efforts}
 							effort={run.effort ?? 'default'}
 							backend={run.backend}
-							evidence={run.run_id}
 							onsaved={() => (retiring = false)}
 							oncancel={() => (retiring = false)}
 						/>

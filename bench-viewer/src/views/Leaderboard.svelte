@@ -13,7 +13,7 @@
 	import { fetchCells, fetchOverview, removeBlacklistEntry } from '../lib/api';
 	import { count, duration, metricLabel, pct, usd } from '../lib/format';
 	import { blacklistEffort, filters, refreshData, router } from '../lib/state.svelte';
-	import type { CellRow, MetricKey } from '../lib/types';
+	import type { BlacklistInfo, CellRow, MetricKey } from '../lib/types';
 	import Badge from '../components/Badge.svelte';
 	import BlacklistBadge from '../components/BlacklistBadge.svelte';
 	import BlacklistForm from '../components/BlacklistForm.svelte';
@@ -33,6 +33,8 @@
 	let expanded = $state<string | null>(null);
 	/** Cell key whose "retire this configuration" form is open. */
 	let retiring = $state<string | null>(null);
+	/** Label of the verdict being dropped, so the button can disable itself. */
+	let restoring = $state<string | null>(null);
 	let editError = $state<string | null>(null);
 
 	// Data lives in a derived await, not an effect that assigns state. Svelte holds
@@ -47,11 +49,21 @@
 	);
 	let canEdit = $derived(overview.blacklist.writable);
 
-	/** Un-retire the configuration a cell describes. */
-	async function restore(cell: CellRow): Promise<void> {
+	/**
+	 * Drop one verdict.
+	 *
+	 * Takes the ENTRY, not the cell: a cell can carry several entries (a grouping
+	 * that spans efforts), and reaching for `entries[0]` would delete the first
+	 * verdict no matter which button was clicked.
+	 *
+	 * Guarded against a second click while in flight — the server 404s a repeat
+	 * DELETE, so a double-click would remove the entry and then paint "no entry
+	 * matching …" in red, reading as a failure when it succeeded.
+	 */
+	async function restore(entry: BlacklistInfo): Promise<void> {
+		if (restoring !== null) return;
+		restoring = entry.label;
 		editError = null;
-		const entry = cell.blacklist.entries[0];
-		if (!entry) return;
 		try {
 			await removeBlacklistEntry({
 				model: entry.model,
@@ -61,6 +73,8 @@
 			refreshData();
 		} catch (caught) {
 			editError = caught instanceof Error ? caught.message : String(caught);
+		} finally {
+			restoring = null;
 		}
 	}
 
@@ -319,11 +333,13 @@
 														{#if canEdit}
 															<button
 																class="chip"
+																disabled={restoring !== null}
 																title="Drop this verdict — the configuration returns to the default view and bench:run will buy it again."
 																onclick={(event) => {
 																	event.stopPropagation();
-																	restore(cell);
-																}}>Un-blacklist</button
+																	restore(entry);
+																}}
+																>{restoring === entry.label ? 'Removing…' : 'Un-blacklist'}</button
 															>
 														{/if}
 													</div>
@@ -341,9 +357,8 @@
 													model={cell.model}
 													lockModel
 													efforts={overview.facets.efforts}
-													effort={blacklistEffort(cell.effort)}
+													effort={blacklistEffort(cell.effort ?? '*')}
 													backend={cell.backend}
-													evidence="{cell.n_runs} run(s) over {cell.tasks}; see bench/runs"
 													onsaved={() => (retiring = null)}
 													oncancel={() => (retiring = null)}
 												/>

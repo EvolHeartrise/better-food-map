@@ -178,7 +178,8 @@ describe('heatmap grouping', () => {
 							reason: 'tag recall collapses',
 							added: '2026-07-31',
 							evidence: null,
-							label: 'openai/gpt-5.6-luna [effort: none]'
+							label: 'openai/gpt-5.6-luna [effort: none]',
+							n_runs_covered: 1
 						}
 					]
 				}

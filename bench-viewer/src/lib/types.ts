@@ -54,6 +54,32 @@ export interface BlacklistInfo {
 	evidence: string | null;
 	/** `model [effort: none]` — the CLI's phrasing, so UI and stderr agree. */
 	label: string;
+	/**
+	 * Runs in the corpus this entry covers, or null when the server had no corpus
+	 * to count against — UNKNOWN, never 0. Zero is a different, real answer: a
+	 * live verdict that hides nothing today but still blocks a future `bench:run`.
+	 */
+	n_runs_covered: number | null;
+}
+
+/** What a proposed verdict would retire, from `/api/blacklist/scope`. */
+export interface ScopeCoverage {
+	n_runs: number;
+	/** Distinct leaderboard rows covered. More than one means the scope is wider than the row. */
+	n_configs: number;
+	configs: string[];
+	tasks: string[];
+}
+
+/** Size of the current filter slice and how much of it the blacklist hid. */
+export interface SliceInfo {
+	n_matching: number;
+	n_visible: number;
+	/** Zero by construction while blacklisted runs are shown. */
+	hidden_blacklisted: number;
+	/** Blacklisted runs in this slice regardless of the toggle — use this for labels. */
+	n_blacklisted: number;
+	include_blacklisted: boolean;
 }
 
 /** `partial` is real, not a rounding of `all` — see the server module's note. */

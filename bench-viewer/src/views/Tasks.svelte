@@ -72,6 +72,20 @@
 					every configuration lands in the same place has stopped telling you anything — that is the
 					cue to record a harder venue, not to celebrate the scores.
 				</p>
+				{#if heat.hidden_blacklisted > 0}
+					<!-- The caveat belongs on THIS card, not only on the heatmap below it:
+					     Best / Worst / Range / At ceiling are all computed over the visible
+					     slice, and "at ceiling" is the number that retires a venue. -->
+					<p class="muted small">
+						Over the visible slice only — {heat.hidden_blacklisted} run{heat.hidden_blacklisted ===
+						1
+							? ''
+							: 's'} on blacklisted configurations are excluded, including from “At ceiling”.
+						<button class="linky" onclick={() => (filters.includeBlacklisted = true)}>
+							Include them
+						</button>
+					</p>
+				{/if}
 			</div>
 		</div>
 
@@ -133,7 +147,7 @@
 				     task "exhausted" from a grid that quietly dropped a third of its
 				     configurations is how a still-useful venue gets retired. -->
 				{heat.hidden_blacklisted} run{heat.hidden_blacklisted === 1 ? '' : 's'} on blacklisted configurations
-				are excluded from this grid and from the spread above.
+				are excluded from this grid.
 				<button class="linky" onclick={() => (filters.includeBlacklisted = true)}>
 					Include them
 				</button>

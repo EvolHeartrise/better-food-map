@@ -25,12 +25,14 @@ import {
 	EFFORT_DEFAULT,
 	BLACKLIST_PATH,
 	describeEntry,
+	entryCovers,
 	findBlock,
 	loadBlacklist,
 	type Blacklist,
 	type BlacklistEntry,
 	type RunConfig
 } from '../blacklist';
+import { dimensionValue } from './aggregate';
 import type { RunRecord } from './record';
 
 export { BLACKLIST_PATH };
@@ -50,6 +52,15 @@ export interface BlacklistInfo {
 	evidence: string | null;
 	/** `model [effort: none]` — the CLI's own phrasing, so UI and stderr agree. */
 	label: string;
+	/**
+	 * Runs in the corpus this entry currently covers, when the caller passed a
+	 * corpus to count against; null when it did not — UNKNOWN, never 0.
+	 *
+	 * Zero is a real and DIFFERENT answer: a live verdict that hides nothing today
+	 * because the model was never run, or was run only at other effort levels. It
+	 * still blocks a future `bench:run`.
+	 */
+	n_runs_covered: number | null;
 }
 
 /**
@@ -80,7 +91,11 @@ export const NO_BLACKLIST: BlacklistStatus = {
 	entries: []
 };
 
-export function toInfo(entry: BlacklistEntry): BlacklistInfo {
+/**
+ * @param runs corpus to count coverage against. Omit when there is none to hand
+ * and `n_runs_covered` becomes null (unknown) rather than a fabricated 0.
+ */
+export function toInfo(entry: BlacklistEntry, runs?: readonly RunRecord[]): BlacklistInfo {
 	return {
 		model: entry.model,
 		effort: entry.effort === undefined || entry.effort === EFFORT_ANY ? 'all' : entry.effort,
@@ -88,7 +103,64 @@ export function toInfo(entry: BlacklistEntry): BlacklistInfo {
 		reason: entry.reason,
 		added: entry.added,
 		evidence: entry.evidence ?? null,
-		label: describeEntry(entry)
+		label: describeEntry(entry),
+		n_runs_covered: runs === undefined ? null : runsCoveredBy(runs, entry)
+	};
+}
+
+/** How many runs one entry covers — per ENTRY, not per model. */
+export function runsCoveredBy(runs: readonly RunRecord[], entry: BlacklistEntry): number {
+	return runs.filter((run) => entryCovers(entry, runConfig(run))).length;
+}
+
+/**
+ * What a proposed scope would actually retire, BEFORE it is recorded.
+ *
+ * The blacklist has no provenance or quantization axis — its scope is
+ * (model, effort, backend) — but the leaderboard splits cells on provenance and
+ * quantization by design, because "aggregating a run served at fp4 with one
+ * served at fp8 measures neither endpoint". So the button on a single row can
+ * retire SEVERAL rows: `deepseek-v4-flash-0731 · openrouter · high` is two rows
+ * in the current corpus (pinned fp8, and unpinned), and one verdict covers both.
+ *
+ * That is the blacklist working as specified — a verdict is about a model and a
+ * reasoning level, not about an endpoint — but a UI that hides it lets someone
+ * retire twice what they were looking at and file evidence describing half of
+ * it. This is what the form shows so the scope is chosen with open eyes.
+ */
+export interface ScopeCoverage {
+	n_runs: number;
+	/** Distinct leaderboard rows (model × backend × effort × quantization × provenance). */
+	n_configs: number;
+	/** Config labels covered, sorted — so the form can name them when >1. */
+	configs: string[];
+	tasks: string[];
+}
+
+export function scopeCoverage(
+	runs: readonly RunRecord[],
+	scope: { model: string; effort?: string; backend?: string }
+): ScopeCoverage {
+	// A probe entry: `reason`/`added` are irrelevant to `entryCovers`, which reads
+	// only model, effort and backend.
+	const probe: BlacklistEntry = { ...scope, reason: '', added: '1970-01-01' };
+	const covered = runs.filter((run) => entryCovers(probe, runConfig(run)));
+	const configs = new Set<string>();
+	for (const run of covered) {
+		configs.add(
+			[
+				dimensionValue(run, 'backend'),
+				dimensionValue(run, 'effort'),
+				dimensionValue(run, 'quantization'),
+				dimensionValue(run, 'provenance')
+			].join(' · ')
+		);
+	}
+	return {
+		n_runs: covered.length,
+		n_configs: configs.size,
+		configs: [...configs].toSorted(),
+		tasks: [...new Set(covered.map((run) => run.task))].toSorted()
 	};
 }
 
@@ -151,10 +223,13 @@ export function statusFor(runs: readonly RunRecord[], list: Blacklist): Blacklis
 /**
  * Per-model status across the corpus, for marking the model filter chips.
  *
- * Keyed by the model id as the runs spell it. A model appears here only when it
- * has runs — the facet lists are built from runs too, so a verdict against a
- * model nobody has run yet is reported through the entry list instead, where it
- * cannot be mistaken for a statement about data on screen.
+ * Keyed by the model id as the runs spell it, and present ONLY for models with
+ * at least one blocked run — a model with runs but no verdict against it is
+ * absent, exactly like a model with no runs at all.
+ *
+ * That makes this map answer "is this chip retired", and nothing else. It is NOT
+ * a corpus membership test: an absent key does not mean "this model has no
+ * runs". Use `runsCoveredBy` when the question is about an entry's reach.
  */
 export function modelStates(
 	runs: readonly RunRecord[],

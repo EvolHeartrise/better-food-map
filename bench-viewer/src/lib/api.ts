@@ -17,6 +17,8 @@ import type {
 	Overview,
 	RunDetail,
 	RunsResponse,
+	ScopeCoverage,
+	SliceInfo,
 	TaskDiscrimination
 } from './types';
 
@@ -147,6 +149,25 @@ export function fetchBlacklist(revision = 0): Promise<BlacklistResponse> {
 	return get<BlacklistResponse>(
 		revision > 0 ? `/api/blacklist?_rev=${encodeURIComponent(String(revision))}` : '/api/blacklist'
 	);
+}
+
+/**
+ * How big the current slice is and how much of it the blacklist hid.
+ *
+ * The filter bar needs the SLICE count, not the corpus count: with a model
+ * filter on a model that has no verdict against it, the corpus number would
+ * claim 62 runs are hidden while the views show none.
+ */
+export function fetchSlice(query: string): Promise<SliceInfo> {
+	return get<SliceInfo>(withQuery('/api/slice', query));
+}
+
+/** What a proposed verdict would retire — shown in the form before recording it. */
+export function fetchScopeCoverage(scope: BlacklistScope): Promise<ScopeCoverage> {
+	const params = new URLSearchParams({ model: scope.model });
+	if (scope.effort !== undefined) params.set('effort', scope.effort);
+	if (scope.backend !== undefined && scope.backend !== '') params.set('backend', scope.backend);
+	return get<ScopeCoverage>(`/api/blacklist/scope?${params.toString()}`);
 }
 
 /** The scope a verdict covers. `effort: '*'` (or omitted) means every level. */

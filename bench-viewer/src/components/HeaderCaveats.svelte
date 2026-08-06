@@ -16,15 +16,23 @@
 </script>
 
 <div class="row wrap caveats">
+	<!-- Every number in this bar describes the CORPUS on disk, not the filtered
+	     slice below it. Labelled so, because they routinely differ. -->
 	<span class="muted small">
-		{data.counts.runs} runs · {data.counts.tasks} tasks · {data.counts.models} models
+		corpus: {data.counts.runs} runs · {data.counts.tasks} tasks · {data.counts.models} models
 	</span>
 
 	{#if data.counts.failed > 0}
+		<!--
+			Corpus-wide, like every count in this bar. Said out loud in the label
+			because the blacklist filter can hide the referent: the corpus's only
+			failed run is a gpt-5.6-luna-pro run, and that model is retired, so by
+			default a reader chasing "1 failed run" finds it nowhere on screen.
+		-->
 		<Badge
 			tone="warn"
-			label="{data.counts.failed} failed run{data.counts.failed === 1 ? '' : 's'}"
-			title="Failed runs produce no report. They are counted, never scored as zero."
+			label="{data.counts.failed} failed run{data.counts.failed === 1 ? '' : 's'} in corpus"
+			title="Failed runs produce no report. They are counted, never scored as zero. This counts the whole corpus — some may be hidden from the current view by a filter or by the blacklist."
 		/>
 	{/if}
 

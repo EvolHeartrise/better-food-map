@@ -7,7 +7,7 @@
 	 * macro (task-equal-weight) and micro (item-pooled) give different numbers, and
 	 * which one is in force has to be visible while reading any of them.
 	 */
-	import { fetchOverview } from '../lib/api';
+	import { fetchOverview, fetchSlice } from '../lib/api';
 	import { filters, router } from '../lib/state.svelte';
 	import { metricLabel } from '../lib/format';
 
@@ -17,13 +17,24 @@
 	let open = $state(false);
 
 	/**
-	 * How many runs the corpus holds for retired configurations.
+	 * The number on the toggle IS the disclosure: a leaderboard quietly missing 62
+	 * of 156 runs, with nothing on screen to say so, is the failure mode this
+	 * control creates.
 	 *
-	 * Shown on the toggle whether or not they are hidden, because the number IS
-	 * the disclosure: a leaderboard quietly missing 56 of 156 runs, with nothing
-	 * on screen to say so, is the failure mode this control creates.
+	 * It must therefore be scoped to the CURRENT SLICE, not to the corpus. Filter
+	 * to a model with no verdict against it and the corpus number still claims 62
+	 * runs are hidden while every view below shows none hidden — the control that
+	 * performs the narrowing would be the one lying about it.
 	 */
-	let hiddenRuns = $derived(blacklist.n_blocked_runs);
+	let slice = $derived(await fetchSlice(filters.query));
+	/**
+	 * Blacklisted runs in this slice, whether or not they are currently shown —
+	 * `hidden_blacklisted` is 0 by construction while they ARE shown, which made
+	 * the toggle read "showing blacklisted (0 runs in this slice)".
+	 */
+	let sliceBlocked = $derived(slice.n_blacklisted);
+	/** Corpus-wide, and labelled as such wherever it appears. */
+	let corpusBlocked = $derived(blacklist.n_blocked_runs);
 </script>
 
 <div class="bar">
@@ -32,16 +43,21 @@
 			Filters{filters.active > 0 ? ` · ${filters.active}` : ''}
 		</button>
 
-		{#if hiddenRuns > 0 || filters.includeBlacklisted}
+		{#if blacklist.error !== null}
+			<!-- An unreadable blacklist must never render as "nothing is retired" —
+			     that is the absent-vs-zero lie, in the dangerous direction. -->
+			<span class="badge bad" title="{blacklist.path}: {blacklist.error}">
+				⊘ blacklist unreadable — nothing hidden
+			</span>
+		{:else if sliceBlocked > 0}
 			<button
 				class="chip"
 				aria-pressed={filters.includeBlacklisted}
 				title="Configurations with a recorded verdict against them are hidden by default. Their runs are still in the corpus and keep their scores."
 				onclick={() => (filters.includeBlacklisted = !filters.includeBlacklisted)}
 			>
-				{filters.includeBlacklisted
-					? `⊘ showing blacklisted (${hiddenRuns} run${hiddenRuns === 1 ? '' : 's'})`
-					: `⊘ ${hiddenRuns} blacklisted run${hiddenRuns === 1 ? '' : 's'} hidden`}
+				⊘ {sliceBlocked} blacklisted run{sliceBlocked === 1 ? '' : 's'}
+				{filters.includeBlacklisted ? 'shown' : 'hidden'}
 			</button>
 		{/if}
 
@@ -136,13 +152,24 @@
 				<button
 					class="chip"
 					aria-pressed={filters.includeBlacklisted}
+					disabled={blacklist.error !== null}
 					onclick={() => (filters.includeBlacklisted = !filters.includeBlacklisted)}
 				>
 					{filters.includeBlacklisted ? 'shown' : 'hidden'}
 				</button>
 				<span class="hint">
-					{blacklist.entries.length} verdict{blacklist.entries.length === 1 ? '' : 's'} on record, covering
-					{hiddenRuns} run{hiddenRuns === 1 ? '' : 's'}.
+					{#if blacklist.error !== null}
+						<!-- Not "0 verdicts": the file failed to parse, so how many there are
+						     is UNKNOWN. Reporting zero here would read as an all-clear. -->
+						{blacklist.path} could not be read, so nothing is hidden and the number of verdicts on record
+						is unknown.
+					{:else}
+						{blacklist.entries.length} verdict{blacklist.entries.length === 1 ? '' : 's'} on record, covering
+						{corpusBlocked} run{corpusBlocked === 1 ? '' : 's'} across the corpus{sliceBlocked !==
+						corpusBlocked
+							? ` (${sliceBlocked} in this slice)`
+							: ''}.
+					{/if}
 					<button class="linky" onclick={() => router.go('blacklist')}>Review them</button>
 				</span>
 			</div>
