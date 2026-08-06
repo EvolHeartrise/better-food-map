@@ -96,7 +96,10 @@ export function heatRows(cells: readonly CellRow[]): HeatRow[] {
 		].filter(Boolean);
 		seen.set(key, {
 			key,
-			label: `${cell.model.split('/').pop()} · ${cell.effort}`,
+			// The ⊘ rides on the LABEL, not the note: notes are conditional (they only
+			// render when a dimension varies), and whether a configuration is retired
+			// must not depend on what else happens to be in the grid.
+			label: `${cell.blacklist.state === 'none' ? '' : '⊘ '}${cell.model.split('/').pop()} · ${cell.effort}`,
 			note: notes.length > 0 ? notes.join(' · ') : undefined
 		});
 	}

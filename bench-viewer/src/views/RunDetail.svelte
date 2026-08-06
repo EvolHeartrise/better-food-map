@@ -17,11 +17,12 @@
 	 *   snapshot holds. A model can score well while never opening the drinks page;
 	 *   that is luck, and this is where it shows.
 	 */
-	import { fetchRunOrNull } from '../lib/api';
+	import { fetchOverview, fetchRunOrNull, removeBlacklistEntry } from '../lib/api';
 	import { count, duration, metricLabel, pct, timestamp, usd } from '../lib/format';
-	import { router } from '../lib/state.svelte';
+	import { filters, refreshData, router } from '../lib/state.svelte';
 	import type { MetricKey } from '../lib/types';
 	import Badge from '../components/Badge.svelte';
+	import BlacklistForm from '../components/BlacklistForm.svelte';
 	import StatTile from '../components/StatTile.svelte';
 
 	const METRICS: MetricKey[] = [
@@ -40,8 +41,37 @@
 
 	let tab = $state<'scores' | 'items' | 'navigation' | 'transcript'>('scores');
 	let useCurrentGold = $state(false);
+	let retiring = $state(false);
+	let restoring = $state(false);
+	let editError = $state<string | null>(null);
 
-	let detail = $derived(await fetchRunOrNull(router.param('id')));
+	let detail = $derived(await fetchRunOrNull(router.param('id'), filters.revision));
+	let overview = $derived(await fetchOverview(filters.revision));
+	let canEdit = $derived(overview.blacklist.writable);
+
+	/**
+	 * Guarded against a second click while in flight: the server 404s a repeat
+	 * DELETE, so a double-click would remove the verdict and then paint "no entry
+	 * matching …" in red — reading as a failure when it in fact succeeded.
+	 */
+	async function restore(): Promise<void> {
+		const entry = detail?.blacklist;
+		if (!entry || restoring) return;
+		restoring = true;
+		editError = null;
+		try {
+			await removeBlacklistEntry({
+				model: entry.model,
+				effort: entry.effort === 'all' ? '*' : entry.effort,
+				backend: entry.backend ?? undefined
+			});
+			refreshData();
+		} catch (caught) {
+			editError = caught instanceof Error ? caught.message : String(caught);
+		} finally {
+			restoring = false;
+		}
+	}
 
 	let report = $derived(
 		useCurrentGold ? (detail?.rescore.current ?? null) : (detail?.run.report ?? null)
@@ -115,7 +145,64 @@
 						title="Scoring this submission against current gold gives different numbers."
 					/>
 				{/if}
+				{#if detail.blacklist}
+					<Badge
+						tone="neutral"
+						label="⊘ blacklisted config"
+						title={`${detail.blacklist.label} — ${detail.blacklist.reason} (added ${detail.blacklist.added})`}
+					/>
+				{/if}
 			</div>
+
+			<!--
+				The verdict, in full, on the page that holds the evidence for it. This
+				run's numbers are not invalidated by it — they are very likely part of
+				what produced it — so it reads as a note, not as a failure.
+			-->
+			{#if detail.blacklist}
+				<div class="verdict">
+					<div class="row wrap vhead">
+						<strong class="small">Configuration retired: {detail.blacklist.label}</strong>
+						<span class="muted small">added {detail.blacklist.added}</span>
+						{#if canEdit}
+							<button
+								class="chip"
+								disabled={restoring}
+								title="Drop this verdict — bench:run will buy this configuration again."
+								onclick={restore}>{restoring ? 'Removing…' : 'Un-blacklist'}</button
+							>
+						{/if}
+					</div>
+					<p class="vreason">{detail.blacklist.reason}</p>
+					{#if detail.blacklist.evidence}
+						<p class="muted small">evidence: {detail.blacklist.evidence}</p>
+					{/if}
+				</div>
+			{:else if canEdit}
+				<div class="retire">
+					{#if retiring}
+						<BlacklistForm
+							model={run.model}
+							lockModel
+							efforts={overview.facets.efforts}
+							effort={run.effort ?? 'default'}
+							backend={run.backend}
+							onsaved={() => (retiring = false)}
+							oncancel={() => (retiring = false)}
+						/>
+					{:else}
+						<button
+							class="chip"
+							title="Record a verdict against this model/effort/backend so it is never re-purchased."
+							onclick={() => (retiring = true)}>⊘ Blacklist this configuration</button
+						>
+					{/if}
+				</div>
+			{/if}
+
+			{#if editError}
+				<p class="error-line">{editError}</p>
+			{/if}
 
 			<div class="tiles">
 				<StatTile
@@ -436,6 +523,34 @@
 {/if}
 
 <style>
+	.verdict {
+		margin-top: 10px;
+		border-left: 2px solid var(--border);
+		padding-left: 10px;
+	}
+
+	.vhead {
+		gap: 8px;
+		align-items: center;
+	}
+
+	.vreason {
+		margin: 2px 0 0;
+		font-size: 12px;
+		color: var(--text-secondary);
+		max-width: 80ch;
+	}
+
+	.retire {
+		margin-top: 10px;
+	}
+
+	.error-line {
+		color: var(--critical);
+		font-size: 12px;
+		margin: 8px 0 0;
+	}
+
 	.small {
 		font-size: 11px;
 	}

@@ -58,6 +58,7 @@ function cell(overrides: Partial<CellRow> = {}): CellRow {
 		rerouted: 0,
 		unsafe_tag_claims_total: 0,
 		run_ids: [],
+		blacklist: { state: 'none', n_blocked: 0, n_runs: 1, entries: [] },
 		metrics,
 		stats: {
 			cost_usd: stat(0.01),
@@ -156,6 +157,40 @@ describe('heatmap grouping', () => {
 		const rows = heatRows([cell({ backend: 'openrouter' }), cell({ backend: 'claude' })]);
 		expect(rows).toHaveLength(2);
 		expect(rows[0].note).not.toBe(rows[1].note);
+	});
+
+	test('a blacklisted configuration is marked in the row LABEL, not the note', () => {
+		// The note only renders when some dimension varies across the grid, so a
+		// marker living there would vanish in a single-backend, single-provenance
+		// slice — exactly the common case.
+		const rows = heatRows([
+			cell({
+				model: 'openai/gpt-5.6-luna',
+				blacklist: {
+					state: 'all',
+					n_blocked: 1,
+					n_runs: 1,
+					entries: [
+						{
+							model: 'openai/gpt-5.6-luna',
+							effort: 'none',
+							backend: null,
+							reason: 'tag recall collapses',
+							added: '2026-07-31',
+							evidence: null,
+							label: 'openai/gpt-5.6-luna [effort: none]',
+							n_runs_covered: 1
+						}
+					]
+				}
+			})
+		]);
+		expect(rows[0].label.startsWith('⊘ ')).toBe(true);
+		expect(rows[0].note).toBeUndefined();
+	});
+
+	test('a live configuration carries no marker', () => {
+		expect(heatRows([cell()])[0].label.startsWith('⊘')).toBe(false);
 	});
 
 	test('a cell that ran but scored nothing is distinct from one that never ran', () => {

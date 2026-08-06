@@ -99,6 +99,28 @@
 							<td class="left">{a.derived.provenance}</td>
 							<td class="left">{b.derived.provenance}</td>
 						</tr>
+						{#if a.blacklist || b.blacklist}
+							<!-- Only when one side is retired. A head-to-head that quietly pits a
+							     live configuration against a decommissioned one reads as an open
+							     question when it is not one. -->
+							<tr>
+								<td class="left muted">Blacklisted</td>
+								<td class="left">
+									{#if a.blacklist}
+										<span title={a.blacklist.reason}>⊘ {a.blacklist.label}</span>
+									{:else}
+										<span class="muted">no</span>
+									{/if}
+								</td>
+								<td class="left">
+									{#if b.blacklist}
+										<span title={b.blacklist.reason}>⊘ {b.blacklist.label}</span>
+									{:else}
+										<span class="muted">no</span>
+									{/if}
+								</td>
+							</tr>
+						{/if}
 						<tr>
 							<td class="left muted">Cost</td>
 							<td class="left">{usd(a.derived.cost_usd)}</td>
