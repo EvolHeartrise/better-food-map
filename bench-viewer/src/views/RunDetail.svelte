@@ -444,29 +444,42 @@
 				{#if !detail.page_coverage}
 					<p class="muted">No page manifest for this task.</p>
 				{:else}
+					{@const coverage = detail.page_coverage}
 					<div class="tiles">
 						<StatTile
-							label="Menu pages opened"
-							value="{detail.page_coverage.menu_visited}/{detail.page_coverage.menu_available}"
-							note={pct(detail.page_coverage.menu_ratio, 0)}
-							tone={detail.page_coverage.menu_ratio < 1 ? 'warn' : 'plain'}
+							label="Pages opened"
+							value="{coverage.visited}/{coverage.available}"
+							note={pct(coverage.ratio, 0)}
 						/>
 						<StatTile
-							label="All pages opened"
-							value="{detail.page_coverage.visited}/{detail.page_coverage.available}"
-							note={pct(detail.page_coverage.ratio, 0)}
+							label="Never opened"
+							value={String(coverage.unvisited.length)}
+							note="the blind-spot list"
+							tone={coverage.unvisited.length > 0 ? 'warn' : 'plain'}
 						/>
 						<StatTile
 							label="Off-manifest fetches"
-							value={String(detail.page_coverage.off_manifest.length)}
+							value={String(coverage.off_manifest.length)}
 							note="APIs and assets — not a fault"
 						/>
 					</div>
 
-					{#if detail.page_coverage.menu_unvisited.length > 0}
-						<h3>Menu pages never opened</h3>
+					{#if coverage.unvisited.length > 0}
+						<h3>Pages never opened</h3>
+						<!--
+							The whole list, not a "menu pages" subset. Recognizing a menu page
+							from its URL needs world knowledge a word list does not have — New
+							York Fries serves its menu from /fries, /poutine, /premiumdogs and
+							/dips — so a filtered list would hide exactly the misses worth
+							seeing. Menu-word URLs are sorted FIRST as a reading hint; the rest
+							still matter, so read past them.
+						-->
+						<p class="muted small">
+							Every recorded page this run never fetched, likely-relevant URLs first. Not all of
+							these are faults — a venue's snapshot includes its careers and privacy pages.
+						</p>
 						<ul class="list mono">
-							{#each detail.page_coverage.menu_unvisited as url (url)}
+							{#each coverage.unvisited as url (url)}
 								<li>{url}</li>
 							{/each}
 						</ul>

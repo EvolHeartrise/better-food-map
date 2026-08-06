@@ -6,11 +6,17 @@
 	// can resolve these components (the repo lints `**/*.svelte`) and so
 	// `svelte-check` can type-check them.
 	"compilerOptions": {
-		"target": "ES2022",
+		"target": "ES2023",
 		"module": "ESNext",
 		"moduleResolution": "bundler",
-		"lib": ["ES2022", "DOM", "DOM.Iterable"],
-		"types": ["svelte", "vite/client"],
+		// ES2023 for `toSorted`/`toReversed`, which this code uses throughout to
+		// avoid mutating arrays it does not own (and which the shared
+		// `scripts/bench/analyze/*` modules, pulled in by these imports, also use).
+		"lib": ["ES2023", "DOM", "DOM.Iterable"],
+		// `bun` for the `bun:test` imports in the co-located *.test.ts files —
+		// without it every test file in this project fails to resolve and
+		// svelte-check reports noise instead of real drift.
+		"types": ["svelte", "vite/client", "bun"],
 		"strict": true,
 		"noEmit": true,
 		"allowJs": true,
