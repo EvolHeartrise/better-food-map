@@ -4,7 +4,14 @@
  * These mirror `scripts/bench/analyze/*` across the JSON boundary. Nulls are
  * load-bearing everywhere: a null is UNKNOWN (a field a run predates, a cost the
  * provider never reported), and the UI must render it as "—", never as 0.
+ *
+ * Mirroring by hand is a liability — nothing checks a mirror against what it
+ * reflects, and one silently-drifted shape crashed the navigation tab on every
+ * run. Where a server type is plain data with no server-only dependencies,
+ * IMPORT it instead (see `PageCoverage`): `import type` is erased at build, so
+ * it costs nothing and makes drift a compile error.
  */
+import type { PageCoverage } from '../../../scripts/bench/analyze/transcript';
 
 export interface Stat {
 	mean: number | null;
@@ -351,17 +358,22 @@ export interface RunDetail {
 		changed: boolean;
 		error?: string;
 	};
-	page_coverage: {
-		available: number;
-		visited: number;
-		ratio: number;
-		unvisited: string[];
-		menu_available: number;
-		menu_visited: number;
-		menu_ratio: number;
-		menu_unvisited: string[];
-		off_manifest: string[];
-	} | null;
+	/**
+	 * IMPORTED from the server rather than mirrored by hand.
+	 *
+	 * Every other type in this file is a hand-written mirror, and nothing checks a
+	 * mirror against the thing it reflects: when `pageCoverage` dropped its
+	 * `menu_available` / `menu_visited` / `menu_ratio` / `menu_unvisited` fields
+	 * (the menu-page ratio was removed as unsound), this declaration kept them and
+	 * the navigation tab crashed on EVERY run with "can't access property length,
+	 * page_coverage.menu_unvisited is undefined". Both sides type-checked; they
+	 * simply described different objects.
+	 *
+	 * `PageCoverage` is plain data with no server-only dependencies, so importing
+	 * it costs nothing at runtime (`import type` is erased) and makes that drift
+	 * impossible rather than merely tested-for.
+	 */
+	page_coverage: PageCoverage | null;
 	fetched_urls: string[];
 	timeline: {
 		type: string;

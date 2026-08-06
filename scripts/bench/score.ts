@@ -216,7 +216,10 @@ function scoreTagField(
 
 	for (const { gold, candidate } of pairs) {
 		const rawCand = candidate[field];
-		const literalTags = new Set(rawCand);
+		// Widened deliberately: the candidate's tags are a narrow union, but the set
+		// we probe with is the EXPANDED one (`Set<string>`), so a narrow Set would
+		// reject the lookup. The membership test is what matters, not the arity.
+		const literalTags = new Set<string>(rawCand);
 		const goldExpanded = expandTags(gold[field]);
 		const candExpanded = expandTags(rawCand);
 		goldTotal += goldExpanded.size;
