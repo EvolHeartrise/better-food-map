@@ -13,30 +13,27 @@
  */
 import type { PageCoverage } from '../../../scripts/bench/analyze/transcript';
 
-export interface Stat {
-	mean: number | null;
-	sd: number | null;
-	median: number | null;
-	min: number | null;
-	max: number | null;
-	n: number;
-	approx?: boolean;
-}
+/**
+ * IMPORTED, not mirrored — for the reason the header states, and because this
+ * exact trio already drifted once. `Stat` used to be hand-written here with an
+ * `approx?: boolean` flag; the aggregation renamed that field to `unpoolable`
+ * when the "approximate" micro-average was measured to be wrong (see
+ * `MICRO_EXACT` in analyze/aggregate.ts), and the mirror kept the dead name.
+ * Both sides type-checked. The leaderboard's `{#if stat.approx}` badge simply
+ * stopped firing, so a metric with NO micro value rendered as a bare em dash —
+ * indistinguishable from "no data", which is the one conflation the aggregation
+ * rules forbid.
+ *
+ * `MetricKey` and `AverageMode` come along because they are the same kind of
+ * thing: plain string unions owned by the aggregation, with no server-only
+ * dependencies. `import type` is erased at build, so this costs nothing at
+ * runtime and makes the next rename a compile error here.
+ */
+import type { AverageMode, MetricKey, Stat } from '../../../scripts/bench/analyze/aggregate';
 
-export type MetricKey =
-	| 'item_recall'
-	| 'item_precision'
-	| 'tag_precision'
-	| 'tag_recall'
-	| 'optional_tag_precision'
-	| 'optional_tag_recall'
-	| 'price_accuracy'
-	| 'description_accuracy'
-	| 'warning_accuracy'
-	| 'source_recall'
-	| 'source_precision';
-
-export type AverageMode = 'macro' | 'micro';
+// Imported for use below AND re-exported, since the rest of the app reads these
+// three from `lib/types` alongside the hand-written wire shapes.
+export type { AverageMode, MetricKey, Stat };
 
 // --- blacklist ----------------------------------------------------------------
 
