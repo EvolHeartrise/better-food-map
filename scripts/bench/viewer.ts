@@ -7,12 +7,21 @@
  *
  * Usage:
  *   bun run bench:viewer [--port 8792] [--runs-dir <dir>] [--tasks-dir <dir>]
- *                        [--rebuild] [--no-build]
+ *                        [--blacklist <file>] [--read-only] [--rebuild] [--no-build]
  *
  * The SPA is built with Vite on demand: if `bench-viewer/dist` is missing or
  * older than any file under `bench-viewer/src`, it is rebuilt before serving
  * (`--rebuild` forces, `--no-build` skips). That keeps the tool a single
  * command with no separate dev server to remember.
+ *
+ * WRITES: the only thing this server can change is the model/config BLACKLIST
+ * (`scripts/bench/blacklist.json`). That is deliberate and it is not a hole in
+ * the read-only rule — the rule protects the CORPUS, because an analytics tool
+ * that can edit its own evidence is a way to lose it. The blacklist is not
+ * evidence; it is a git-tracked record of DECISIONS made from the evidence, and
+ * the view where you read the numbers is the right place to record the verdict
+ * they support. Nothing under `bench/` is ever written. `--read-only` disables
+ * the two mutating endpoints entirely.
  *
  * Binds 127.0.0.1 only. This reads unpublished bench data and has no auth, so
  * it must never be reachable off the machine. All human output is on stderr;
@@ -21,6 +30,17 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, normalize, resolve, sep } from 'node:path';
+import { addEntry, removeEntries, saveBlacklist, today, type BlacklistEntry } from './blacklist';
+import {
+	BLACKLIST_PATH,
+	blockFor,
+	hideBlacklisted,
+	loadBlacklistSafe,
+	modelStates,
+	statusFor,
+	toInfo,
+	type Blacklist
+} from './analyze/blacklist';
 import {
 	buildCells,
 	DEFAULT_DIMENSIONS,
@@ -63,6 +83,10 @@ export interface ViewerArgs {
 	port: number;
 	runsDir: string;
 	tasksDir: string;
+	/** Where the model/config verdicts live. Git-tracked, NOT under `bench/`. */
+	blacklistPath: string;
+	/** When true the blacklist endpoints refuse to write. */
+	readOnly: boolean;
 	rebuild: boolean;
 	build: boolean;
 }
@@ -71,13 +95,15 @@ export type ArgsResult = { ok: true; args: ViewerArgs } | { ok: false; error: st
 
 const USAGE =
 	'usage: bun run bench:viewer [--port 8792] [--runs-dir <dir>] [--tasks-dir <dir>] ' +
-	'[--rebuild] [--no-build]';
+	'[--blacklist <file>] [--read-only] [--rebuild] [--no-build]';
 
 export function parseArgs(argv: readonly string[]): ArgsResult {
 	const args: ViewerArgs = {
 		port: 8792,
 		runsDir: DEFAULT_RUNS_DIR,
 		tasksDir: DEFAULT_TASKS_DIR,
+		blacklistPath: BLACKLIST_PATH,
+		readOnly: false,
 		rebuild: false,
 		build: true
 	};
@@ -111,6 +137,14 @@ export function parseArgs(argv: readonly string[]): ArgsResult {
 				if (!value) return { ok: false, error: '--tasks-dir needs a path' };
 				args.tasksDir = value;
 				i++;
+				break;
+			case '--blacklist':
+				if (!value) return { ok: false, error: '--blacklist needs a path' };
+				args.blacklistPath = value;
+				i++;
+				break;
+			case '--read-only':
+				args.readOnly = true;
 				break;
 			case '--rebuild':
 				args.rebuild = true;
@@ -154,6 +188,36 @@ class IndexCache {
 			this.at = now;
 		}
 		return this.cached;
+	}
+}
+
+/**
+ * The blacklist, re-read on the same TTL as the index — `bench:blacklist --add`
+ * in another terminal must show up here without a restart — but invalidated
+ * IMMEDIATELY on our own write, so the response to a POST already reflects it.
+ * A verdict recorded in the UI that took two seconds to take effect would read
+ * as a failed click.
+ */
+class BlacklistCache {
+	private cached: { list: Blacklist; error: string | null } | null = null;
+	private at = 0;
+
+	constructor(
+		private readonly path: string,
+		private readonly now: () => number = () => Date.now()
+	) {}
+
+	get(): { list: Blacklist; error: string | null } {
+		const now = this.now();
+		if (!this.cached || now - this.at > INDEX_TTL_MS) {
+			this.cached = loadBlacklistSafe(this.path);
+			this.at = now;
+		}
+		return this.cached;
+	}
+
+	invalidate(): void {
+		this.cached = null;
 	}
 }
 
@@ -204,14 +268,29 @@ export function filterFromQuery(url: URL): RunFilter {
 	};
 }
 
+/**
+ * Retired configurations are hidden unless asked for.
+ *
+ * Opt-IN rather than opt-out because the default reading of this dashboard is
+ * "what should we run", and a configuration we have already decided against is
+ * noise in that question — it is also, unhelpfully, often near the top, since
+ * plenty of blacklist entries were written about configs that scored WELL and
+ * lost on cost. The count hidden is reported on every response that hides any,
+ * so the slice never silently narrows.
+ */
+export function includeBlacklistedFromQuery(url: URL): boolean {
+	return url.searchParams.get('include_blacklisted') === '1';
+}
+
 /** Cells minus their run objects — the client only needs ids to drill down. */
-function serializeCell(cell: Cell): Record<string, unknown> {
+function serializeCell(cell: Cell, blacklist: Blacklist): Record<string, unknown> {
 	return {
 		...cellRow(cell),
 		metrics: cell.metrics,
 		policy_conflicts: cell.policy_conflicts,
 		provenances: cell.provenances,
 		run_ids: cell.runs.map((run) => run.run_id),
+		blacklist: statusFor(cell.runs, blacklist),
 		stats: {
 			cost_usd: cell.cost_usd,
 			price_cached: cell.price_cached,
@@ -228,12 +307,33 @@ function uniqueSorted(values: readonly string[]): string[] {
 	return [...new Set(values)].toSorted();
 }
 
-/** Facets for the filter UI, derived from the corpus rather than hardcoded. */
-function overview(index: RunIndex, runsDir: string, tasksDir: string): Record<string, unknown> {
+/**
+ * Facets for the filter UI, derived from the corpus rather than hardcoded.
+ *
+ * Deliberately computed over the WHOLE index, blacklist hiding included: the
+ * header describes the corpus on disk, and the model chip you need in order to
+ * un-hide a retired model must not itself be hidden by the hiding.
+ */
+function overview(
+	index: RunIndex,
+	args: ViewerArgs,
+	blacklist: Blacklist,
+	blacklistError: string | null
+): Record<string, unknown> {
 	const runs = index.runs;
 	return {
-		runs_dir: runsDir,
-		tasks_dir: tasksDir,
+		runs_dir: args.runsDir,
+		tasks_dir: args.tasksDir,
+		blacklist: {
+			path: args.blacklistPath,
+			/** Null unless the file is unreadable — then the UI says so, never "empty". */
+			error: blacklistError,
+			writable: !args.readOnly && blacklistError === null,
+			entries: blacklist.entries.map((entry) => toInfo(entry)),
+			model_states: modelStates(runs, blacklist),
+			/** Runs the default view hides. Reported so the hiding is never silent. */
+			n_blocked_runs: runs.length - hideBlacklisted(runs, blacklist).length
+		},
 		counts: {
 			runs: runs.length,
 			scored: runs.filter((run) => run.status === 'scored').length,
@@ -258,7 +358,11 @@ function overview(index: RunIndex, runsDir: string, tasksDir: string): Record<st
 	};
 }
 
-function runDetail(run: RunRecord, tasksDir: string): Record<string, unknown> {
+function runDetail(
+	run: RunRecord,
+	tasksDir: string,
+	blacklist: Blacklist
+): Record<string, unknown> {
 	const taskDir = taskDirFor(run, tasksDir);
 	const events = loadTranscript(run.dir);
 	const fetched = fetchedUrls(events);
@@ -290,9 +394,17 @@ function runDetail(run: RunRecord, tasksDir: string): Record<string, unknown> {
 				)
 			: null;
 
+	const block = blockFor(run, blacklist);
+
 	return {
 		run,
 		derived: deriveRun(run),
+		/**
+		 * The verdict covering THIS run's configuration, or null. Present even when
+		 * the run is being viewed through a slice that hides its config: a run you
+		 * deep-linked to must tell you it is retired rather than looking ordinary.
+		 */
+		blacklist: block === null ? null : toInfo(block),
 		name_fidelity: fidelityFor(run.report),
 		name_fidelity_current: fidelityFor(rescore.current),
 		rescore,
@@ -430,8 +542,163 @@ export function isAllowedHost(hostHeader: string | null): boolean {
 	return host === '127.0.0.1' || host === 'localhost' || host === '[::1]' || host === '::1';
 }
 
+/**
+ * Guard for the two mutating endpoints.
+ *
+ * `isAllowedHost` already stops DNS rebinding, but a rebound page could still
+ * reach a same-origin-looking POST, so writes get two more cheap checks:
+ *
+ * - **Origin**, when present, must be a localhost origin. A page on the web
+ *   POSTing here carries its own origin and is refused.
+ * - **content-type must be JSON.** A cross-origin `fetch` with this type is not
+ *   a CORS-simple request, so the browser preflights it — and we answer no CORS
+ *   headers, so it never leaves. An HTML `<form>`, which needs no preflight,
+ *   cannot produce this type at all.
+ *
+ * Returns an error string, or null when the write may proceed.
+ */
+export function writeRefusal(
+	request: Request,
+	options: { readOnly: boolean; blacklistError: string | null }
+): string | null {
+	if (options.readOnly) {
+		return 'the viewer was started with --read-only; blacklist edits are disabled';
+	}
+	if (options.blacklistError !== null) {
+		// Writing would serialize our empty in-memory fallback OVER whatever is in
+		// the file, destroying verdicts we could not parse. Refuse and say why.
+		return `refusing to write over an unreadable blacklist: ${options.blacklistError}`;
+	}
+	const origin = request.headers.get('origin');
+	if (origin !== null && origin !== '' && origin !== 'null') {
+		let host: string;
+		try {
+			host = new URL(origin).hostname;
+		} catch {
+			return `cross-origin write refused (origin: ${origin})`;
+		}
+		if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') {
+			return `cross-origin write refused (origin: ${origin})`;
+		}
+	}
+	const bodyType = request.headers.get('content-type') ?? '';
+	if (!bodyType.toLowerCase().startsWith('application/json')) {
+		return 'blacklist edits must be sent as application/json';
+	}
+	return null;
+}
+
+/** Shape of an add/remove request body, validated before anything is written. */
+export interface BlacklistWriteBody {
+	model?: unknown;
+	effort?: unknown;
+	backend?: unknown;
+	reason?: unknown;
+	evidence?: unknown;
+}
+
+export type ParsedWrite =
+	| { ok: true; entry: { model: string; effort?: string; backend?: string } }
+	| { ok: false; error: string };
+
+/** The scope fields common to add and remove. */
+export function parseScope(body: BlacklistWriteBody): ParsedWrite {
+	const text = (value: unknown): string | undefined =>
+		typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+
+	const model = text(body.model);
+	if (model === undefined) return { ok: false, error: 'model is required' };
+
+	const backend = text(body.backend);
+	if (backend !== undefined && backend !== 'openrouter' && backend !== 'claude') {
+		return { ok: false, error: `backend must be openrouter|claude (got ${backend})` };
+	}
+
+	// An omitted/'*' effort means "every level" — kept as undefined so the entry
+	// written here is byte-identical to one the CLI would write for that scope.
+	const rawEffort = text(body.effort);
+	const effort = rawEffort === undefined || rawEffort === '*' ? undefined : rawEffort;
+
+	return { ok: true, entry: { model, effort, backend } };
+}
+
+/**
+ * Add (`POST`) or drop (`DELETE`) one blacklist entry.
+ *
+ * Both go through `addEntry`/`removeEntries` from the CLI module, so an entry
+ * recorded here is indistinguishable from one `bench:blacklist --add` wrote —
+ * same duplicate-scope refusal, same file shape, same `added` stamp. The reply
+ * carries the refreshed list so the UI updates from the server's truth rather
+ * than from an optimistic guess about what it just did.
+ */
+async function handleBlacklistWrite(
+	request: Request,
+	args: ViewerArgs,
+	blacklistCache: BlacklistCache,
+	indexCache: IndexCache
+): Promise<Response> {
+	if (request.method !== 'POST' && request.method !== 'DELETE') {
+		return json({ error: `${request.method} not allowed on /api/blacklist` }, 405);
+	}
+
+	const { list: blacklist, error: blacklistError } = blacklistCache.get();
+	const refusal = writeRefusal(request, { readOnly: args.readOnly, blacklistError });
+	if (refusal !== null) return json({ error: refusal }, 403);
+
+	let body: BlacklistWriteBody;
+	try {
+		body = (await request.json()) as BlacklistWriteBody;
+	} catch {
+		return json({ error: 'body must be valid JSON' }, 400);
+	}
+	if (typeof body !== 'object' || body === null) {
+		return json({ error: 'body must be a JSON object' }, 400);
+	}
+
+	const scope = parseScope(body);
+	if (!scope.ok) return json({ error: scope.error }, 400);
+
+	if (request.method === 'DELETE') {
+		const { list: next, removed } = removeEntries(blacklist, scope.entry);
+		if (removed.length === 0) {
+			return json({ error: `no entry matching ${scope.entry.model}` }, 404);
+		}
+		saveBlacklist(next, args.blacklistPath);
+		blacklistCache.invalidate();
+		return json({
+			removed: removed.map((entry) => toInfo(entry)),
+			entries: next.entries.map((entry) => toInfo(entry)),
+			model_states: modelStates(indexCache.get().runs, next)
+		});
+	}
+
+	// A verdict without its why rots into superstition, so `reason` is required
+	// here exactly as it is on the CLI — the UI cannot record a silent veto.
+	const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+	if (reason.length === 0) {
+		return json({ error: 'reason is required — a verdict without its why is unusable' }, 400);
+	}
+	const evidence =
+		typeof body.evidence === 'string' && body.evidence.trim().length > 0
+			? body.evidence.trim()
+			: undefined;
+
+	const entry: BlacklistEntry = { ...scope.entry, reason, added: today(), evidence };
+	const result = addEntry(blacklist, entry);
+	if (!result.ok) return json({ error: result.error }, 409);
+
+	saveBlacklist(result.list, args.blacklistPath);
+	blacklistCache.invalidate();
+	return json({
+		added: toInfo(entry),
+		entries: result.list.entries.map((e) => toInfo(e)),
+		model_states: modelStates(indexCache.get().runs, result.list)
+	});
+}
+
 export function createHandler(args: ViewerArgs, hasUi: boolean) {
 	const cache = new IndexCache(args.runsDir);
+	const blacklistCache = new BlacklistCache(args.blacklistPath);
 
 	/**
 	 * Every request goes through this, so an unexpected throw becomes a small JSON
@@ -440,7 +707,7 @@ export function createHandler(args: ViewerArgs, hasUi: boolean) {
 	 * unvalidated, so a schema-drifted file really can throw deep inside a
 	 * derivation, and one bad run must not take the endpoint (or leak the repo).
 	 */
-	const handle = (request: Request): Response => {
+	const handle = async (request: Request): Promise<Response> => {
 		const url = new URL(request.url);
 		const { pathname } = url;
 
@@ -451,22 +718,54 @@ export function createHandler(args: ViewerArgs, hasUi: boolean) {
 			});
 		}
 
+		if (pathname === '/api/blacklist' && request.method !== 'GET') {
+			return handleBlacklistWrite(request, args, blacklistCache, cache);
+		}
+
 		if (pathname.startsWith('/api/')) {
 			const index = cache.get();
-			const runs = filterRuns(index.runs, filterFromQuery(url));
+			const { list: blacklist, error: blacklistError } = blacklistCache.get();
+			const matching = filterRuns(index.runs, filterFromQuery(url));
+			// Blacklist hiding runs LAST, after every other filter, so the count it
+			// reports is "hidden from this slice" rather than "hidden from the corpus".
+			const includeBlacklisted = includeBlacklistedFromQuery(url);
+			const runs = includeBlacklisted ? matching : hideBlacklisted(matching, blacklist);
+			const hidden = matching.length - runs.length;
 
 			switch (pathname) {
 				case '/api/overview':
-					return json(overview(index, args.runsDir, args.tasksDir));
+					return json(overview(index, args, blacklist, blacklistError));
+
+				case '/api/blacklist':
+					return json({
+						path: args.blacklistPath,
+						error: blacklistError,
+						writable: !args.readOnly && blacklistError === null,
+						entries: blacklist.entries.map((entry) => toInfo(entry)),
+						model_states: modelStates(index.runs, blacklist)
+					});
 
 				case '/api/runs':
-					return json({ runs: runs.map((run) => runRow(run)) });
+					return json({
+						runs: runs.map((run) => {
+							const block = blockFor(run, blacklist);
+							return { ...runRow(run), blacklist: block === null ? null : toInfo(block) };
+						}),
+						hidden_blacklisted: hidden,
+						include_blacklisted: includeBlacklisted
+					});
 
 				case '/api/cells': {
 					const mode = parseMode(url.searchParams.get('mode'));
 					const dimensions = parseDimensions(url.searchParams.get('dims'));
 					const cells = buildCells(runs, { dimensions, mode });
-					return json({ mode, dimensions, cells: cells.map((cell) => serializeCell(cell)) });
+					return json({
+						mode,
+						dimensions,
+						hidden_blacklisted: hidden,
+						include_blacklisted: includeBlacklisted,
+						cells: cells.map((cell) => serializeCell(cell, blacklist))
+					});
 				}
 
 				case '/api/discrimination': {
@@ -475,15 +774,18 @@ export function createHandler(args: ViewerArgs, hasUi: boolean) {
 					return json({
 						metric,
 						mode,
+						hidden_blacklisted: hidden,
 						tasks: taskDiscrimination(runs, metric, { mode })
 					});
 				}
 
 				case '/api/run': {
 					const id = url.searchParams.get('id');
+					// Looked up in the FULL index, never the hidden slice: a deep link to a
+					// retired run must open and say it is retired, not 404.
 					const run = index.runs.find((entry) => entry.run_id === id);
 					if (!run) return json({ error: `no such run: ${id}` }, 404);
-					return json(runDetail(run, args.tasksDir));
+					return json(runDetail(run, args.tasksDir, blacklist));
 				}
 
 				default:
@@ -513,9 +815,9 @@ export function createHandler(args: ViewerArgs, hasUi: boolean) {
 		});
 	};
 
-	return (request: Request): Response => {
+	return async (request: Request): Promise<Response> => {
 		try {
-			return handle(request);
+			return await handle(request);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			console.error(`request failed: ${new URL(request.url).pathname}: ${message}`);
@@ -544,6 +846,12 @@ function main(argv: string[]): number {
 		console.error(`skipped ${problem.dir}: ${problem.error}`);
 	}
 
+	const { list: blacklist, error: blacklistError } = loadBlacklistSafe(args.blacklistPath);
+	if (blacklistError !== null) {
+		console.error(`blacklist unreadable (${args.blacklistPath}): ${blacklistError}`);
+		console.error('  nothing will be hidden, and blacklist edits are disabled until it parses.');
+	}
+
 	const hasUi = ensureBuilt({ force: args.rebuild, enabled: args.build });
 
 	Bun.serve({
@@ -555,6 +863,14 @@ function main(argv: string[]): number {
 	console.error(
 		`bench viewer on http://127.0.0.1:${args.port} — ${index.runs.length} run(s) from ${args.runsDir}`
 	);
+	if (blacklistError === null) {
+		const hiddenRuns = index.runs.length - hideBlacklisted(index.runs, blacklist).length;
+		console.error(
+			`blacklist: ${blacklist.entries.length} entr(y|ies) hiding ${hiddenRuns} run(s) by default ` +
+				`— toggle "show blacklisted" in the UI. ` +
+				(args.readOnly ? 'Edits DISABLED (--read-only).' : `Edits write ${args.blacklistPath}.`)
+		);
+	}
 	return 0;
 }
 

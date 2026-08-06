@@ -247,8 +247,27 @@ tr.clickable:focus-visible {
 	color: var(--text-primary);
 }
 
+.chip[disabled] {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+/**
+ * The one action in this app that writes anything (recording a blacklist
+ * verdict). Weighted so it never reads as just another filter chip — but still a
+ * chip, because it is a small, reversible, git-tracked edit, not a deploy.
+ */
+.chip.primary {
+	border-color: var(--series-1);
+	background: color-mix(in srgb, var(--series-1) 14%, var(--surface-1));
+	color: var(--text-primary);
+	font-weight: 600;
+}
+
 select,
-input[type='search'] {
+textarea,
+input[type='search'],
+input[type='text'] {
 	font: inherit;
 	font-size: 13px;
 	padding: 4px 8px;
@@ -256,6 +275,15 @@ input[type='search'] {
 	border-radius: 6px;
 	background: var(--surface-1);
 	color: var(--text-primary);
+}
+
+textarea {
+	font-family: inherit;
+	resize: vertical;
+}
+
+input[readonly] {
+	background: color-mix(in srgb, var(--gridline) 40%, var(--surface-1));
 }
 
 /* --- badges (status: always icon or word + colour, never colour alone) ----- */

@@ -10,11 +10,13 @@
 	 * whichever column you sort by, and `n` sits beside every rank because most
 	 * cells here are one or two runs deep.
 	 */
-	import { fetchCells, fetchOverview } from '../lib/api';
+	import { fetchCells, fetchOverview, removeBlacklistEntry } from '../lib/api';
 	import { count, duration, metricLabel, pct, usd } from '../lib/format';
-	import { filters, router } from '../lib/state.svelte';
+	import { blacklistEffort, filters, refreshData, router } from '../lib/state.svelte';
 	import type { CellRow, MetricKey } from '../lib/types';
 	import Badge from '../components/Badge.svelte';
+	import BlacklistBadge from '../components/BlacklistBadge.svelte';
+	import BlacklistForm from '../components/BlacklistForm.svelte';
 
 	const COLUMNS: MetricKey[] = [
 		'item_recall',
@@ -29,15 +31,38 @@
 	let sortKey = $state<string>('item_recall');
 	let sortDesc = $state(true);
 	let expanded = $state<string | null>(null);
+	/** Cell key whose "retire this configuration" form is open. */
+	let retiring = $state<string | null>(null);
+	let editError = $state<string | null>(null);
 
 	// Data lives in a derived await, not an effect that assigns state. Svelte holds
 	// the current table on screen until the new slice resolves, so refiltering
 	// never flashes a skeleton.
-	let cells = $derived((await fetchCells(filters.query, filters.mode, filters.dimensions)).cells);
+	let response = $derived(await fetchCells(filters.query, filters.mode, filters.dimensions));
+	let cells = $derived(response.cells);
 
+	let overview = $derived(await fetchOverview(filters.revision));
 	let totalTasks = $derived(
-		filters.tasks.length > 0 ? filters.tasks.length : (await fetchOverview()).counts.tasks
+		filters.tasks.length > 0 ? filters.tasks.length : overview.counts.tasks
 	);
+	let canEdit = $derived(overview.blacklist.writable);
+
+	/** Un-retire the configuration a cell describes. */
+	async function restore(cell: CellRow): Promise<void> {
+		editError = null;
+		const entry = cell.blacklist.entries[0];
+		if (!entry) return;
+		try {
+			await removeBlacklistEntry({
+				model: entry.model,
+				effort: entry.effort === 'all' ? '*' : entry.effort,
+				backend: entry.backend ?? undefined
+			});
+			refreshData();
+		} catch (caught) {
+			editError = caught instanceof Error ? caught.message : String(caught);
+		}
+	}
 
 	/** Null means UNKNOWN — never a value, so it never participates in the order. */
 	function sortValue(cell: CellRow, key: string): number | string | null {
@@ -110,11 +135,27 @@
 						: 'micro-averaged (pooled over items, so big menus dominate)'} · sorted by
 					{sortKey === 'config' ? 'configuration' : metricLabel(sortKey)}
 				</p>
+				{#if response.hidden_blacklisted > 0}
+					<!-- Stated as a sentence, not only as a badge: this is the table people
+					     screenshot, and a leaderboard silently missing a third of its runs
+					     is precisely the confidently-wrong conclusion to avoid. -->
+					<p class="muted small">
+						{response.hidden_blacklisted} run{response.hidden_blacklisted === 1 ? '' : 's'} on blacklisted
+						configurations {response.hidden_blacklisted === 1 ? 'is' : 'are'} not shown.
+						<button class="linky" onclick={() => (filters.includeBlacklisted = true)}>
+							Include them
+						</button>
+					</p>
+				{/if}
 			</div>
 			<p class="muted small right">
 				No composite score by design — recall and precision fail differently.
 			</p>
 		</div>
+
+		{#if editError}
+			<p class="error-line">{editError}</p>
+		{/if}
 
 		<div class="scroll-x table-wrap">
 			<table>
@@ -176,7 +217,10 @@
 							aria-label="{cell.model} {cell.effort}: show details"
 						>
 							<td class="left">
-								<div class="config">{cell.model}</div>
+								<div class="config">
+									{cell.model}
+									<BlacklistBadge state={cell.blacklist.state} entries={cell.blacklist.entries} />
+								</div>
 								<div class="muted small">
 									effort {cell.effort}{cell.quantization ? ` · ${cell.quantization}` : ''} ·
 									{cell.backend}
@@ -261,6 +305,61 @@
 										{/if}
 									</div>
 
+									{#if cell.blacklist.state !== 'none'}
+										<!-- The verdict in full. A cell can be on the Pareto frontier and
+										     still be retired — several entries were written about configs
+										     that scored well and lost on cost — so the reason has to be
+										     readable right next to the numbers that look good. -->
+										<div class="verdicts">
+											{#each cell.blacklist.entries as entry (entry.label + entry.added)}
+												<div class="verdict">
+													<div class="vhead">
+														<strong>{entry.label}</strong>
+														<span class="muted small">added {entry.added}</span>
+														{#if canEdit}
+															<button
+																class="chip"
+																title="Drop this verdict — the configuration returns to the default view and bench:run will buy it again."
+																onclick={(event) => {
+																	event.stopPropagation();
+																	restore(cell);
+																}}>Un-blacklist</button
+															>
+														{/if}
+													</div>
+													<p class="vreason">{entry.reason}</p>
+													{#if entry.evidence}
+														<p class="muted small">evidence: {entry.evidence}</p>
+													{/if}
+												</div>
+											{/each}
+										</div>
+									{:else if canEdit}
+										<div class="retire">
+											{#if retiring === cell.key}
+												<BlacklistForm
+													model={cell.model}
+													lockModel
+													efforts={overview.facets.efforts}
+													effort={blacklistEffort(cell.effort)}
+													backend={cell.backend}
+													evidence="{cell.n_runs} run(s) over {cell.tasks}; see bench/runs"
+													onsaved={() => (retiring = null)}
+													oncancel={() => (retiring = null)}
+												/>
+											{:else}
+												<button
+													class="chip"
+													title="Record a verdict against this configuration so it is never re-purchased."
+													onclick={(event) => {
+														event.stopPropagation();
+														retiring = cell.key;
+													}}>⊘ Blacklist this configuration</button
+												>
+											{/if}
+										</div>
+									{/if}
+
 									<div class="meta muted small">
 										<span>Provenance: {cell.provenances.join(' / ')}</span>
 										<span>Tasks: {cell.tasks}</span>
@@ -316,6 +415,57 @@
 	.config {
 		font-weight: 600;
 		font-size: 13px;
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		flex-wrap: wrap;
+	}
+
+	.verdicts {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		margin-bottom: 10px;
+	}
+
+	.verdict {
+		border-left: 2px solid var(--border);
+		padding-left: 10px;
+	}
+
+	.vhead {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+
+	.vreason {
+		margin: 2px 0 0;
+		font-size: 12px;
+		color: var(--text-secondary);
+		white-space: normal;
+		max-width: 70ch;
+	}
+
+	.retire {
+		margin-bottom: 10px;
+	}
+
+	.error-line {
+		color: var(--critical);
+		font-size: 12px;
+		margin: 8px 0 0;
+	}
+
+	.linky {
+		background: none;
+		border: none;
+		padding: 0;
+		font: inherit;
+		color: var(--series-1);
+		cursor: pointer;
+		text-decoration: underline;
 	}
 
 	.clickable {

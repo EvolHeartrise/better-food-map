@@ -413,6 +413,11 @@ A malformed `blacklist.json` is a hard error rather than an empty list —
 silently ignoring a corrupt file would re-enable exactly the spending it exists
 to prevent.
 
+Entries can also be read, recorded and removed from the viewer's **Blacklist**
+tab — see [Blacklist in the viewer](#blacklist-in-the-viewer) below. It writes
+through this same module, so an entry added there is indistinguishable from one
+`--add` wrote.
+
 ## Authoring at scale
 
 Two tools speed up filling the bench without lowering the bar that gold is
@@ -529,9 +534,9 @@ A local Vite + Svelte SPA (`bench-viewer/`) served by `Bun.serve`, bound to
 **127.0.0.1 only** — it exposes unpublished bench data and has no auth. The UI
 bundle builds on demand when it is missing or older than its sources
 (`--rebuild` forces, `--no-build` skips and serves the JSON API alone). Options:
-`--port` (8792), `--runs-dir`, `--tasks-dir`.
+`--port` (8792), `--runs-dir`, `--tasks-dir`, `--blacklist`, `--read-only`.
 
-Five views, all rendering against ONE shared filter slice (a per-view filter is
+Six views, all rendering against ONE shared filter slice (a per-view filter is
 how two cards quietly end up describing different data):
 
 - **Leaderboard** — one row per configuration cell, the scorer's metric vector as
@@ -544,6 +549,65 @@ how two cards quietly end up describing different data):
 - **Runs / Run detail** — every run, drilling into its full report, the
   name-fidelity split, page-discovery coverage and the turn timeline.
 - **Compare** — two runs on the same task, diffed item by item.
+- **Blacklist** — the verdict register (below).
+
+### Blacklist in the viewer
+
+The dashboard knows which configurations have been [ruled
+out](#pruning-the-test-matrix-benchblacklist) and acts on it in three ways.
+
+**Hidden by default.** Runs whose (model, effort, backend) is covered by an entry
+are dropped from every view. This is opt-out, the opposite polarity to failed
+runs — the default question the dashboard answers is "what should we run", and a
+configuration already ruled out is not a candidate. Toggle it with the
+`⊘ N blacklisted runs hidden` chip in the filter bar, or `Blacklisted: shown` in
+the filter panel; on the API it is `?include_blacklisted=1`.
+
+The hiding is never silent. The count sits in the header, on the toggle itself,
+and as a sentence on every view that dropped anything, and each response carries
+`hidden_blacklisted`. A leaderboard quietly missing 62 of 156 runs, with nothing
+on screen to say so, is exactly the confidently-wrong conclusion this whole
+layer exists to prevent. Two consequences worth stating:
+
+- **A run detail page always opens**, retired or not, and says so — a deep link
+  never 404s on a verdict.
+- **The Tasks view's discriminating-power table is over the visible slice**, so
+  judging a venue "exhausted" while a third of its configurations are hidden is
+  the mistake to watch for; the view names the count for that reason.
+
+**Marked when shown.** With blacklisted configs included, they carry a `⊘` badge
+on the leaderboard, in the runs list, on the Compare table, on the heatmap row
+label, and — most importantly — in the Frontier's point labels. A retired config
+can sit ON the Pareto frontier and get direct-labelled as the thing to run:
+several entries were written about configurations that scored well and lost on
+cost, which is precisely what puts them there. Expanding a leaderboard row or
+opening a run shows the verdict in full: reason, date, evidence.
+
+**Editable.** The Blacklist tab lists every entry with its reason and date and
+offers Remove; the leaderboard's expanded row and the run detail both carry a
+`⊘ Blacklist this configuration` button pre-filled with that scope. `reason` is
+required in the UI exactly as on the CLI — a one-click veto with no why would
+destroy the property that makes the file reviewable.
+
+This is the ONLY thing the viewer can write, and it is not a hole in the
+read-only rule: that rule protects the CORPUS, because an analytics tool that
+can edit its own evidence is a way to lose it. `blacklist.json` is not evidence,
+it is the git-tracked record of decisions made FROM the evidence — and the
+screen where you read the numbers is the right place to record the verdict they
+support. Nothing under `bench/` is ever written.
+
+Guards on the two mutating endpoints (`POST`/`DELETE /api/blacklist`), on top of
+the localhost bind and Host check every request already passes:
+
+- **`--read-only`** disables them outright.
+- **An `Origin`**, when present, must be a localhost origin.
+- **`content-type: application/json` is required** — which is what makes a
+  cross-origin call non-simple, so the browser preflights it and gets no CORS
+  headers back. An HTML `<form>` cannot produce that type at all.
+- **An unreadable `blacklist.json` refuses writes** rather than serializing the
+  empty in-memory fallback over verdicts that merely failed to parse. In that
+  state the UI reports the file as unreadable and hides nothing — never "no
+  configuration is retired", which would be a lie in the dangerous direction.
 
 ### What the analysis layer adds beyond `report.json`
 
@@ -627,6 +691,7 @@ scripts/bench/analyze/     pure, tested, no UI (runs under `bun test scripts`)
   record.ts     walk bench/runs -> RunRecord[]  (absent-vs-zero discipline)
   derive.ts     per-run derived metrics + the name-fidelity overlay
   aggregate.ts  cells, macro/micro averaging, spread, Pareto, task discrimination
+  blacklist.ts  which runs/cells are retired (matches via ../blacklist), safe load
   rescore.ts    re-run scoreCandidate against current gold (read-only)
   transcript.ts turn timeline + page-discovery coverage
   export.ts     the bench:export CLI

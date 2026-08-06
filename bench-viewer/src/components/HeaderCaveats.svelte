@@ -9,9 +9,10 @@
 	 * how a confident wrong conclusion gets made.
 	 */
 	import { fetchOverview } from '../lib/api';
+	import { filters } from '../lib/state.svelte';
 	import Badge from './Badge.svelte';
 
-	let data = $derived(await fetchOverview());
+	let data = $derived(await fetchOverview(filters.revision));
 </script>
 
 <div class="row wrap caveats">
@@ -32,6 +33,26 @@
 			tone="warn"
 			label="{data.unattributed_runs} runs without provenance"
 			title="These runs predate provider logging. A score without provider and quantization measures model × provider × quantization, not the model."
+		/>
+	{/if}
+
+	{#if data.blacklist.error !== null}
+		<Badge
+			tone="bad"
+			label="blacklist unreadable"
+			title={`${data.blacklist.path}: ${data.blacklist.error}\n\nNothing is being hidden and edits are disabled. Do not read this dashboard as "no configuration is retired".`}
+		/>
+	{:else if data.blacklist.n_blocked_runs > 0}
+		<!-- The hiding is stated in the header, not only on the control that does
+		     it: a reader who never opens the filter bar still has to know the
+		     default view is a slice. -->
+		<Badge
+			tone="neutral"
+			label="⊘ {data.blacklist.n_blocked_runs} blacklisted run{data.blacklist.n_blocked_runs === 1
+				? ''
+				: 's'} {filters.includeBlacklisted ? 'shown' : 'hidden'}"
+			title="{data.blacklist.entries
+				.length} recorded verdict(s) against tested configurations. Their runs keep their scores; they are just not offered as candidates."
 		/>
 	{/if}
 
