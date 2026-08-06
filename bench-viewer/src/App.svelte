@@ -10,6 +10,7 @@
 	 */
 	import FilterBar from './components/FilterBar.svelte';
 	import HeaderCaveats from './components/HeaderCaveats.svelte';
+	import BlacklistView from './views/Blacklist.svelte';
 	import Compare from './views/Compare.svelte';
 	import Frontier from './views/Frontier.svelte';
 	import Leaderboard from './views/Leaderboard.svelte';
@@ -22,12 +23,17 @@
 		{ view: 'leaderboard', label: 'Leaderboard' },
 		{ view: 'frontier', label: 'Frontier' },
 		{ view: 'tasks', label: 'Tasks' },
-		{ view: 'runs', label: 'Runs' }
+		{ view: 'runs', label: 'Runs' },
+		{ view: 'blacklist', label: 'Blacklist' }
 	] as const;
 
 	let view = $derived(router.current.view);
-	/** Run detail and compare are their own scope; a global filter there is noise. */
-	let showFilters = $derived(view !== 'run' && view !== 'compare');
+	/**
+	 * Run detail and compare are their own scope; a global filter there is noise.
+	 * The blacklist register is the file itself, not a slice of runs, so the run
+	 * filters would only mislead about what it covers.
+	 */
+	let showFilters = $derived(view !== 'run' && view !== 'compare' && view !== 'blacklist');
 </script>
 
 <header>
@@ -72,6 +78,8 @@
 			<RunDetailView />
 		{:else if view === 'compare'}
 			<Compare />
+		{:else if view === 'blacklist'}
+			<BlacklistView />
 		{:else}
 			<Leaderboard />
 		{/if}

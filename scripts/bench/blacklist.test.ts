@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -120,6 +120,32 @@ describe('loadBlacklist / saveBlacklist', () => {
 			expect(() => loadBlacklist(path)).toThrow(/invalid/);
 			writeFileSync(path, JSON.stringify({ entries: [{ ...entry(), added: '31-07-2026' }] }));
 			expect(() => loadBlacklist(path)).toThrow(/YYYY-MM-DD/);
+		});
+	});
+
+	test('the write is atomic and leaves no temp file behind', () => {
+		// A plain writeFileSync truncates first, so a crash mid-write leaves a
+		// half-file — and loadBlacklist treats a malformed file as a HARD ERROR, so
+		// that window turns a crash into "every bench:run refuses to start" plus the
+		// loss of every verdict in the file. rename() closes it.
+		withTmp((path) => {
+			saveBlacklist({ entries: [entry()] }, path);
+			saveBlacklist({ entries: [entry(), entry({ model: 'second/model' })] }, path);
+			expect(loadBlacklist(path).entries).toHaveLength(2);
+			expect(existsSync(`${path}.tmp`)).toBe(false);
+		});
+	});
+
+	test('overwriting never leaves a partially-written file readable', () => {
+		withTmp((path) => {
+			saveBlacklist({ entries: [entry()] }, path);
+			// Whatever is at `path` after any save must parse — the invariant rename
+			// buys us, checked here so a future switch back to writeFileSync fails.
+			for (let n = 2; n <= 6; n += 1) {
+				const entries = Array.from({ length: n }, (_, i) => entry({ model: `m/${i}` }));
+				saveBlacklist({ entries }, path);
+				expect(loadBlacklist(path).entries).toHaveLength(n);
+			}
 		});
 	});
 });

@@ -14,6 +14,7 @@
 	import { filters, router } from '../lib/state.svelte';
 	import { frontierKeys as computeFrontier, plottableCells } from '../lib/analysis';
 	import type { CellRow, ScatterPoint } from '../lib/types';
+	import BlacklistBadge from '../components/BlacklistBadge.svelte';
 	import ScatterChart from '../components/ScatterChart.svelte';
 
 	type XAxis = 'cost' | 'cost_cached' | 'duration';
@@ -26,7 +27,8 @@
 
 	let xAxis = $state<XAxis>('cost');
 
-	let cells = $derived((await fetchCells(filters.query, filters.mode, filters.dimensions)).cells);
+	let response = $derived(await fetchCells(filters.query, filters.mode, filters.dimensions));
+	let cells = $derived(response.cells);
 
 	function xValue(cell: CellRow): number | null {
 		if (xAxis === 'cost') return cell.stats.cost_usd.mean;
@@ -47,15 +49,31 @@
 
 	let frontier = $derived(computeFrontier(plotted));
 
+	/**
+	 * The blacklist marker is folded into the point LABEL, not just the tooltip.
+	 *
+	 * This is the view where the omission would do real damage: a retired
+	 * configuration can sit on the Pareto frontier and get direct-labelled as the
+	 * thing to run — several verdicts in the corpus were written about configs
+	 * that scored well and lost on cost, which is exactly what puts them there.
+	 */
 	let points = $derived.by<ScatterPoint[]>(() =>
 		plotted.map((entry) => ({
 			id: entry.cell.key,
-			label: `${entry.cell.model.split('/').pop()} · ${entry.cell.effort}`,
+			label: `${entry.cell.blacklist.state === 'none' ? '' : '⊘ '}${entry.cell.model.split('/').pop()} · ${entry.cell.effort}`,
 			x: entry.x,
 			y: entry.y,
 			n: entry.cell.n_runs,
 			frontier: frontier.has(entry.cell.key),
-			detail: `${entry.cell.n_tasks} task(s)${entry.cell.quantization && entry.cell.quantization !== 'unpinned' ? ` · ${entry.cell.quantization}` : ''}`
+			detail: [
+				`${entry.cell.n_tasks} task(s)`,
+				entry.cell.quantization && entry.cell.quantization !== 'unpinned'
+					? entry.cell.quantization
+					: null,
+				entry.cell.blacklist.state === 'none' ? null : 'blacklisted — verdict on record'
+			]
+				.filter(Boolean)
+				.join(' · ')
 		}))
 	);
 
@@ -76,6 +94,20 @@
 					Labelled points are the Pareto frontier — nothing beats them on both axes. Point identity
 					is in the tooltip and the table below, not in colour.
 				</p>
+				{#if response.hidden_blacklisted > 0}
+					<p class="muted small">
+						{response.hidden_blacklisted} run{response.hidden_blacklisted === 1 ? '' : 's'} on blacklisted
+						configurations excluded — the frontier below is over live candidates only.
+						<button class="linky" onclick={() => (filters.includeBlacklisted = true)}>
+							Include them
+						</button>
+					</p>
+				{:else if filters.includeBlacklisted}
+					<p class="muted small">
+						Blacklisted configurations are included and marked <strong>⊘</strong>. A retired config
+						can still sit on the frontier — that is usually why it was retired.
+					</p>
+				{/if}
 			</div>
 			<div class="row">
 				{#each Object.keys(X_AXES) as key (key)}
@@ -128,6 +160,11 @@
 						<tr>
 							<td class="left">
 								{entry.cell.model} <span class="muted">· {entry.cell.effort}</span>
+								<BlacklistBadge
+									state={entry.cell.blacklist.state}
+									entries={entry.cell.blacklist.entries}
+									compact
+								/>
 							</td>
 							<td>{pct(entry.y)}</td>
 							<td>{X_AXES[xAxis].format(entry.x)}</td>
@@ -161,5 +198,15 @@
 
 	h3 {
 		margin-bottom: 8px;
+	}
+
+	.linky {
+		background: none;
+		border: none;
+		padding: 0;
+		font: inherit;
+		color: var(--series-1);
+		cursor: pointer;
+		text-decoration: underline;
 	}
 </style>

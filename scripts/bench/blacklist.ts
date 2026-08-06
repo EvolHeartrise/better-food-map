@@ -22,7 +22,7 @@
  * Exit 0 on success (and on --check when the config is ALLOWED), 1 on --check
  * when it is BLOCKED, 2 on a usage/validation error.
  */
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as v from 'valibot';
 
@@ -117,8 +117,31 @@ export function loadBlacklist(path: string = BLACKLIST_PATH): Blacklist {
 	return parsed.output;
 }
 
+/**
+ * Write the blacklist ATOMICALLY: full contents to a sibling temp file, then
+ * rename over the target.
+ *
+ * A plain `writeFileSync` truncates before it writes, so a crash — or a full
+ * disk — mid-write leaves a half-file. `loadBlacklist` treats a malformed file
+ * as a hard error, on purpose, so that window turns a crash into "every
+ * bench:run refuses to start" plus the loss of every verdict in it. `rename` on
+ * the same filesystem is atomic, so a reader sees either the old file or the new
+ * one and never a partial.
+ */
 export function saveBlacklist(list: Blacklist, path: string = BLACKLIST_PATH): void {
-	writeFileSync(path, JSON.stringify(list, null, '\t') + '\n');
+	const temp = `${path}.tmp`;
+	writeFileSync(temp, JSON.stringify(list, null, '\t') + '\n');
+	try {
+		renameSync(temp, path);
+	} catch (error) {
+		// Don't leave the temp file behind to be mistaken for a real one.
+		try {
+			unlinkSync(temp);
+		} catch {
+			// Best effort; the rename failure is the error worth reporting.
+		}
+		throw error;
+	}
 }
 
 /** Human-readable scope of an entry, e.g. `openai/gpt-5.6-luna [effort: none]`. */
