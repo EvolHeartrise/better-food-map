@@ -1,9 +1,10 @@
 import { describe, expect, test } from 'bun:test';
+import type { ScoreReport } from '../score';
 import { cellRow, parseArgs, runRow, toCsv } from './export';
 import { buildCells } from './aggregate';
 import { toRunRecord } from './record';
 
-function run(overrides: Record<string, unknown> = {}) {
+function run(overrides: Record<string, unknown> = {}, scoreReport: ScoreReport | null = null) {
 	return toRunRecord({
 		task: 'woodenspoon',
 		dirName: '2026-07-31T19:07:54.470Z-m',
@@ -18,8 +19,24 @@ function run(overrides: Record<string, unknown> = {}) {
 			price: 0.002,
 			...overrides
 		},
-		report: null
+		report: scoreReport
 	});
+}
+
+/** Only the fields the aggregation reads; the rest of the vector is irrelevant here. */
+function report(overrides: Partial<ScoreReport> = {}): ScoreReport {
+	return {
+		gold_items: 4,
+		candidate_items: 4,
+		matched: 4,
+		item_recall: 1,
+		item_precision: 1,
+		tag_recall: 1,
+		tag_precision: 1,
+		source_recall: 1,
+		source_precision: 1,
+		...overrides
+	} as ScoreReport;
 }
 
 describe('parseArgs', () => {
@@ -89,6 +106,29 @@ describe('cellRow', () => {
 		expect(row).toHaveProperty('item_recall_mean');
 		expect(row).toHaveProperty('item_recall_n');
 	});
+
+	test('a metric with no micro value is FLAGGED, not just left blank', () => {
+		// The drift this catches: the aggregation renamed this flag (`approx` ->
+		// `unpoolable`) and the export kept testing the dead name, so micro-mode
+		// exports carried an empty cell with nothing to say the metric is unpoolable
+		// BY CONSTRUCTION rather than unscored. Those are different facts, and only
+		// one of them is fixed by switching to macro.
+		const [cell] = buildCells([run({}, report())], { mode: 'micro' });
+		const row = cellRow(cell);
+		expect(row.tag_recall_mean).toBeNull();
+		expect(row.tag_recall_unpoolable).toBe(1);
+		expect(row.source_recall_unpoolable).toBe(1);
+		// A metric micro CAN pool exactly carries no flag and a real mean.
+		expect(row.item_recall_mean).toBe(1);
+		expect(row.item_recall_unpoolable).toBeUndefined();
+	});
+
+	test('macro never flags anything as unpoolable — it is exact for every metric', () => {
+		const [cell] = buildCells([run({}, report())], { mode: 'macro' });
+		const row = cellRow(cell);
+		expect(row.tag_recall_mean).toBe(1);
+		expect(row.tag_recall_unpoolable).toBeUndefined();
+	});
 });
 
 describe('toCsv', () => {
@@ -106,8 +146,8 @@ describe('toCsv', () => {
 	});
 
 	test('columns are the union across rows, so optional flags survive', () => {
-		const csv = toCsv([{ a: 1 }, { a: 2, approx: 1 }]);
-		expect(csv.split('\n')[0]).toBe('a,approx');
+		const csv = toCsv([{ a: 1 }, { a: 2, unpoolable: 1 }]);
+		expect(csv.split('\n')[0]).toBe('a,unpoolable');
 		expect(csv.split('\n')[1]).toBe('1,');
 	});
 });

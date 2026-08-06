@@ -108,7 +108,7 @@ describe('aggregateMetric', () => {
 		];
 		const stat = aggregateMetric(runs, 'price_accuracy', 'micro');
 		expect(stat.mean).toBeCloseTo(0.9);
-		expect(stat.approx).toBeUndefined();
+		expect(stat.unpoolable).toBeUndefined();
 	});
 
 	test('tag and source metrics report NO micro value rather than a wrong one', () => {

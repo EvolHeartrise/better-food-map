@@ -159,7 +159,12 @@ export function cellRow(cell: Cell): Record<string, string | number | null> {
 		row[`${metric}_mean`] = stat.mean;
 		row[`${metric}_sd`] = stat.sd;
 		row[`${metric}_n`] = stat.n;
-		if (stat.approx) row[`${metric}_approx`] = 1;
+		// Under `--mode micro` the tag and source metrics have no poolable
+		// denominator, so their mean is null BY CONSTRUCTION rather than for lack of
+		// data (see MICRO_EXACT in aggregate.ts). An empty CSV cell cannot tell those
+		// apart, and a reader who cannot tell reaches for the wrong conclusion —
+		// "this cell scored nothing" instead of "ask macro". The flag says which.
+		if (stat.unpoolable) row[`${metric}_unpoolable`] = 1;
 	}
 	return row;
 }
@@ -167,8 +172,8 @@ export function cellRow(cell: Cell): Record<string, string | number | null> {
 /** RFC4180-ish: quote when needed, double inner quotes, empty cell for null. */
 export function toCsv(rows: readonly Record<string, string | number | null>[]): string {
 	if (rows.length === 0) return '';
-	// Union of keys, first-seen order — an optional column (a metric's `approx`
-	// flag) must not vanish just because row 1 lacked it.
+	// Union of keys, first-seen order — an optional column (a metric's
+	// `unpoolable` flag) must not vanish just because row 1 lacked it.
 	const columns: string[] = [];
 	const seen = new Set<string>();
 	for (const row of rows) {
