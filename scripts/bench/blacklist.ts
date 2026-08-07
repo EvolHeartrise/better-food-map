@@ -44,6 +44,16 @@ export interface BlacklistEntry {
 	effort?: string;
 	/** `openrouter` | `claude`; omitted covers both. */
 	backend?: string;
+	/**
+	 * Harness (agent setup) this verdict covers; omitted covers every harness.
+	 *
+	 * Omitted is the RIGHT default for a verdict about raw model capability ("it
+	 * truncates long menus"), and the WRONG one for a verdict a different setup
+	 * might overturn — a model ruled out for missing pages may well pass with a
+	 * review pass that re-enumerates them. Scope the entry when the verdict is
+	 * about the pairing rather than the model.
+	 */
+	harness?: string;
 	/** Why this configuration was ruled out — required, this is the whole point. */
 	reason: string;
 	/** ISO date (YYYY-MM-DD) the verdict was recorded. */
@@ -60,6 +70,7 @@ const EntrySchema = v.object({
 	model: v.pipe(v.string(), v.minLength(1)),
 	effort: v.optional(v.string()),
 	backend: v.optional(v.string()),
+	harness: v.optional(v.string()),
 	reason: v.pipe(v.string(), v.minLength(1)),
 	added: v.pipe(v.string(), v.regex(/^\d{4}-\d{2}-\d{2}$/, 'added must be YYYY-MM-DD')),
 	evidence: v.optional(v.string())
@@ -73,18 +84,23 @@ export interface RunConfig {
 	/** The requested level, or undefined when no --effort was passed. */
 	effort?: string;
 	backend: string;
+	/** The harness the run would use; undefined is treated as the default setup. */
+	harness?: string;
 }
 
 const norm = (s: string): string => s.trim().toLowerCase();
 
 /**
- * Does `entry` cover `cfg`? Model and backend must match (an entry with no
- * backend covers both); effort matches when the entry is `*`/omitted, when the
- * entry is `default` and the run passed no --effort, or on an exact level match.
+ * Does `entry` cover `cfg`? Model, backend and harness must match (an entry
+ * omitting backend or harness covers all of them); effort matches when the entry
+ * is `*`/omitted, when the entry is `default` and the run passed no --effort, or
+ * on an exact level match.
  */
 export function entryCovers(entry: BlacklistEntry, cfg: RunConfig): boolean {
 	if (norm(entry.model) !== norm(cfg.model)) return false;
 	if (entry.backend !== undefined && norm(entry.backend) !== norm(cfg.backend)) return false;
+	if (entry.harness !== undefined && norm(entry.harness) !== norm(cfg.harness ?? 'single-pass'))
+		return false;
 
 	const scope = entry.effort === undefined ? EFFORT_ANY : norm(entry.effort);
 	if (scope === EFFORT_ANY) return true;
@@ -148,7 +164,12 @@ export function saveBlacklist(list: Blacklist, path: string = BLACKLIST_PATH): v
 export function describeEntry(entry: BlacklistEntry): string {
 	const scope = entry.effort === undefined || entry.effort === EFFORT_ANY ? 'all' : entry.effort;
 	const backend = entry.backend === undefined ? '' : `, backend: ${entry.backend}`;
-	return `${entry.model} [effort: ${scope}${backend}]`;
+	// The harness scope is part of what a verdict covers, so it has to be part of
+	// how the verdict READS. Without it a `harness: single-pass` entry and an
+	// unscoped one printed identically in the CLI list, the refusal message and
+	// the viewer's register — three places you would go to audit exactly that.
+	const harness = entry.harness === undefined ? '' : `, harness: ${entry.harness}`;
+	return `${entry.model} [effort: ${scope}${backend}${harness}]`;
 }
 
 /** The stderr message shown when a run is refused. */
@@ -160,24 +181,39 @@ export function formatBlocked(entry: BlacklistEntry, overrideFlag: string): stri
 		...(entry.evidence === undefined ? [] : [`  evidence: ${entry.evidence}`]),
 		`  Re-test anyway with ${overrideFlag}, or drop the entry:`,
 		`    bun run bench:blacklist --remove --model ${entry.model}` +
-			(entry.effort === undefined ? '' : ` --effort ${entry.effort}`)
+			(entry.effort === undefined ? '' : ` --effort ${entry.effort}`) +
+			(entry.backend === undefined ? '' : ` --backend ${entry.backend}`) +
+			(entry.harness === undefined ? '' : ` --harness ${entry.harness}`)
 	].join('\n');
 }
 
 /**
- * Add an entry, refusing an exact duplicate scope (same model/effort/backend) so
- * the file never accumulates competing verdicts for one configuration.
+ * Do two entries name the SAME scope? Every axis participates, including
+ * `harness` — otherwise a `harness: two-pass` verdict could not be added beside
+ * a `harness: single-pass` one ("already blacklisted"), and removing either took
+ * both. Add and remove share this so they can never disagree about identity.
+ */
+function sameScopeAs(
+	a: { model: string; effort?: string; backend?: string; harness?: string },
+	b: { model: string; effort?: string; backend?: string; harness?: string }
+): boolean {
+	return (
+		norm(a.model) === norm(b.model) &&
+		norm(a.effort ?? EFFORT_ANY) === norm(b.effort ?? EFFORT_ANY) &&
+		norm(a.backend ?? '') === norm(b.backend ?? '') &&
+		norm(a.harness ?? '') === norm(b.harness ?? '')
+	);
+}
+
+/**
+ * Add an entry, refusing an exact duplicate scope (same model/effort/backend/
+ * harness) so the file never accumulates competing verdicts for one configuration.
  */
 export function addEntry(
 	list: Blacklist,
 	entry: BlacklistEntry
 ): { ok: true; list: Blacklist } | { ok: false; error: string } {
-	const sameScope = list.entries.find(
-		(e) =>
-			norm(e.model) === norm(entry.model) &&
-			norm(e.effort ?? EFFORT_ANY) === norm(entry.effort ?? EFFORT_ANY) &&
-			norm(e.backend ?? '') === norm(entry.backend ?? '')
-	);
+	const sameScope = list.entries.find((e) => sameScopeAs(e, entry));
 	if (sameScope) {
 		return { ok: false, error: `already blacklisted: ${describeEntry(sameScope)}` };
 	}
@@ -187,14 +223,9 @@ export function addEntry(
 /** Remove every entry with exactly this scope; reports how many went. */
 export function removeEntries(
 	list: Blacklist,
-	scope: { model: string; effort?: string; backend?: string }
+	scope: { model: string; effort?: string; backend?: string; harness?: string }
 ): { list: Blacklist; removed: BlacklistEntry[] } {
-	const removed = list.entries.filter(
-		(e) =>
-			norm(e.model) === norm(scope.model) &&
-			norm(e.effort ?? EFFORT_ANY) === norm(scope.effort ?? EFFORT_ANY) &&
-			norm(e.backend ?? '') === norm(scope.backend ?? '')
-	);
+	const removed = list.entries.filter((e) => sameScopeAs(e, scope));
 	return {
 		list: { entries: list.entries.filter((e) => !removed.includes(e)) },
 		removed
@@ -221,9 +252,9 @@ const USAGE = [
 	'usage:',
 	'  bun run bench:blacklist',
 	'  bun run bench:blacklist --add --model <id> [--effort <level|default|*>] [--backend <b>]',
-	'                          --reason <text> [--evidence <text>]',
-	'  bun run bench:blacklist --remove --model <id> [--effort <level>] [--backend <b>]',
-	'  bun run bench:blacklist --check --model <id> [--effort <level>] [--backend <b>]'
+	'                          [--harness <name>] --reason <text> [--evidence <text>]',
+	'  bun run bench:blacklist --remove --model <id> [--effort <level>] [--backend <b>] [--harness <name>]',
+	'  bun run bench:blacklist --check --model <id> [--effort <level>] [--backend <b>] [--harness <name>]'
 ].join('\n');
 
 export interface BlacklistCli {
@@ -231,6 +262,8 @@ export interface BlacklistCli {
 	model?: string;
 	effort?: string;
 	backend?: string;
+	/** Harness scope; omitted covers every harness. */
+	harness?: string;
 	reason?: string;
 	evidence?: string;
 }
@@ -272,12 +305,14 @@ export function parseCli(argv: string[]): BlacklistCli | { error: string } {
 			arg === '--model' ||
 			arg === '--effort' ||
 			arg === '--backend' ||
+			arg === '--harness' ||
 			arg === '--reason' ||
 			arg === '--evidence'
 		) {
 			const value = argv[++i];
 			if (value === undefined) return { error: `${arg} requires a value` };
-			out[arg.slice(2) as 'model' | 'effort' | 'backend' | 'reason' | 'evidence'] = value;
+			out[arg.slice(2) as 'model' | 'effort' | 'backend' | 'harness' | 'reason' | 'evidence'] =
+				value;
 		} else {
 			return { error: `unknown option: ${arg}` };
 		}
@@ -329,13 +364,16 @@ function main(): number {
 		const hit = findBlock(list, {
 			model,
 			effort: cli.effort,
-			backend: cli.backend ?? 'openrouter'
+			backend: cli.backend ?? 'openrouter',
+			harness: cli.harness
 		});
 		if (hit) {
 			console.error(`BLOCKED: ${describeEntry(hit)} — ${hit.reason} (added ${hit.added})`);
 			return 1;
 		}
-		console.error(`allowed: ${model} [effort: ${cli.effort ?? 'default'}]`);
+		console.error(
+			`allowed: ${model} [effort: ${cli.effort ?? 'default'}, harness: ${cli.harness ?? 'single-pass'}]`
+		);
 		return 0;
 	}
 
@@ -344,6 +382,7 @@ function main(): number {
 			model,
 			effort: cli.effort,
 			backend: cli.backend,
+			harness: cli.harness,
 			reason: cli.reason as string,
 			added: today(),
 			evidence: cli.evidence
@@ -363,11 +402,13 @@ function main(): number {
 	const { list: next, removed } = removeEntries(list, {
 		model,
 		effort: cli.effort,
-		backend: cli.backend
+		backend: cli.backend,
+		harness: cli.harness
 	});
 	if (removed.length === 0) {
 		console.error(
-			`error: no entry matching ${model} [effort: ${cli.effort ?? 'all'}] — nothing removed`
+			`error: no entry matching ${model} [effort: ${cli.effort ?? 'all'}` +
+				`${cli.harness === undefined ? '' : `, harness: ${cli.harness}`}] — nothing removed`
 		);
 		console.error(formatList(list));
 		return 2;

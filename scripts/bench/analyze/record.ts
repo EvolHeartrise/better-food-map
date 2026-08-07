@@ -64,6 +64,24 @@ export interface RunRecord {
 	providers: string[] | null;
 	/** `providers` resolved to tiers. Null when absent; `{}` when the lookup failed. */
 	provider_quantizations: Record<string, string> | null;
+	/**
+	 * The agent setup (harness) that drove the run. A run predating the field is
+	 * `single-pass`, which is not a guess: that was the only setup that existed
+	 * when it ran. Contrast `prompt_sha`, where absence genuinely means unknown.
+	 */
+	harness: string;
+	/**
+	 * Content hash per pass prompt, keyed `<index>-<role>`. NULL on runs predating
+	 * the field — an UNKNOWN prompt, not a matching one. Those runs must not pool
+	 * with runs whose prompt is recorded, since nothing establishes they agree.
+	 */
+	prompt_sha: Record<string, string> | null;
+	/** Review-pass model override; null when inherited or when there is no review pass. */
+	review_model: string | null;
+	/** Review-pass effort override; null when inherited or absent. */
+	review_effort: string | null;
+	/** Per-pass breakdown; empty on runs predating multi-pass harnesses. */
+	passes: PassRecord[];
 	/** Gold policy version the run was scored against, when recorded. */
 	policy_version: string | null;
 	entry_url: string | null;
@@ -106,6 +124,30 @@ export interface RunRecord {
 	 * `rescore.ts` for comparing against current gold.
 	 */
 	report: ScoreReport | null;
+	/**
+	 * The FIRST pass's frozen report on a multi-pass run (`report-pass1.json`),
+	 * null when the run had one pass or predates the artifact. Scored against the
+	 * same gold as `report`, so the difference is the review pass's effect.
+	 */
+	report_pass1: ScoreReport | null;
+}
+
+/** One pass of a multi-pass run, as recorded on `meta.passes`. */
+export interface PassRecord {
+	index: number;
+	role: string;
+	model: string;
+	backend: string;
+	effort: string | null;
+	/** Null when the pass recorded no status — never assumed to be `scored`. */
+	status: string | null;
+	failure_reason: string | null;
+	duration_ms: number | null;
+	tool_calls: number | null;
+	prompt_tokens: number | null;
+	completion_tokens: number | null;
+	total_tokens: number | null;
+	price: number | null;
 }
 
 /** A run directory that could not be indexed, and why. */
@@ -164,6 +206,7 @@ export function toRunRecord(input: {
 	dir: string;
 	meta: Record<string, unknown>;
 	report: ScoreReport | null;
+	reportPass1?: ScoreReport | null;
 }): RunRecord {
 	const { meta } = input;
 	const status: RunStatus = readString(meta, 'status') === 'failed' ? 'failed' : 'scored';
@@ -180,6 +223,13 @@ export function toRunRecord(input: {
 		quantization_requested: readStringArray(meta, 'quantization_requested'),
 		providers: readStringArray(meta, 'providers'),
 		provider_quantizations: readStringMap(meta, 'provider_quantizations'),
+		// Absent harness => single-pass: the only setup that existed before the
+		// field, so this is a fact about those runs rather than a default.
+		harness: readString(meta, 'harness') ?? 'single-pass',
+		prompt_sha: readStringMap(meta, 'prompt_sha'),
+		review_model: readString(meta, 'review_model'),
+		review_effort: readString(meta, 'review_effort'),
+		passes: readPasses(meta),
 		policy_version: readString(meta, 'policy_version'),
 		entry_url: readString(meta, 'entry_url'),
 		task_dir: readString(meta, 'task_dir'),
@@ -206,8 +256,42 @@ export function toRunRecord(input: {
 		price_cached: readNumber(meta, 'price_cached'),
 		total_cost_usd: readNumber(meta, 'total_cost_usd'),
 
-		report: input.report ?? null
+		report: input.report ?? null,
+		report_pass1: input.reportPass1 ?? null
 	};
+}
+
+/**
+ * Read `meta.passes`. Returns [] for a run that predates multi-pass harnesses —
+ * an empty breakdown, never a synthesized one-pass entry: fabricating a pass
+ * record would put numbers in the UI that no run actually reported.
+ */
+function readPasses(meta: Record<string, unknown>): PassRecord[] {
+	const raw = meta['passes'];
+	if (!Array.isArray(raw)) return [];
+	const out: PassRecord[] = [];
+	for (const entry of raw) {
+		if (typeof entry !== 'object' || entry === null) continue;
+		const p = entry as Record<string, unknown>;
+		out.push({
+			index: readNumber(p, 'index') ?? 0,
+			role: readString(p, 'role') ?? '(unknown role)',
+			model: readString(p, 'model') ?? '(unknown model)',
+			backend: readString(p, 'backend') ?? '(unknown backend)',
+			effort: readString(p, 'effort'),
+			// Absent stays null. Defaulting to 'scored' would report an outcome no
+			// run recorded — the same absent-as-default trap this module forbids.
+			status: readString(p, 'status'),
+			failure_reason: readString(p, 'failure_reason'),
+			duration_ms: readNumber(p, 'duration_ms'),
+			tool_calls: readNumber(p, 'tool_calls'),
+			prompt_tokens: readNumber(p, 'prompt_tokens'),
+			completion_tokens: readNumber(p, 'completion_tokens'),
+			total_tokens: readNumber(p, 'total_tokens'),
+			price: readNumber(p, 'price')
+		});
+	}
+	return out.toSorted((a, b) => a.index - b.index);
 }
 
 /**
@@ -230,6 +314,31 @@ function isDir(path: string): boolean {
 		return statSync(path).isDirectory();
 	} catch {
 		return false;
+	}
+}
+
+/**
+ * Read one frozen report from a run dir. An ABSENT file is expected (a failed
+ * run writes none, a single-pass run has no pass-1 report) and returns null
+ * silently; a file that exists but will not parse is recorded as a problem
+ * rather than swallowed — swallowing it once indexed runs as `scored` with no
+ * report, padding every cell's counts while contributing to no metric.
+ */
+function readReport(dir: string, file: string, index: RunIndex): ScoreReport | null {
+	const path = join(dir, file);
+	if (!existsSync(path)) return null;
+	try {
+		const parsed = readJson(path);
+		if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+			throw new Error(`${file} is not an object`);
+		}
+		return parsed as ScoreReport;
+	} catch (error) {
+		index.problems.push({
+			dir,
+			error: `${file} unreadable: ${error instanceof Error ? error.message : String(error)}`
+		});
+		return null;
 	}
 }
 
@@ -261,31 +370,18 @@ export function loadRunIndex(runsDir: string = DEFAULT_RUNS_DIR): RunIndex {
 				// swallowing it indexed the run as `scored` with no report, so it padded
 				// every cell's n_runs/n_scored while contributing to no metric, and
 				// nothing anywhere said the file was broken.
-				const reportPath = join(dir, 'report.json');
-				let report: ScoreReport | null = null;
-				if (existsSync(reportPath)) {
-					try {
-						const parsed = readJson(reportPath);
-						if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-							throw new Error('report.json is not an object');
-						}
-						report = parsed as ScoreReport;
-					} catch (error) {
-						index.problems.push({
-							dir,
-							error: `report.json unreadable: ${
-								error instanceof Error ? error.message : String(error)
-							}`
-						});
-					}
-				}
+				const report = readReport(dir, 'report.json', index);
+				// Present only on a multi-pass run; absence is the normal case and
+				// never a problem, but an unreadable one is reported like any other.
+				const reportPass1 = readReport(dir, 'report-pass1.json', index);
 				index.runs.push(
 					toRunRecord({
 						task,
 						dirName,
 						dir,
 						meta: meta as Record<string, unknown>,
-						report
+						report,
+						reportPass1
 					})
 				);
 			} catch (error) {

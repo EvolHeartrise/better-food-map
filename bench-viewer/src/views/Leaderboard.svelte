@@ -240,6 +240,17 @@
 									effort {cell.effort}{cell.quantization ? ` · ${cell.quantization}` : ''} ·
 									{cell.backend}
 								</div>
+								<!-- The agent setup sits with the model because it IS part of what was
+								     measured: a two-pass row and a single-pass row of the same model are
+								     two systems, not two samples. `single-pass` is left implicit to keep
+								     the default row quiet; anything else is called out. -->
+								{#if cell.harness && cell.harness !== 'single-pass'}
+									<div class="harness small">
+										{cell.harness}{cell.review && cell.review !== 'none' && cell.review !== 'same'
+											? ` · review: ${cell.review}`
+											: ''}
+									</div>
+								{/if}
 							</td>
 							<td
 								title="{cell.n_scored} scored of {cell.n_runs} run(s), across {cell.n_scored_tasks} task(s)"
@@ -392,6 +403,21 @@
 										<span>Provenance: {cell.provenances.join(' / ')}</span>
 										<span>Tasks: {cell.tasks}</span>
 										<span>Gold: {cell.policy_versions}</span>
+										{#if cell.harness}<span>Harness: {cell.harness}</span>{/if}
+										{#if cell.review && cell.review !== 'none'}
+											<span>Review pass: {cell.review}</span>
+										{/if}
+										<!-- `unknown` means the run predates prompt hashing, NOT that it used
+										     today's prompt. Those runs are kept in their own cell for exactly
+										     that reason, so the label has to say which it is. -->
+										{#if cell.prompt_sha}
+											<span
+												title={cell.prompt_sha === 'unknown'
+													? 'This run predates prompt hashing, so which prompt produced it is unrecorded — it is NOT known to match the current prompt.'
+													: 'Content hash of each pass prompt. Runs under different prompts never share a cell.'}
+												>Prompt: {cell.prompt_sha}</span
+											>
+										{/if}
 										<span>Tokens: {count(cell.stats.total_tokens.mean)} avg</span>
 										<span>Cache read: {pct(cell.stats.cache_hit_rate.mean, 0)}</span>
 										<span
@@ -447,6 +473,13 @@
 		align-items: center;
 		gap: 6px;
 		flex-wrap: wrap;
+	}
+
+	/* A non-default agent setup is configuration, not decoration — it reads at the
+	   same weight as the model line rather than fading into the muted metadata. */
+	.harness {
+		color: var(--accent, #4f7fd4);
+		font-weight: 600;
 	}
 
 	.verdicts {

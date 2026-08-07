@@ -175,6 +175,7 @@ describe('heatmap grouping', () => {
 							model: 'openai/gpt-5.6-luna',
 							effort: 'none',
 							backend: null,
+							harness: null,
 							reason: 'tag recall collapses',
 							added: '2026-07-31',
 							evidence: null,

@@ -247,6 +247,99 @@ never touches the real network — its two tools are served in-process:
   submission, consulting no snapshot or gold data; the raw submitted text is still
   preserved verbatim in the transcript.
 
+### Harnesses — testing an agent SETUP, not just a model
+
+`--model`/`--effort`/`--quantization` describe **who** answered. `--harness`
+describes **how they were asked**.
+
+```bash
+# the original loop (default — nothing changes if you omit the flag)
+bun run bench:run bench/tasks/<slug> --model <id> --harness single-pass
+
+# draft, then correct: a second fresh agent reviews the first one's submission
+bun run bench:run bench/tasks/<slug> --model <id> --harness two-pass
+
+# cheap drafter checked by a stronger reviewer
+bun run bench:run bench/tasks/<slug> --harness two-pass \
+  --model deepseek/deepseek-v4-flash-0731 --effort low \
+  --review-model openai/gpt-5.6-luna --review-effort xhigh
+```
+
+| harness       | passes                                                                                  |
+| ------------- | --------------------------------------------------------------------------------------- |
+| `single-pass` | one agent extracts and submits                                                          |
+| `two-pass`    | one agent extracts; a second **fresh** agent corrects it. Scored on pass 2's submission |
+
+**What the review pass gets.** The previous pass's submitted `sources` + `items`,
+the entry URL, and the same `fetch_page` snapshot access — nothing else. It does
+NOT get the first pass's transcript or reasoning (it is a new agent handed a
+draft, not a longer conversation), and it does NOT get gold, a score, or anything
+derived from either. That last point is the invariant every harness must hold: a
+pass that can see the answer key measures nothing. `harness.test.ts` asserts the
+review message serializes only `items` and `sources`, so a future caller passing
+an enriched object cannot silently widen what the model sees.
+
+**The review prompt embeds the extraction prompt verbatim.** A reviewer working
+from a different rule set is worse than no reviewer: it rewrites correctly-applied
+conventions (the variant parenthetical, the whole-venue dietary rule, verbatim
+naming) into plausible wrongness, and under exact name matching every such edit
+costs a miss AND a hallucination. Composing guarantees both passes are judged by
+one standard. On top of the rules it names the two failure modes run analysis
+finds most often — a missed menu page and a paraphrased item name.
+
+**`--review-model` / `--review-effort` are optional and inherit.** Unset, the
+review pass runs the same model and effort as the extraction pass — the
+self-correction configuration. Set, you get the drafter/reviewer split. Passing
+either on a harness with no review pass is an **error**, not a no-op: silently
+ignoring it is how a sweep gets spent believing it tested a reviewer that never
+ran.
+
+**A multi-pass run is charged for all of it.** `duration_ms`, every token count
+and every cost field on `meta.json` are the run TOTALS across passes, because the
+question a two-pass row answers on the Frontier is "what did this setup cost",
+not "what did its last stage cost". `meta.passes[]` carries the per-pass
+breakdown. A pass that fails to submit ends the harness and **fails the run**,
+even if an earlier pass submitted — the setup being measured is the pair, not its
+better half.
+
+**Pass 1's answer is kept and scored.** A multi-pass run also writes
+`candidate-pass1.json` and `report-pass1.json`, scored against the same gold as
+the final report. Without them you can see that a two-pass run scored 94% but not
+whether the reviewer earned four points or gave away six. `bench:run` prints the
+per-metric effect to stderr, `bench:export` carries it as `pass1_*` and
+`review_delta_*` columns, and the viewer gets a **passes** tab.
+
+The effect is reported **per metric and signed, never as one improved/regressed
+verdict** — a reviewer routinely recovers a missed page (recall up) while
+renaming items it touched (precision down), and the trade is the interesting
+part. The viewer also lists items the review pass _recovered_ and items it _lost_,
+because swapping one miss for another leaves every ratio flat.
+
+**Page discovery is reported per pass too.** Every transcript event is stamped
+with the pass that produced it, so the run detail shows which pages each pass
+opened and which a later pass reached first. The whole-run union answers "did this
+setup reach every page"; only the split answers "did the reviewer find a page the
+extractor missed", which is the hypothesis the harness exists to test.
+
+Adding a harness means adding an entry to `HARNESSES` in `harness.ts` and nothing
+else: the runner iterates `passes`, the meta records the name and per-pass prompt
+hashes, and the analysis layer already splits cells on both.
+
+### Prompt provenance (`prompt_sha`)
+
+Every run records a content hash of each pass's system prompt, keyed
+`<index>-<role>` (`{"1-extract": "a3f1c8…", "2-review": "7d2e94…"}`), and the
+aggregation splits cells on it. Two runs sharing a model, provider and effort but
+not a prompt are not the same configuration. Provider drift already split cells
+and gold drift had two detectors; a prompt edit used to land pre-edit and
+post-edit runs in one cell with nothing on screen to say so.
+
+A run predating the field reports `unknown` — an **unknown** prompt, never one
+assumed to match today's. Those runs keep their own cell for that reason. The hash
+covers the exact string sent to the model, so a whitespace-only edit produces a
+new value; the point is detecting that the prompt CHANGED, not judging whether the
+change mattered.
+
 ### Reasoning effort & temperature
 
 ```bash
@@ -301,7 +394,11 @@ of which default applied when `effort` is null: `provider-default` for
 openrouter, `claude-code-default` for claude).
 
 Options: `--max-tool-calls N` (default 40; on the Claude backend it maps to the
-SDK's `maxTurns`). The run aborts as failed if the model exhausts its budget,
+SDK's `maxTurns`). It is a **per-pass** budget: `--max-tool-calls 40 --harness
+two-pass` allows 40 fetches in each pass, not 40 across the run. Each pass is a
+fresh agent that has to rediscover the site, so a shared budget would starve the
+reviewer rather than measure it — but note this is the one axis where a two-pass
+run is not charged as a single unit. The run aborts as failed if the model exhausts its budget,
 stops calling tools without submitting (OpenRouter path nudges once first), or
 can't produce a valid submission. On the Claude backend a valid submit ends the
 run by interrupting the streaming query (via an `AbortController`) and ignoring
@@ -318,9 +415,13 @@ straight from the SDK result — so both backends report cache accounting.
 Each run writes `bench/runs/<task-slug>/<iso-timestamp>-<model-slug>/`:
 `candidate.json` (submitted extraction), `report.json` (`scoreCandidate` output),
 `transcript.jsonl` (one event per request/response and tool call/result, with
-per-request token + cache usage), and `meta.json`. `meta.json` records `model`,
-`backend`, `effort` / `temperature` / `effort_default` (see above), timings,
-status, and token totals: `prompt_tokens`,
+per-request token + cache usage, each stamped with the `pass` that produced it),
+and `meta.json`. A multi-pass run additionally writes `candidate-pass1.json` and
+`report-pass1.json` (see [Harnesses](#harnesses--testing-an-agent-setup-not-just-a-model));
+`candidate.json`/`report.json` remain the headline result either way, so every
+existing reader is unaffected. `meta.json` records `model`, `backend`, `harness`,
+`prompt_sha`, `review_model` / `review_effort`, `passes[]`, `effort` /
+`temperature` / `effort_default` (see above), timings, status, and token totals: `prompt_tokens`,
 `completion_tokens`, `total_tokens`, `cached_prompt_tokens` (prompt tokens served
 from a provider cache), `cache_write_tokens` (tokens written into a cache), and
 `total_cost_usd` when the provider surfaces it (the Claude backend). Cache fields
@@ -398,12 +499,23 @@ also carries two USD cost fields (absent on the Claude backend, which reports
   denominated in USD). Requests missing a cost are skipped; `price` is `null` when
   no request carried cost info at all.
 - `price_cached` — the **HYPOTHETICAL cost of the same run under perfect prefix
-  caching**. Definition: the bench loop is append-only, so request _i_'s prompt is
-  request _i-1_'s prompt plus new tokens; assume every token of request _i_'s
-  prompt that was already in request _i-1_'s prompt is billed at the model's
-  cache-read rate, the remainder at the normal input rate, and completions at the
-  output rate; request 1 is fully uncached; cache-WRITE premiums are ignored
-  (idealized). It is computed from the per-request usage sequence plus the model's
+  caching**. Definition: within a single pass the loop is append-only, so request
+  _i_'s prompt is request _i-1_'s prompt plus new tokens; assume every token of
+  request _i_'s prompt that was already in request _i-1_'s prompt is billed at the
+  model's cache-read rate, the remainder at the normal input rate, and completions
+  at the output rate; the first request of each pass is fully uncached; cache-WRITE
+  premiums are ignored (idealized).
+
+  **Estimated PER PASS and summed**, for two reasons that both produced wrong
+  money when it was done over the merged usage list. Each pass starts a FRESH
+  message list under a different system prompt, so the append-only premise is
+  false at a pass boundary — pass 2's whole opening prompt (review prompt plus the
+  serialized draft) was being billed at the cache-read rate. And rates are
+  per-model: on a `--review-model` split, pricing the reviewer's tokens at the
+  drafter's rates under-reported the README's own flagship example by ~16x on a
+  selectable Frontier axis. `price_cached` is `null` when ANY pass could not be
+  priced — a partial counterfactual is not a smaller one, and the error always
+  flatters the multi-pass configuration. It is computed from the per-request usage sequence plus the model's
   per-token pricing, fetched once per run from OpenRouter's public models endpoint
   (`GET /api/v1/models` → `pricing.prompt`, `pricing.completion`,
   `pricing.input_cache_read`). `price_cached` is `null` when that pricing can't be
@@ -438,7 +550,11 @@ bun run bench:blacklist --check  --model <id> [--effort <level>]   # exit 0 allo
 
 `bench:run` and `bench:draft` consult it **first** — before the API-key check,
 before the models fetch, before any chat request — so a blacklisted run costs
-nothing. They **exit 3** (not 2) and print the entry's reason, date, and
+nothing. On a multi-pass harness EVERY model the run would call is checked,
+including `--review-model`: a reviewer that has been ruled out must not run, and
+must not do so only after the extraction pass has already been paid for. The same
+holds for pre-flight `--effort`/`--temperature` validation, which now covers each
+pass's own model. They **exit 3** (not 2) and print the entry's reason, date, and
 evidence: a sweep driver can treat 3 as "deliberately skipped" and keep going,
 while 2 still means "you misconfigured this."
 
@@ -451,6 +567,7 @@ that has to survive a machine change and be reviewable in a diff. Each entry is:
 | `model`    | model id as passed to `--model` (matched case-insensitively)                                              |
 | `effort`   | a level name, `default` (only runs passing no `--effort`), or `*`/omitted (every level, default included) |
 | `backend`  | `openrouter` \| `claude`; omitted covers both                                                             |
+| `harness`  | agent setup the verdict covers; omitted covers every harness (see the note below)                         |
 | `reason`   | **required** — why it was ruled out. A verdict without its why rots into superstition                     |
 | `added`    | `YYYY-MM-DD`, so an old verdict against a since-updated model is visible as stale                         |
 | `evidence` | optional pointer to the runs that justified it                                                            |
@@ -458,6 +575,23 @@ that has to survive a machine change and be reviewable in a diff. Each entry is:
 Note `effort: none` and `effort: default` are **different scopes**: `none` is an
 explicit reasoning level, `default` is "no `--effort` flag passed". Blacklisting
 one does not block the other. To rule a model out entirely, omit `--effort`.
+
+**`harness` needs a deliberate choice.** Omitted covers every harness, which is
+right for a verdict about raw model capability ("it truncates long menus") and
+wrong for one a different setup might overturn — a model ruled out for missing
+pages may well pass with a review pass that re-enumerates them. Every entry
+written before harnesses existed omits it, so those verdicts currently block
+`--harness two-pass` runs too. Scope them if you want to re-test those models
+under a new setup, or use `--ignore-blacklist` for a one-off:
+
+```bash
+bun run bench:blacklist --remove --model openai/gpt-5.6-luna --effort minimal
+bun run bench:blacklist --add --model openai/gpt-5.6-luna --effort minimal \
+  --harness single-pass --reason "…" --evidence "…"
+```
+
+The scope participates in entry identity, so a `single-pass` and a `two-pass`
+verdict for one model coexist, and `--remove` takes only the scope you name.
 
 Two escape hatches, because a blacklist you cannot override is a trap — models
 get updated and old verdicts expire:
@@ -715,6 +849,13 @@ number:
   so runs served at different quantizations never share a cell.
   `quantization_requested: null` renders as "unpinned (cheapest-first)", never as
   "unquantized".
+- **So do the harness, the review configuration and the prompt.** A two-pass run
+  and a single-pass run of the same model are two systems, not two samples of one;
+  a cheap drafter checked by a strong reviewer is a third. `review` reads `none`
+  (no review pass), `same` (the reviewer inherited the primary config) or the
+  override, so a drafter/reviewer split never pools with self-correction.
+  `prompt_sha` closes the last silent-drift hole — and its `unknown` value means
+  the prompt was not recorded, NOT that it matched the current one.
 - **Averaging mode is explicit.** `macro` weights every task equally and is exact
   for every metric. `micro` pools raw counts, so a 180-item menu outweighs a
   26-item one — and it is only offered where the report carries the counts to
@@ -744,6 +885,8 @@ number:
 ### Layout
 
 ```
+scripts/bench/prompts.ts   the model-facing prompts + promptSha (no gold, ever)
+scripts/bench/harness.ts   the agent-setup registry + multi-pass accounting
 scripts/bench/analyze/     pure, tested, no UI (runs under `bun test scripts`)
   record.ts     walk bench/runs -> RunRecord[]  (absent-vs-zero discipline)
   derive.ts     per-run derived metrics + the name-fidelity overlay

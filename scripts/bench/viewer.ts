@@ -72,7 +72,7 @@ import {
 	rescoreRun,
 	taskDirFor
 } from './analyze/rescore';
-import { buildTimeline, fetchedUrls, pageCoverage } from './analyze/transcript';
+import { buildTimeline, fetchedUrls, pageCoverage, transcriptPasses } from './analyze/transcript';
 import { loadManifest } from './snapshot-store';
 
 const VIEWER_ROOT = 'bench-viewer';
@@ -427,9 +427,63 @@ function runDetail(
 		rescore,
 		page_coverage: pageCoverage(loadManifest(taskDir), fetched),
 		fetched_urls: fetched,
+		/**
+		 * Coverage per pass, so "the reviewer opened a page the extractor missed"
+		 * is measurable. The union above answers "did this SETUP reach every page";
+		 * it cannot distinguish a reviewer that recovered a whole menu section from
+		 * one that opened nothing — which is the harness's core hypothesis. Empty on
+		 * a single-pass run or a transcript predating pass stamps.
+		 */
+		pass_coverage: transcriptPasses(events).map((pass) => ({
+			pass,
+			fetched_urls: fetchedUrls(events, pass),
+			coverage: pageCoverage(loadManifest(taskDir), fetchedUrls(events, pass))
+		})),
 		timeline: buildTimeline(events),
 		gold_items: gold?.items ?? null,
-		candidate_items: Array.isArray(candidate?.items) ? candidate.items : null
+		candidate_items: Array.isArray(candidate?.items) ? candidate.items : null,
+		/**
+		 * What the review pass changed, on a multi-pass run — null on a single-pass
+		 * one, which is a different fact from "changed nothing" (that is a zero
+		 * delta). Computed from the two FROZEN reports, so it says what the review
+		 * did at run time; the rescore block above is the separate question of
+		 * whether today's gold still agrees.
+		 */
+		review_effect: reviewEffect(run)
+	};
+}
+
+/**
+ * Per-metric effect of the review pass: the pass-1 score, the final score, and
+ * the signed difference. Null unless the run recorded a pass-1 report.
+ *
+ * Deliberately NOT collapsed into an "improved / regressed" verdict. A reviewer
+ * routinely recovers a missed page (recall up) while renaming items it touched
+ * (precision down), and the trade is the interesting part — the same reason the
+ * scorer never averages recall with precision.
+ */
+function reviewEffect(run: RunRecord): Record<string, unknown> | null {
+	const before = run.report_pass1;
+	const after = run.report;
+	if (!before || !after) return null;
+	const metrics: Record<string, { before: number; after: number; delta: number }> = {};
+	for (const key of METRIC_KEYS) {
+		const b = before[key];
+		const a = after[key];
+		if (typeof b !== 'number' || typeof a !== 'number') continue;
+		metrics[key] = { before: b, after: a, delta: a - b };
+	}
+	return {
+		metrics,
+		matched: { before: before.matched, after: after.matched },
+		hallucinated: {
+			before: before.hallucinated_items.length,
+			after: after.hallucinated_items.length
+		},
+		// Items the review pass ADDED to / REMOVED from the miss list: churn that a
+		// ratio cannot show, since swapping one miss for another leaves it flat.
+		newly_found: before.missed_items.filter((n) => !after.missed_items.includes(n)).toSorted(),
+		newly_missed: after.missed_items.filter((n) => !before.missed_items.includes(n)).toSorted()
 	};
 }
 
