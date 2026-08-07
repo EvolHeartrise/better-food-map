@@ -703,8 +703,31 @@ export interface RunResult {
 export function normalizeAssistantMessage(message: ChatMessage): ChatMessage {
 	const hasToolCalls = (message.tool_calls?.length ?? 0) > 0;
 	const hasContent = typeof message.content === 'string' && message.content.length > 0;
-	if (hasToolCalls || hasContent) return message;
-	return { ...message, content: '' };
+
+	// PROJECTED onto the request schema, not spread. A provider's response carries
+	// fields that belong only to a response — `reasoning`, `reasoning_details`,
+	// `refusal` — and echoing them into the next request is a deserialization
+	// hazard, the same class of provider disagreement as the empty-turn case above.
+	// CoreWeave maps BOTH `reasoning` and `reasoning_details` onto one
+	// `reasoning_content` field and rejects the whole request with
+	// "duplicate field `reasoning_content`", intermittently, once a conversation
+	// has accumulated the right combination of turns; GMICloud and DeepInfra
+	// tolerate them, so which endpoint OpenRouter happened to route to decided
+	// whether a run completed. They also carry nothing the model needs — a model's
+	// own reasoning is not an input — so dropping them loses no signal.
+	//
+	// `tool_calls` is copied whenever the KEY is present, empty array included: an
+	// empty `tool_calls: []` is a turn the model really sent that way, and the
+	// transcript should not disagree with what was echoed.
+	const normalized: ChatMessage = { role: message.role };
+	if (message.tool_calls !== undefined) normalized.tool_calls = message.tool_calls;
+	if (message.tool_call_id !== undefined) normalized.tool_call_id = message.tool_call_id;
+	if (hasToolCalls || hasContent) {
+		if (message.content !== undefined) normalized.content = message.content;
+	} else {
+		normalized.content = '';
+	}
+	return normalized;
 }
 
 function parseArguments(raw: string): { ok: true; value: unknown } | { ok: false; error: string } {

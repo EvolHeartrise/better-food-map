@@ -647,15 +647,49 @@ describe('normalizeAssistantMessage', () => {
 		});
 	});
 
-	test('leaves a turn with content or tool_calls untouched', () => {
+	test('preserves the content and tool_calls of a turn that has them', () => {
+		// Equality, not identity: the normalizer now returns a fresh object so it can
+		// drop response-only fields (see the stripping test below).
 		const withText = { role: 'assistant' as const, content: 'hi' };
-		expect(normalizeAssistantMessage(withText)).toBe(withText);
+		expect(normalizeAssistantMessage(withText)).toEqual(withText);
 		const withCalls = {
 			role: 'assistant' as const,
 			content: null,
 			tool_calls: [{ id: 'c', type: 'function', function: { name: 'f', arguments: '{}' } }]
 		};
-		expect(normalizeAssistantMessage(withCalls)).toBe(withCalls);
+		expect(normalizeAssistantMessage(withCalls)).toEqual(withCalls);
+	});
+
+	test('strips response-only provider fields so they are never echoed back', () => {
+		// CoreWeave maps both `reasoning` and `reasoning_details` onto one
+		// `reasoning_content` and 400s the request with "duplicate field
+		// `reasoning_content`"; GMICloud and DeepInfra accept them. Echoing them
+		// made run success depend on which endpoint OpenRouter routed to.
+		const fromProvider = {
+			role: 'assistant' as const,
+			content: null,
+			refusal: null,
+			reasoning: 'thinking out loud',
+			reasoning_details: [{ type: 'reasoning.text', text: 'x' }],
+			tool_calls: [{ id: 'c', type: 'function', function: { name: 'f', arguments: '{}' } }]
+		} as ChatMessage;
+		const out = normalizeAssistantMessage(fromProvider);
+		expect(Object.keys(out).toSorted()).toEqual(['content', 'role', 'tool_calls']);
+		for (const dropped of ['reasoning', 'reasoning_details', 'refusal']) {
+			expect(out).not.toHaveProperty(dropped);
+		}
+		// The turn's real payload survives intact.
+		expect(out.tool_calls).toHaveLength(1);
+	});
+
+	test('strips them on an empty turn too, where the 400 was first seen', () => {
+		const out = normalizeAssistantMessage({
+			role: 'assistant',
+			content: null,
+			reasoning: null,
+			reasoning_details: []
+		} as ChatMessage);
+		expect(out).toEqual({ role: 'assistant', content: '' });
 	});
 });
 
