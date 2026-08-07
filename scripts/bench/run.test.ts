@@ -764,6 +764,7 @@ describe('buildMeta provenance fields', () => {
 		model: 'm',
 		maxToolCalls: 40,
 		backend: 'openrouter',
+		harness: 'single-pass',
 		quantizations: ['fp8']
 	};
 	const result: RunResult = {
@@ -834,7 +835,8 @@ describe('buildMeta effort/temperature fields', () => {
 		taskDir: 'bench/tasks/x',
 		model: 'm',
 		maxToolCalls: 40,
-		backend: 'openrouter'
+		backend: 'openrouter',
+		harness: 'single-pass'
 	};
 
 	test('records requested values and provider-default when unset (openrouter)', () => {

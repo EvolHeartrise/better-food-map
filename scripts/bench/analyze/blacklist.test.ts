@@ -29,6 +29,11 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
 		quantization_requested: null,
 		providers: null,
 		provider_quantizations: null,
+		harness: 'single-pass',
+		prompt_sha: null,
+		review_model: null,
+		review_effort: null,
+		passes: [],
 		policy_version: 'draft',
 		entry_url: null,
 		task_dir: null,
@@ -49,6 +54,7 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
 		price_cached: null,
 		total_cost_usd: null,
 		report: null,
+		report_pass1: null,
 		...overrides
 	};
 }

@@ -28,8 +28,26 @@ import {
 	loadBlacklist,
 	type BlacklistEntry
 } from './blacklist';
+import {
+	DEFAULT_HARNESS,
+	HARNESS_NAMES,
+	harnessFor,
+	mergePassResults,
+	promptShasFor,
+	userMessageFor,
+	type HarnessSpec,
+	type PassMeta,
+	type PassSpec
+} from './harness';
 import { DIETARY_TAGS, GoldSchema, htmlToText, type GoldMenu } from './lint';
-import { CandidateSchema, formatSummary, scoreCandidate, type ScoreReport } from './score';
+import { SYSTEM_PROMPT } from './prompts';
+import {
+	CandidateSchema,
+	formatSummary,
+	scoreCandidate,
+	type CandidateMenu,
+	type ScoreReport
+} from './score';
 import {
 	findEntry,
 	loadManifest,
@@ -624,31 +642,10 @@ const TOOLS = [
 	}
 ];
 
-export const SYSTEM_PROMPT = [
-	'You are extracting a restaurant’s FULL menu from a snapshot of its website, served to you through the fetch_page tool. You have no other access to the site.',
-	'',
-	'fetch_page returns the page’s text; `[image: …]` markers are the page’s own image alt text. Alt text is source text — a dish photo’s alt (e.g. "[image: Vegan Battered Cauliflower …]") is a valid source designation for the item it depicts. It is NOT menu prose: never use alt text as an item’s name or description.',
-	'',
-	'Rules:',
-	'- The menu must be EXHAUSTIVE: capture every item, in every section (appetizers, mains, sides, noodles/rice, drinks, desserts, kids, specials), and every size/variant the source itemizes. Do not submit a representative sample.',
-	'- The menu is routinely split across MULTIPLE pages or tabs (a separate drinks, dessert, brunch, lunch/dinner, or specials page). Follow the links returned by fetch_page and enumerate every menu-shaped page BEFORE you finish. A menu with zero drinks or zero desserts for a sit-down venue almost always means you missed a page.',
-	'- Add-ons, modifiers, and upsell options attached to an item ("Extra Chutney (Red)", "Add Noodles", "Make it Vegan", size upgrades priced as +$N) are NOT menu items — do not submit them as items. Where relevant they belong in the parent item’s data (e.g. an on-request dietary option → the parent’s optional_tags).',
-	'- Name each item with its FULL name as displayed on its own line in the source, including any origin/appellation/producer qualifier that sits on that line (a wine listed "Stone Road Vineyards Smooth Red, BC VQA" keeps ", BC VQA"; "Villa Teresa Organic Merlot, Italy" keeps ", Italy"). Do not abbreviate or drop part of the displayed name.',
-	'- A trailing parenthetical `(…)` on an item name is a qualifier YOU add, and it has exactly two uses, both defined below: a source-itemized size/serving variant, and a source-designated price context (Happy Hour, a day-of-week special). Never add one for any other reason.',
-	'- When the source itemizes ONE dish at MULTIPLE prices (sizes, serving formats), submit ONE item per variant, named `<dish name exactly as displayed> (<variant label>)` using the source’s OWN word for the variant ("bowl", "cup", "5 oz", "bottle"). Never invent a size the source does not itemize, and an item sold at a single price gets NO size parenthetical. For a size variant the source shows as a measured volume plus vendor slang ("8oz halfer", "16 oz sleeve"), name it with just the measured volume — `(8 oz)`, `(16 oz)` — not the slang.',
-	'- Two items may never share the same name. When a venue lists the SAME name for two genuinely different items (e.g. a poutine and a hot dog both called "Bacon Double Cheese"), distinguish them using the words the source itself gives you for the second one — its section, or how it is described on its own page.',
-	'- A Happy Hour item is a source-designated price context, not a new dish: when the source lists an item on a Happy Hour menu/section (or otherwise marks it "Happy Hour"), submit it as its OWN item — distinct from any regular-menu version — carrying its Happy Hour price, and append the literal suffix ` (Happy Hour)` to the END of its name. This qualifier is REQUIRED on every Happy Hour item — it is the price-context use of the parenthetical listed above: `Sweet-Chili Cauliflower` becomes `Sweet-Chili Cauliflower (Happy Hour)`. When the item ALSO carries a size/serving-format variant label, `(Happy Hour)` goes LAST, after that label: `Stone Road Red Blend (5 oz glass) (Happy Hour)`.',
-	'- A day-of-week drink special (an item under a "Daily Drink Specials" section, or one the source marks for specific days) is, like Happy Hour, a source-designated price context: submit it as its OWN item carrying the special price, and append ` (<Day> Daily Special)` to the END of its name, using the day label the source shows ("Monday", "Tuesday", …, "Friday/Saturday", "Sunday") — e.g. `House Lemonade (Monday Daily Special)`. When it also has a size label, the day suffix goes LAST: `Stone Road Red White & Rose (5 oz) (Wednesday Daily Special)`.',
-	'- The six dietary tags are vegan, vegetarian, gluten_free, dairy_free, nut_free, and halal. They are SOURCE-ASSERTED ONLY: apply a tag to an item only when the source explicitly designates it — through a dietary label/marker or in the item’s displayed name (e.g. "Vegan Burger"). A designation the source asserts for the WHOLE venue or menu (e.g. a "100% Pure Vegetarian" heading, or a venue presenting itself as "plant-based" or "vegan" anywhere in the source — including an about/story/identity page, not only the menu) counts as a source assertion for every item it covers — tag each such item accordingly even when the item itself carries no individual label. A plant-based or vegan venue claim covers EVERY item on that menu — tag them all vegan, DRINKS INCLUDED (a vegetarian-only venue claim maps to vegetarian instead). NEVER infer a tag from general knowledge of the dish. NEVER derive a free-of tag (gluten_free/nut_free/dairy_free) from the ABSENCE of an allergen symbol — an allergen legend marks presence, never freedom-from. A designation must use the actual free-of/dietary term: hedged or softened phrasings ("gluten-friendly", "plant-forward", "vegan-ish", "nut-conscious") are NOT designations and support NO tag, mandatory or optional — when a venue avoids the real term, respect that choice ("plant-forward" is a hedge — mostly-but-not-only plants; a fully "plant-based" or "vegan" venue claim is the opposite and DOES designate vegan menu-wide, per the whole-venue rule above). ALWAYS assert exactly what the source labels, even when the label conflicts with the item’s ingredient information — never demote or drop a label because of ingredients, except when the item itself offers a matching "make it X" option (see optional_tags).',
-	'- optional_tags are designations that hold only on request (e.g. "can be made vegan"). A tag never appears in both tags and optional_tags. When the source offers an item as "can be made X" / "make it X" (a modifier or note), X goes in optional_tags, NOT tags — the source resolves its own contradiction there, so no warning is needed. When an item shows BOTH a dietary label X AND a matching "make it X" / "can be made X" option, the on-request signal wins: X goes in optional_tags, NOT tags. This source-internal contradiction is different from an ingredient conflict — an ingredient conflict never demotes a label and gets a `warning` instead.',
-	'- When a source label OBVIOUSLY conflicts with the item’s own listed ingredients (e.g. a "Vegan" label on an item whose description lists paneer/dairy), keep the tag AND set `warning` to a terse string noting the conflict; otherwise omit warning (or set it null).',
-	'- description is the venue’s own menu text for the item, verbatim; if the source gives none, use null. Do not write your own descriptions.',
-	'- price is a number (in the source’s currency) or null when the source shows no price.',
-	'- A named listing shown at a rotating or market price ("Rotating Taps", "Rotating Canned Kombucha", "Market Price", "ask your server") IS a menu item: submit it with its displayed name and price null — do not invent or guess a price. (A heading that carries no item name of its own is not an item.)',
-	'- sources is every URL the menu data actually came from.',
-	'',
-	'Work by fetching pages, then call submit_menu exactly once with your final extraction.'
-].join('\n');
+// The extraction prompt now lives in ./prompts alongside the review prompt that
+// composes with it, and alongside `promptSha`. Re-exported here because this is
+// where run-claude.ts and the existing tests already reach for it.
+export { SYSTEM_PROMPT };
 
 // --- the agent loop -----------------------------------------------------------
 
@@ -729,11 +726,18 @@ export async function runAgent(opts: {
 	entryUrl: string;
 	maxToolCalls: number;
 	transcript: TranscriptEvent[];
+	/** System prompt for this pass; defaults to the extraction prompt. */
+	systemPrompt?: string;
+	/** Opening user message; defaults to just handing over the entry URL. */
+	userMessage?: string;
 }): Promise<RunResult> {
 	const { chat, store, entryUrl, maxToolCalls, transcript } = opts;
 	const messages: ChatMessage[] = [
-		{ role: 'system', content: SYSTEM_PROMPT },
-		{ role: 'user', content: `The restaurant’s website entry URL is: ${entryUrl}` }
+		{ role: 'system', content: opts.systemPrompt ?? SYSTEM_PROMPT },
+		{
+			role: 'user',
+			content: opts.userMessage ?? `The restaurant’s website entry URL is: ${entryUrl}`
+		}
 	];
 
 	let toolCalls = 0;
@@ -1007,6 +1011,32 @@ export interface RunMeta {
 	backend: Backend;
 	task_dir: string;
 	entry_url: string;
+	/**
+	 * The agent setup this run was driven by (see harness.ts). Always written.
+	 * A run predating the field is `single-pass` by construction — that was the
+	 * only setup that existed — and the analysis layer defaults it accordingly.
+	 */
+	harness: string;
+	/**
+	 * Content hash of each pass's system prompt, keyed `<index>-<role>`. Prompt
+	 * text is part of what a score measures: two runs sharing a model, provider
+	 * and effort but not a prompt are different configurations. Runs predating
+	 * this field record no hash and are treated as an UNKNOWN prompt, never as
+	 * one matching today's.
+	 */
+	prompt_sha: Record<string, string>;
+	/**
+	 * Model used for the review pass. Null when the harness has no review pass,
+	 * or when the review pass inherited `model` (the self-correction setup).
+	 */
+	review_model: string | null;
+	/** Reasoning effort for the review pass; null when unset or inherited. */
+	review_effort: string | null;
+	/**
+	 * Per-pass configuration and outcome. Single-element for `single-pass`. The
+	 * top-level token/cost/timing fields are the run TOTALS across these.
+	 */
+	passes: PassMeta[];
 	/** Requested reasoning-effort level, or null when unset (backend default applied). */
 	effort: string | null;
 	/**
@@ -1086,6 +1116,15 @@ function writeRun(
 		transcript: TranscriptEvent[];
 		candidate?: v.InferOutput<typeof CandidateSchema>;
 		report?: ScoreReport;
+		/**
+		 * The FIRST pass's submission and its score, on a multi-pass harness. Kept
+		 * beside the final result so a reviewer's effect is measurable: without it
+		 * you can see that a two-pass run scored 94%, but not whether the second
+		 * pass earned four points or gave away six. `candidate.json`/`report.json`
+		 * remain the run's headline result, so every existing reader is unaffected.
+		 */
+		firstPassCandidate?: v.InferOutput<typeof CandidateSchema>;
+		firstPassReport?: ScoreReport;
 	}
 ): void {
 	mkdirSync(runDir, { recursive: true });
@@ -1099,6 +1138,18 @@ function writeRun(
 	}
 	if (parts.report) {
 		writeFileSync(join(runDir, 'report.json'), JSON.stringify(parts.report, null, '\t'));
+	}
+	if (parts.firstPassCandidate) {
+		writeFileSync(
+			join(runDir, 'candidate-pass1.json'),
+			JSON.stringify(parts.firstPassCandidate, null, '\t')
+		);
+	}
+	if (parts.firstPassReport) {
+		writeFileSync(
+			join(runDir, 'report-pass1.json'),
+			JSON.stringify(parts.firstPassReport, null, '\t')
+		);
 	}
 }
 
@@ -1117,12 +1168,24 @@ export interface CliArgs {
 	ignoreBlacklist?: boolean;
 	/** Pin routing to these quantization tiers (openrouter only); undefined = default routing. */
 	quantizations?: string[];
+	/** Agent setup driving the run (see harness.ts); defaults to `single-pass`. */
+	harness: string;
+	/**
+	 * Model for the review pass. Undefined means "inherit the primary model", which
+	 * is the self-correction configuration; setting it gives the drafter/reviewer
+	 * split (a cheap extractor checked by a stronger reviewer).
+	 */
+	reviewModel?: string;
+	/** Reasoning effort for the review pass; undefined inherits `effort`. */
+	reviewEffort?: string;
 }
 
 const USAGE =
 	'usage: bun run bench:run <task-dir> --model <model-id> ' +
 	'[--backend openrouter|claude] [--effort <level>] [--temperature <n>] [--max-tool-calls N] ' +
-	'[--quantization <fp8[,bf16]>] [--ignore-blacklist]';
+	'[--quantization <fp8[,bf16]>] [--harness <name>] [--review-model <id>] ' +
+	'[--review-effort <level>] [--ignore-blacklist]\n' +
+	`  harnesses: ${HARNESS_NAMES.join(', ')}`;
 
 /** Only the OpenRouter backend needs OPENROUTER_API_KEY; Claude uses the SDK login. */
 export function requiresOpenRouterKey(backend: Backend): boolean {
@@ -1140,10 +1203,29 @@ export function parseCli(argv: string[]): CliArgs | { error: string } {
 	let temperature: number | undefined;
 	let ignoreBlacklist = false;
 	let quantizations: string[] | undefined;
+	let harness = DEFAULT_HARNESS;
+	let reviewModel: string | undefined;
+	// Validated after the loop for the same reason as --effort: --backend may
+	// appear on either side of it.
+	let reviewEffortRaw: string | undefined;
 	for (let i = 0; i < argv.length; i += 1) {
 		const arg = argv[i];
 		if (arg === '--model') {
 			model = argv[++i];
+		} else if (arg === '--harness') {
+			const h = argv[++i];
+			if (h === undefined || h === '') return { error: '--harness requires a name' };
+			if (!HARNESS_NAMES.includes(h)) {
+				return { error: `unknown harness: ${h} (expected ${HARNESS_NAMES.join('|')})` };
+			}
+			harness = h;
+		} else if (arg === '--review-model') {
+			reviewModel = argv[++i];
+			if (reviewModel === undefined || reviewModel === '')
+				return { error: '--review-model requires a model id' };
+		} else if (arg === '--review-effort') {
+			reviewEffortRaw = argv[++i];
+			if (reviewEffortRaw === undefined) return { error: '--review-effort requires a level' };
 		} else if (arg === '--backend') {
 			const b = argv[++i];
 			if (b !== 'openrouter' && b !== 'claude') {
@@ -1213,6 +1295,28 @@ export function parseCli(argv: string[]): CliArgs | { error: string } {
 		effort = effortRaw;
 	}
 
+	let reviewEffort: string | undefined;
+	if (reviewEffortRaw !== undefined) {
+		const levels = effortLevelsFor(backend);
+		if (!levels.includes(reviewEffortRaw))
+			return {
+				error: `--review-effort must be one of ${levels.join('|')} for the ${backend} backend (got ${reviewEffortRaw})`
+			};
+		reviewEffort = reviewEffortRaw;
+	}
+
+	// A review override on a harness with no review pass is silently ignorable,
+	// but silence is how someone spends a sweep believing they tested a reviewer
+	// they never ran. Reject it instead.
+	const spec = harnessFor(harness);
+	const hasReviewPass = spec?.passes.some((p) => p.role === 'review') ?? false;
+	if (!hasReviewPass && (reviewModel !== undefined || reviewEffort !== undefined)) {
+		const flag = reviewModel !== undefined ? '--review-model' : '--review-effort';
+		return {
+			error: `${flag} requires a harness with a review pass (--harness ${harness} has none)`
+		};
+	}
+
 	return {
 		taskDir,
 		model,
@@ -1221,7 +1325,10 @@ export function parseCli(argv: string[]): CliArgs | { error: string } {
 		effort,
 		temperature,
 		ignoreBlacklist,
-		quantizations
+		quantizations,
+		harness,
+		reviewModel,
+		reviewEffort
 	};
 }
 
@@ -1236,14 +1343,22 @@ export function buildMeta(
 	/** Process-start instant; defaults to `startedAt` so a run with no setup phase reads equal. */
 	invokedAt: Date = startedAt,
 	/** provider → quantization, resolved after the run; empty when unavailable. */
-	providerQuantizations: Record<string, string> = {}
+	providerQuantizations: Record<string, string> = {},
+	/** Per-pass breakdown; defaults to empty for callers that ran no pass at all. */
+	passes: PassMeta[] = []
 ): RunMeta {
 	const providers = result.providers ?? [];
+	const spec = harnessFor(cli.harness);
 	return {
 		model: cli.model,
 		backend: cli.backend,
 		task_dir: cli.taskDir,
 		entry_url: manifest.entryUrl,
+		harness: cli.harness,
+		prompt_sha: spec ? promptShasFor(spec) : {},
+		review_model: cli.reviewModel ?? null,
+		review_effort: cli.reviewEffort ?? null,
+		passes,
 		effort: cli.effort ?? null,
 		effort_default: cli.backend === 'claude' ? 'claude-code-default' : 'provider-default',
 		temperature: cli.temperature ?? null,
@@ -1271,6 +1386,229 @@ export function buildMeta(
 		...(costs ? { price: costs.price, price_cached: costs.price_cached } : {}),
 		status: result.status,
 		failure_reason: result.failureReason
+	};
+}
+
+/** The model a pass runs under: a review pass may override, and otherwise inherits. */
+export function modelForPass(cli: CliArgs, pass: PassSpec): string {
+	return pass.role === 'review' ? (cli.reviewModel ?? cli.model) : cli.model;
+}
+
+/** The reasoning effort a pass runs under; same inheritance rule as the model. */
+export function effortForPass(cli: CliArgs, pass: PassSpec): string | undefined {
+	return pass.role === 'review' ? (cli.reviewEffort ?? cli.effort) : cli.effort;
+}
+
+/**
+ * A one-line label for the review configuration, used as a leaderboard
+ * dimension so a drafter/reviewer split never pools with self-correction.
+ * `none` = no review pass; `same` = the reviewer inherited the primary config.
+ */
+export function reviewLabel(
+	cli: Pick<CliArgs, 'harness' | 'reviewModel' | 'reviewEffort'>
+): string {
+	const spec = harnessFor(cli.harness);
+	if (!spec?.passes.some((p) => p.role === 'review')) return 'none';
+	if (cli.reviewModel === undefined && cli.reviewEffort === undefined) return 'same';
+	const model = cli.reviewModel ?? '(same model)';
+	return cli.reviewEffort === undefined ? model : `${model}@${cli.reviewEffort}`;
+}
+
+/**
+ * Run ONE pass of a harness, appending its events to the run transcript tagged
+ * with which pass produced them.
+ *
+ * Each pass gets a fresh message list: a review pass is a NEW agent handed the
+ * previous submission, not a continuation of the extractor's context. That is
+ * the setup being measured — carrying the first pass's reasoning forward would
+ * make it a longer single conversation instead.
+ */
+async function executePass(opts: {
+	pass: PassSpec;
+	cli: CliArgs;
+	store: SnapshotStore;
+	entryUrl: string;
+	previous: CandidateMenu | undefined;
+	transcript: TranscriptEvent[];
+	apiKey: string;
+}): Promise<RunResult> {
+	const { pass, cli, store, entryUrl, previous, transcript, apiKey } = opts;
+	const model = modelForPass(cli, pass);
+	const effort = effortForPass(cli, pass);
+	const userMessage = userMessageFor(pass, entryUrl, previous);
+	// Collected separately so every event can be stamped with its pass, including
+	// the ones already recorded when a pass throws midway.
+	const passTranscript: TranscriptEvent[] = [];
+
+	const drain = (): void => {
+		for (const e of passTranscript) {
+			transcript.push({ ...e, pass: pass.index, pass_role: pass.role });
+		}
+		passTranscript.length = 0;
+	};
+
+	try {
+		if (cli.backend === 'claude') {
+			const { runClaudeAgent } = await import('./run-claude');
+			return await runClaudeAgent({
+				model,
+				store,
+				entryUrl,
+				maxToolCalls: cli.maxToolCalls,
+				effort: effort as EffortLevel | undefined,
+				transcript: passTranscript,
+				systemPrompt: pass.systemPrompt,
+				userPrompt: userMessage
+			});
+		}
+		return await runAgent({
+			chat: openRouterChat(model, apiKey, {
+				effort,
+				temperature: cli.temperature,
+				quantizations: cli.quantizations
+			}),
+			store,
+			entryUrl,
+			maxToolCalls: cli.maxToolCalls,
+			transcript: passTranscript,
+			systemPrompt: pass.systemPrompt,
+			userMessage
+		});
+	} finally {
+		drain();
+	}
+}
+
+/** How a single pass is executed; injectable so the sequencing is testable. */
+export type PassExecutor = (opts: {
+	pass: PassSpec;
+	cli: CliArgs;
+	store: SnapshotStore;
+	entryUrl: string;
+	previous: CandidateMenu | undefined;
+	transcript: TranscriptEvent[];
+	apiKey: string;
+}) => Promise<RunResult>;
+
+export interface PassSequence {
+	passResults: RunResult[];
+	passMetas: PassMeta[];
+	/** Pass 1's submission, kept so a review pass's effect can be scored separately. */
+	firstPassCandidate: CandidateMenu | undefined;
+	/** Set when a pass threw; the caller writes the failed run and stops. */
+	threw?: { pass: PassSpec; error: unknown };
+}
+
+/**
+ * Drive a harness's passes in order, threading each submission into the next.
+ *
+ * Stops early — without an error — when a pass produces no candidate: a review
+ * pass has nothing to review, and inventing a fallback would silently score a
+ * different setup than the one requested. Stops with `threw` set when a pass
+ * raises, so the caller can still write the partial run rather than losing the
+ * transcript.
+ *
+ * Extracted from `main()` so the sequencing is testable without a network: pass
+ * an `execute` and drive the whole harness with scripted results.
+ */
+export async function runPasses(opts: {
+	harness: HarnessSpec;
+	cli: CliArgs;
+	store: SnapshotStore;
+	entryUrl: string;
+	transcript: TranscriptEvent[];
+	apiKey: string;
+	modelInfo: ModelInfo | null;
+	execute?: PassExecutor;
+	onPassStart?: (pass: PassSpec) => void;
+	onPassAbandoned?: (pass: PassSpec, reason: string) => void;
+}): Promise<PassSequence> {
+	const { harness, cli, store, entryUrl, transcript, apiKey, modelInfo } = opts;
+	const execute = opts.execute ?? executePass;
+
+	const passResults: RunResult[] = [];
+	const passMetas: PassMeta[] = [];
+	let firstPassCandidate: CandidateMenu | undefined;
+	let previous: CandidateMenu | undefined;
+
+	for (const pass of harness.passes) {
+		opts.onPassStart?.(pass);
+		const passStartedAt = Date.now();
+		let result: RunResult;
+		try {
+			result = await execute({ pass, cli, store, entryUrl, previous, transcript, apiKey });
+		} catch (error) {
+			// A thrown pass collected no usage, so its price is null; the openrouter
+			// fields stay PRESENT as null rather than absent — absent would read as
+			// "this backend does not report cost", which is a different claim.
+			const thrown: RunResult = {
+				status: 'failed',
+				failureReason: String(error),
+				toolCalls: 0,
+				submitAttempts: 0,
+				promptTokens: 0,
+				completionTokens: 0,
+				totalTokens: 0,
+				cachedPromptTokens: 0,
+				cacheWriteTokens: 0,
+				usages: []
+			};
+			const thrownCosts =
+				cli.backend === 'openrouter' ? { price: null, price_cached: null } : undefined;
+			passResults.push(thrown);
+			passMetas.push(toPassMeta(pass, cli, thrown, Date.now() - passStartedAt, thrownCosts));
+			return { passResults, passMetas, firstPassCandidate, threw: { pass, error } };
+		}
+
+		passResults.push(result);
+		passMetas.push(
+			toPassMeta(
+				pass,
+				cli,
+				result,
+				Date.now() - passStartedAt,
+				computeOpenRouterCosts(cli, result, modelInfo)
+			)
+		);
+
+		if (pass.index === 1) firstPassCandidate = result.candidate;
+
+		if (!result.candidate) {
+			opts.onPassAbandoned?.(pass, result.failureReason ?? 'unknown');
+			break;
+		}
+		previous = result.candidate;
+	}
+
+	return { passResults, passMetas, firstPassCandidate };
+}
+
+/** Fold one pass's result and configuration into its `meta.passes` entry. */
+function toPassMeta(
+	pass: PassSpec,
+	cli: CliArgs,
+	result: RunResult,
+	durationMs: number,
+	costs: { price: number | null; price_cached: number | null } | undefined
+): PassMeta {
+	return {
+		index: pass.index,
+		role: pass.role,
+		model: modelForPass(cli, pass),
+		backend: cli.backend,
+		effort: effortForPass(cli, pass) ?? null,
+		status: result.status,
+		failure_reason: result.failureReason,
+		duration_ms: durationMs,
+		tool_calls: result.toolCalls,
+		submit_attempts: result.submitAttempts,
+		prompt_tokens: result.promptTokens,
+		completion_tokens: result.completionTokens,
+		total_tokens: result.totalTokens,
+		cached_prompt_tokens: result.cachedPromptTokens,
+		cache_write_tokens: result.cacheWriteTokens,
+		providers: result.providers ?? [],
+		...(costs ? { price: costs.price } : {})
 	};
 }
 
@@ -1322,6 +1660,48 @@ export function formatProvenance(meta: RunMeta): string | undefined {
 	return `served by  ${parts.join(', ')}${pin}${reroute}`;
 }
 
+/**
+ * The stderr review-effect block: what the second pass actually changed.
+ *
+ * Reported per metric and signed, never as one "improved/regressed" verdict. A
+ * review pass routinely trades one metric for another — recovering a missed page
+ * (recall up) while renaming three items it touched (precision down) — and a
+ * single summary number would hide the trade that is the interesting part. This
+ * mirrors the scorer's own refusal to average recall with precision.
+ */
+export function formatPassDelta(before: ScoreReport, after: ScoreReport): string {
+	const metrics = [
+		['item recall', before.item_recall, after.item_recall],
+		['item precision', before.item_precision, after.item_precision],
+		['tag recall', before.tag_recall, after.tag_recall],
+		['tag precision', before.tag_precision, after.tag_precision],
+		['price', before.price_accuracy, after.price_accuracy],
+		['description', before.description_accuracy, after.description_accuracy],
+		['source recall', before.source_recall, after.source_recall]
+	] as const;
+
+	const lines = ['review pass effect (pass 1 → final):'];
+	let changed = false;
+	for (const [label, from, to] of metrics) {
+		const delta = to - from;
+		if (Math.abs(delta) < 1e-9) continue;
+		changed = true;
+		const sign = delta > 0 ? '+' : '';
+		lines.push(
+			`  ${label.padEnd(16)} ${(from * 100).toFixed(1)}% → ${(to * 100).toFixed(1)}%  ` +
+				`(${sign}${(delta * 100).toFixed(1)}pp)`
+		);
+	}
+	if (!changed) lines.push('  no scored metric changed');
+	// Item churn is reported even when the ratios did not move: swapping one
+	// missed item for another leaves recall identical while changing the answer.
+	lines.push(
+		`  items ${before.matched} → ${after.matched} matched, ` +
+			`${before.hallucinated_items.length} → ${after.hallucinated_items.length} hallucinated`
+	);
+	return lines.join('\n');
+}
+
 /** The stderr wall-clock line: total invocation time, with the agent run broken out. */
 export function formatWallClock(meta: Pick<RunMeta, 'wall_clock_ms' | 'duration_ms'>): string {
 	return (
@@ -1355,7 +1735,8 @@ async function main(): Promise<number> {
 		blocked = findBlock(loadBlacklist(), {
 			model: cli.model,
 			effort: cli.effort,
-			backend: cli.backend
+			backend: cli.backend,
+			harness: cli.harness
 		});
 	} catch (e) {
 		console.error(`error: ${String(e)}`);
@@ -1437,58 +1818,61 @@ async function main(): Promise<number> {
 		`${startedAt.toISOString()}-${modelSlug(cli.model)}`
 	);
 
-	let result: RunResult;
-	try {
-		if (cli.backend === 'claude') {
-			// Loaded lazily so the openrouter path never imports the Agent SDK.
-			const { runClaudeAgent } = await import('./run-claude');
-			result = await runClaudeAgent({
-				model: cli.model,
-				store,
-				entryUrl: manifest.entryUrl,
-				maxToolCalls: cli.maxToolCalls,
-				// Validated against CLAUDE_EFFORT_LEVELS in parseCli, so this narrows safely.
-				effort: cli.effort as EffortLevel | undefined,
-				transcript
-			});
-		} else {
-			result = await runAgent({
-				chat: openRouterChat(cli.model, apiKey ?? '', {
-					effort: cli.effort,
-					temperature: cli.temperature,
-					quantizations: cli.quantizations
-				}),
-				store,
-				entryUrl: manifest.entryUrl,
-				maxToolCalls: cli.maxToolCalls,
-				transcript
-			});
+	// The harness name is validated in parseCli, so this always resolves.
+	const harness = harnessFor(cli.harness) as HarnessSpec;
+
+	const sequence = await runPasses({
+		harness,
+		cli,
+		store,
+		entryUrl: manifest.entryUrl,
+		transcript,
+		apiKey: apiKey ?? '',
+		modelInfo,
+		onPassStart: (pass) => {
+			if (harness.passes.length === 1) return;
+			const effort = effortForPass(cli, pass);
+			console.error(
+				`pass ${pass.index}/${harness.passes.length} (${pass.role}) — ` +
+					`${modelForPass(cli, pass)}${effort ? ` @ ${effort}` : ''}`
+			);
+		},
+		onPassAbandoned: (pass, reason) => {
+			console.error(`pass ${pass.index} (${pass.role}) produced no submission: ${reason}`);
 		}
-	} catch (e) {
-		const failed: RunResult = {
-			status: 'failed',
-			failureReason: String(e),
-			toolCalls: 0,
-			submitAttempts: 0,
-			promptTokens: 0,
-			completionTokens: 0,
-			totalTokens: 0,
-			cachedPromptTokens: 0,
-			cacheWriteTokens: 0,
-			usages: []
-		};
-		// A thrown run collected no usage, so price is null; keep the openrouter
-		// fields present (as null) rather than fetching pricing for an empty run.
-		const costs = cli.backend === 'openrouter' ? { price: null, price_cached: null } : undefined;
-		const meta = buildMeta(cli, manifest, gold.policy_version, startedAt, failed, costs, invokedAt);
-		writeRun(runDir, { meta, transcript });
-		console.error(`run failed: ${String(e)}`);
+	});
+	const { passResults, passMetas, firstPassCandidate } = sequence;
+
+	if (sequence.threw) {
+		const { pass, error } = sequence.threw;
+		const thrownCosts =
+			cli.backend === 'openrouter' ? { price: null, price_cached: null } : undefined;
+		const meta = buildMeta(
+			cli,
+			manifest,
+			gold.policy_version,
+			startedAt,
+			mergePassResults(passResults),
+			thrownCosts,
+			invokedAt,
+			{},
+			passMetas
+		);
+		writeRun(runDir, { meta, transcript, firstPassCandidate });
+		console.error(`run failed in pass ${pass.index} (${pass.role}): ${String(error)}`);
 		console.error(formatWallClock(meta));
 		console.error(`run directory: ${runDir}`);
 		return 1;
 	}
 
+	const result = mergePassResults(passResults);
 	const report = result.candidate ? scoreCandidate(gold, result.candidate) : undefined;
+	// Scored against the SAME gold as the final report, so the delta between them
+	// is the review pass's effect and nothing else.
+	const firstPassReport =
+		harness.passes.length > 1 && firstPassCandidate
+			? scoreCandidate(gold, firstPassCandidate)
+			: undefined;
 	const costs = computeOpenRouterCosts(cli, result, modelInfo);
 	// Resolve the providers this run used to their quantization tiers. Only worth
 	// a request when the run actually reported providers; best-effort throughout.
@@ -1504,12 +1888,21 @@ async function main(): Promise<number> {
 		result,
 		costs,
 		invokedAt,
-		providerQuants
+		providerQuants,
+		passMetas
 	);
-	writeRun(runDir, { meta, transcript, candidate: result.candidate, report });
+	writeRun(runDir, {
+		meta,
+		transcript,
+		candidate: result.candidate,
+		report,
+		firstPassCandidate: harness.passes.length > 1 ? firstPassCandidate : undefined,
+		firstPassReport
+	});
 
 	if (report) console.error(formatSummary(report));
 	else console.error(`run failed: ${result.failureReason ?? 'unknown'}`);
+	if (report && firstPassReport) console.error(formatPassDelta(firstPassReport, report));
 	const provenance = formatProvenance(meta);
 	if (provenance) console.error(provenance);
 	console.error(formatWallClock(meta));

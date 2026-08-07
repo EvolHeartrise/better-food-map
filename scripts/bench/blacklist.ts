@@ -44,6 +44,16 @@ export interface BlacklistEntry {
 	effort?: string;
 	/** `openrouter` | `claude`; omitted covers both. */
 	backend?: string;
+	/**
+	 * Harness (agent setup) this verdict covers; omitted covers every harness.
+	 *
+	 * Omitted is the RIGHT default for a verdict about raw model capability ("it
+	 * truncates long menus"), and the WRONG one for a verdict a different setup
+	 * might overturn — a model ruled out for missing pages may well pass with a
+	 * review pass that re-enumerates them. Scope the entry when the verdict is
+	 * about the pairing rather than the model.
+	 */
+	harness?: string;
 	/** Why this configuration was ruled out — required, this is the whole point. */
 	reason: string;
 	/** ISO date (YYYY-MM-DD) the verdict was recorded. */
@@ -60,6 +70,7 @@ const EntrySchema = v.object({
 	model: v.pipe(v.string(), v.minLength(1)),
 	effort: v.optional(v.string()),
 	backend: v.optional(v.string()),
+	harness: v.optional(v.string()),
 	reason: v.pipe(v.string(), v.minLength(1)),
 	added: v.pipe(v.string(), v.regex(/^\d{4}-\d{2}-\d{2}$/, 'added must be YYYY-MM-DD')),
 	evidence: v.optional(v.string())
@@ -73,18 +84,23 @@ export interface RunConfig {
 	/** The requested level, or undefined when no --effort was passed. */
 	effort?: string;
 	backend: string;
+	/** The harness the run would use; undefined is treated as the default setup. */
+	harness?: string;
 }
 
 const norm = (s: string): string => s.trim().toLowerCase();
 
 /**
- * Does `entry` cover `cfg`? Model and backend must match (an entry with no
- * backend covers both); effort matches when the entry is `*`/omitted, when the
- * entry is `default` and the run passed no --effort, or on an exact level match.
+ * Does `entry` cover `cfg`? Model, backend and harness must match (an entry
+ * omitting backend or harness covers all of them); effort matches when the entry
+ * is `*`/omitted, when the entry is `default` and the run passed no --effort, or
+ * on an exact level match.
  */
 export function entryCovers(entry: BlacklistEntry, cfg: RunConfig): boolean {
 	if (norm(entry.model) !== norm(cfg.model)) return false;
 	if (entry.backend !== undefined && norm(entry.backend) !== norm(cfg.backend)) return false;
+	if (entry.harness !== undefined && norm(entry.harness) !== norm(cfg.harness ?? 'single-pass'))
+		return false;
 
 	const scope = entry.effort === undefined ? EFFORT_ANY : norm(entry.effort);
 	if (scope === EFFORT_ANY) return true;

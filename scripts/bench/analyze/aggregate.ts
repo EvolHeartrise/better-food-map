@@ -15,6 +15,7 @@
  * - **Provenance splits cells by default.** Aggregating a run served at fp4 with
  *   one served at fp8 measures neither endpoint.
  */
+import { promptShaLabel } from '../harness';
 import type { ScoreReport } from '../score';
 import { deriveRun, provenanceLabel } from './derive';
 import type { RunRecord } from './record';
@@ -251,6 +252,9 @@ export const DIMENSIONS = [
 	'temperature',
 	'quantization',
 	'provenance',
+	'harness',
+	'review',
+	'prompt_sha',
 	'task',
 	'policy_version'
 ] as const;
@@ -264,6 +268,13 @@ export type Dimension = (typeof DIMENSIONS)[number];
  * reason — `bench:run --temperature` is a real sampling change, and nothing
  * would badge two temperatures silently sharing a cell. (Every run in the
  * current corpus has `temperature: null`, so this changes no existing grouping.)
+ *
+ * `harness`, `review` and `prompt_sha` are in for the same reason and are the
+ * strongest case of it: a two-pass run and a single-pass run of the same model
+ * are two different systems, and pooling them would report a number describing
+ * neither. `prompt_sha` closes the last silent-drift hole — provider drift split
+ * cells and gold drift had two detectors, but a prompt edit used to land
+ * pre-edit and post-edit runs in one cell with nothing on screen to say so.
  */
 export const DEFAULT_DIMENSIONS: Dimension[] = [
 	'model',
@@ -271,10 +282,31 @@ export const DEFAULT_DIMENSIONS: Dimension[] = [
 	'effort',
 	'temperature',
 	'quantization',
-	'provenance'
+	'provenance',
+	'harness',
+	'review',
+	'prompt_sha'
 ];
 
 /** The display value of one dimension for one run. Never blank. */
+/**
+ * The review-configuration label for a run, reconstructed from its meta.
+ *
+ * A run with no review-pass evidence reads `none`. That is right for every
+ * single-pass run, and it is also what a pre-harness run gets — correctly, since
+ * none of them had a review pass.
+ */
+export function reviewLabelFor(run: RunRecord): string {
+	const hasReviewPass =
+		run.passes.some((p) => p.role === 'review') ||
+		run.review_model !== null ||
+		run.review_effort !== null;
+	if (!hasReviewPass) return 'none';
+	if (run.review_model === null && run.review_effort === null) return 'same';
+	const model = run.review_model ?? '(same model)';
+	return run.review_effort === null ? model : `${model}@${run.review_effort}`;
+}
+
 export function dimensionValue(run: RunRecord, dimension: Dimension): string {
 	switch (dimension) {
 		case 'model':
@@ -293,6 +325,15 @@ export function dimensionValue(run: RunRecord, dimension: Dimension): string {
 				: 'unpinned';
 		case 'provenance':
 			return provenanceLabel(run);
+		case 'harness':
+			return run.harness;
+		case 'review':
+			// 'none' = no review pass; 'same' = the reviewer inherited the primary
+			// model and effort. An override prints what it overrode to, so a
+			// drafter/reviewer split never pools with self-correction.
+			return reviewLabelFor(run);
+		case 'prompt_sha':
+			return promptShaLabel(run.prompt_sha);
 		case 'task':
 			return run.task;
 		case 'policy_version':

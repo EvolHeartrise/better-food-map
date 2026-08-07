@@ -15,7 +15,8 @@
  * state, reported as an empty result rather than an error.
  */
 import { writeFileSync } from 'node:fs';
-import { buildCells, METRIC_KEYS, type AverageMode, type Cell } from './aggregate';
+import { promptShaLabel } from '../harness';
+import { buildCells, METRIC_KEYS, reviewLabelFor, type AverageMode, type Cell } from './aggregate';
 import { deriveRun } from './derive';
 import { DEFAULT_RUNS_DIR, loadRunIndex, type RunRecord } from './record';
 
@@ -100,6 +101,10 @@ export function runRow(run: RunRecord): Record<string, string | number | null> {
 		quantization_requested: run.quantization_requested?.join('+') ?? null,
 		provenance: derived.provenance,
 		rerouted: derived.rerouted ? 1 : 0,
+		harness: run.harness,
+		review: reviewLabelFor(run),
+		prompt_sha: promptShaLabel(run.prompt_sha),
+		n_passes: run.passes.length,
 		policy_version: run.policy_version,
 		status: run.status,
 		failure_reason: run.failure_reason,
@@ -122,7 +127,20 @@ export function runRow(run: RunRecord): Record<string, string | number | null> {
 		gold_items: run.report?.gold_items ?? null,
 		candidate_items: run.report?.candidate_items ?? null,
 		matched: run.report?.matched ?? null,
-		...Object.fromEntries(METRIC_KEYS.map((key) => [key, run.report?.[key] ?? null]))
+		...Object.fromEntries(METRIC_KEYS.map((key) => [key, run.report?.[key] ?? null])),
+		// Pass-1 score and the review pass's per-metric effect. Null throughout on a
+		// single-pass run: there is no earlier score to compare, which is a different
+		// fact from "the reviewer changed nothing" (that reads as 0).
+		...Object.fromEntries(
+			METRIC_KEYS.flatMap((key) => {
+				const before = run.report_pass1?.[key] ?? null;
+				const after = run.report?.[key] ?? null;
+				return [
+					[`pass1_${key}`, before],
+					[`review_delta_${key}`, before === null || after === null ? null : after - before]
+				];
+			})
+		)
 	};
 }
 
