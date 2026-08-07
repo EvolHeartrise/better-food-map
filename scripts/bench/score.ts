@@ -20,8 +20,15 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as v from 'valibot';
-import { GoldSchema, normalizeForSearch, type GoldMenu } from './lint';
+import { GoldSchema, nameMatchKey, normalizeForSearch, type GoldMenu } from './lint';
 import { normalizeUrl } from './snapshot-store';
+
+// `nameMatchKey` lives with the other normalization primitives in `lint.ts` so
+// the LINTER can key its duplicate-name check by the same identity the scorer
+// matches on (a gold carrying both "X (Dog)" and "X Dog" used to pass lint and
+// then make 100% recall unreachable). Re-exported here because this is where
+// every caller already reaches for it.
+export { nameMatchKey };
 
 // A candidate is shaped exactly like gold, except policy_version is optional —
 // an agent need not stamp the policy it was authored under.
@@ -136,25 +143,6 @@ function impliedBy(rawTags: readonly string[], tag: string): string | undefined 
 interface Pair {
 	gold: MenuItem;
 	candidate: MenuItem;
-}
-
-/**
- * Name-matching key: paren-insensitive form of a name, with whitespace collapsed
- * away INSIDE each parenthetical so trivial spacing differences in a variant
- * label never split a match. Within every balanced `(…)` group all whitespace is
- * removed (`(5 oz glass)` and `(5oz glass)` both key to `5ozglass`; `(8 oz)` and
- * `(8oz)` both to `8oz`), the group is bounded by spaces, and any stray unbalanced
- * paren is dropped to a space; then `normalizeForSearch` lowercases and collapses
- * the OUTSIDE whitespace. So "Fresh Soup (Bowl)" still keys identically to "Fresh
- * Soup Bowl", "Soup(bowl)" keys as "soup bowl" (not "soupbowl"), and a candidate
- * matches a gold variant regardless of the source's parenthesization OR its
- * spacing inside the label. Whitespace BETWEEN words outside parens still matters.
- */
-export function nameMatchKey(name: string): string {
-	const collapsed = name
-		.replace(/\(([^()]*)\)/g, (_m, inner: string) => ` ${inner.replace(/\s+/g, '')} `)
-		.replace(/[()]/g, ' ');
-	return normalizeForSearch(collapsed);
 }
 
 /**
