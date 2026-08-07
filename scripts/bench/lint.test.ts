@@ -2,7 +2,16 @@ import { describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { htmlToText, lintGold, lintTask, normalizeForSearch, stripVariantSuffix } from './lint';
+import {
+	htmlToText,
+	lintGold,
+	lintTask,
+	nameMatchKey,
+	normalizeForSearch,
+	resolveTaskDirs,
+	runLint,
+	stripVariantSuffix
+} from './lint';
 
 const CORPUS = normalizeForSearch(
 	htmlToText(
@@ -72,18 +81,65 @@ describe('htmlToText entity decoding', () => {
 		expect(htmlToText('it&#039;s 5 &#038; 6')).toBe("it's 5 & 6");
 	});
 
-	test('an unknown entity is left INTACT, never replaced with a space', () => {
-		// The regression this whole change exists for: replacing an unrecognized
-		// entity with a space deleted the character AND the word boundary, so
+	test('an unknown VISIBLE entity is left intact, never replaced with a space', () => {
+		// The regression this change exists for: replacing an unrecognized entity
+		// with a space deleted the character AND the word boundary, so
 		// "caf&eacute;" read as "caf" and no gold name containing it could match.
 		expect(htmlToText('I &hearts; poutine')).toBe('I &hearts; poutine');
-		expect(htmlToText('a&thinsp;b')).toBe('a&thinsp;b');
+		expect(htmlToText('a&notanentity;b')).toBe('a&notanentity;b');
+	});
+
+	test('the spacing family decodes to real spaces — leaving it intact would GLUE words', () => {
+		// The opposite failure to the one above, and the reason "unknown stays
+		// intact" cannot be applied blindly: these denote whitespace, so a literal
+		// "&thinsp;" between two words is strictly worse than the space it replaces.
+		const corpus = normalizeForSearch(htmlToText('<p>Fish&thinsp;&amp;&thinsp;Chips</p>'));
+		expect(corpus).toContain(normalizeForSearch('Fish & Chips'));
+		for (const entity of ['&ensp;', '&emsp;', '&numsp;', '&hairsp;', '&NonBreakingSpace;']) {
+			expect(normalizeForSearch(htmlToText(`Soup${entity}of${entity}the${entity}Day`))).toBe(
+				'soup of the day'
+			);
+		}
+	});
+
+	test('zero-width and invisible characters never split a match', () => {
+		// Invisible to a reader — so invisible to the gold author, and they must not
+		// decide whether a name is found. None of these is JS `\s`, so the
+		// whitespace collapse alone cannot save them.
+		for (const glued of [
+			'Pad&#8203;Thai',
+			'Pad&ZeroWidthSpace;Thai',
+			'Pad&zwnj;Thai',
+			'Pad&shy;Thai',
+			'Pad&#173;Thai'
+		]) {
+			expect(normalizeForSearch(htmlToText(glued))).toBe('padthai');
+		}
+	});
+
+	test('C1 code points decode as windows-1252, per the HTML spec', () => {
+		// Legacy CMSes emit these meaning punctuation, not control characters.
+		expect(htmlToText('Flamin&#146; Bacon')).toBe('Flamin’ Bacon');
+		expect(htmlToText('soup &#151; salad')).toBe('soup — salad');
+	});
+
+	test('control characters separate words rather than gluing them', () => {
+		expect(normalizeForSearch(htmlToText('Fish&#1;Chips'))).toBe('fish chips');
 	});
 
 	test('code points that are not text are left intact rather than injected', () => {
 		expect(htmlToText('a&#0;b')).toBe('a&#0;b'); // NUL
 		expect(htmlToText('a&#xD800;b')).toBe('a&#xD800;b'); // lone surrogate
 		expect(htmlToText('a&#1114112;b')).toBe('a&#1114112;b'); // > U+10FFFF
+	});
+
+	test('the lowercase fallback covers only HTML5 uppercase aliases', () => {
+		// `&AMP;` is real; `&EACUTE;` is not, and decoding it to a lowercase "é"
+		// would corrupt the case of a real word.
+		expect(htmlToText('5 &AMP; 6')).toBe('5 & 6');
+		expect(htmlToText('&REG;')).toBe('®');
+		expect(htmlToText('&EACUTE;clair')).toBe('&EACUTE;clair');
+		expect(htmlToText('&OUML;l')).toBe('&OUML;l');
 	});
 
 	test('a bare ampersand and a non-entity are untouched', () => {
@@ -242,6 +298,26 @@ describe('lintGold variant names', () => {
 		expect(r.errors.join()).toContain('not found');
 	});
 
+	test('duplicate detection uses the SCORER key, so "X (Dog)" and "X Dog" collide', () => {
+		// These are the same item to `matchItems`, which would silently keep the
+		// first and make 100% recall unreachable — with the dropped row absent from
+		// `missed_items`, so nothing on screen would say why.
+		expect(nameMatchKey('Bacon Double Cheese (Dog)')).toBe(nameMatchKey('Bacon Double Cheese Dog'));
+		const corpus = normalizeForSearch(htmlToText('<p>Bacon Double Cheese Dog</p>'));
+		const gold = structuredClone(base);
+		gold.items = [
+			{
+				name: 'Bacon Double Cheese (Dog)',
+				description: null,
+				tags: [],
+				optional_tags: [],
+				price: 8
+			},
+			{ name: 'Bacon Double Cheese Dog', description: null, tags: [], optional_tags: [], price: 8 }
+		];
+		expect(lintGold(gold, corpus, REC).errors.join()).toContain('duplicate');
+	});
+
 	test('a format disambiguator passes on its base, and both spellings coexist', () => {
 		// New York Fries lists a poutine AND a hot dog as "Bacon Double Cheese".
 		// Gold names must be unique, so the format is an authored qualifier in a
@@ -317,6 +393,161 @@ describe('lintTask: a task with nothing to lint yet', () => {
 			const r = lintTask(dir);
 			expect(r.skipped).toBeUndefined();
 			expect(r.errors.length).toBeGreaterThan(0);
+		});
+	});
+
+	test('a path that is not a task directory is an error, never a skip', () => {
+		withTask((dir) => {
+			// A mistyped slug is not an unauthored task — it is not there at all.
+			const missing = lintTask(join(dir, 'typo-slug'));
+			expect(missing.skipped).toBeUndefined();
+			expect(missing.errors.join()).toContain('not a task directory');
+
+			writeFileSync(join(dir, 'notes.md'), 'x');
+			const file = lintTask(join(dir, 'notes.md'));
+			expect(file.skipped).toBeUndefined();
+			expect(file.errors.join()).toContain('not a task directory');
+		});
+	});
+});
+
+describe('lintTask: manifest warnings ride along only with a finding', () => {
+	/** A minimal but REAL task tree: manifest + snapshot index + one body. */
+	function withRecordedTask(itemName: string, fn: (dir: string) => void): void {
+		const dir = mkdtempSync(join(tmpdir(), 'bench-lint-rec-'));
+		try {
+			mkdirSync(join(dir, 'snapshot', 'bodies'), { recursive: true });
+			mkdirSync(join(dir, 'gold'), { recursive: true });
+			writeFileSync(join(dir, 'snapshot', 'bodies', 'm.html'), '<p>Fries</p>');
+			writeFileSync(
+				join(dir, 'snapshot', 'index.json'),
+				JSON.stringify({
+					entries: [
+						{
+							method: 'GET',
+							url: 'https://x.com/menu',
+							status: 200,
+							contentType: 'text/html',
+							file: 'm.html',
+							size: 12,
+							recordedAt: '2026-08-06T00:00:00.000Z'
+						}
+					]
+				})
+			);
+			writeFileSync(
+				join(dir, 'manifest.json'),
+				JSON.stringify({
+					entryUrl: 'https://x.com/',
+					primaryHost: 'x.com',
+					createdAt: '2026-08-06T00:00:00.000Z',
+					lastRecordedAt: '2026-08-06T00:00:00.000Z',
+					pages: [],
+					warnings: ['page budget exhausted with 154 URLs unvisited'],
+					counts: { pages: 1, responses: 1, hosts: 1 }
+				})
+			);
+			writeFileSync(
+				join(dir, 'gold', 'data.json'),
+				JSON.stringify({
+					policy_version: '2026-08-06',
+					sources: ['https://x.com/menu'],
+					items: [{ name: itemName, description: null, tags: [], optional_tags: [], price: 6 }]
+				})
+			);
+			fn(dir);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	}
+
+	test('a clean gold does not repeat the snapshot warning', () => {
+		withRecordedTask('Fries', (dir) => {
+			const r = lintTask(dir);
+			expect(r.errors).toEqual([]);
+			expect(r.warnings).toEqual([]);
+		});
+	});
+
+	test('a finding carries the snapshot warning that explains it', () => {
+		withRecordedTask('Phantom Dish', (dir) => {
+			const r = lintTask(dir);
+			expect(r.errors.join()).toContain('Phantom Dish');
+			// "page budget exhausted" is the CAUSE of a name missing from the
+			// snapshot; separating them leaves the finding unexplained.
+			expect(r.warnings.join()).toContain('page budget exhausted');
+		});
+	});
+});
+
+describe('resolveTaskDirs / runLint', () => {
+	function withRoot(fn: (root: string) => void): void {
+		const dir = mkdtempSync(join(tmpdir(), 'bench-lint-cli-'));
+		try {
+			fn(dir);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	}
+
+	test('explicit args are taken verbatim, even for paths that do not exist', () => {
+		const r = resolveTaskDirs(['a', 'b'], 'bench/tasks');
+		expect(r).toEqual({ kind: 'explicit', dirs: ['a', 'b'] });
+	});
+
+	test('an absent root is "nothing to lint", exit 0 — CI has no bench data', () => {
+		const r = resolveTaskDirs([], join(tmpdir(), 'definitely-not-here-9271'));
+		expect(r.kind).toBe('nothing');
+	});
+
+	test('a root holding only files is distinguished from an empty one', () => {
+		withRoot((root) => {
+			const empty = resolveTaskDirs([], root);
+			expect(empty.kind).toBe('nothing');
+			expect(empty.kind === 'nothing' && empty.note).toContain('is empty');
+
+			writeFileSync(join(root, '.DS_Store'), 'x');
+			const filesOnly = resolveTaskDirs([], root);
+			expect(filesOnly.kind).toBe('nothing');
+			expect(filesOnly.kind === 'nothing' && filesOnly.note).toContain('no task directories');
+		});
+	});
+
+	test('a scan takes directories only, so a stray file cannot fail the run', () => {
+		withRoot((root) => {
+			mkdirSync(join(root, 'venue'));
+			writeFileSync(join(root, 'notes.md'), 'x');
+			const r = resolveTaskDirs([], root);
+			expect(r.kind).toBe('scan');
+			expect(r.kind === 'scan' && r.dirs).toEqual([join(root, 'venue')]);
+		});
+	});
+
+	test('scan mode: a skip passes and is counted in a summary; explicit mode fails', () => {
+		withRoot((root) => {
+			mkdirSync(join(root, 'unauthored'));
+			const dirs = [join(root, 'unauthored')];
+
+			const scan = runLint(dirs, false);
+			expect(scan.failed).toBe(false);
+			expect(scan.lines.join('\n')).toContain('skip ');
+			// Skips must be counted, or three of them scrolling above a row of `ok`s
+			// reads as a clean corpus.
+			expect(scan.lines.join('\n')).toContain('1 of 1 task(s) skipped');
+
+			const explicit = runLint(dirs, true);
+			expect(explicit.failed).toBe(true);
+			expect(explicit.lines.join('\n')).toContain('FAIL');
+		});
+	});
+
+	test('a real failure still fails alongside a skip', () => {
+		withRoot((root) => {
+			mkdirSync(join(root, 'unauthored'));
+			mkdirSync(join(root, 'broken', 'gold'), { recursive: true });
+			writeFileSync(join(root, 'broken', 'gold', 'data.json'), '{ not json');
+			const r = runLint([join(root, 'unauthored'), join(root, 'broken')], false);
+			expect(r.failed).toBe(true);
 		});
 	});
 });

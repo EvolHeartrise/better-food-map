@@ -64,17 +64,26 @@ bench/tasks/<venue-slug>/
   the measured volume (`(8 oz)`, `(16 oz)`). Add-ons and upsells (`Add Noodles`,
   `Extra Chutney`) remain non-items.
 
-- **A format disambiguator, when one venue sells the same-named item two ways.**
-  New York Fries lists both a poutine and a hot dog as `Bacon Double Cheese`.
-  Gold item names must be unique — the scorer keys items by name and silently
-  drops a collision, and the linter errors on one — so the format goes in a
-  trailing group: the poutine keeps the bare name, and the dog becomes
-  `Bacon Double Cheese (Dog)`. Use the source's own word for the format, taken
-  from the section the item is listed under. Note the scorer's `nameMatchKey` strips
-  parentheses before comparing, so `X (Dog)` and `X Dog` are the SAME key: the
-  parentheses are for the reader and the linter, and cost nothing at scoring
-  time. Without the group the name is neither verbatim NOR flagged as authored,
-  which is what made three of these read as gold typos.
+- **A format disambiguator, when one venue sells the same-named item two ways —
+  an AUTHORING convention only, invisible to scoring.** New York Fries lists both
+  a poutine and a hot dog as `Bacon Double Cheese`. Gold item names must be unique
+  (the linter errors on a collision, and `matchItems` would silently keep only the
+  first), so the format goes in a trailing group: the poutine keeps the bare name,
+  the dog becomes `Bacon Double Cheese (Dog)`. Use the source's own word for the
+  format.
+
+  This costs a model nothing and is deliberately NOT in the system prompt.
+  `nameMatchKey` strips parentheses before comparing, so `X (Dog)` and `X Dog` are
+  the SAME key — a model that writes the bare suffix, which is what 27 of 36 New
+  York Fries runs already did unprompted, matches gold either way. The parentheses
+  exist for the READER and the LINTER: without them the name is neither verbatim
+  nor marked as authored, which is exactly what made three real gold items read as
+  typos. Teaching the convention to the model was measured to be a net loss — every
+  literal reading of the instruction ("use the section heading" → `(Premium Dogs)`,
+  or qualifying both sides, or qualifying the wrong one) costs 3 misses and 3
+  hallucinations, and none of them can gain a point the bare suffix does not
+  already get.
+
 - A Happy Hour item is a source-designated price context: it is its own item,
   distinct from any regular-menu version, carrying its Happy Hour price, with the
   literal suffix ` (Happy Hour)` appended to the END of its name (e.g.
@@ -116,7 +125,21 @@ NFC and with HTML entities decoded, so a source that spells `sautéed` as
 `e`+U+0301 still matches gold's U+00E9, and `caf&eacute;` is `café` rather than
 `caf`. An entity the decoder does not know is left INTACT, never replaced with a
 space — silently deleting a character is how two identical-looking strings stop
-comparing equal.
+comparing equal. The exception is anything that denotes WHITESPACE or is
+invisible (`&thinsp;`, `&shy;`, a zero-width space): those decode to the real
+character and `normalizeForSearch` then removes or collapses them, because a
+literal `&thinsp;` left between two words glues them together.
+
+**This normalization is shared with the SCORER** (`normalizeForSearch` backs
+`nameMatchKey` and description equality), so it is not only a lint change: a
+model that submitted NFC text against an NFD snapshot was previously marked
+wrong. Rescoring the current corpus, 23 `meetonmain` runs now score slightly
+higher on `description_accuracy` than their frozen `report.json` says. The frozen
+reports are the historical record and are never rewritten; `bench:viewer`'s
+rescore-on-read is what surfaces the difference. Note the corollary: a stored
+report and a fresh score can now diverge for a reason that is neither a gold edit
+nor a `policy_version` bump, and nothing in `meta.json` records which scorer
+version produced it.
 
 ## Recording a snapshot
 

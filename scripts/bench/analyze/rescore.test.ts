@@ -63,6 +63,34 @@ describe('reportsDiffer', () => {
 			reportsDiffer(report({ missed_items: ['a', 'b'] }), report({ missed_items: ['b', 'a'] }))
 		).toBe(false);
 	});
+
+	test('an editorial gold RELABEL that keeps the match key is not a change', () => {
+		// `X Dog` -> `X (Dog)` is the same item to the scorer (`nameMatchKey` drops
+		// parentheses), so nothing about the run moved. Comparing raw strings
+		// reported 20 of 36 newyorkfries runs as stale for a rename that changed no
+		// number — the opposite of what this flag is documented to mean.
+		expect(
+			reportsDiffer(
+				report({ missed_items: ['Bacon Double Cheese Dog'] }),
+				report({ missed_items: ['Bacon Double Cheese (Dog)'] })
+			)
+		).toBe(false);
+		expect(
+			reportsDiffer(
+				report({ tag_false_positives: [{ item: 'Triple Cheese Dog', tag: 'vegan' }] }),
+				report({ tag_false_positives: [{ item: 'Triple Cheese (Dog)', tag: 'vegan' }] })
+			)
+		).toBe(false);
+	});
+
+	test('a genuinely different item still registers as a change', () => {
+		expect(
+			reportsDiffer(
+				report({ missed_items: ['Bacon Double Cheese Dog'] }),
+				report({ missed_items: ['Triple Cheese Dog'] })
+			)
+		).toBe(true);
+	});
 });
 
 describe('taskDirFor', () => {
