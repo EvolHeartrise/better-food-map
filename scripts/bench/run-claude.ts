@@ -278,11 +278,13 @@ export function buildClaudeOptions(
 	model: string,
 	maxToolCalls: number,
 	abortController: AbortController,
-	effort?: EffortLevel
+	effort?: EffortLevel,
+	/** System prompt for this pass; defaults to the extraction prompt. */
+	systemPrompt: string = SYSTEM_PROMPT
 ): Options {
 	return {
 		model,
-		systemPrompt: SYSTEM_PROMPT,
+		systemPrompt,
 		// `effort` guides the SDK's adaptive-thinking depth. Omitted when unset so
 		// the Claude Code harness default (xhigh) applies; the SDK's own default is
 		// `high`. Levels: low|medium|high|xhigh|max (EffortLevel).
@@ -311,6 +313,13 @@ export interface ClaudeAgentOpts {
 	/** Reasoning-effort level → SDK `Options.effort`; undefined = harness default. */
 	effort?: EffortLevel;
 	transcript: TranscriptEvent[];
+	/**
+	 * System prompt for this pass. Defaults to the extraction prompt, so the
+	 * single-pass path is unchanged; a review pass passes its own.
+	 */
+	systemPrompt?: string;
+	/** Opening user message; defaults to just handing over the entry URL. */
+	userPrompt?: string;
 	/** Test seam; defaults to the real SDK `query()`. */
 	queryFn?: QueryFn;
 }
@@ -331,8 +340,15 @@ export async function runClaudeAgent(opts: ClaudeAgentOpts): Promise<RunResult> 
 	const state = newRunState();
 	const server = buildBenchMcpServer(store, state);
 	const abortController = new AbortController();
-	const options = buildClaudeOptions(server, model, maxToolCalls, abortController, opts.effort);
-	const prompt = `The restaurant’s website entry URL is: ${entryUrl}`;
+	const options = buildClaudeOptions(
+		server,
+		model,
+		maxToolCalls,
+		abortController,
+		opts.effort,
+		opts.systemPrompt
+	);
+	const prompt = opts.userPrompt ?? `The restaurant’s website entry URL is: ${entryUrl}`;
 	// Same handlers the SDK server wraps, exposed via the seam for test drivers.
 	const tools: BenchToolHandlers = {
 		fetchPage: (url) => fetchPageToolResult(store, url),

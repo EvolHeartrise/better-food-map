@@ -269,3 +269,75 @@ describe('today', () => {
 		expect(today(new Date('2026-07-31T23:59:00Z'))).toBe('2026-07-31');
 	});
 });
+
+describe('harness is a full scope axis, not just a matcher field', () => {
+	const at = (harness?: string): BlacklistEntry => ({
+		model: 'm',
+		harness,
+		reason: 'r',
+		added: '2026-08-06'
+	});
+
+	test('describeEntry shows the scope, so two verdicts do not read identically', () => {
+		// Without this an unscoped verdict and a single-pass-scoped one printed the
+		// same string in the CLI list, the refusal message and the viewer register —
+		// the three places you would look to audit exactly that difference.
+		expect(describeEntry(at('single-pass'))).toContain('harness: single-pass');
+		expect(describeEntry(at())).not.toContain('harness');
+		expect(describeEntry(at('single-pass'))).not.toBe(describeEntry(at()));
+	});
+
+	test('two differently-scoped verdicts can coexist', () => {
+		const first = addEntry({ entries: [] }, at('single-pass'));
+		expect(first.ok).toBe(true);
+		if (!first.ok) return;
+		const second = addEntry(first.list, at('two-pass'));
+		expect(second.ok).toBe(true);
+		if (!second.ok) return;
+		expect(second.list.entries).toHaveLength(2);
+	});
+
+	test('an exact duplicate scope is still refused', () => {
+		const first = addEntry({ entries: [] }, at('two-pass'));
+		if (!first.ok) throw new Error('setup');
+		const dup = addEntry(first.list, at('two-pass'));
+		expect(dup.ok).toBe(false);
+	});
+
+	test('--remove takes only the named scope, not every harness for that model', () => {
+		const list = { entries: [at('single-pass'), at('two-pass'), at()] };
+		const { removed, list: next } = removeEntries(list, { model: 'm', harness: 'two-pass' });
+		expect(removed).toHaveLength(1);
+		expect(removed[0].harness).toBe('two-pass');
+		expect(next.entries).toHaveLength(2);
+	});
+
+	test('removing the unscoped verdict leaves the scoped ones', () => {
+		const list = { entries: [at('single-pass'), at()] };
+		const { removed } = removeEntries(list, { model: 'm' });
+		expect(removed).toHaveLength(1);
+		expect(removed[0].harness).toBeUndefined();
+	});
+
+	test('the suggested --remove command reproduces the FULL scope', () => {
+		// A suggestion that under-specifies the scope removes more than the entry it
+		// was printed for.
+		const message = formatBlocked(
+			{ ...at('two-pass'), effort: 'high', backend: 'openrouter' },
+			'--ignore-blacklist'
+		);
+		expect(message).toContain('--harness two-pass');
+		expect(message).toContain('--effort high');
+		expect(message).toContain('--backend openrouter');
+	});
+
+	test('the CLI accepts --harness on add, remove and check', () => {
+		for (const mode of ['--add', '--remove', '--check']) {
+			const args = ['--model', 'm', '--harness', 'two-pass', mode];
+			if (mode === '--add') args.push('--reason', 'r');
+			const parsed = parseCli(args);
+			expect(parsed).not.toHaveProperty('error');
+			expect((parsed as { harness?: string }).harness).toBe('two-pass');
+		}
+	});
+});

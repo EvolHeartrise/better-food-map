@@ -39,7 +39,7 @@
 		'source_precision'
 	];
 
-	let tab = $state<'scores' | 'items' | 'navigation' | 'transcript'>('scores');
+	let tab = $state<'scores' | 'items' | 'navigation' | 'transcript' | 'passes'>('scores');
 	let useCurrentGold = $state(false);
 	let retiring = $state(false);
 	let restoring = $state(false);
@@ -236,7 +236,9 @@
 		</div>
 
 		<div class="row wrap tabs">
-			{#each ['scores', 'items', 'navigation', 'transcript'] as name (name)}
+			<!-- `passes` appears only for a multi-pass run: on a single-pass run the
+			     tab would open onto "this run had one pass", which is noise. -->
+			{#each ['scores', 'items', 'navigation', 'transcript', ...(detail.run.passes.length > 1 ? ['passes'] : [])] as name (name)}
 				<button class="chip" aria-pressed={tab === name} onclick={() => (tab = name as typeof tab)}
 					>{name}</button
 				>
@@ -289,6 +291,199 @@
 								</tr>
 							</tbody>
 						</table>
+					</div>
+				{/if}
+			</div>
+		{/if}
+
+		{#if tab === 'passes'}
+			<div class="card">
+				<h2>Passes</h2>
+				<div class="scroll-x">
+					<table>
+						<thead>
+							<tr>
+								<th class="left">#</th>
+								<th class="left">Role</th>
+								<th class="left">Model</th>
+								<th>Effort</th>
+								<th>Status</th>
+								<th>Duration</th>
+								<th>Tool calls</th>
+								<th>Tokens</th>
+								<th>Cost</th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each detail.run.passes as pass (pass.index)}
+								<tr>
+									<td class="left">{pass.index}</td>
+									<td class="left">{pass.role}</td>
+									<td class="left">{pass.model}</td>
+									<td>{pass.effort ?? '—'}</td>
+									<td class:bad={pass.status === 'failed'}>{pass.status ?? '—'}</td>
+									<td>{duration(pass.duration_ms)}</td>
+									<td>{pass.tool_calls ?? '—'}</td>
+									<td>{count(pass.total_tokens)}</td>
+									<td>{usd(pass.price)}</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+				<p class="muted small">
+					The headline cost, token and duration figures above are the TOTAL across these passes — a
+					two-pass setup is only comparable to a single-pass one if it is charged for both halves.
+					<code>--max-tool-calls</code> applies PER pass, so each fresh agent gets the full budget.
+				</p>
+			</div>
+
+			{#if detail.pass_coverage.length > 0}
+				<div class="card">
+					<h2>Page discovery, per pass</h2>
+					<!-- The Navigation tab shows the whole-run UNION, which answers "did this setup
+					     reach every page" but cannot tell a reviewer that recovered a whole menu
+					     section from one that opened nothing. That distinction is the harness's
+					     core hypothesis, so it gets its own table. -->
+					<div class="scroll-x">
+						<table>
+							<thead>
+								<tr>
+									<th class="left">Pass</th>
+									<th>Pages opened</th>
+									<th>Of available</th>
+									<th class="left">Opened only by this pass</th>
+								</tr>
+							</thead>
+							<tbody>
+								{#each detail.pass_coverage as entry (entry.pass)}
+									{@const earlier = new Set(
+										detail.pass_coverage
+											.filter((other) => other.pass < entry.pass)
+											.flatMap((other) => other.fetched_urls)
+									)}
+									{@const fresh = entry.fetched_urls.filter((url) => !earlier.has(url))}
+									<tr>
+										<td class="left">{entry.pass}</td>
+										<td>{entry.fetched_urls.length}</td>
+										<td>{entry.coverage ? entry.coverage.available : '—'}</td>
+										<td class="left">
+											{#if entry.pass === detail.pass_coverage[0].pass}
+												<span class="muted">—</span>
+											{:else if fresh.length === 0}
+												<span class="muted">nothing new</span>
+											{:else}
+												<span class="good">{fresh.length}</span>
+												<span class="muted small"
+													>{fresh.slice(0, 3).join(', ')}{fresh.length > 3
+														? ` +${fresh.length - 3} more`
+														: ''}</span
+												>
+											{/if}
+										</td>
+									</tr>
+								{/each}
+							</tbody>
+						</table>
+					</div>
+				</div>
+			{/if}
+
+			<div class="card">
+				<h2>What the review pass changed</h2>
+				{#if !detail.review_effect}
+					<!-- Two DIFFERENT reasons the effect is unavailable, and naming the wrong one
+					     sends you looking for a file that is sitting right there. When pass 2
+					     fails to submit, `report-pass1.json` DOES exist — only the final report
+					     is missing. -->
+					{#if detail.run.report_pass1 && !detail.run.report}
+						<p class="muted">
+							Pass 1 was scored, but the run produced no final result{detail.run.failure_reason
+								? ` (${detail.run.failure_reason})`
+								: ''} — so there is nothing to compare it against. Pass 1's own score is in
+							<code>report-pass1.json</code>.
+						</p>
+					{:else}
+						<p class="muted">
+							No pass-1 score was recorded for this run, so the review pass's effect cannot be
+							separated from the final result.
+						</p>
+					{/if}
+				{:else}
+					{@const effect = detail.review_effect}
+					<div class="scroll-x">
+						<table>
+							<thead>
+								<tr>
+									<th class="left">Metric</th>
+									<th>After pass 1</th>
+									<th>Final</th>
+									<th>Change</th>
+								</tr>
+							</thead>
+							<tbody>
+								{#each METRICS as metric (metric)}
+									{@const m = effect.metrics[metric]}
+									{#if m}
+										<tr>
+											<td class="left">{metricLabel(metric)}</td>
+											<td>{pct(m.before)}</td>
+											<td>{pct(m.after)}</td>
+											<!-- Signed and per metric, never a net verdict: a reviewer that
+											     recovers a missed page while renaming items has improved recall
+											     AND damaged precision, and one badge would erase the trade. -->
+											<td
+												class:good={m.delta > 0}
+												class:bad={m.delta < 0}
+												class:muted={m.delta === 0}
+											>
+												{m.delta === 0
+													? '—'
+													: `${m.delta > 0 ? '+' : ''}${(m.delta * 100).toFixed(1)}pp`}
+											</td>
+										</tr>
+									{/if}
+								{/each}
+								<tr>
+									<td class="left">Items matched</td>
+									<td>{effect.matched.before}</td>
+									<td>{effect.matched.after}</td>
+									<td class="muted">—</td>
+								</tr>
+								<tr>
+									<td class="left">Hallucinated</td>
+									<td>{effect.hallucinated.before}</td>
+									<td>{effect.hallucinated.after}</td>
+									<td class="muted">—</td>
+								</tr>
+							</tbody>
+						</table>
+					</div>
+
+					<div class="row wrap churn">
+						<div>
+							<h3>Recovered by the review pass ({effect.newly_found.length})</h3>
+							{#if effect.newly_found.length === 0}
+								<p class="muted small">Nothing pass 1 missed was found.</p>
+							{:else}
+								<ul class="small">
+									{#each effect.newly_found as name (name)}<li>{name}</li>{/each}
+								</ul>
+							{/if}
+						</div>
+						<div>
+							<!-- The regression direction, called out separately: a review pass that
+							     nets +2pp while DROPPING items pass 1 had is a different result from
+							     one that only adds, and a ratio cannot tell them apart. -->
+							<h3 class="warn">Lost by the review pass ({effect.newly_missed.length})</h3>
+							{#if effect.newly_missed.length === 0}
+								<p class="muted small">Nothing pass 1 found was lost.</p>
+							{:else}
+								<ul class="small">
+									{#each effect.newly_missed as name (name)}<li>{name}</li>{/each}
+								</ul>
+							{/if}
+						</div>
 					</div>
 				{/if}
 			</div>
@@ -629,6 +824,45 @@
 	.moved {
 		color: var(--serious);
 		font-weight: 600;
+	}
+
+	/* Review-pass deltas. Colour carries the DIRECTION only — magnitude stays in
+	   the number, because a +0.4pp gain and a +40pp gain must not read alike. */
+	.good {
+		color: var(--good);
+		font-weight: 600;
+	}
+
+	.bad {
+		color: var(--critical);
+		font-weight: 600;
+	}
+
+	.warn {
+		color: var(--warning);
+	}
+
+	.churn {
+		gap: 24px;
+		align-items: flex-start;
+		margin-top: 12px;
+	}
+
+	.churn > div {
+		flex: 1 1 260px;
+		min-width: 0;
+	}
+
+	.churn h3 {
+		font-size: 12px;
+		margin: 0 0 4px;
+	}
+
+	.churn ul {
+		margin: 0;
+		padding-left: 18px;
+		max-height: 240px;
+		overflow-y: auto;
 	}
 
 	.diff {

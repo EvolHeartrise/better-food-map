@@ -52,6 +52,8 @@ export interface BlacklistInfo {
 	effort: string;
 	/** Null covers both backends. */
 	backend: string | null;
+	/** Null covers every harness — the scope every pre-harness verdict carries. */
+	harness: string | null;
 	reason: string;
 	/** `YYYY-MM-DD`. An old verdict against a since-updated model reads as stale. */
 	added: string;
@@ -153,6 +155,14 @@ export interface RunRow {
 	quantization_requested: string | null;
 	provenance: string;
 	rerouted: number;
+	/** Agent setup. Pre-harness runs read `single-pass` — what they in fact were. */
+	harness: string;
+	/** `none` (no review pass), `same` (reviewer inherited), or the override. */
+	review: string;
+	/** Joined per-pass prompt hashes, or `unknown` on a run predating hashing. */
+	prompt_sha: string;
+	/** Passes recorded; 0 on runs predating multi-pass harnesses. */
+	n_passes: number;
 	policy_version: string | null;
 	status: 'scored' | 'failed';
 	failure_reason: string | null;
@@ -195,6 +205,10 @@ export interface CellRow {
 	effort: string;
 	quantization?: string;
 	provenance?: string;
+	/** Present when `harness` is among the active dimensions (it is by default). */
+	harness?: string;
+	review?: string;
+	prompt_sha?: string;
 	task?: string;
 	policy_version?: string;
 	n_runs: number;
@@ -298,6 +312,41 @@ export interface ScoreReport {
 	ignored_sources: string[];
 }
 
+/** One pass of a multi-pass run, as recorded on `meta.passes`. */
+export interface PassRow {
+	index: number;
+	role: string;
+	model: string;
+	backend: string;
+	effort: string | null;
+	/** Null when the pass recorded no status — never assumed to be `scored`. */
+	status: string | null;
+	failure_reason: string | null;
+	duration_ms: number | null;
+	tool_calls: number | null;
+	prompt_tokens: number | null;
+	completion_tokens: number | null;
+	total_tokens: number | null;
+	price: number | null;
+}
+
+/**
+ * The review pass's per-metric effect, computed from the two FROZEN reports.
+ *
+ * Deliberately a vector with no summary verdict: a reviewer that recovers a
+ * missed page while renaming three items has improved recall AND damaged
+ * precision, and one "improved/regressed" badge would erase the trade.
+ */
+export interface ReviewEffect {
+	metrics: Partial<Record<MetricKey, { before: number; after: number; delta: number }>>;
+	matched: { before: number; after: number };
+	hallucinated: { before: number; after: number };
+	/** Gold items pass 1 missed that the review pass found. */
+	newly_found: string[];
+	/** Gold items pass 1 had that the review pass lost — the regression to watch. */
+	newly_missed: string[];
+}
+
 export interface RunDetail {
 	run: {
 		run_id: string;
@@ -311,6 +360,11 @@ export interface RunDetail {
 		quantization_requested: string[] | null;
 		providers: string[] | null;
 		provider_quantizations: Record<string, string> | null;
+		harness: string;
+		prompt_sha: Record<string, string> | null;
+		review_model: string | null;
+		review_effort: string | null;
+		passes: PassRow[];
 		policy_version: string | null;
 		entry_url: string | null;
 		status: 'scored' | 'failed';
@@ -329,9 +383,22 @@ export interface RunDetail {
 		price_cached: number | null;
 		total_cost_usd: number | null;
 		report: ScoreReport | null;
+		/** The FIRST pass's frozen report; null on a single-pass run. */
+		report_pass1: ScoreReport | null;
 	};
 	/** The verdict covering this run's configuration, or null. */
 	blacklist: BlacklistInfo | null;
+	/**
+	 * What the review pass changed, or null when the run had one pass. Null is
+	 * "no second pass", NOT "the second pass changed nothing" — that is a run
+	 * whose deltas are all zero, and the UI must not render them the same way.
+	 */
+	review_effect: ReviewEffect | null;
+	/**
+	 * Page-discovery coverage per pass. Empty on a single-pass run or a transcript
+	 * predating pass stamps; `page_coverage` above stays the whole-run union.
+	 */
+	pass_coverage: { pass: number; fetched_urls: string[]; coverage: PageCoverage | null }[];
 	derived: {
 		cost_usd: number | null;
 		cost_source: string | null;

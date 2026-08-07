@@ -17,6 +17,12 @@
 import { normalizeUrl, type BenchManifest } from '../snapshot-store';
 
 export interface TurnEvent {
+	/**
+	 * Which pass produced this event on a multi-pass run; absent on a single-pass
+	 * run or one predating harnesses. Without it the timeline silently interleaves
+	 * two agents' turns as if they were one conversation.
+	 */
+	pass?: number;
 	type: string;
 	ts: string;
 	/** Milliseconds since the previous event. Null on the first event. */
@@ -87,24 +93,44 @@ export function buildTimeline(events: readonly Record<string, unknown>[]): TurnE
 			reasoning_tokens: num(completionDetails?.reasoning_tokens),
 			cost: num(usage?.cost),
 			provider: str(event.provider),
-			response_id: str(event.response_id)
+			response_id: str(event.response_id),
+			pass: num(event.pass)
 		};
 		return turn;
 	});
 }
 
-/** Distinct URLs the model asked `fetch_page` for, in first-request order. */
-export function fetchedUrls(events: readonly Record<string, unknown>[]): string[] {
+/**
+ * Distinct URLs the model asked `fetch_page` for, in first-request order.
+ *
+ * `pass` narrows it to one pass of a multi-pass run. Unfiltered, the union of
+ * both passes is what the run as a whole opened — correct for "did this SETUP
+ * reach every page", but useless for the question the two-pass harness exists to
+ * ask: did the REVIEW pass find a page the extractor missed? A union answers yes
+ * to both, so the per-pass split is what makes the hypothesis measurable.
+ */
+export function fetchedUrls(events: readonly Record<string, unknown>[], pass?: number): string[] {
 	const seen = new Set<string>();
 	const out: string[] = [];
 	for (const event of events) {
 		if (str(event.type) !== 'tool_call') continue;
+		if (pass !== undefined && num(event.pass) !== pass) continue;
 		const url = toolCallUrl(event);
 		if (!url || seen.has(url)) continue;
 		seen.add(url);
 		out.push(url);
 	}
 	return out;
+}
+
+/** The distinct pass numbers a transcript recorded, ascending; [] when unstamped. */
+export function transcriptPasses(events: readonly Record<string, unknown>[]): number[] {
+	const seen = new Set<number>();
+	for (const event of events) {
+		const p = num(event.pass);
+		if (p !== undefined) seen.add(p);
+	}
+	return [...seen].toSorted((a, b) => a - b);
 }
 
 /**
