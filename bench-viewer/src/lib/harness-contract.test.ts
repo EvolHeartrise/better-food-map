@@ -44,7 +44,9 @@ describe('harness wire contract', () => {
 		const emitted = row({});
 		expect(emitted.harness).toBe('single-pass');
 		expect(emitted.review).toBe('none');
-		expect(emitted.n_passes).toBe(0);
+		// NULL, not 0. Those runs each made exactly one pass; `0` would be a false
+		// statement, and it is the same absent-vs-zero trap `prompt_sha` avoids.
+		expect(emitted.n_passes).toBeNull();
 	});
 
 	test('a pre-hashing run reads UNKNOWN prompt, never a match', () => {

@@ -7,17 +7,18 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { entryCovers, type BlacklistEntry } from './blacklist';
-import { HARNESSES, promptShasFor } from './harness';
+import { HARNESSES, promptShasFor, reviewLabel, type PassMeta } from './harness';
 import { REVIEW_SYSTEM_PROMPT, SYSTEM_PROMPT } from './prompts';
 import type { ScoreReport } from './score';
 import { SnapshotStore } from './snapshot-store';
 import {
 	buildMeta,
+	distinctPassModels,
 	effortForPass,
+	foldRunCosts,
 	formatPassDelta,
 	modelForPass,
 	parseCli,
-	reviewLabel,
 	runAgent,
 	runPasses,
 	type ChatFn,
@@ -172,21 +173,29 @@ describe('per-pass configuration', () => {
 	});
 });
 
+/** The shared label takes the three fields both `meta.json` and CliArgs carry. */
+const labelOf = (cli: CliArgs): string =>
+	reviewLabel({
+		harness: cli.harness,
+		reviewModel: cli.reviewModel,
+		reviewEffort: cli.reviewEffort
+	});
+
 describe('reviewLabel', () => {
 	test('single-pass reads none', () => {
-		expect(reviewLabel(ok(BASE))).toBe('none');
+		expect(labelOf(ok(BASE))).toBe('none');
 	});
 
 	test('an inherited reviewer reads same', () => {
-		expect(reviewLabel(ok([...BASE, '--harness', 'two-pass']))).toBe('same');
+		expect(labelOf(ok([...BASE, '--harness', 'two-pass']))).toBe('same');
 	});
 
 	test('an override prints what it overrode to, so it never pools with self-correction', () => {
+		expect(labelOf(ok([...BASE, '--harness', 'two-pass', '--review-model', 'strong/model']))).toBe(
+			'strong/model'
+		);
 		expect(
-			reviewLabel(ok([...BASE, '--harness', 'two-pass', '--review-model', 'strong/model']))
-		).toBe('strong/model');
-		expect(
-			reviewLabel(
+			labelOf(
 				ok([
 					...BASE,
 					'--harness',
@@ -201,7 +210,7 @@ describe('reviewLabel', () => {
 	});
 
 	test('an effort-only override still distinguishes the cell', () => {
-		expect(reviewLabel(ok([...BASE, '--harness', 'two-pass', '--review-effort', 'max']))).toBe(
+		expect(labelOf(ok([...BASE, '--harness', 'two-pass', '--review-effort', 'max']))).toBe(
 			'(same model)@max'
 		);
 	});
@@ -451,7 +460,7 @@ describe('runPasses orchestration', () => {
 				entryUrl: 'https://x.com/',
 				transcript: [] as TranscriptEvent[],
 				apiKey: '',
-				modelInfo: null,
+				modelInfo: () => null,
 				execute
 			},
 			cleanup: () => rmSync(dir, { recursive: true, force: true })
@@ -561,7 +570,7 @@ describe('runPasses orchestration', () => {
 				entryUrl: 'https://x.com/',
 				transcript: [],
 				apiKey: '',
-				modelInfo: null,
+				modelInfo: () => null,
 				execute: async () => {
 					calls += 1;
 					return submitted('only');
@@ -595,7 +604,7 @@ describe('runPasses orchestration', () => {
 				entryUrl: 'https://x.com/',
 				transcript: [],
 				apiKey: '',
-				modelInfo: null,
+				modelInfo: () => null,
 				execute: async ({ pass }) => submitted(pass.role)
 			});
 			expect(seq.passMetas[0]).toMatchObject({ model: 'm', effort: 'low' });
@@ -603,5 +612,110 @@ describe('runPasses orchestration', () => {
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe('foldRunCosts', () => {
+	const passMeta = (over: Partial<PassMeta>): PassMeta =>
+		({
+			index: 1,
+			role: 'extract',
+			model: 'm',
+			backend: 'openrouter',
+			effort: null,
+			status: 'scored',
+			duration_ms: 1,
+			tool_calls: 1,
+			submit_attempts: 1,
+			prompt_tokens: 0,
+			completion_tokens: 0,
+			total_tokens: 0,
+			cached_prompt_tokens: 0,
+			cache_write_tokens: 0,
+			providers: [],
+			...over
+		}) as PassMeta;
+
+	test('sums the per-pass cached counterfactual instead of re-estimating over merged usage', () => {
+		// Per-pass because each pass starts a FRESH message list under a different
+		// system prompt: one monotone estimate over the merged list treats pass 2's
+		// entire opening prompt as a cache hit, always flattering multi-pass.
+		const folded = foldRunCosts(
+			[passMeta({ price_cached: 0.01 }), passMeta({ index: 2, price_cached: 0.17 })],
+			[{ cost: 0.02 }, { cost: 0.2 }],
+			'openrouter'
+		);
+		expect(folded?.price_cached).toBeCloseTo(0.18, 10);
+	});
+
+	test('real price sums provider-reported cost, which is model-agnostic', () => {
+		const folded = foldRunCosts(
+			[passMeta({ price_cached: 0 })],
+			[{ cost: 0.04 }, { cost: 0.06 }],
+			'openrouter'
+		);
+		expect(folded?.price).toBeCloseTo(0.1, 10);
+	});
+
+	test('a single unpriceable pass makes the whole counterfactual null', () => {
+		// A partial counterfactual is not a smaller one — the error would always
+		// under-report the multi-pass configuration.
+		const folded = foldRunCosts(
+			[passMeta({ price_cached: 0.01 }), passMeta({ index: 2, price_cached: null })],
+			[{ cost: 0.02 }],
+			'openrouter'
+		);
+		expect(folded?.price_cached).toBeNull();
+		expect(folded?.price).toBeCloseTo(0.02, 10);
+	});
+
+	test('a partially-completed run keeps the cost the finished passes really incurred', () => {
+		// The throw path used to hardcode price: null, so a run whose pass 1 was
+		// billed reported real tokens with no cost — silently dropped from every
+		// cost mean while its tokens still counted.
+		const folded = foldRunCosts([passMeta({ price_cached: 0.01 })], [{ cost: 0.14 }], 'openrouter');
+		expect(folded?.price).toBeCloseTo(0.14, 10);
+	});
+
+	test('no passes at all yields null, not zero', () => {
+		expect(foldRunCosts([], [], 'openrouter')).toEqual({ price: null, price_cached: null });
+	});
+
+	test('the claude backend reports no openrouter cost fields', () => {
+		expect(foldRunCosts([passMeta({})], [], 'claude')).toBeUndefined();
+	});
+});
+
+describe('distinctPassModels', () => {
+	test('is one model when the reviewer inherits', () => {
+		expect(
+			distinctPassModels(HARNESSES['two-pass'], ok([...BASE, '--harness', 'two-pass']))
+		).toEqual(['m']);
+	});
+
+	test('is both models on a drafter/reviewer split, in pass order', () => {
+		expect(
+			distinctPassModels(
+				HARNESSES['two-pass'],
+				ok([...BASE, '--harness', 'two-pass', '--review-model', 'strong/model'])
+			)
+		).toEqual(['m', 'strong/model']);
+	});
+});
+
+describe('reviewLabel is keyed off the harness, not the completed passes', () => {
+	test('a two-pass run whose first pass failed still reads `same`', () => {
+		// Inferring the label from `meta.passes` labelled this run `none`, splitting
+		// its failures into a phantom cell and leaving the real `two-pass · same`
+		// row reading a 0% failure rate. Worse, it only mislabelled the INHERITED
+		// configuration, so failure rates were not comparable across review configs.
+		expect(reviewLabel({ harness: 'two-pass', reviewModel: null, reviewEffort: null })).toBe(
+			'same'
+		);
+	});
+
+	test('an unknown harness falls back to the override evidence', () => {
+		expect(reviewLabel({ harness: 'mystery', reviewModel: null, reviewEffort: null })).toBe('none');
+		expect(reviewLabel({ harness: 'mystery', reviewModel: 'x', reviewEffort: null })).toBe('x');
 	});
 });

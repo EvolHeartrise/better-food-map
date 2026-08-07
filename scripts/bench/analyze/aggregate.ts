@@ -15,7 +15,7 @@
  * - **Provenance splits cells by default.** Aggregating a run served at fp4 with
  *   one served at fp8 measures neither endpoint.
  */
-import { promptShaLabel } from '../harness';
+import { promptShaLabel, reviewLabel } from '../harness';
 import type { ScoreReport } from '../score';
 import { deriveRun, provenanceLabel } from './derive';
 import type { RunRecord } from './record';
@@ -290,21 +290,18 @@ export const DEFAULT_DIMENSIONS: Dimension[] = [
 
 /** The display value of one dimension for one run. Never blank. */
 /**
- * The review-configuration label for a run, reconstructed from its meta.
- *
- * A run with no review-pass evidence reads `none`. That is right for every
- * single-pass run, and it is also what a pre-harness run gets — correctly, since
- * none of them had a review pass.
+ * The review-configuration label for a run. Delegates to the shared
+ * implementation in `harness.ts`, which keys off the HARNESS SPEC rather than
+ * off which passes the run completed — inferring it from `meta.passes` labelled
+ * a two-pass run whose first pass failed as `none`, splitting its failures into
+ * a phantom cell.
  */
 export function reviewLabelFor(run: RunRecord): string {
-	const hasReviewPass =
-		run.passes.some((p) => p.role === 'review') ||
-		run.review_model !== null ||
-		run.review_effort !== null;
-	if (!hasReviewPass) return 'none';
-	if (run.review_model === null && run.review_effort === null) return 'same';
-	const model = run.review_model ?? '(same model)';
-	return run.review_effort === null ? model : `${model}@${run.review_effort}`;
+	return reviewLabel({
+		harness: run.harness,
+		reviewModel: run.review_model,
+		reviewEffort: run.review_effort
+	});
 }
 
 export function dimensionValue(run: RunRecord, dimension: Dimension): string {

@@ -45,6 +45,8 @@ export interface BlacklistInfo {
 	effort: string;
 	/** Null covers both backends. */
 	backend: string | null;
+	/** Null covers every harness — the scope every pre-harness verdict carries. */
+	harness: string | null;
 	/** Why the configuration was ruled out. Never empty — the CLI requires it. */
 	reason: string;
 	/** `YYYY-MM-DD`. An old verdict against a since-updated model reads as stale. */
@@ -100,6 +102,8 @@ export function toInfo(entry: BlacklistEntry, runs?: readonly RunRecord[]): Blac
 		model: entry.model,
 		effort: entry.effort === undefined || entry.effort === EFFORT_ANY ? 'all' : entry.effort,
 		backend: entry.backend ?? null,
+		/** Null covers every harness — the scope every pre-harness verdict carries. */
+		harness: entry.harness ?? null,
 		reason: entry.reason,
 		added: entry.added,
 		evidence: entry.evidence ?? null,
@@ -175,7 +179,13 @@ export function runConfig(run: RunRecord): RunConfig {
 	return {
 		model: run.model,
 		effort: run.effort ?? undefined,
-		backend: run.backend
+		backend: run.backend,
+		// Must be carried, or the matcher's `cfg.harness ?? 'single-pass'` fallback
+		// evaluates every run as single-pass: a `harness: "single-pass"` verdict
+		// would then hide two-pass runs the RUNNER deliberately allows (the exact
+		// re-test workflow the README recommends), and a `harness: "two-pass"`
+		// verdict would show retired runs as ordinary.
+		harness: run.harness
 	};
 }
 

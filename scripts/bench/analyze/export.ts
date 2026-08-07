@@ -104,7 +104,10 @@ export function runRow(run: RunRecord): Record<string, string | number | null> {
 		harness: run.harness,
 		review: reviewLabelFor(run),
 		prompt_sha: promptShaLabel(run.prompt_sha),
-		n_passes: run.passes.length,
+		// Null, NOT 0, when no breakdown was recorded: the 156 legacy runs each made
+		// exactly one pass, so `0` is a false statement — and it would sit one line
+		// from `prompt_sha`, which gets the same distinction right.
+		n_passes: run.passes.length === 0 ? null : run.passes.length,
 		policy_version: run.policy_version,
 		status: run.status,
 		failure_reason: run.failure_reason,

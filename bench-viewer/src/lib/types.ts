@@ -52,6 +52,8 @@ export interface BlacklistInfo {
 	effort: string;
 	/** Null covers both backends. */
 	backend: string | null;
+	/** Null covers every harness — the scope every pre-harness verdict carries. */
+	harness: string | null;
 	reason: string;
 	/** `YYYY-MM-DD`. An old verdict against a since-updated model reads as stale. */
 	added: string;
@@ -317,7 +319,8 @@ export interface PassRow {
 	model: string;
 	backend: string;
 	effort: string | null;
-	status: string;
+	/** Null when the pass recorded no status — never assumed to be `scored`. */
+	status: string | null;
 	failure_reason: string | null;
 	duration_ms: number | null;
 	tool_calls: number | null;
@@ -391,6 +394,11 @@ export interface RunDetail {
 	 * whose deltas are all zero, and the UI must not render them the same way.
 	 */
 	review_effect: ReviewEffect | null;
+	/**
+	 * Page-discovery coverage per pass. Empty on a single-pass run or a transcript
+	 * predating pass stamps; `page_coverage` above stays the whole-run union.
+	 */
+	pass_coverage: { pass: number; fetched_urls: string[]; coverage: PageCoverage | null }[];
 	derived: {
 		cost_usd: number | null;
 		cost_source: string | null;

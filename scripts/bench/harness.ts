@@ -74,7 +74,9 @@ export function isHarnessName(name: string): boolean {
 }
 
 export function harnessFor(name: string): HarnessSpec | undefined {
-	return HARNESSES[name];
+	// Guarded, not a raw index: `harnessFor('constructor')` would otherwise return
+	// `Object.prototype.constructor` and be treated as a harness spec.
+	return isHarnessName(name) ? HARNESSES[name] : undefined;
 }
 
 /**
@@ -125,9 +127,54 @@ export function promptShasFor(harness: HarnessSpec): Record<string, string> {
  */
 export function promptShaLabel(shas: Record<string, string> | null | undefined): string {
 	if (!shas) return 'unknown';
-	const keys = Object.keys(shas).toSorted((a, b) => a.localeCompare(b));
+	// Ordered by pass INDEX, not lexicographically: keys are `<index>-<role>`, so
+	// a 10-pass harness would otherwise put `10-x` before `2-y` and give the same
+	// prompt set two different labels depending on pass count.
+	const keys = Object.keys(shas).toSorted((a, b) => {
+		const ai = Number.parseInt(a, 10);
+		const bi = Number.parseInt(b, 10);
+		if (Number.isFinite(ai) && Number.isFinite(bi) && ai !== bi) return ai - bi;
+		return a.localeCompare(b);
+	});
 	if (keys.length === 0) return 'unknown';
 	return keys.map((k) => shas[k]).join('/');
+}
+
+/**
+ * The review-configuration label: `none` (the harness has no review pass),
+ * `same` (the reviewer inherited the primary model and effort), or what it was
+ * overridden to. Used as a leaderboard dimension, so a drafter/reviewer split
+ * never pools with self-correction.
+ *
+ * Keyed off the HARNESS SPEC, never off which passes a run happened to complete.
+ * Inferring it from `meta.passes` labelled a two-pass run whose first pass failed
+ * as `none` — splitting its failures into a phantom cell and leaving the real
+ * `two-pass · same` row reading a 0% failure rate. Worse, the mislabelling only
+ * hit the INHERITED configuration, since an override still had `review_model` to
+ * give it away, so failure rates were not even comparable between the two.
+ *
+ * One implementation for both the runner and the analysis layer, because two
+ * implementations of one label is how a cell gets labelled two ways.
+ */
+export function reviewLabel(opts: {
+	harness: string;
+	reviewModel: string | null | undefined;
+	reviewEffort: string | null | undefined;
+}): string {
+	const spec = harnessFor(opts.harness);
+	// `null` and `undefined` both mean "not set": meta.json writes null, CliArgs
+	// leaves it undefined, and this one function serves both callers.
+	const reviewModel = opts.reviewModel ?? undefined;
+	const reviewEffort = opts.reviewEffort ?? undefined;
+	// An UNKNOWN harness is not assumed review-less: fall back to the overrides,
+	// which are the only other evidence a review pass was configured.
+	const hasReviewPass = spec
+		? spec.passes.some((p) => p.role === 'review')
+		: reviewModel !== undefined || reviewEffort !== undefined;
+	if (!hasReviewPass) return 'none';
+	if (reviewModel === undefined && reviewEffort === undefined) return 'same';
+	const model = reviewModel ?? '(same model)';
+	return reviewEffort === undefined ? model : `${model}@${reviewEffort}`;
 }
 
 // --- multi-pass accounting ----------------------------------------------------
@@ -157,6 +204,13 @@ export interface PassMeta {
 	providers: string[];
 	/** Real billed cost of this pass (openrouter only), when the provider reported it. */
 	price?: number | null;
+	/**
+	 * Perfect-prefix-cache counterfactual for THIS pass, priced with THIS pass's
+	 * model. Per-pass because rates differ across a `--review-model` split, and
+	 * because the estimator's append-only prompt premise only holds inside one
+	 * pass — a fresh message list under a different system prompt breaks it.
+	 */
+	price_cached?: number | null;
 }
 
 /**
@@ -178,7 +232,12 @@ export function mergePassResults(results: readonly RunResult[]): RunResult {
 	if (results.length === 0) {
 		throw new Error('mergePassResults: no passes to merge');
 	}
+	// The LAST pass that produced a candidate — matching this function's contract
+	// rather than relying on `runPasses` stopping at the first pass that did not.
+	// A future harness that continues past a barren pass must not silently lose
+	// the answer an earlier one produced.
 	const last = results[results.length - 1];
+	const lastWithCandidate = results.findLast((r) => r.candidate !== undefined);
 	const providers: string[] = [];
 	for (const r of results) {
 		for (const p of r.providers ?? []) if (!providers.includes(p)) providers.push(p);
@@ -188,9 +247,12 @@ export function mergePassResults(results: readonly RunResult[]): RunResult {
 		.filter((c): c is number => typeof c === 'number');
 
 	return {
+		// `status`/`failureReason` come from the FINAL pass: the setup being measured
+		// is the whole chain, so a chain whose last pass failed is a failed run even
+		// if an earlier pass submitted.
 		status: last.status,
 		failureReason: last.failureReason,
-		candidate: last.candidate,
+		candidate: last.status === 'scored' ? lastWithCandidate?.candidate : undefined,
 		toolCalls: sum(results, (r) => r.toolCalls),
 		submitAttempts: sum(results, (r) => r.submitAttempts),
 		promptTokens: sum(results, (r) => r.promptTokens),

@@ -321,7 +321,7 @@
 									<td class="left">{pass.role}</td>
 									<td class="left">{pass.model}</td>
 									<td>{pass.effort ?? '—'}</td>
-									<td class:bad={pass.status === 'failed'}>{pass.status}</td>
+									<td class:bad={pass.status === 'failed'}>{pass.status ?? '—'}</td>
 									<td>{duration(pass.duration_ms)}</td>
 									<td>{pass.tool_calls ?? '—'}</td>
 									<td>{count(pass.total_tokens)}</td>
@@ -334,16 +334,81 @@
 				<p class="muted small">
 					The headline cost, token and duration figures above are the TOTAL across these passes — a
 					two-pass setup is only comparable to a single-pass one if it is charged for both halves.
+					<code>--max-tool-calls</code> applies PER pass, so each fresh agent gets the full budget.
 				</p>
 			</div>
+
+			{#if detail.pass_coverage.length > 0}
+				<div class="card">
+					<h2>Page discovery, per pass</h2>
+					<!-- The Navigation tab shows the whole-run UNION, which answers "did this setup
+					     reach every page" but cannot tell a reviewer that recovered a whole menu
+					     section from one that opened nothing. That distinction is the harness's
+					     core hypothesis, so it gets its own table. -->
+					<div class="scroll-x">
+						<table>
+							<thead>
+								<tr>
+									<th class="left">Pass</th>
+									<th>Pages opened</th>
+									<th>Of available</th>
+									<th class="left">Opened only by this pass</th>
+								</tr>
+							</thead>
+							<tbody>
+								{#each detail.pass_coverage as entry (entry.pass)}
+									{@const earlier = new Set(
+										detail.pass_coverage
+											.filter((other) => other.pass < entry.pass)
+											.flatMap((other) => other.fetched_urls)
+									)}
+									{@const fresh = entry.fetched_urls.filter((url) => !earlier.has(url))}
+									<tr>
+										<td class="left">{entry.pass}</td>
+										<td>{entry.fetched_urls.length}</td>
+										<td>{entry.coverage ? entry.coverage.available : '—'}</td>
+										<td class="left">
+											{#if entry.pass === detail.pass_coverage[0].pass}
+												<span class="muted">—</span>
+											{:else if fresh.length === 0}
+												<span class="muted">nothing new</span>
+											{:else}
+												<span class="good">{fresh.length}</span>
+												<span class="muted small"
+													>{fresh.slice(0, 3).join(', ')}{fresh.length > 3
+														? ` +${fresh.length - 3} more`
+														: ''}</span
+												>
+											{/if}
+										</td>
+									</tr>
+								{/each}
+							</tbody>
+						</table>
+					</div>
+				</div>
+			{/if}
 
 			<div class="card">
 				<h2>What the review pass changed</h2>
 				{#if !detail.review_effect}
-					<p class="muted">
-						No pass-1 score was recorded for this run, so the review pass's effect cannot be
-						separated from the final result.
-					</p>
+					<!-- Two DIFFERENT reasons the effect is unavailable, and naming the wrong one
+					     sends you looking for a file that is sitting right there. When pass 2
+					     fails to submit, `report-pass1.json` DOES exist — only the final report
+					     is missing. -->
+					{#if detail.run.report_pass1 && !detail.run.report}
+						<p class="muted">
+							Pass 1 was scored, but the run produced no final result{detail.run.failure_reason
+								? ` (${detail.run.failure_reason})`
+								: ''} — so there is nothing to compare it against. Pass 1's own score is in
+							<code>report-pass1.json</code>.
+						</p>
+					{:else}
+						<p class="muted">
+							No pass-1 score was recorded for this run, so the review pass's effect cannot be
+							separated from the final result.
+						</p>
+					{/if}
 				{:else}
 					{@const effect = detail.review_effect}
 					<div class="scroll-x">

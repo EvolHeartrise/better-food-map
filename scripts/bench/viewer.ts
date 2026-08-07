@@ -72,7 +72,7 @@ import {
 	rescoreRun,
 	taskDirFor
 } from './analyze/rescore';
-import { buildTimeline, fetchedUrls, pageCoverage } from './analyze/transcript';
+import { buildTimeline, fetchedUrls, pageCoverage, transcriptPasses } from './analyze/transcript';
 import { loadManifest } from './snapshot-store';
 
 const VIEWER_ROOT = 'bench-viewer';
@@ -427,6 +427,18 @@ function runDetail(
 		rescore,
 		page_coverage: pageCoverage(loadManifest(taskDir), fetched),
 		fetched_urls: fetched,
+		/**
+		 * Coverage per pass, so "the reviewer opened a page the extractor missed"
+		 * is measurable. The union above answers "did this SETUP reach every page";
+		 * it cannot distinguish a reviewer that recovered a whole menu section from
+		 * one that opened nothing — which is the harness's core hypothesis. Empty on
+		 * a single-pass run or a transcript predating pass stamps.
+		 */
+		pass_coverage: transcriptPasses(events).map((pass) => ({
+			pass,
+			fetched_urls: fetchedUrls(events, pass),
+			coverage: pageCoverage(loadManifest(taskDir), fetchedUrls(events, pass))
+		})),
 		timeline: buildTimeline(events),
 		gold_items: gold?.items ?? null,
 		candidate_items: Array.isArray(candidate?.items) ? candidate.items : null,

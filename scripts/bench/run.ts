@@ -34,6 +34,7 @@ import {
 	harnessFor,
 	mergePassResults,
 	promptShasFor,
+	reviewLabel,
 	userMessageFor,
 	type HarnessSpec,
 	type PassMeta,
@@ -1400,21 +1401,6 @@ export function effortForPass(cli: CliArgs, pass: PassSpec): string | undefined 
 }
 
 /**
- * A one-line label for the review configuration, used as a leaderboard
- * dimension so a drafter/reviewer split never pools with self-correction.
- * `none` = no review pass; `same` = the reviewer inherited the primary config.
- */
-export function reviewLabel(
-	cli: Pick<CliArgs, 'harness' | 'reviewModel' | 'reviewEffort'>
-): string {
-	const spec = harnessFor(cli.harness);
-	if (!spec?.passes.some((p) => p.role === 'review')) return 'none';
-	if (cli.reviewModel === undefined && cli.reviewEffort === undefined) return 'same';
-	const model = cli.reviewModel ?? '(same model)';
-	return cli.reviewEffort === undefined ? model : `${model}@${cli.reviewEffort}`;
-}
-
-/**
  * Run ONE pass of a harness, appending its events to the run transcript tagged
  * with which pass produced them.
  *
@@ -1479,6 +1465,22 @@ async function executePass(opts: {
 	}
 }
 
+/**
+ * Every distinct model the harness will actually call, in pass order.
+ *
+ * A `--review-model` split is two models in one run, and anything fetched
+ * per-model (pricing, `supported_parameters`, provider quantization tiers) has to
+ * cover both or it describes the wrong one.
+ */
+export function distinctPassModels(harness: HarnessSpec, cli: CliArgs): string[] {
+	const out: string[] = [];
+	for (const pass of harness.passes) {
+		const model = modelForPass(cli, pass);
+		if (!out.includes(model)) out.push(model);
+	}
+	return out;
+}
+
 /** How a single pass is executed; injectable so the sequencing is testable. */
 export type PassExecutor = (opts: {
 	pass: PassSpec;
@@ -1518,7 +1520,13 @@ export async function runPasses(opts: {
 	entryUrl: string;
 	transcript: TranscriptEvent[];
 	apiKey: string;
-	modelInfo: ModelInfo | null;
+	/**
+	 * Pricing per MODEL, not per run: a `--review-model` split bills two models,
+	 * and pricing pass 2's tokens at pass 1's rates under-reported the README's own
+	 * flagship example (cheap drafter + strong reviewer) by ~16x on the Frontier's
+	 * cost axis.
+	 */
+	modelInfo: (model: string) => ModelInfo | null;
 	execute?: PassExecutor;
 	onPassStart?: (pass: PassSpec) => void;
 	onPassAbandoned?: (pass: PassSpec, reason: string) => void;
@@ -1567,7 +1575,7 @@ export async function runPasses(opts: {
 				cli,
 				result,
 				Date.now() - passStartedAt,
-				computeOpenRouterCosts(cli, result, modelInfo)
+				computeOpenRouterCosts(cli, result, modelInfo(modelForPass(cli, pass)))
 			)
 		);
 
@@ -1608,7 +1616,7 @@ function toPassMeta(
 		cached_prompt_tokens: result.cachedPromptTokens,
 		cache_write_tokens: result.cacheWriteTokens,
 		providers: result.providers ?? [],
-		...(costs ? { price: costs.price } : {})
+		...(costs ? { price: costs.price, price_cached: costs.price_cached } : {})
 	};
 }
 
@@ -1639,6 +1647,44 @@ function computeOpenRouterCosts(
 			)
 		: null;
 	return { price, price_cached };
+}
+
+/**
+ * Run-level cost, folded from the PER-PASS numbers rather than recomputed over
+ * the merged usage list. Two reasons, both of which produced wrong money:
+ *
+ * - **Rates are per model.** A `--review-model` split bills two models; pricing
+ *   the whole run at the primary model's rates under-reported the README's own
+ *   flagship example by ~16x.
+ * - **`estimateCachedPrice` assumes an append-only prompt** (request i's prompt
+ *   is request i-1's plus new tokens). Each pass starts a FRESH message list
+ *   under a different system prompt, so at a pass boundary that premise is false
+ *   and the whole opening prompt of pass 2 — review prompt plus the serialized
+ *   draft — was billed at the cache-read rate. Per-pass estimation keeps the
+ *   premise true inside each pass, where it actually holds.
+ *
+ * `price` (REAL billed cost) is provider-reported and model-agnostic, so it sums
+ * directly. `price_cached` is null when ANY pass could not be priced: a partial
+ * counterfactual is not a smaller counterfactual, and the error would always
+ * flatter the multi-pass configuration.
+ */
+export function foldRunCosts(
+	passMetas: readonly PassMeta[],
+	mergedUsages: ChatUsage[],
+	backend: Backend
+): { price: number | null; price_cached: number | null } | undefined {
+	if (backend !== 'openrouter') return undefined;
+	const price = sumRealCost(mergedUsages);
+	let cached: number | null = 0;
+	for (const pass of passMetas) {
+		if (pass.price_cached === null || pass.price_cached === undefined) {
+			cached = null;
+			break;
+		}
+		cached += pass.price_cached;
+	}
+	// No passes ran at all (a throw before the first request): nothing to price.
+	return { price, price_cached: passMetas.length === 0 ? null : cached };
 }
 
 /**
@@ -1732,12 +1778,20 @@ async function main(): Promise<number> {
 	// tell "deliberately skipped" from "misconfigured" and keep going.
 	let blocked: BlacklistEntry | undefined;
 	try {
-		blocked = findBlock(loadBlacklist(), {
-			model: cli.model,
-			effort: cli.effort,
-			backend: cli.backend,
-			harness: cli.harness
-		});
+		const list = loadBlacklist();
+		const spec = harnessFor(cli.harness);
+		// EVERY model the run would call, not just the primary one: a reviewer that
+		// has been ruled out would otherwise run and spend, and it would do so after
+		// pass 1 had already been paid for.
+		for (const pass of spec?.passes ?? []) {
+			blocked = findBlock(list, {
+				model: modelForPass(cli, pass),
+				effort: effortForPass(cli, pass),
+				backend: cli.backend,
+				harness: cli.harness
+			});
+			if (blocked) break;
+		}
 	} catch (e) {
 		console.error(`error: ${String(e)}`);
 		return 2;
@@ -1782,27 +1836,40 @@ async function main(): Promise<number> {
 		return 2;
 	}
 
-	// Fetch the model's OpenRouter metadata ONCE (pricing + supported_parameters)
-	// and share it between pre-flight parameter validation (below) and the run-cost
-	// accounting (after the run). Only the openrouter backend uses the endpoint.
-	const modelInfo = cli.backend === 'openrouter' ? await fetchModelInfo(cli.model) : null;
+	// The harness name is validated in parseCli, so this always resolves.
+	const harness = harnessFor(cli.harness) as HarnessSpec;
 
-	// Pre-flight: reject an --effort/--temperature the model does not accept BEFORE
-	// burning a chat request. A missing/unfetchable allowlist NEVER blocks the run —
-	// it warns and proceeds (the provider is the source of truth, this is a courtesy).
-	if (cli.backend === 'openrouter' && (cli.effort !== undefined || cli.temperature !== undefined)) {
-		const supported = modelInfo?.supportedParameters ?? null;
-		if (supported === null) {
-			console.error(
-				`note: could not read supported_parameters for ${cli.model} — skipping pre-flight --effort/--temperature validation`
-			);
-		} else {
-			const err = validateRequestedParams(
-				{ effort: cli.effort, temperature: cli.temperature },
-				supported
-			);
+	// Metadata (pricing + supported_parameters) for EVERY model the run will use,
+	// fetched once each. A --review-model split bills two models at two rates, so
+	// one lookup for the primary model priced the reviewer's tokens wrongly.
+	const modelInfos = new Map<string, ModelInfo | null>();
+	if (cli.backend === 'openrouter') {
+		for (const model of distinctPassModels(harness, cli)) {
+			modelInfos.set(model, await fetchModelInfo(model));
+		}
+	}
+	const modelInfoFor = (model: string): ModelInfo | null => modelInfos.get(model) ?? null;
+
+	// Pre-flight: reject an --effort/--temperature a model does not accept BEFORE
+	// burning a chat request — for EVERY pass, so an unsupported --review-effort
+	// fails here rather than after pass 1 has already been paid for. A
+	// missing/unfetchable allowlist NEVER blocks the run: it warns and proceeds
+	// (the provider is the source of truth, this is a courtesy).
+	if (cli.backend === 'openrouter') {
+		for (const pass of harness.passes) {
+			const effort = effortForPass(cli, pass);
+			if (effort === undefined && cli.temperature === undefined) continue;
+			const model = modelForPass(cli, pass);
+			const supported = modelInfoFor(model)?.supportedParameters ?? null;
+			if (supported === null) {
+				console.error(
+					`note: could not read supported_parameters for ${model} — skipping pre-flight --effort/--temperature validation`
+				);
+				continue;
+			}
+			const err = validateRequestedParams({ effort, temperature: cli.temperature }, supported);
 			if (err) {
-				console.error(`error: model ${cli.model} ${err}`);
+				console.error(`error: model ${model} (pass ${pass.index}, ${pass.role}) ${err}`);
 				return 2;
 			}
 		}
@@ -1818,9 +1885,6 @@ async function main(): Promise<number> {
 		`${startedAt.toISOString()}-${modelSlug(cli.model)}`
 	);
 
-	// The harness name is validated in parseCli, so this always resolves.
-	const harness = harnessFor(cli.harness) as HarnessSpec;
-
 	const sequence = await runPasses({
 		harness,
 		cli,
@@ -1828,7 +1892,7 @@ async function main(): Promise<number> {
 		entryUrl: manifest.entryUrl,
 		transcript,
 		apiKey: apiKey ?? '',
-		modelInfo,
+		modelInfo: modelInfoFor,
 		onPassStart: (pass) => {
 			if (harness.passes.length === 1) return;
 			const effort = effortForPass(cli, pass);
@@ -1845,20 +1909,34 @@ async function main(): Promise<number> {
 
 	if (sequence.threw) {
 		const { pass, error } = sequence.threw;
-		const thrownCosts =
-			cli.backend === 'openrouter' ? { price: null, price_cached: null } : undefined;
+		const partial = mergePassResults(passResults);
+		// NOT hardcoded null: on a multi-pass harness an earlier pass may have
+		// completed and been billed. Discarding that made the run report real
+		// tokens with `price: null`, which drops it from every cost mean while its
+		// tokens still count.
+		const thrownCosts = foldRunCosts(passMetas, partial.usages ?? [], cli.backend);
 		const meta = buildMeta(
 			cli,
 			manifest,
 			gold.policy_version,
 			startedAt,
-			mergePassResults(passResults),
+			partial,
 			thrownCosts,
 			invokedAt,
 			{},
 			passMetas
 		);
-		writeRun(runDir, { meta, transcript, firstPassCandidate });
+		// Pass 1's answer is scoreable even though pass 2 died — and that is exactly
+		// when you most want to know whether pass 1 was fine.
+		writeRun(runDir, {
+			meta,
+			transcript,
+			firstPassCandidate: harness.passes.length > 1 ? firstPassCandidate : undefined,
+			firstPassReport:
+				harness.passes.length > 1 && firstPassCandidate
+					? scoreCandidate(gold, firstPassCandidate)
+					: undefined
+		});
 		console.error(`run failed in pass ${pass.index} (${pass.role}): ${String(error)}`);
 		console.error(formatWallClock(meta));
 		console.error(`run directory: ${runDir}`);
@@ -1873,13 +1951,19 @@ async function main(): Promise<number> {
 		harness.passes.length > 1 && firstPassCandidate
 			? scoreCandidate(gold, firstPassCandidate)
 			: undefined;
-	const costs = computeOpenRouterCosts(cli, result, modelInfo);
+	const costs = foldRunCosts(passMetas, result.usages ?? [], cli.backend);
 	// Resolve the providers this run used to their quantization tiers. Only worth
 	// a request when the run actually reported providers; best-effort throughout.
-	const providerQuants =
-		cli.backend === 'openrouter' && (result.providers?.length ?? 0) > 0
-			? await fetchProviderQuantizations(cli.model)
-			: {};
+	// Resolved per MODEL: on a drafter/reviewer split the two passes may be served
+	// by different providers, and looking every provider up in the PRIMARY model's
+	// endpoint table attributed the reviewer's provider a tier that never served
+	// it. Later models win ties only for providers the earlier ones did not list.
+	let providerQuants: Record<string, string> = {};
+	if (cli.backend === 'openrouter' && (result.providers?.length ?? 0) > 0) {
+		for (const model of distinctPassModels(harness, cli)) {
+			providerQuants = { ...(await fetchProviderQuantizations(model)), ...providerQuants };
+		}
+	}
 	const meta = buildMeta(
 		cli,
 		manifest,

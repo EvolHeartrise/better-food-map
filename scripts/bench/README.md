@@ -315,6 +315,12 @@ renaming items it touched (precision down), and the trade is the interesting
 part. The viewer also lists items the review pass _recovered_ and items it _lost_,
 because swapping one miss for another leaves every ratio flat.
 
+**Page discovery is reported per pass too.** Every transcript event is stamped
+with the pass that produced it, so the run detail shows which pages each pass
+opened and which a later pass reached first. The whole-run union answers "did this
+setup reach every page"; only the split answers "did the reviewer find a page the
+extractor missed", which is the hypothesis the harness exists to test.
+
 Adding a harness means adding an entry to `HARNESSES` in `harness.ts` and nothing
 else: the runner iterates `passes`, the meta records the name and per-pass prompt
 hashes, and the analysis layer already splits cells on both.
@@ -388,7 +394,11 @@ of which default applied when `effort` is null: `provider-default` for
 openrouter, `claude-code-default` for claude).
 
 Options: `--max-tool-calls N` (default 40; on the Claude backend it maps to the
-SDK's `maxTurns`). The run aborts as failed if the model exhausts its budget,
+SDK's `maxTurns`). It is a **per-pass** budget: `--max-tool-calls 40 --harness
+two-pass` allows 40 fetches in each pass, not 40 across the run. Each pass is a
+fresh agent that has to rediscover the site, so a shared budget would starve the
+reviewer rather than measure it — but note this is the one axis where a two-pass
+run is not charged as a single unit. The run aborts as failed if the model exhausts its budget,
 stops calling tools without submitting (OpenRouter path nudges once first), or
 can't produce a valid submission. On the Claude backend a valid submit ends the
 run by interrupting the streaming query (via an `AbortController`) and ignoring
@@ -489,12 +499,23 @@ also carries two USD cost fields (absent on the Claude backend, which reports
   denominated in USD). Requests missing a cost are skipped; `price` is `null` when
   no request carried cost info at all.
 - `price_cached` — the **HYPOTHETICAL cost of the same run under perfect prefix
-  caching**. Definition: the bench loop is append-only, so request _i_'s prompt is
-  request _i-1_'s prompt plus new tokens; assume every token of request _i_'s
-  prompt that was already in request _i-1_'s prompt is billed at the model's
-  cache-read rate, the remainder at the normal input rate, and completions at the
-  output rate; request 1 is fully uncached; cache-WRITE premiums are ignored
-  (idealized). It is computed from the per-request usage sequence plus the model's
+  caching**. Definition: within a single pass the loop is append-only, so request
+  _i_'s prompt is request _i-1_'s prompt plus new tokens; assume every token of
+  request _i_'s prompt that was already in request _i-1_'s prompt is billed at the
+  model's cache-read rate, the remainder at the normal input rate, and completions
+  at the output rate; the first request of each pass is fully uncached; cache-WRITE
+  premiums are ignored (idealized).
+
+  **Estimated PER PASS and summed**, for two reasons that both produced wrong
+  money when it was done over the merged usage list. Each pass starts a FRESH
+  message list under a different system prompt, so the append-only premise is
+  false at a pass boundary — pass 2's whole opening prompt (review prompt plus the
+  serialized draft) was being billed at the cache-read rate. And rates are
+  per-model: on a `--review-model` split, pricing the reviewer's tokens at the
+  drafter's rates under-reported the README's own flagship example by ~16x on a
+  selectable Frontier axis. `price_cached` is `null` when ANY pass could not be
+  priced — a partial counterfactual is not a smaller one, and the error always
+  flatters the multi-pass configuration. It is computed from the per-request usage sequence plus the model's
   per-token pricing, fetched once per run from OpenRouter's public models endpoint
   (`GET /api/v1/models` → `pricing.prompt`, `pricing.completion`,
   `pricing.input_cache_read`). `price_cached` is `null` when that pricing can't be
@@ -529,7 +550,11 @@ bun run bench:blacklist --check  --model <id> [--effort <level>]   # exit 0 allo
 
 `bench:run` and `bench:draft` consult it **first** — before the API-key check,
 before the models fetch, before any chat request — so a blacklisted run costs
-nothing. They **exit 3** (not 2) and print the entry's reason, date, and
+nothing. On a multi-pass harness EVERY model the run would call is checked,
+including `--review-model`: a reviewer that has been ruled out must not run, and
+must not do so only after the extraction pass has already been paid for. The same
+holds for pre-flight `--effort`/`--temperature` validation, which now covers each
+pass's own model. They **exit 3** (not 2) and print the entry's reason, date, and
 evidence: a sweep driver can treat 3 as "deliberately skipped" and keep going,
 while 2 still means "you misconfigured this."
 
@@ -556,9 +581,17 @@ right for a verdict about raw model capability ("it truncates long menus") and
 wrong for one a different setup might overturn — a model ruled out for missing
 pages may well pass with a review pass that re-enumerates them. Every entry
 written before harnesses existed omits it, so those verdicts currently block
-`--harness two-pass` runs too. Scope them (`harness: "single-pass"`) if you want
-to re-test those models under a new setup, or use `--ignore-blacklist` for a
-one-off.
+`--harness two-pass` runs too. Scope them if you want to re-test those models
+under a new setup, or use `--ignore-blacklist` for a one-off:
+
+```bash
+bun run bench:blacklist --remove --model openai/gpt-5.6-luna --effort minimal
+bun run bench:blacklist --add --model openai/gpt-5.6-luna --effort minimal \
+  --harness single-pass --reason "…" --evidence "…"
+```
+
+The scope participates in entry identity, so a `single-pass` and a `two-pass`
+verdict for one model coexist, and `--remove` takes only the scope you name.
 
 Two escape hatches, because a blacklist you cannot override is a trap — models
 get updated and old verdicts expire:

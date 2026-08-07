@@ -139,7 +139,8 @@ export interface PassRecord {
 	model: string;
 	backend: string;
 	effort: string | null;
-	status: string;
+	/** Null when the pass recorded no status — never assumed to be `scored`. */
+	status: string | null;
 	failure_reason: string | null;
 	duration_ms: number | null;
 	tool_calls: number | null;
@@ -278,7 +279,9 @@ function readPasses(meta: Record<string, unknown>): PassRecord[] {
 			model: readString(p, 'model') ?? '(unknown model)',
 			backend: readString(p, 'backend') ?? '(unknown backend)',
 			effort: readString(p, 'effort'),
-			status: readString(p, 'status') ?? 'scored',
+			// Absent stays null. Defaulting to 'scored' would report an outcome no
+			// run recorded — the same absent-as-default trap this module forbids.
+			status: readString(p, 'status'),
 			failure_reason: readString(p, 'failure_reason'),
 			duration_ms: readNumber(p, 'duration_ms'),
 			tool_calls: readNumber(p, 'tool_calls'),

@@ -12,7 +12,8 @@ import {
 	scopeCoverage,
 	statusFor,
 	toInfo,
-	type Blacklist
+	type Blacklist,
+	type BlacklistEntry
 } from './blacklist';
 import type { RunRecord } from './record';
 
@@ -304,5 +305,52 @@ describe('loadBlacklistSafe', () => {
 		const path = join(dir, 'invalid.json');
 		writeFileSync(path, JSON.stringify({ entries: [{ model: 'm', reason: 'r', added: 'nope' }] }));
 		expect(loadBlacklistSafe(path).error).toContain('added must be YYYY-MM-DD');
+	});
+});
+
+describe('harness scope reaches the analytics layer', () => {
+	// The matcher defaults a missing `cfg.harness` to `single-pass`, so a
+	// `runConfig` that dropped the field evaluated EVERY run as single-pass —
+	// inverting the verdict in both directions at once.
+	// Same model the `run()` fixture uses, so only the harness axis is in play.
+	const MODEL = 'openai/gpt-5.6-luna';
+	const entry = (harness?: string): BlacklistEntry => ({
+		model: MODEL,
+		harness,
+		reason: 'r',
+		added: '2026-08-06'
+	});
+
+	test('a single-pass verdict does NOT retire a two-pass run', () => {
+		// This is the README's recommended re-test workflow: scope the old verdicts
+		// to single-pass, then run the model under a new harness. Before the fix the
+		// runner allowed those runs and the leaderboard hid them.
+		const twoPass = run({ harness: 'two-pass' });
+		expect(blockFor(twoPass, { entries: [entry('single-pass')] })).toBeNull();
+		expect(runsCoveredBy([twoPass], entry('single-pass'))).toBe(0);
+		expect(hideBlacklisted([twoPass], { entries: [entry('single-pass')] })).toHaveLength(1);
+	});
+
+	test('a two-pass verdict DOES retire a two-pass run', () => {
+		const twoPass = run({ harness: 'two-pass' });
+		expect(blockFor(twoPass, { entries: [entry('two-pass')] })).not.toBeNull();
+		expect(runsCoveredBy([twoPass], entry('two-pass'))).toBe(1);
+	});
+
+	test('a two-pass verdict leaves single-pass runs alone', () => {
+		const single = run({ harness: 'single-pass' });
+		expect(blockFor(single, { entries: [entry('two-pass')] })).toBeNull();
+	});
+
+	test('an unscoped verdict still covers every harness', () => {
+		// Every pre-existing verdict is this shape and must keep applying.
+		for (const harness of ['single-pass', 'two-pass']) {
+			expect(blockFor(run({ harness }), { entries: [entry()] })).not.toBeNull();
+		}
+	});
+
+	test('toInfo surfaces the scope so the register can show it', () => {
+		expect(toInfo(entry('single-pass')).harness).toBe('single-pass');
+		expect(toInfo(entry()).harness).toBeNull();
 	});
 });
