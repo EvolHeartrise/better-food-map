@@ -45,6 +45,15 @@ bench/tasks/<venue-slug>/
   `dairy_free`, `nut_free`, `halal`) — course tags are deliberately NOT scored
   by this bench. Store tags minimally (e.g. `vegan` alone); the scorer expands
   the vegan → vegetarian + dairy_free implication on both sides before comparing.
+- **A trailing `(…)` group marks AUTHORED text: a qualifier the gold adds, which
+  the source does not display on the item's own line.** Every case below is one
+  of these, and they are all handled by one rule — an item name passes the
+  snapshot-membership check when either the full name, or its base with trailing
+  `(…)` groups removed (stripped repeatedly, so a `(size) (Happy Hour)` double
+  suffix still resolves to the bare dish name), appears in the snapshot. So the
+  BASE must be verbatim and the qualifiers are never corpus-checked. Everything
+  outside the parentheses is the source's own words; everything inside is ours.
+
 - When a source itemizes ONE dish at MULTIPLE prices (sizes/serving formats:
   bowl/cup, 5 oz/9 oz/bottle), each variant is its own item named
   `<dish name exactly as displayed> (<variant label, in the source's own word>)`
@@ -52,11 +61,20 @@ bench/tasks/<venue-slug>/
   trailing parenthetical. Keep the FULL displayed name including any
   origin/appellation qualifier on its line (`… Smooth Red, BC VQA`), and for a
   size variant shown with vendor slang (`8oz halfer`, `16 oz sleeve`) use just
-  the measured volume (`(8 oz)`, `(16 oz)`). The linter accepts a variant name when either the full
-  name or its base with trailing `(…)` groups removed (stripped repeatedly, so a
-  `(size) (Happy Hour)` double suffix still resolves to the bare dish name) is in
-  the snapshot, so the base must be verbatim but the labels themselves are not
-  corpus-checked. Add-ons and upsells (`Add Noodles`, `Extra Chutney`) remain non-items.
+  the measured volume (`(8 oz)`, `(16 oz)`). Add-ons and upsells (`Add Noodles`,
+  `Extra Chutney`) remain non-items.
+
+- **A format disambiguator, when one venue sells the same-named item two ways.**
+  New York Fries lists both a poutine and a hot dog as `Bacon Double Cheese`.
+  Gold item names must be unique — the scorer keys items by name and silently
+  drops a collision, and the linter errors on one — so the format goes in a
+  trailing group: the poutine keeps the bare name, and the dog becomes
+  `Bacon Double Cheese (Dog)`. Use the source's own word for the format, taken
+  from the section the item is listed under. Note the scorer's `nameMatchKey` strips
+  parentheses before comparing, so `X (Dog)` and `X Dog` are the SAME key: the
+  parentheses are for the reader and the linter, and cost nothing at scoring
+  time. Without the group the name is neither verbatim NOR flagged as authored,
+  which is what made three of these read as gold typos.
 - A Happy Hour item is a source-designated price context: it is its own item,
   distinct from any regular-menu version, carrying its Happy Hour price, with the
   literal suffix ` (Happy Hour)` appended to the END of its name (e.g.
@@ -82,7 +100,23 @@ bench/tasks/<venue-slug>/
 
 Validate with `bun run bench:lint [task-dir...]` (defaults to all tasks): schema
 and vocabulary checks, and every item name / source URL must exist in the task's
-own snapshot — a zero-hit name is a gold typo or a snapshot hole.
+own snapshot — a zero-hit name is a gold typo, an unmarked authored qualifier
+(see the `(…)` rule above), or a snapshot hole.
+
+A task with no `gold/data.json` is **skipped, not failed**, when linting all
+tasks: `bench:new` scaffolds a task dir before anything is recorded and
+`bench:draft` writes `gold/draft.json` and deliberately never `data.json`, so
+"recorded, drafted, not yet promoted" is a normal state of the authoring
+workflow rather than a defect. Naming that task explicitly
+(`bench:lint bench/tasks/<slug>`) still fails — asking for one task by name and
+getting silence is its own trap.
+
+The snapshot corpus the membership checks run against is compared under Unicode
+NFC and with HTML entities decoded, so a source that spells `sautéed` as
+`e`+U+0301 still matches gold's U+00E9, and `caf&eacute;` is `café` rather than
+`caf`. An entity the decoder does not know is left INTACT, never replaced with a
+space — silently deleting a character is how two identical-looking strings stop
+comparing equal.
 
 ## Recording a snapshot
 

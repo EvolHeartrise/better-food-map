@@ -13,7 +13,7 @@
  *
  * Errors exit 1 (gold is wrong); warnings print but pass (worth a look).
  */
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import * as v from 'valibot';
 import { isTextType, loadManifest, normalizeUrl, SnapshotStore } from './snapshot-store';
@@ -56,15 +56,101 @@ export const GoldSchema = v.object({
 
 export type GoldMenu = v.InferOutput<typeof GoldSchema>;
 
+/**
+ * Named HTML entities `htmlToText` decodes.
+ *
+ * Deliberately a focused set rather than the full HTML5 table: menu pages use a
+ * narrow vocabulary — structural characters, typographic punctuation, legal
+ * marks, and the accented letters of café/jalapeño/crème. Everything else is
+ * covered by the numeric forms, and an entity this table does not know is left
+ * INTACT rather than destroyed (see `decodeEntity`).
+ */
 const ENTITIES: Record<string, string> = {
+	// structural
 	'&amp;': '&',
 	'&lt;': '<',
 	'&gt;': '>',
 	'&quot;': '"',
-	'&#39;': "'",
 	'&apos;': "'",
-	'&nbsp;': ' '
+	'&nbsp;': ' ',
+	// typographic punctuation
+	'&rsquo;': '’',
+	'&lsquo;': '‘',
+	'&rdquo;': '”',
+	'&ldquo;': '“',
+	'&ndash;': '–',
+	'&mdash;': '—',
+	'&hellip;': '…',
+	'&middot;': '·',
+	'&bull;': '•',
+	'&laquo;': '«',
+	'&raquo;': '»',
+	'&deg;': '°',
+	// legal / commercial marks
+	'&reg;': '®',
+	'&copy;': '©',
+	'&trade;': '™',
+	// accented letters, both cases
+	'&eacute;': 'é',
+	'&Eacute;': 'É',
+	'&egrave;': 'è',
+	'&Egrave;': 'È',
+	'&agrave;': 'à',
+	'&Agrave;': 'À',
+	'&ccedil;': 'ç',
+	'&Ccedil;': 'Ç',
+	'&ntilde;': 'ñ',
+	'&Ntilde;': 'Ñ',
+	'&uuml;': 'ü',
+	'&Uuml;': 'Ü',
+	'&ouml;': 'ö',
+	'&Ouml;': 'Ö',
+	'&auml;': 'ä',
+	'&Auml;': 'Ä'
 };
+
+const ENTITY_RE = /&[a-zA-Z][a-zA-Z0-9]*;|&#\d+;|&#[xX][0-9a-fA-F]+;/g;
+
+/**
+ * One HTML entity → the character it denotes, or the entity UNCHANGED when it
+ * cannot be decoded.
+ *
+ * Leaving an unknown entity intact is the point. The previous implementation
+ * replaced every entity outside a seven-item table with a SPACE, which silently
+ * destroyed characters — `caf&eacute;` became `caf` (losing both the é and the
+ * word boundary), `Flamin&#8217;` became `Flamin`, and `NYF&reg;` became `NYF `.
+ * Across the current snapshots that was ~600 destroyed characters, each one a
+ * potential false "not found in the snapshot" for a gold name or description.
+ * It also reached MODELS, since `fetchPage` renders pages through this same
+ * function. A literal `&hearts;` surviving in the text is noise; a deleted
+ * apostrophe is a wrong answer, so unknown decodes to itself.
+ *
+ * Named lookup is exact first, then lowercased, so `&AMP;` still decodes while
+ * `&Eacute;` keeps its case.
+ */
+function decodeEntity(entity: string): string {
+	const named = ENTITIES[entity] ?? ENTITIES[entity.toLowerCase()];
+	if (named !== undefined) return named;
+
+	const decimal = /^&#(\d+);$/.exec(entity);
+	const hex = decimal ? null : /^&#[xX]([0-9a-fA-F]+);$/.exec(entity);
+	if (!decimal && !hex) return entity;
+	const code = decimal
+		? Number.parseInt(decimal[1], 10)
+		: Number.parseInt((hex as RegExpExecArray)[1], 16);
+
+	// NUL, lone surrogates and out-of-range values are not text; keep the source
+	// bytes visible rather than injecting something unrepresentable.
+	if (
+		!Number.isInteger(code) ||
+		code <= 0 ||
+		code > 0x10ffff ||
+		(code >= 0xd800 && code <= 0xdfff)
+	) {
+		return entity;
+	}
+	return String.fromCodePoint(code);
+}
 
 /**
  * Rendered/raw HTML → searchable text: no scripts/styles/tags, entities decoded.
@@ -81,20 +167,30 @@ export function htmlToText(html: string): string {
 			return alt ? ` [image: ${alt}] ` : ' ';
 		})
 		.replace(/<[^>]+>/g, ' ')
-		.replace(/&[a-z]+;|&#\d+;/gi, (e) => ENTITIES[e.toLowerCase()] ?? ' ');
+		.replace(ENTITY_RE, decodeEntity);
 }
 
 /**
  * Case-, whitespace- and apostrophe-insensitive form used for corpus membership
- * checks and for the scorer's name/description matching. The apostrophe family
- * (’ ‘ ʼ ´ `) folds to a plain ASCII ' so a name like "Mac n’ Cheez" matches
- * "Mac n' Cheez" — a model straightening the source's curly apostrophe (a
- * detokenizer habit it can't reliably control) is typography, not an extraction
- * error, so it must never split a match. Apostrophe style is never semantic, so
- * folding it can only merge two spellings of the SAME name, never distinct items.
+ * checks and for the scorer's name/description matching.
+ *
+ * Unicode is normalized to NFC FIRST, because a composed character and its
+ * decomposed form render identically but never compare equal: MeeT's snapshot
+ * spells "sautéed" as `e`+U+0301 (NFD) while the hand-authored gold carries
+ * U+00E9 (NFC), so the description check reported a mismatch between two strings
+ * a human cannot tell apart. Normalizing is not a fuzzy match — it is the
+ * standard equality for text that Unicode itself defines as equivalent.
+ *
+ * The apostrophe family (’ ‘ ʼ ´ `) then folds to a plain ASCII ' so a name like
+ * "Mac n’ Cheez" matches "Mac n' Cheez" — a model straightening the source's
+ * curly apostrophe (a detokenizer habit it can't reliably control) is typography,
+ * not an extraction error, so it must never split a match. Apostrophe style is
+ * never semantic, so folding it can only merge two spellings of the SAME name,
+ * never distinct items.
  */
 export function normalizeForSearch(text: string): string {
 	return text
+		.normalize('NFC')
 		.replace(/[’‘ʼ´`]/g, "'")
 		.toLowerCase()
 		.replace(/\s+/g, ' ')
@@ -119,6 +215,13 @@ export function stripVariantSuffix(name: string): string | undefined {
 export interface LintResult {
 	errors: string[];
 	warnings: string[];
+	/**
+	 * Set by `lintTask` only, when the directory holds nothing to lint YET — a
+	 * task scaffolded by `bench:new`, or recorded and drafted but not promoted.
+	 * Holds the human reason. `lintGold` never sets it: given gold, there is
+	 * always something to check.
+	 */
+	skipped?: string;
 }
 
 /**
@@ -205,10 +308,32 @@ export function buildCorpus(store: SnapshotStore): string {
 	return normalizeForSearch(parts.join(' '));
 }
 
+/**
+ * Lint one task directory.
+ *
+ * A dir with no `gold/data.json` is SKIPPED, not failed. When this linter was
+ * written a task directory meant an authored task, so absent gold could only be
+ * a mistake. `bench:new` (scaffolds a task dir before anything is recorded) and
+ * `bench:draft` (writes `gold/draft.json`, deliberately never `data.json`) both
+ * landed the following day and made "recorded, drafted, not yet promoted" a
+ * normal, long-lived state — one the authoring workflow in the README walks
+ * through on purpose. Reporting it as an error made `bench:lint` permanently red
+ * for doing exactly what the docs say, which is how a linter stops being read.
+ *
+ * The CLI still fails on a skip for a task named EXPLICITLY on the command line:
+ * asking to lint one task by name and getting silence is its own trap.
+ */
 export function lintTask(taskDir: string): LintResult {
 	const goldPath = join(taskDir, 'gold', 'data.json');
 	if (!existsSync(goldPath)) {
-		return { errors: [`no gold/data.json in ${taskDir}`], warnings: [] };
+		const drafted = existsSync(join(taskDir, 'gold', 'draft.json'));
+		return {
+			errors: [],
+			warnings: [],
+			skipped: drafted
+				? 'gold/draft.json exists but has not been promoted to gold/data.json'
+				: 'no gold authored yet'
+		};
 	}
 	let goldRaw: unknown;
 	try {
@@ -224,9 +349,22 @@ export function lintTask(taskDir: string): LintResult {
 	const recordedUrls = new Set(
 		store.index.entries.filter((e) => e.method === 'GET').map((e) => e.url)
 	);
-	const result = lintGold(goldRaw, buildCorpus(store), recordedUrls);
-	for (const w of manifest.warnings) result.warnings.push(`manifest: ${w}`);
-	return result;
+	// The manifest's own warnings ("page budget exhausted with 154 URLs
+	// unvisited") are NOT re-reported here. They describe the SNAPSHOT, not the
+	// gold, they are identical on every run until the venue is re-recorded, and
+	// they belong to the tools that own that state — the recorder prints them and
+	// `bench:new --status` tracks it. Repeating them under every lint trained the
+	// eye to skim past the section where real findings appear.
+	return lintGold(goldRaw, buildCorpus(store), recordedUrls);
+}
+
+/** True when the path exists and is a directory; false on anything unreadable. */
+function isDirectory(path: string): boolean {
+	try {
+		return statSync(path).isDirectory();
+	} catch {
+		return false;
+	}
 }
 
 if (import.meta.main) {
@@ -237,19 +375,34 @@ if (import.meta.main) {
 		console.error('no bench/tasks directory — nothing to lint (skipping)');
 		process.exit(0);
 	}
-	const taskDirs = args.length > 0 ? args : readdirSync(tasksRoot).map((d) => join(tasksRoot, d));
+	// Explicitly named dirs are linted as given; a bare scan takes only
+	// directories, so a stray file under bench/tasks (a .DS_Store, a notes.md)
+	// cannot fail the run with a confusing "no manifest.json" for a non-task.
+	const explicit = args.length > 0;
+	const taskDirs = explicit
+		? args
+		: readdirSync(tasksRoot)
+				.map((d) => join(tasksRoot, d))
+				.filter(isDirectory);
 	if (taskDirs.length === 0) {
 		console.error('bench/tasks is empty — nothing to lint (skipping)');
 		process.exit(0);
 	}
 	let failed = false;
 	for (const dir of taskDirs) {
-		const { errors, warnings } = lintTask(dir);
-		const status = errors.length > 0 ? 'FAIL' : 'ok';
+		const { errors, warnings, skipped } = lintTask(dir);
+		// A skip is a finding only when this task was asked for by name.
+		if (skipped !== undefined && !explicit) {
+			console.error(`skip  ${dir}`);
+			console.error(`  ${skipped}`);
+			continue;
+		}
+		const allErrors = skipped !== undefined ? [...errors, skipped] : errors;
+		const status = allErrors.length > 0 ? 'FAIL' : 'ok';
 		console.error(`${status.padEnd(5)} ${dir}`);
-		for (const e of errors) console.error(`  error: ${e}`);
+		for (const e of allErrors) console.error(`  error: ${e}`);
 		for (const w of warnings) console.error(`  warning: ${w}`);
-		if (errors.length > 0) failed = true;
+		if (allErrors.length > 0) failed = true;
 	}
 	process.exit(failed ? 1 : 0);
 }

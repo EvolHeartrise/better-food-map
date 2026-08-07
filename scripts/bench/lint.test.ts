@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { htmlToText, lintGold, normalizeForSearch, stripVariantSuffix } from './lint';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { htmlToText, lintGold, lintTask, normalizeForSearch, stripVariantSuffix } from './lint';
 
 const CORPUS = normalizeForSearch(
 	htmlToText(
@@ -43,6 +46,71 @@ describe('htmlToText / normalizeForSearch', () => {
 		expect(text).not.toContain('300x300'); // filenames/srcset stay stripped
 		expect(text).not.toContain('decorative');
 		expect(text).not.toContain('Vegan Menu'); // non-img attributes stay stripped
+	});
+});
+
+describe('htmlToText entity decoding', () => {
+	test('decodes the named set, preserving case on accented letters', () => {
+		expect(htmlToText('caf&eacute;')).toBe('café');
+		expect(htmlToText('&Eacute;clair')).toBe('Éclair');
+		expect(htmlToText('jalape&ntilde;o')).toBe('jalapeño');
+		expect(htmlToText('NYF&reg;')).toBe('NYF®');
+		expect(htmlToText('soup &ndash; salad')).toBe('soup – salad');
+		expect(htmlToText('Flamin&rsquo; Bacon')).toBe('Flamin’ Bacon');
+	});
+
+	test('an uppercase spelling of a case-independent entity still decodes', () => {
+		expect(htmlToText('5 &AMP; 6')).toBe('5 & 6');
+		expect(htmlToText('&QUOT;x&QUOT;')).toBe('"x"');
+	});
+
+	test('decodes decimal, zero-padded decimal, and hex numeric forms', () => {
+		expect(htmlToText('Flamin&#8217; Bacon')).toBe('Flamin’ Bacon');
+		expect(htmlToText('Flamin&#x2019; Bacon')).toBe('Flamin’ Bacon');
+		expect(htmlToText('Flamin&#X2019; Bacon')).toBe('Flamin’ Bacon');
+		// Zero-padded forms the old 7-entry table missed entirely.
+		expect(htmlToText('it&#039;s 5 &#038; 6')).toBe("it's 5 & 6");
+	});
+
+	test('an unknown entity is left INTACT, never replaced with a space', () => {
+		// The regression this whole change exists for: replacing an unrecognized
+		// entity with a space deleted the character AND the word boundary, so
+		// "caf&eacute;" read as "caf" and no gold name containing it could match.
+		expect(htmlToText('I &hearts; poutine')).toBe('I &hearts; poutine');
+		expect(htmlToText('a&thinsp;b')).toBe('a&thinsp;b');
+	});
+
+	test('code points that are not text are left intact rather than injected', () => {
+		expect(htmlToText('a&#0;b')).toBe('a&#0;b'); // NUL
+		expect(htmlToText('a&#xD800;b')).toBe('a&#xD800;b'); // lone surrogate
+		expect(htmlToText('a&#1114112;b')).toBe('a&#1114112;b'); // > U+10FFFF
+	});
+
+	test('a bare ampersand and a non-entity are untouched', () => {
+		expect(htmlToText('Fish & Chips')).toBe('Fish & Chips');
+		expect(htmlToText('a & b; c')).toBe('a & b; c');
+	});
+});
+
+describe('normalizeForSearch Unicode normalization', () => {
+	// Written as explicit code points, never as source literals: the two forms are
+	// indistinguishable on screen, so a literal pair would depend on how an editor
+	// happened to save this file rather than on what the function does.
+	const NFD = 'saut\u0065\u0301ed onions'; // e + combining acute — MeeT's snapshot
+	const NFC = 'saut\u00e9ed onions'; // precomposed é — the hand-authored gold
+
+	test('NFD and NFC spellings of the same word compare equal', () => {
+		expect(NFD).not.toBe(NFC); // identical on screen, different strings
+		expect(normalizeForSearch(NFD)).toBe(normalizeForSearch(NFC));
+	});
+
+	test('a decomposed corpus still contains a composed gold description', () => {
+		const corpus = normalizeForSearch(htmlToText(`<p>with ${NFD}</p>`));
+		expect(corpus).toContain(normalizeForSearch(NFC));
+	});
+
+	test('normalization does not merge genuinely different letters', () => {
+		expect(normalizeForSearch('resume')).not.toBe(normalizeForSearch('r\u00e9sum\u00e9'));
 	});
 });
 
@@ -172,5 +240,83 @@ describe('lintGold variant names', () => {
 	test('a name that is ONLY a parenthetical (empty base) fails', () => {
 		const r = lintGold(withName('(bowl)'), VARIANT_CORPUS, REC);
 		expect(r.errors.join()).toContain('not found');
+	});
+
+	test('a format disambiguator passes on its base, and both spellings coexist', () => {
+		// New York Fries lists a poutine AND a hot dog as "Bacon Double Cheese".
+		// Gold names must be unique, so the format is an authored qualifier in a
+		// trailing group — which the base-stripping rule already accepts. Written
+		// as a bare suffix ("… Dog") it is neither verbatim nor marked as authored,
+		// which is exactly how three real gold items read as typos.
+		const corpus = normalizeForSearch(htmlToText('<p>Bacon Double Cheese</p>'));
+		const gold = structuredClone(base);
+		gold.items = [
+			{ name: 'Bacon Double Cheese', description: null, tags: [], optional_tags: [], price: 9 },
+			{
+				name: 'Bacon Double Cheese (Dog)',
+				description: null,
+				tags: [],
+				optional_tags: [],
+				price: 8
+			}
+		];
+		const r = lintGold(gold, corpus, REC);
+		expect(r.errors).toEqual([]); // unique names, both resolve to the same verbatim base
+
+		const bare = structuredClone(gold);
+		bare.items[1].name = 'Bacon Double Cheese Dog';
+		expect(lintGold(bare, corpus, REC).errors.join()).toContain('not found');
+	});
+});
+
+describe('lintTask: a task with nothing to lint yet', () => {
+	function withTask(fn: (dir: string) => void): void {
+		const dir = mkdtempSync(join(tmpdir(), 'bench-lint-'));
+		try {
+			fn(dir);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	}
+
+	test('a scaffolded task with no gold is SKIPPED, not failed', () => {
+		withTask((dir) => {
+			// What `bench:new <slug> <url> --stratum …` leaves behind.
+			writeFileSync(join(dir, 'task.json'), '{"slug":"x"}');
+			const r = lintTask(dir);
+			expect(r.errors).toEqual([]);
+			expect(r.skipped).toBe('no gold authored yet');
+		});
+	});
+
+	test('a drafted-but-unpromoted task names the draft in its skip reason', () => {
+		withTask((dir) => {
+			// What `bench:draft` leaves behind: draft.json, deliberately not data.json.
+			mkdirSync(join(dir, 'gold'), { recursive: true });
+			writeFileSync(join(dir, 'gold', 'draft.json'), '{}');
+			const r = lintTask(dir);
+			expect(r.errors).toEqual([]);
+			expect(r.skipped).toContain('draft.json');
+		});
+	});
+
+	test('gold present but no manifest is a real error, never a skip', () => {
+		withTask((dir) => {
+			mkdirSync(join(dir, 'gold'), { recursive: true });
+			writeFileSync(join(dir, 'gold', 'data.json'), JSON.stringify(goodGold));
+			const r = lintTask(dir);
+			expect(r.skipped).toBeUndefined();
+			expect(r.errors.join()).toContain('manifest');
+		});
+	});
+
+	test('unparseable gold is an error, not a skip', () => {
+		withTask((dir) => {
+			mkdirSync(join(dir, 'gold'), { recursive: true });
+			writeFileSync(join(dir, 'gold', 'data.json'), '{ not json');
+			const r = lintTask(dir);
+			expect(r.skipped).toBeUndefined();
+			expect(r.errors.length).toBeGreaterThan(0);
+		});
 	});
 });
