@@ -265,10 +265,26 @@ bun run bench:run bench/tasks/<slug> --harness two-pass \
   --review-model openai/gpt-5.6-luna --review-effort xhigh
 ```
 
-| harness       | passes                                                                                  |
-| ------------- | --------------------------------------------------------------------------------------- |
-| `single-pass` | one agent extracts and submits                                                          |
-| `two-pass`    | one agent extracts; a second **fresh** agent corrects it. Scored on pass 2's submission |
+| harness          | passes                                                                                                                     |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `single-pass`    | one agent extracts and submits                                                                                             |
+| `two-pass`       | one agent extracts; a second **fresh** agent corrects it. Scored on pass 2's submission                                    |
+| `two-pass-patch` | like `two-pass`, but the reviewer submits **corrections** (ops applied to the draft) instead of re-emitting the whole menu |
+
+**`two-pass-patch` — the reviewer patches instead of re-typing.** On a large menu
+a full-re-emission review spends most of its output tokens re-typing items it
+never doubted (a 180-item review pass burned 43k completion tokens to change
+nothing). The patch reviewer gets a `submit_corrections` tool instead of
+`submit_menu`: `add` (full items), `remove` (by name), `update` (per-field, item
+named by the scorer's own `nameMatchKey` identity so paren/case differences never
+fail a legitimate correction), and `set_sources`. An empty object approves the
+draft unchanged. Ops are validated and applied in-process (`applyCorrections`);
+an unknown target name, unknown field, or a post-patch duplicate name comes back
+as a validation issue for the model to retry, and the patched result must still
+pass the scorer's `CandidateSchema` — one source of truth for what an item is.
+On the first 180-item comparison the patch review pass was ~40% cheaper and ~2.3×
+faster than the full re-emission at equal quality. **OpenRouter backend only**
+(`--backend claude` exits 2: the Agent SDK path does not serve the tool).
 
 **What the review pass gets.** The previous pass's submitted `sources` + `items`,
 the entry URL, and the same `fetch_page` snapshot access — nothing else. It does
@@ -284,8 +300,19 @@ from a different rule set is worse than no reviewer: it rewrites correctly-appli
 conventions (the variant parenthetical, the whole-venue dietary rule, verbatim
 naming) into plausible wrongness, and under exact name matching every such edit
 costs a miss AND a hallucination. Composing guarantees both passes are judged by
-one standard. On top of the rules it names the two failure modes run analysis
-finds most often — a missed menu page and a paraphrased item name.
+one standard. On top of the rules it runs a numbered verification CHECKLIST built
+from run analysis — page sweep, venue-wide dietary claim, name fidelity (dietary
+markers are tags not name text; variant labels verbatim), description
+completeness, price/tag check, removals-need-evidence, and evidence-based source
+edits. The checklist replaced a gentler "correct the draft" prompt after
+measurement showed that prompt was a literal no-op for some models (zero edits
+across 13 runs) while its successor produced +5.9pp item recall / +17pp
+description accuracy (woodenspoon) and a +47.6pp tag-recall sweep (meetonmain,
+whole-venue vegan) within-run. Removal-type checks stay evidence-based because
+the same measurements caught the failure modes: an earlier reviewer deleted items
+it merely hadn't seen, and an early source-trimming clause cost 12.5pp of source
+recall until it was scoped to "remove only what you have confirmed contributed
+nothing".
 
 **`--review-model` / `--review-effort` are optional and inherit.** Unset, the
 review pass runs the same model and effort as the extraction pass — the
@@ -339,6 +366,11 @@ assumed to match today's. Those runs keep their own cell for that reason. The ha
 covers the exact string sent to the model, so a whitespace-only edit produces a
 new value; the point is detecting that the prompt CHANGED, not judging whether the
 change mattered.
+
+Each run also writes **`prompts.json`** — the full prompt text behind each sha,
+keyed like `prompt_sha` (`<index>-<role>` → `{ sha, text }`) — so a sha in
+`meta.json` resolves from the run directory itself instead of from git
+archaeology over `prompts.ts`. Runs predating the file have only their shas.
 
 ### Reasoning effort & temperature
 
