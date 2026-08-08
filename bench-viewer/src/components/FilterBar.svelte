@@ -3,235 +3,105 @@
 	 * The single filter row. Every view renders against this one slice — per-view
 	 * filters are how two cards quietly end up describing different data.
 	 *
-	 * The averaging mode sits here rather than inside a chart for the same reason:
-	 * macro (task-equal-weight) and micro (item-pooled) give different numbers, and
-	 * which one is in force has to be visible while reading any of them.
+	 * There is no averaging-mode control: every number is the task-equal (macro)
+	 * average, which is exact for every metric. The item-pooled (micro) mode was
+	 * removed from the UI deliberately — see `filters.mode`.
 	 */
-	import { fetchOverview, fetchSlice } from '../lib/api';
-	import { filters, router } from '../lib/state.svelte';
+	import { fetchOverview } from '../lib/api';
+	import { filters } from '../lib/state.svelte';
 	import { metricLabel } from '../lib/format';
+	import type { MetricKey } from '../lib/types';
+	import Chip from './Chip.svelte';
+	import { Button } from '$lib/components/ui/button';
+	import * as Card from '$lib/components/ui/card';
+	import * as Select from '$lib/components/ui/select';
+	import { Separator } from '$lib/components/ui/separator';
 
-	let overview = $derived(await fetchOverview(filters.revision));
+	let overview = $derived(await fetchOverview());
 	let facets = $derived(overview.facets);
-	let blacklist = $derived(overview.blacklist);
 	let open = $state(false);
-
-	/**
-	 * The number on the toggle IS the disclosure: a leaderboard quietly missing 62
-	 * of 156 runs, with nothing on screen to say so, is the failure mode this
-	 * control creates.
-	 *
-	 * It must therefore be scoped to the CURRENT SLICE, not to the corpus. Filter
-	 * to a model with no verdict against it and the corpus number still claims 62
-	 * runs are hidden while every view below shows none hidden — the control that
-	 * performs the narrowing would be the one lying about it.
-	 */
-	let slice = $derived(await fetchSlice(filters.query));
-	/**
-	 * Blacklisted runs in this slice, whether or not they are currently shown —
-	 * `hidden_blacklisted` is 0 by construction while they ARE shown, which made
-	 * the toggle read "showing blacklisted (0 runs in this slice)".
-	 */
-	let sliceBlocked = $derived(slice.n_blacklisted);
-	/** Corpus-wide, and labelled as such wherever it appears. */
-	let corpusBlocked = $derived(blacklist.n_blocked_runs);
 </script>
 
-<div class="bar">
-	<div class="row wrap">
-		<button class="chip" aria-pressed={open} onclick={() => (open = !open)}>
+<Card.Root size="sm" class="gap-0 px-3 py-2.5">
+	<div class="flex flex-wrap items-center gap-2">
+		<Chip pressed={open} onPressedChange={(next) => (open = next)}>
 			Filters{filters.active > 0 ? ` · ${filters.active}` : ''}
-		</button>
+		</Chip>
 
-		{#if blacklist.error !== null}
-			<!-- An unreadable blacklist must never render as "nothing is retired" —
-			     that is the absent-vs-zero lie, in the dangerous direction. -->
-			<span class="badge bad" title="{blacklist.path}: {blacklist.error}">
-				⊘ blacklist unreadable — nothing hidden
-			</span>
-		{:else if sliceBlocked > 0}
-			<button
-				class="chip"
-				aria-pressed={filters.includeBlacklisted}
-				title="Configurations with a recorded verdict against them are hidden by default. Their runs are still in the corpus and keep their scores."
-				onclick={() => (filters.includeBlacklisted = !filters.includeBlacklisted)}
-			>
-				⊘ {sliceBlocked} blacklisted run{sliceBlocked === 1 ? '' : 's'}
-				{filters.includeBlacklisted ? 'shown' : 'hidden'}
-			</button>
-		{/if}
-
-		<label class="control">
-			Average
-			<select bind:value={filters.mode}>
-				<option value="macro">macro (task-equal)</option>
-				<option value="micro">micro (item-pooled)</option>
-			</select>
-		</label>
-
-		<label class="control">
+		<label class="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
 			Metric
-			<select bind:value={filters.metric}>
-				{#each facets.metrics as metric (metric)}
-					<option value={metric}>{metricLabel(metric)}</option>
-				{/each}
-			</select>
+			<Select.Root
+				type="single"
+				value={filters.metric}
+				onValueChange={(value) => (filters.metric = value as MetricKey)}
+			>
+				<Select.Trigger size="sm" class="h-7 text-xs">
+					{metricLabel(filters.metric)}
+				</Select.Trigger>
+				<Select.Content>
+					{#each facets.metrics as metric (metric)}
+						<Select.Item value={metric} label={metricLabel(metric)} />
+					{/each}
+				</Select.Content>
+			</Select.Root>
 		</label>
 
 		{#if filters.active > 0}
-			<button class="chip" onclick={() => filters.reset()}>Clear</button>
+			<Button variant="ghost" size="xs" onclick={() => filters.reset()}>Clear</Button>
 		{/if}
 	</div>
 
 	{#if open}
-		<div class="panel">
-			<div class="group">
-				<span class="key">Task</span>
-				<div class="row wrap">
+		<Separator class="mt-2.5 mb-2.5" />
+		<div class="flex flex-col gap-2">
+			<div class="flex flex-wrap items-baseline gap-2">
+				<span class="min-w-[70px] text-xs text-muted-foreground">Task</span>
+				<div class="flex flex-wrap items-center gap-1.5">
 					{#each facets.tasks as task (task)}
-						<button
-							class="chip"
-							aria-pressed={filters.tasks.includes(task)}
-							onclick={() => filters.toggle('tasks', task)}>{task}</button
+						<Chip
+							pressed={filters.tasks.includes(task)}
+							onPressedChange={() => filters.toggle('tasks', task)}>{task}</Chip
 						>
 					{/each}
 				</div>
 			</div>
 
-			<div class="group">
-				<span class="key">Model</span>
-				<div class="row wrap">
+			<div class="flex flex-wrap items-baseline gap-2">
+				<span class="min-w-[70px] text-xs text-muted-foreground">Model</span>
+				<div class="flex flex-wrap items-center gap-1.5">
 					{#each facets.models as model (model)}
-						{@const state = blacklist.model_states[model]}
-						<button
-							class="chip"
-							class:retired={state === 'all'}
-							aria-pressed={filters.models.includes(model)}
-							title={state === 'all'
-								? 'Every configuration of this model is blacklisted.'
-								: state === 'partial'
-									? 'Some configurations of this model are blacklisted.'
-									: undefined}
-							onclick={() => filters.toggle('models', model)}
+						<Chip
+							pressed={filters.models.includes(model)}
+							onPressedChange={() => filters.toggle('models', model)}>{model}</Chip
 						>
-							<!-- The glyph, not the styling, is what carries the meaning: a chip
-							     that only DIMMED would read as disabled under CVD or in print. -->
-							{state === undefined ? '' : state === 'all' ? '⊘ ' : '⊘~ '}{model}
-						</button>
 					{/each}
 				</div>
 			</div>
 
-			<div class="group">
-				<span class="key">Effort</span>
-				<div class="row wrap">
+			<div class="flex flex-wrap items-baseline gap-2">
+				<span class="min-w-[70px] text-xs text-muted-foreground">Effort</span>
+				<div class="flex flex-wrap items-center gap-1.5">
 					{#each facets.efforts as effort (effort)}
-						<button
-							class="chip"
-							aria-pressed={filters.efforts.includes(effort)}
-							onclick={() => filters.toggle('efforts', effort)}>{effort}</button
+						<Chip
+							pressed={filters.efforts.includes(effort)}
+							onPressedChange={() => filters.toggle('efforts', effort)}>{effort}</Chip
 						>
 					{/each}
 				</div>
 			</div>
 
-			<div class="group">
-				<span class="key">Failed runs</span>
-				<button
-					class="chip"
-					aria-pressed={filters.includeFailed}
-					onclick={() => (filters.includeFailed = !filters.includeFailed)}
+			<div class="flex flex-wrap items-baseline gap-2">
+				<span class="min-w-[70px] text-xs text-muted-foreground">Failed runs</span>
+				<Chip
+					pressed={filters.includeFailed}
+					onPressedChange={(next) => (filters.includeFailed = next)}
 				>
 					{filters.includeFailed ? 'included' : 'excluded'}
-				</button>
-				<span class="hint">A failure rate you can't see is a lie — keep them in.</span>
-			</div>
-
-			<div class="group">
-				<span class="key">Blacklisted</span>
-				<button
-					class="chip"
-					aria-pressed={filters.includeBlacklisted}
-					disabled={blacklist.error !== null}
-					onclick={() => (filters.includeBlacklisted = !filters.includeBlacklisted)}
-				>
-					{filters.includeBlacklisted ? 'shown' : 'hidden'}
-				</button>
-				<span class="hint">
-					{#if blacklist.error !== null}
-						<!-- Not "0 verdicts": the file failed to parse, so how many there are
-						     is UNKNOWN. Reporting zero here would read as an all-clear. -->
-						{blacklist.path} could not be read, so nothing is hidden and the number of verdicts on record
-						is unknown.
-					{:else}
-						{blacklist.entries.length} verdict{blacklist.entries.length === 1 ? '' : 's'} on record, covering
-						{corpusBlocked} run{corpusBlocked === 1 ? '' : 's'} across the corpus{sliceBlocked !==
-						corpusBlocked
-							? ` (${sliceBlocked} in this slice)`
-							: ''}.
-					{/if}
-					<button class="linky" onclick={() => router.go('blacklist')}>Review them</button>
+				</Chip>
+				<span class="text-[11px] text-muted-foreground">
+					A failure rate you can't see is a lie — keep them in.
 				</span>
 			</div>
 		</div>
 	{/if}
-</div>
-
-<style>
-	.bar {
-		background: var(--surface-1);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		padding: 10px 12px;
-	}
-
-	.control {
-		display: inline-flex;
-		align-items: center;
-		gap: 6px;
-		color: var(--text-secondary);
-		font-size: 12px;
-	}
-
-	.panel {
-		margin-top: 10px;
-		padding-top: 10px;
-		border-top: 1px solid var(--gridline);
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-	}
-
-	.group {
-		display: flex;
-		align-items: baseline;
-		gap: 8px;
-		flex-wrap: wrap;
-	}
-
-	.key {
-		color: var(--text-secondary);
-		font-size: 12px;
-		min-width: 70px;
-	}
-
-	.hint {
-		color: var(--text-muted);
-		font-size: 11px;
-	}
-
-	.retired {
-		color: var(--text-muted);
-		border-style: dashed;
-	}
-
-	.linky {
-		background: none;
-		border: none;
-		padding: 0;
-		font: inherit;
-		color: var(--series-1);
-		cursor: pointer;
-		text-decoration: underline;
-	}
-</style>
+</Card.Root>

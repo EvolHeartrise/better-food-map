@@ -14,6 +14,9 @@
 	import { router } from '../lib/state.svelte';
 	import { diffRuns, itemKey } from '../lib/analysis';
 	import type { MenuItem, MetricKey } from '../lib/types';
+	import { Button } from '$lib/components/ui/button';
+	import * as Card from '$lib/components/ui/card';
+	import * as Table from '$lib/components/ui/table';
 
 	const METRICS: MetricKey[] = [
 		'item_recall',
@@ -51,225 +54,173 @@
 </script>
 
 {#if !a || !b}
-	<div class="card"><p class="muted">Pick two runs from the Runs view to compare.</p></div>
+	<Card.Root size="sm">
+		<Card.Content class="text-muted-foreground">
+			Pick two runs from the Runs view to compare.
+		</Card.Content>
+	</Card.Root>
 {:else}
-	<div class="stack">
-		<div class="card">
-			<div class="spread">
-				<h2>Run comparison</h2>
-				<button class="chip" onclick={() => router.go('runs')}>← All runs</button>
-			</div>
+	<div class="flex flex-col gap-4">
+		<Card.Root size="sm">
+			<Card.Header class="gap-0">
+				<Card.Title>Run comparison</Card.Title>
+				<Card.Action class="self-center">
+					<Button variant="outline" size="xs" onclick={() => router.go('runs')}>← All runs</Button>
+				</Card.Action>
+			</Card.Header>
 
-			<div class="scroll-x">
-				<table>
-					<thead>
-						<tr>
-							<th class="left"></th>
-							<th class="left">A</th>
-							<th class="left">B</th>
-						</tr>
-					</thead>
-					<tbody>
-						<tr>
-							<td class="left muted">Run</td>
-							<td class="left">{a.run.model} · {a.run.effort ?? 'default'}</td>
-							<td class="left">{b.run.model} · {b.run.effort ?? 'default'}</td>
-						</tr>
-						<tr>
-							<td class="left muted">Task</td>
-							<td class="left">{a.run.task}</td>
-							<td class="left">{b.run.task}</td>
-						</tr>
-						<tr>
-							<td class="left muted">Started</td>
-							<td class="left mono">{timestamp(a.run.started_at)}</td>
-							<td class="left mono">{timestamp(b.run.started_at)}</td>
-						</tr>
-						<tr>
-							<td class="left muted">Gold</td>
-							<td class="left" class:conflict={goldConflict}>
+			<Card.Content>
+				<Table.Root class="text-[13px] tabular-nums">
+					<Table.Header>
+						<Table.Row class="hover:bg-transparent">
+							<Table.Head class="text-xs"></Table.Head>
+							<Table.Head class="text-xs">A</Table.Head>
+							<Table.Head class="text-xs">B</Table.Head>
+						</Table.Row>
+					</Table.Header>
+					<Table.Body>
+						<Table.Row>
+							<Table.Cell class="text-muted-foreground">Run</Table.Cell>
+							<Table.Cell>{a.run.model} · {a.run.effort ?? 'default'}</Table.Cell>
+							<Table.Cell>{b.run.model} · {b.run.effort ?? 'default'}</Table.Cell>
+						</Table.Row>
+						<Table.Row>
+							<Table.Cell class="text-muted-foreground">Task</Table.Cell>
+							<Table.Cell>{a.run.task}</Table.Cell>
+							<Table.Cell>{b.run.task}</Table.Cell>
+						</Table.Row>
+						<Table.Row>
+							<Table.Cell class="text-muted-foreground">Started</Table.Cell>
+							<Table.Cell class="font-mono text-xs">{timestamp(a.run.started_at)}</Table.Cell>
+							<Table.Cell class="font-mono text-xs">{timestamp(b.run.started_at)}</Table.Cell>
+						</Table.Row>
+						<Table.Row>
+							<Table.Cell class="text-muted-foreground">Gold</Table.Cell>
+							<Table.Cell class={goldConflict ? 'font-semibold text-critical' : ''}>
 								{a.run.policy_version ?? 'unknown'}
-							</td>
-							<td class="left" class:conflict={goldConflict}>
+							</Table.Cell>
+							<Table.Cell class={goldConflict ? 'font-semibold text-critical' : ''}>
 								{b.run.policy_version ?? 'unknown'}
-							</td>
-						</tr>
-						<tr>
-							<td class="left muted">Provenance</td>
-							<td class="left">{a.derived.provenance}</td>
-							<td class="left">{b.derived.provenance}</td>
-						</tr>
-						{#if a.blacklist || b.blacklist}
-							<!-- Only when one side is retired. A head-to-head that quietly pits a
-							     live configuration against a decommissioned one reads as an open
-							     question when it is not one. -->
-							<tr>
-								<td class="left muted">Blacklisted</td>
-								<td class="left">
-									{#if a.blacklist}
-										<span title={a.blacklist.reason}>⊘ {a.blacklist.label}</span>
-									{:else}
-										<span class="muted">no</span>
-									{/if}
-								</td>
-								<td class="left">
-									{#if b.blacklist}
-										<span title={b.blacklist.reason}>⊘ {b.blacklist.label}</span>
-									{:else}
-										<span class="muted">no</span>
-									{/if}
-								</td>
-							</tr>
-						{/if}
-						<tr>
-							<td class="left muted">Cost</td>
-							<td class="left">{usd(a.derived.cost_usd)}</td>
-							<td class="left">{usd(b.derived.cost_usd)}</td>
-						</tr>
+							</Table.Cell>
+						</Table.Row>
+						<Table.Row>
+							<Table.Cell class="text-muted-foreground">Provenance</Table.Cell>
+							<Table.Cell>{a.derived.provenance}</Table.Cell>
+							<Table.Cell>{b.derived.provenance}</Table.Cell>
+						</Table.Row>
+						<Table.Row>
+							<Table.Cell class="text-muted-foreground">Cost</Table.Cell>
+							<Table.Cell>{usd(a.derived.cost_usd)}</Table.Cell>
+							<Table.Cell>{usd(b.derived.cost_usd)}</Table.Cell>
+						</Table.Row>
 						{#each METRICS as metric (metric)}
 							{@const left = a.run.report?.[metric] ?? null}
 							{@const right = b.run.report?.[metric] ?? null}
-							<tr>
-								<td class="left muted">{metricLabel(metric)}</td>
-								<td class="left" class:better={left !== null && right !== null && left > right}>
+							<Table.Row>
+								<Table.Cell class="text-muted-foreground">{metricLabel(metric)}</Table.Cell>
+								<Table.Cell
+									class={left !== null && right !== null && left > right
+										? 'font-semibold text-good'
+										: ''}
+								>
 									{pct(left)}
-								</td>
-								<td class="left" class:better={left !== null && right !== null && right > left}>
+								</Table.Cell>
+								<Table.Cell
+									class={left !== null && right !== null && right > left
+										? 'font-semibold text-good'
+										: ''}
+								>
 									{pct(right)}
-								</td>
-							</tr>
+								</Table.Cell>
+							</Table.Row>
 						{/each}
-					</tbody>
-				</table>
-			</div>
-		</div>
+					</Table.Body>
+				</Table.Root>
+			</Card.Content>
+		</Card.Root>
 
 		{#if goldConflict}
-			<div class="card">
-				<p class="danger">
+			<Card.Root size="sm" class="border-critical/45">
+				<Card.Content class="text-critical">
 					These runs were scored against DIFFERENT versions of {a.run.task}'s gold ({a.run
 						.policy_version ?? 'unknown'} vs {b.run.policy_version ?? 'unknown'}). Their frozen
 					reports answer different questions, so the metric table above is not a like-for-like
 					comparison — open each run and use "Score against current gold" to compare them on equal
 					terms.
-				</p>
-			</div>
+				</Card.Content>
+			</Card.Root>
 		{/if}
 
 		{#if !sameTask}
-			<div class="card">
-				<p class="danger">
+			<Card.Root size="sm" class="border-critical/45">
+				<Card.Content class="text-critical">
 					These runs are on different tasks ({a.run.task} vs {b.run.task}). Their golds differ, so
 					an item-level diff would compare two different menus — the metric table above is the only
 					honest comparison here, and even that only holds if you read it as two separate
 					measurements.
-				</p>
-			</div>
+				</Card.Content>
+			</Card.Root>
 		{:else if diff}
-			<div class="card">
-				<div class="spread">
-					<h2>Item differences</h2>
-					<p class="muted small">
+			<Card.Root size="sm">
+				<Card.Header class="gap-0">
+					<Card.Title>Item differences</Card.Title>
+					<Card.Description class="text-xs">
 						Keyed the way the scorer keys items, so a difference here is a difference it counted. ★
 						marks an item present in gold.
-					</p>
-				</div>
+					</Card.Description>
+				</Card.Header>
 
-				<div class="split">
-					<div>
-						<h3>Only in A ({diff.onlyA.length})</h3>
-						<ul class="list">
-							{#each diff.onlyA as item (item.name)}
-								<li>{inGold(item) ? '★ ' : ''}{item.name}</li>
-							{:else}
-								<li class="muted">None</li>
-							{/each}
-						</ul>
-					</div>
-					<div>
-						<h3>Only in B ({diff.onlyB.length})</h3>
-						<ul class="list">
-							{#each diff.onlyB as item (item.name)}
-								<li>{inGold(item) ? '★ ' : ''}{item.name}</li>
-							{:else}
-								<li class="muted">None</li>
-							{/each}
-						</ul>
-					</div>
-				</div>
-
-				{#if diff.differing.length > 0}
-					<h3>Same item, different value ({diff.differing.length})</h3>
-					<div class="scroll-x">
-						<table>
-							<thead>
-								<tr>
-									<th class="left">Item</th>
-									<th class="left">Field</th>
-									<th class="left">A</th>
-									<th class="left">B</th>
-								</tr>
-							</thead>
-							<tbody>
-								{#each diff.differing as row, index (row.name + row.field + index)}
-									<tr>
-										<td class="left">{row.name}</td>
-										<td class="left muted">{row.field}</td>
-										<td class="left">{row.a}</td>
-										<td class="left">{row.b}</td>
-									</tr>
+				<Card.Content>
+					<div class="grid grid-cols-1 gap-6 md:grid-cols-2">
+						<div>
+							<h3 class="text-[13px] text-muted-foreground">Only in A ({diff.onlyA.length})</h3>
+							<ul class="mt-1.5 max-h-[340px] list-disc overflow-y-auto pl-4.5 text-xs">
+								{#each diff.onlyA as item (item.name)}
+									<li>{inGold(item) ? '★ ' : ''}{item.name}</li>
+								{:else}
+									<li class="text-muted-foreground">None</li>
 								{/each}
-							</tbody>
-						</table>
+							</ul>
+						</div>
+						<div>
+							<h3 class="text-[13px] text-muted-foreground">Only in B ({diff.onlyB.length})</h3>
+							<ul class="mt-1.5 max-h-[340px] list-disc overflow-y-auto pl-4.5 text-xs">
+								{#each diff.onlyB as item (item.name)}
+									<li>{inGold(item) ? '★ ' : ''}{item.name}</li>
+								{:else}
+									<li class="text-muted-foreground">None</li>
+								{/each}
+							</ul>
+						</div>
 					</div>
-				{/if}
-			</div>
+
+					{#if diff.differing.length > 0}
+						<h3 class="mt-4 mb-1 text-[13px] text-muted-foreground">
+							Same item, different value ({diff.differing.length})
+						</h3>
+						<Table.Root class="text-[13px]">
+							<Table.Header>
+								<Table.Row class="hover:bg-transparent">
+									<Table.Head class="text-xs">Item</Table.Head>
+									<Table.Head class="text-xs">Field</Table.Head>
+									<Table.Head class="text-xs">A</Table.Head>
+									<Table.Head class="text-xs">B</Table.Head>
+								</Table.Row>
+							</Table.Header>
+							<Table.Body>
+								{#each diff.differing as row, index (row.name + row.field + index)}
+									<Table.Row>
+										<Table.Cell>{row.name}</Table.Cell>
+										<Table.Cell class="text-muted-foreground">{row.field}</Table.Cell>
+										<Table.Cell>{row.a}</Table.Cell>
+										<Table.Cell>{row.b}</Table.Cell>
+									</Table.Row>
+								{/each}
+							</Table.Body>
+						</Table.Root>
+					{/if}
+				</Card.Content>
+			</Card.Root>
 		{/if}
 	</div>
 {/if}
-
-<style>
-	.small {
-		font-size: 11px;
-	}
-
-	.split {
-		display: grid;
-		grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-		gap: 24px;
-		margin-top: 10px;
-	}
-
-	@media (max-width: 800px) {
-		.split {
-			grid-template-columns: minmax(0, 1fr);
-		}
-	}
-
-	.list {
-		margin: 6px 0 0;
-		padding-left: 18px;
-		font-size: 12px;
-		max-height: 340px;
-		overflow-y: auto;
-	}
-
-	h3 {
-		margin: 14px 0 4px;
-		color: var(--text-secondary);
-	}
-
-	.conflict {
-		color: var(--critical);
-		font-weight: 600;
-	}
-
-	.better {
-		color: var(--good);
-		font-weight: 600;
-	}
-
-	.danger {
-		color: var(--critical);
-	}
-</style>

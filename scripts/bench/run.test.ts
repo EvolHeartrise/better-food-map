@@ -4,12 +4,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as v from 'valibot';
 import { GoldSchema, type GoldMenu } from './lint';
-import { scoreCandidate } from './score';
+import { scoreCandidate, type CandidateMenu } from './score';
 import { SnapshotStore } from './snapshot-store';
 import {
+	applyCorrections,
 	buildMeta,
 	buildOpenRouterBody,
 	capText,
+	claimRunDir,
 	estimateCachedPrice,
 	extractHrefs,
 	fetchPage,
@@ -325,6 +327,121 @@ describe('validateSubmission', () => {
 		expect(bad.ok).toBe(false);
 		if (bad.ok) throw new Error('expected failure');
 		expect(bad.issues.length).toBeGreaterThan(0);
+	});
+});
+
+describe('applyCorrections', () => {
+	const draft = (): CandidateMenu => ({
+		sources: ['https://x.com/menu'],
+		items: [
+			{ name: 'Samosa (2 pc)', description: null, tags: [], optional_tags: [], price: 3.99 },
+			{ name: 'Chai', description: 'Spiced tea', tags: [], optional_tags: [], price: 2.5 }
+		]
+	});
+
+	test('an empty object approves the draft unchanged', () => {
+		const result = applyCorrections(draft(), {});
+		expect(result.ok).toBe(true);
+		if (!result.ok) throw new Error('expected success');
+		expect(result.candidate).toEqual(draft());
+	});
+
+	test('add, remove, update and set_sources all apply', () => {
+		const result = applyCorrections(draft(), {
+			add: [
+				{ name: 'Lassi', description: null, tags: ['vegetarian'], optional_tags: [], price: 4 }
+			],
+			remove: ['Samosa (2 pc)'],
+			update: [{ name: 'Chai', set: { price: 3, tags: ['vegetarian'] } }],
+			set_sources: ['https://x.com/menu', 'https://x.com/drinks']
+		});
+		expect(result.ok).toBe(true);
+		if (!result.ok) throw new Error('expected success');
+		expect(result.candidate.sources).toEqual(['https://x.com/menu', 'https://x.com/drinks']);
+		expect(result.candidate.items.map((i) => i.name)).toEqual(['Chai', 'Lassi']);
+		expect(result.candidate.items[0].price).toBe(3);
+		expect(result.candidate.items[0].tags).toEqual(['vegetarian']);
+		// Untouched fields survive the update.
+		expect(result.candidate.items[0].description).toBe('Spiced tea');
+	});
+
+	test('remove/update match names by the scorer identity (paren/case-insensitive)', () => {
+		const result = applyCorrections(draft(), {
+			remove: ['samosa (2pc)'],
+			update: [{ name: 'CHAI', set: { name: 'Masala Chai' } }]
+		});
+		expect(result.ok).toBe(true);
+		if (!result.ok) throw new Error('expected success');
+		expect(result.candidate.items.map((i) => i.name)).toEqual(['Masala Chai']);
+	});
+
+	test('an unknown target name is an issue, and the draft is not mutated', () => {
+		const before = draft();
+		const result = applyCorrections(before, { remove: ['Pakora'] });
+		expect(result.ok).toBe(false);
+		if (result.ok) throw new Error('expected failure');
+		expect(result.issues[0]).toContain('Pakora');
+		expect(before).toEqual(draft());
+	});
+
+	test('an unknown update field and an unknown top-level key are issues', () => {
+		const badField = applyCorrections(draft(), {
+			update: [{ name: 'Chai', set: { calories: 100 } }]
+		});
+		expect(badField.ok).toBe(false);
+		const badKey = applyCorrections(draft(), { rename: [] });
+		expect(badKey.ok).toBe(false);
+	});
+
+	test('a correction that duplicates an item name is rejected', () => {
+		const result = applyCorrections(draft(), {
+			add: [{ name: 'chai', description: null, tags: [], optional_tags: [], price: 1 }]
+		});
+		expect(result.ok).toBe(false);
+		if (result.ok) throw new Error('expected failure');
+		expect(result.issues[0]).toContain('duplicate');
+	});
+
+	test('the patched result is still validated against CandidateSchema', () => {
+		const result = applyCorrections(draft(), {
+			update: [{ name: 'Chai', set: { tags: ['not_a_tag'] } }]
+		});
+		expect(result.ok).toBe(false);
+	});
+
+	test('tag_menu sweeps every item, including added ones, without duplicating', () => {
+		const start = draft();
+		start.items[1].tags = ['vegan'];
+		const result = applyCorrections(start, {
+			add: [{ name: 'Lassi', description: null, tags: [], optional_tags: [], price: 4 }],
+			tag_menu: ['vegan']
+		});
+		expect(result.ok).toBe(true);
+		if (!result.ok) throw new Error('expected success');
+		for (const item of result.candidate.items) {
+			expect(item.tags.filter((t) => t === 'vegan')).toEqual(['vegan']);
+		}
+	});
+
+	test('tag_menu rejects a non-dietary tag', () => {
+		expect(applyCorrections(draft(), { tag_menu: ['spicy'] }).ok).toBe(false);
+	});
+});
+
+describe('claimRunDir', () => {
+	test('same name claims distinct suffixed directories', () => {
+		const parent = mkdtempSync(join(tmpdir(), 'bench-rundir-'));
+		try {
+			const a = claimRunDir(parent, '2026-08-07T23:47:41.698Z-model');
+			const b = claimRunDir(parent, '2026-08-07T23:47:41.698Z-model');
+			const c = claimRunDir(parent, '2026-08-07T23:47:41.698Z-model');
+			expect(a).not.toBe(b);
+			expect(b).not.toBe(c);
+			expect(b.endsWith('-2')).toBe(true);
+			expect(c.endsWith('-3')).toBe(true);
+		} finally {
+			rmSync(parent, { recursive: true, force: true });
+		}
 	});
 });
 
@@ -725,6 +842,37 @@ describe('quantization pinning', () => {
 				error: '--quantization is not supported with --backend claude (no provider routing)'
 			}
 		);
+	});
+});
+
+describe('provider pinning', () => {
+	const messages: ChatMessage[] = [{ role: 'user', content: 'hi' }];
+
+	test('pins provider.only with fallbacks off, composing with a quantization pin', () => {
+		expect(buildOpenRouterBody('m', messages, { providerOnly: ['CoreWeave'] }).provider).toEqual({
+			only: ['CoreWeave'],
+			allow_fallbacks: false
+		});
+		expect(
+			buildOpenRouterBody('m', messages, { providerOnly: ['CoreWeave'], quantizations: ['fp8'] })
+				.provider
+		).toEqual({ quantizations: ['fp8'], only: ['CoreWeave'], allow_fallbacks: false });
+	});
+
+	test('parseCli accepts names and a comma list, and requires a value', () => {
+		const one = parseCli(['t', '--model', 'm', '--provider', 'CoreWeave']);
+		expect((one as CliArgs).providerOnly).toEqual(['CoreWeave']);
+		const many = parseCli(['t', '--model', 'm', '--provider', 'CoreWeave, BaseTen']);
+		expect((many as CliArgs).providerOnly).toEqual(['CoreWeave', 'BaseTen']);
+		expect(parseCli(['t', '--model', 'm', '--provider'])).toEqual({
+			error: '--provider requires a name'
+		});
+	});
+
+	test('rejected on the claude backend, which has no provider routing', () => {
+		expect(
+			parseCli(['t', '--model', 'm', '--backend', 'claude', '--provider', 'CoreWeave'])
+		).toEqual({ error: '--provider is not supported with --backend claude (no provider routing)' });
 	});
 });
 

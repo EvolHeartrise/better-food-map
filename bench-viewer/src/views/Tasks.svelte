@@ -14,6 +14,8 @@
 	import { heatLookup, heatRows } from '../lib/analysis';
 	import BarChart from '../components/BarChart.svelte';
 	import Heatmap from '../components/Heatmap.svelte';
+	import * as Card from '$lib/components/ui/card';
+	import * as Table from '$lib/components/ui/table';
 
 	let discrimination = $derived(
 		await fetchDiscrimination(filters.query, filters.mode, filters.metric)
@@ -62,100 +64,80 @@
 	);
 </script>
 
-<div class="stack">
-	<div class="card">
-		<div class="spread">
-			<div>
-				<h2>Discriminating power</h2>
-				<p class="muted small">
-					Spread of configuration means on {metricLabel(filters.metric).toLowerCase()}. A task where
-					every configuration lands in the same place has stopped telling you anything — that is the
-					cue to record a harder venue, not to celebrate the scores.
-				</p>
-				{#if heat.hidden_blacklisted > 0}
-					<!-- The caveat belongs on THIS card, not only on the heatmap below it:
-					     Best / Worst / Range / At ceiling are all computed over the visible
-					     slice, and "at ceiling" is the number that retires a venue. -->
-					<p class="muted small">
-						Over the visible slice only — {heat.hidden_blacklisted} run{heat.hidden_blacklisted ===
-						1
-							? ''
-							: 's'} on blacklisted configurations are excluded, including from “At ceiling”.
-						<button class="linky" onclick={() => (filters.includeBlacklisted = true)}>
-							Include them
-						</button>
-					</p>
-				{/if}
-			</div>
-		</div>
+<div class="flex flex-col gap-4">
+	<Card.Root size="sm">
+		<Card.Header class="gap-0">
+			<Card.Title>Discriminating power</Card.Title>
+			<Card.Description class="text-xs">
+				Spread of configuration means on {metricLabel(filters.metric).toLowerCase()}. A task where
+				every configuration lands in the same place has stopped telling you anything — that is the
+				cue to record a harder venue, not to celebrate the scores.
+			</Card.Description>
+		</Card.Header>
 
-		<div class="grid">
+		<Card.Content class="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">
 			<div>
-				<h3 class="muted small">Spread across configurations (sd, percentage points)</h3>
+				<h3 class="mb-2.5 text-[11px] text-muted-foreground">
+					Spread across configurations (sd, percentage points)
+				</h3>
 				<BarChart bars={spreadBars} format={(value) => `${(value * 100).toFixed(1)} pp`} />
 			</div>
 
-			<div class="scroll-x">
-				<table>
-					<thead>
-						<tr>
-							<th class="left">Task</th>
-							<th title="configuration cells that produced a score, of all that ran this task"
-								>Scored cells</th
+			<div class="min-w-0">
+				<Table.Root class="num-table text-[13px] tabular-nums">
+					<Table.Header>
+						<Table.Row class="hover:bg-transparent">
+							<Table.Head class="text-xs">Task</Table.Head>
+							<Table.Head
+								class="text-xs"
+								title="configuration cells that produced a score, of all that ran this task"
+								>Scored cells</Table.Head
 							>
-							<th>Best</th>
-							<th>Worst</th>
-							<th>Range</th>
-							<th>At ceiling</th>
-						</tr>
-					</thead>
-					<tbody>
+							<Table.Head class="text-xs">Best</Table.Head>
+							<Table.Head class="text-xs">Worst</Table.Head>
+							<Table.Head class="text-xs">Range</Table.Head>
+							<Table.Head class="text-xs">At ceiling</Table.Head>
+						</Table.Row>
+					</Table.Header>
+					<Table.Body>
 						{#each discrimination as task (task.task)}
-							<tr>
-								<td class="left">{task.task}</td>
-								<td>
+							<Table.Row class="hover:bg-primary/5">
+								<Table.Cell>{task.task}</Table.Cell>
+								<Table.Cell>
 									{task.n_scored_cells}{#if task.n_scored_cells !== task.n_cells}<span
-											class="muted small">/{task.n_cells}</span
+											class="text-[11px] text-muted-foreground">/{task.n_cells}</span
 										>{/if}
-								</td>
-								<td>{pct(task.best, 0)}</td>
-								<td>{pct(task.worst, 0)}</td>
-								<td>{pct(task.range, 1)}</td>
-								<td class:spent={(task.ceiling_share ?? 0) >= 0.8}>
+								</Table.Cell>
+								<Table.Cell>{pct(task.best, 0)}</Table.Cell>
+								<Table.Cell>{pct(task.worst, 0)}</Table.Cell>
+								<Table.Cell>{pct(task.range, 1)}</Table.Cell>
+								<Table.Cell
+									class={(task.ceiling_share ?? 0) >= 0.8 ? 'font-semibold text-serious' : ''}
+								>
 									{pct(task.ceiling_share, 0)}
-								</td>
-							</tr>
+								</Table.Cell>
+							</Table.Row>
 						{/each}
-					</tbody>
-				</table>
-				<p class="muted small note">
+					</Table.Body>
+				</Table.Root>
+				<p class="mt-2 text-[11px] text-muted-foreground">
 					"At ceiling" is the share of configurations scoring ≥ 99.9%. Approaching 100% means the
 					task is exhausted for the models in this slice.
 				</p>
 			</div>
-		</div>
-	</div>
+		</Card.Content>
+	</Card.Root>
 
-	<div class="card">
-		<h2>Configuration × task</h2>
-		<p class="muted small">
-			{metricLabel(filters.metric)} per intersection. A plain dash means that configuration never ran
-			that task; a dash with <strong>!</strong> means it ran and produced no score. Neither is a
-			zero. Click a cell to filter the leaderboard to its task.
-			{#if heat.hidden_blacklisted > 0}
-				<!-- Named here because this view is the bench-AUTHORING signal: judging a
-				     task "exhausted" from a grid that quietly dropped a third of its
-				     configurations is how a still-useful venue gets retired. -->
-				{heat.hidden_blacklisted} run{heat.hidden_blacklisted === 1 ? '' : 's'} on blacklisted configurations
-				are excluded from this grid.
-				<button class="linky" onclick={() => (filters.includeBlacklisted = true)}>
-					Include them
-				</button>
-			{:else if filters.includeBlacklisted}
-				Rows marked <strong>⊘</strong> are blacklisted configurations.
-			{/if}
-		</p>
-		<div class="heat">
+	<Card.Root size="sm">
+		<Card.Header class="gap-0">
+			<Card.Title>Configuration × task</Card.Title>
+			<Card.Description class="text-xs">
+				{metricLabel(filters.metric)} per intersection. A plain dash means that configuration never ran
+				that task; a dash with <strong>!</strong> means it ran and produced no score. Neither is a zero.
+				Click a cell to filter the leaderboard to its task.
+			</Card.Description>
+		</Card.Header>
+		<Card.Content>
 			<Heatmap
 				{rows}
 				{columns}
@@ -163,54 +145,6 @@
 				format={(value) => pct(value, 0)}
 				onselect={openTask}
 			/>
-		</div>
-	</div>
+		</Card.Content>
+	</Card.Root>
 </div>
-
-<style>
-	.small {
-		font-size: 11px;
-	}
-
-	.grid {
-		display: grid;
-		grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-		gap: 24px;
-		margin-top: 14px;
-		align-items: start;
-	}
-
-	@media (max-width: 900px) {
-		.grid {
-			grid-template-columns: minmax(0, 1fr);
-		}
-	}
-
-	.heat {
-		margin-top: 12px;
-	}
-
-	.note {
-		margin: 8px 0 0;
-	}
-
-	.spent {
-		color: var(--serious);
-		font-weight: 600;
-	}
-
-	h3 {
-		margin-bottom: 10px;
-		font-weight: 600;
-	}
-
-	.linky {
-		background: none;
-		border: none;
-		padding: 0;
-		font: inherit;
-		color: var(--series-1);
-		cursor: pointer;
-		text-decoration: underline;
-	}
-</style>

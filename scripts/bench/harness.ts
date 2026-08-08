@@ -18,6 +18,7 @@
  * is the whole point of measuring it. A harness that peeks measures nothing.
  */
 import {
+	REVIEW_PATCH_SYSTEM_PROMPT,
 	REVIEW_SYSTEM_PROMPT,
 	SYSTEM_PROMPT,
 	buildExtractUserMessage,
@@ -38,6 +39,15 @@ export interface PassSpec {
 	role: PassRole;
 	/** The system prompt this pass runs under. */
 	systemPrompt: string;
+	/**
+	 * How this pass submits. `menu` (the default) is a full submit_menu
+	 * re-emission; `patch` replaces it with submit_corrections — operations
+	 * applied to the previous pass's candidate — so a reviewer of a 180-item
+	 * menu spends its output tokens on its corrections, not on re-typing the
+	 * 160 items it never doubted. Only meaningful on a pass with a previous
+	 * candidate to patch.
+	 */
+	submission?: 'menu' | 'patch';
 }
 
 export interface HarnessSpec {
@@ -60,6 +70,15 @@ export const HARNESSES: Record<string, HarnessSpec> = {
 		passes: [
 			{ index: 1, role: 'extract', systemPrompt: SYSTEM_PROMPT },
 			{ index: 2, role: 'review', systemPrompt: REVIEW_SYSTEM_PROMPT }
+		]
+	},
+	'two-pass-patch': {
+		name: 'two-pass-patch',
+		description:
+			'Two-pass where the reviewer submits corrections (add/remove/update ops applied to the draft) instead of re-emitting the whole menu. Scored on the patched result.',
+		passes: [
+			{ index: 1, role: 'extract', systemPrompt: SYSTEM_PROMPT },
+			{ index: 2, role: 'review', systemPrompt: REVIEW_PATCH_SYSTEM_PROMPT, submission: 'patch' }
 		]
 	}
 };
@@ -96,7 +115,7 @@ export function userMessageFor(
 		if (!previous) {
 			throw new Error(`pass ${pass.index} (review) has no previous candidate to review`);
 		}
-		return buildReviewUserMessage(entryUrl, previous);
+		return buildReviewUserMessage(entryUrl, previous, pass.submission ?? 'menu');
 	}
 	return buildExtractUserMessage(entryUrl);
 }
@@ -112,6 +131,27 @@ export function promptShasFor(harness: HarnessSpec): Record<string, string> {
 	const out: Record<string, string> = {};
 	for (const pass of harness.passes) {
 		out[`${pass.index}-${pass.role}`] = promptSha(pass.systemPrompt);
+	}
+	return out;
+}
+
+/**
+ * The full prompt text behind each hash, keyed like `promptShasFor`.
+ *
+ * `meta.json` records only the sha; resolving a sha back to the text it names
+ * meant walking git history for the right revision of `prompts.ts`. Written to
+ * each run directory as `prompts.json`, so a run is self-describing: the exact
+ * prompt that produced it travels with it.
+ */
+export function promptTextsFor(
+	harness: HarnessSpec
+): Record<string, { sha: string; text: string }> {
+	const out: Record<string, { sha: string; text: string }> = {};
+	for (const pass of harness.passes) {
+		out[`${pass.index}-${pass.role}`] = {
+			sha: promptSha(pass.systemPrompt),
+			text: pass.systemPrompt
+		};
 	}
 	return out;
 }

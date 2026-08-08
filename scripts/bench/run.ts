@@ -14,33 +14,26 @@
  *
  * Requires OPENROUTER_API_KEY in the environment. Writes a run directory under
  * bench/runs/<task-slug>/<iso-timestamp>-<model-slug>/ (bench/ is gitignored).
- * Exit 0 on a scored run, 1 on a failed run, 2 on usage/config errors, 3 when the
- * model/config is blacklisted (see blacklist.ts) and the run was skipped unspent.
+ * Exit 0 on a scored run, 1 on a failed run, 2 on usage/config errors.
  */
 import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import * as v from 'valibot';
 import {
-	describeEntry,
-	findBlock,
-	formatBlocked,
-	loadBlacklist,
-	type BlacklistEntry
-} from './blacklist';
-import {
 	DEFAULT_HARNESS,
 	HARNESS_NAMES,
 	harnessFor,
 	mergePassResults,
 	promptShasFor,
+	promptTextsFor,
 	reviewLabel,
 	userMessageFor,
 	type HarnessSpec,
 	type PassMeta,
 	type PassSpec
 } from './harness';
-import { DIETARY_TAGS, GoldSchema, htmlToText, type GoldMenu } from './lint';
+import { DIETARY_TAGS, GoldSchema, htmlToText, nameMatchKey, type GoldMenu } from './lint';
 import { SYSTEM_PROMPT } from './prompts';
 import {
 	CandidateSchema,
@@ -574,24 +567,182 @@ export function validateSubmission(payload: unknown): SubmitResult {
 	};
 }
 
+// --- submit_corrections (patch passes) -----------------------------------------
+
+/**
+ * Structural shape of a submit_corrections payload. Deliberately loose on item
+ * fields: the patched RESULT is validated against the scorer's CandidateSchema,
+ * which stays the single source of truth for what an item is — a second,
+ * hand-mirrored item schema here would drift from it.
+ */
+const CorrectionsSchema = v.strictObject({
+	add: v.optional(v.array(v.looseObject({}))),
+	remove: v.optional(v.array(v.string())),
+	update: v.optional(v.array(v.strictObject({ name: v.string(), set: v.looseObject({}) }))),
+	set_sources: v.optional(v.array(v.string())),
+	/**
+	 * Whole-venue dietary sweep: add these tags to EVERY item (added items
+	 * included). Exists because the venue-wide designation rule is a menu-wide
+	 * fact, and expressing it as ~180 per-item update ops measurably under-applies
+	 * — a patch reviewer swept only half a plant-based menu that way.
+	 */
+	tag_menu: v.optional(v.array(v.picklist(DIETARY_TAGS)))
+});
+
+const UPDATABLE_FIELDS = new Set([
+	'name',
+	'description',
+	'tags',
+	'optional_tags',
+	'price',
+	'warning'
+]);
+
+/**
+ * Validate a submit_corrections payload and apply it to the previous pass's
+ * candidate. Returns the same SubmitResult shape as validateSubmission, so the
+ * agent loop's retry machinery treats both submission modes identically.
+ *
+ * `remove` and `update` name draft items by the scorer's own identity —
+ * `nameMatchKey` — so trivial paren/spacing differences in how the model quotes
+ * a name back never fail a legitimate correction. A name matching NO draft item
+ * is an issue (the model is correcting something that is not there), as is one
+ * matching two (ambiguous target). The patched result must pass CandidateSchema;
+ * every issue is reported against the operation that caused it where possible.
+ */
+export function applyCorrections(
+	previous: v.InferOutput<typeof CandidateSchema>,
+	payload: unknown
+): SubmitResult {
+	const parsed = v.safeParse(CorrectionsSchema, payload);
+	if (!parsed.success) {
+		return {
+			ok: false,
+			issues: parsed.issues
+				.slice(0, 20)
+				.map((issue) => `${v.getDotPath(issue) ?? '(root)'}: ${issue.message}`)
+		};
+	}
+	const ops = parsed.output;
+	const issues: string[] = [];
+
+	// Work on a deep copy — the previous candidate is pass 1's recorded output
+	// and must never be mutated by a failed (or successful) patch attempt.
+	const result = structuredClone(previous) as {
+		sources: string[];
+		items: Record<string, unknown>[];
+	};
+
+	const findByName = (name: string): number[] => {
+		const key = nameMatchKey(name);
+		const hits: number[] = [];
+		for (let i = 0; i < result.items.length; i += 1) {
+			if (nameMatchKey(String(result.items[i].name)) === key) hits.push(i);
+		}
+		return hits;
+	};
+
+	for (const op of ops.update ?? []) {
+		const unknownFields = Object.keys(op.set).filter((k) => !UPDATABLE_FIELDS.has(k));
+		if (unknownFields.length > 0) {
+			issues.push(`update "${op.name}": unknown field(s) ${unknownFields.join(', ')}`);
+			continue;
+		}
+		const hits = findByName(op.name);
+		if (hits.length === 0) issues.push(`update "${op.name}": no draft item has that name`);
+		else if (hits.length > 1) issues.push(`update "${op.name}": matches more than one draft item`);
+		else Object.assign(result.items[hits[0]], op.set);
+	}
+
+	for (const name of ops.remove ?? []) {
+		const hits = findByName(name);
+		if (hits.length === 0) issues.push(`remove "${name}": no draft item has that name`);
+		else if (hits.length > 1) issues.push(`remove "${name}": matches more than one draft item`);
+		else result.items.splice(hits[0], 1);
+	}
+
+	for (const item of ops.add ?? []) {
+		result.items.push(item as Record<string, unknown>);
+	}
+
+	if (ops.set_sources !== undefined) result.sources = ops.set_sources;
+
+	// After add/update, so a sweep covers every item that ends up on the menu.
+	for (const tag of ops.tag_menu ?? []) {
+		for (const item of result.items) {
+			const tags = Array.isArray(item.tags) ? (item.tags as unknown[]) : [];
+			if (!tags.includes(tag)) item.tags = [...tags, tag];
+		}
+	}
+
+	if (issues.length > 0) return { ok: false, issues: issues.slice(0, 20) };
+
+	// Added/renamed items must not collide with kept ones under the scorer's
+	// identity — a duplicate would silently score as a hallucination.
+	const seen = new Map<string, string>();
+	for (const item of result.items) {
+		const key = nameMatchKey(String(item.name));
+		const prior = seen.get(key);
+		if (prior !== undefined) {
+			issues.push(`duplicate item name after corrections: "${prior}" vs "${String(item.name)}"`);
+		} else {
+			seen.set(key, String(item.name));
+		}
+	}
+	if (issues.length > 0) return { ok: false, issues: issues.slice(0, 20) };
+
+	return validateSubmission(result);
+}
+
 // --- tool definitions sent to the model --------------------------------------
 
-const TOOLS = [
-	{
-		type: 'function',
-		function: {
-			name: 'fetch_page',
+const FETCH_PAGE_TOOL = {
+	type: 'function',
+	function: {
+		name: 'fetch_page',
+		description:
+			'Fetch a page from the restaurant website snapshot. Returns the page text and, ' +
+			'for HTML pages, a list of links found on the page. Use it to navigate the site and ' +
+			'discover every menu page. URLs not in the snapshot return status 404.',
+		parameters: {
+			type: 'object',
+			properties: { url: { type: 'string', description: 'Absolute URL to fetch.' } },
+			required: ['url']
+		}
+	}
+};
+
+/** JSON-schema for one menu item, shared by submit_menu and submit_corrections. */
+const ITEM_SCHEMA = {
+	type: 'object',
+	properties: {
+		name: { type: 'string' },
+		description: {
+			type: ['string', 'null'],
+			description: "The venue's own menu text verbatim, else null."
+		},
+		tags: {
+			type: 'array',
+			items: { type: 'string', enum: [...DIETARY_TAGS] },
+			description: 'Source-asserted dietary tags only.'
+		},
+		optional_tags: {
+			type: 'array',
+			items: { type: 'string', enum: [...DIETARY_TAGS] },
+			description: 'Dietary designations that hold only on request.'
+		},
+		price: { type: ['number', 'null'] },
+		warning: {
+			type: ['string', 'null'],
 			description:
-				'Fetch a page from the restaurant website snapshot. Returns the page text and, ' +
-				'for HTML pages, a list of links found on the page. Use it to navigate the site and ' +
-				'discover every menu page. URLs not in the snapshot return status 404.',
-			parameters: {
-				type: 'object',
-				properties: { url: { type: 'string', description: 'Absolute URL to fetch.' } },
-				required: ['url']
-			}
+				'Terse note when a source label contradicts the item’s listed ingredients (e.g. a "Vegan" label on an item whose description lists paneer), else null/omit.'
 		}
 	},
+	required: ['name', 'description', 'tags', 'optional_tags', 'price']
+};
+
+const TOOLS = [
+	FETCH_PAGE_TOOL,
 	{
 		type: 'function',
 		function: {
@@ -608,36 +759,71 @@ const TOOLS = [
 					},
 					items: {
 						type: 'array',
-						items: {
-							type: 'object',
-							properties: {
-								name: { type: 'string' },
-								description: {
-									type: ['string', 'null'],
-									description: "The venue's own menu text verbatim, else null."
-								},
-								tags: {
-									type: 'array',
-									items: { type: 'string', enum: [...DIETARY_TAGS] },
-									description: 'Source-asserted dietary tags only.'
-								},
-								optional_tags: {
-									type: 'array',
-									items: { type: 'string', enum: [...DIETARY_TAGS] },
-									description: 'Dietary designations that hold only on request.'
-								},
-								price: { type: ['number', 'null'] },
-								warning: {
-									type: ['string', 'null'],
-									description:
-										'Terse note when a source label contradicts the item’s listed ingredients (e.g. a "Vegan" label on an item whose description lists paneer), else null/omit.'
-								}
-							},
-							required: ['name', 'description', 'tags', 'optional_tags', 'price']
-						}
+						items: ITEM_SCHEMA
 					}
 				},
 				required: ['sources', 'items']
+			}
+		}
+	}
+];
+
+/**
+ * The patch-pass tool set: fetch_page plus submit_corrections instead of
+ * submit_menu. Operations are applied to the previous pass's candidate — the
+ * reviewer never re-emits the full menu.
+ */
+export const PATCH_TOOLS = [
+	FETCH_PAGE_TOOL,
+	{
+		type: 'function',
+		function: {
+			name: 'submit_corrections',
+			description:
+				'Submit your corrections to the draft menu as operations. Call this exactly once when done. ' +
+				'An empty object approves the draft unchanged.',
+			parameters: {
+				type: 'object',
+				properties: {
+					add: {
+						type: 'array',
+						items: ITEM_SCHEMA,
+						description: 'Items the draft missed, complete with all fields.'
+					},
+					remove: {
+						type: 'array',
+						items: { type: 'string' },
+						description: 'Names of draft items the source does not itemize, exactly as drafted.'
+					},
+					update: {
+						type: 'array',
+						items: {
+							type: 'object',
+							properties: {
+								name: { type: 'string', description: 'The draft item’s current name.' },
+								set: {
+									type: 'object',
+									description:
+										'Only the fields to change: name (to rename), description, tags, optional_tags, price, warning.',
+									properties: ITEM_SCHEMA.properties
+								}
+							},
+							required: ['name', 'set']
+						},
+						description: 'Field-level fixes to draft items.'
+					},
+					set_sources: {
+						type: 'array',
+						items: { type: 'string' },
+						description: 'Replace the draft’s sources list entirely. Omit to keep it.'
+					},
+					tag_menu: {
+						type: 'array',
+						items: { type: 'string', enum: [...DIETARY_TAGS] },
+						description:
+							'Whole-venue dietary sweep: add these dietary tags to EVERY item on the menu (including ones you add). Use when the source designates a claim venue-wide (e.g. a plant-based venue → ["vegan"]), instead of one update per item.'
+					}
+				}
 			}
 		}
 	}
@@ -754,8 +940,16 @@ export async function runAgent(opts: {
 	systemPrompt?: string;
 	/** Opening user message; defaults to just handing over the entry URL. */
 	userMessage?: string;
+	/**
+	 * When set, this is a PATCH pass: the model gets submit_corrections instead
+	 * of submit_menu, and its operations are applied to this candidate to produce
+	 * the pass's result. The caller must also send `PATCH_TOOLS` on the chat
+	 * request (see `OpenRouterRequestOpts.tools`).
+	 */
+	patchPrevious?: CandidateMenu;
 }): Promise<RunResult> {
-	const { chat, store, entryUrl, maxToolCalls, transcript } = opts;
+	const { chat, store, entryUrl, maxToolCalls, transcript, patchPrevious } = opts;
+	const submitToolName = patchPrevious ? 'submit_corrections' : 'submit_menu';
 	const messages: ChatMessage[] = [
 		{ role: 'system', content: opts.systemPrompt ?? SYSTEM_PROMPT },
 		{
@@ -844,7 +1038,9 @@ export async function runAgent(opts: {
 				transcript.push({ type: 'note', ts: new Date().toISOString(), note: 'nudged for submit' });
 				messages.push({
 					role: 'user',
-					content: 'You must call submit_menu with your final extraction.'
+					content: patchPrevious
+						? 'You must call submit_corrections with your corrections (an empty object approves the draft unchanged).'
+						: 'You must call submit_menu with your final extraction.'
 				});
 				continue;
 			}
@@ -880,9 +1076,11 @@ export async function runAgent(opts: {
 					typeof args.url === 'string'
 						? fetchPage(store, args.url)
 						: { error: 'fetch_page requires a string "url" argument' };
-			} else if (call.function.name === 'submit_menu') {
+			} else if (call.function.name === submitToolName) {
 				submitAttempts += 1;
-				const submission = validateSubmission(parsed.value);
+				const submission = patchPrevious
+					? applyCorrections(patchPrevious, parsed.value)
+					: validateSubmission(parsed.value);
 				if (submission.ok) {
 					transcript.push({
 						type: 'tool_result',
@@ -908,7 +1106,7 @@ export async function runAgent(opts: {
 					});
 					return done({
 						status: 'failed',
-						failureReason: `submit_menu failed validation ${MAX_SUBMIT_ATTEMPTS} times`
+						failureReason: `${submitToolName} failed validation ${MAX_SUBMIT_ATTEMPTS} times`
 					});
 				}
 			} else {
@@ -947,6 +1145,14 @@ export interface OpenRouterRequestOpts {
 	 * cheapest-first and therefore biased toward the MOST quantized endpoint.
 	 */
 	quantizations?: string[];
+	/**
+	 * Restrict routing to exactly these providers (OpenRouter `provider.only`),
+	 * with fallbacks off — a silent fallback to another provider would
+	 * reintroduce the confound the pin removes. Omitted = any provider.
+	 */
+	providerOnly?: string[];
+	/** Tool set to offer the model; defaults to the extraction tools (`TOOLS`). */
+	tools?: unknown[];
 }
 
 /**
@@ -967,7 +1173,7 @@ export function buildOpenRouterBody(
 	const body: Record<string, unknown> = {
 		model,
 		messages: isAnthropic ? withAnthropicCache(messages) : messages,
-		tools: TOOLS,
+		tools: opts.tools ?? TOOLS,
 		tool_choice: 'auto',
 		usage: { include: true }
 	};
@@ -976,8 +1182,15 @@ export function buildOpenRouterBody(
 	// Pin routing to a quantization tier. allow_fallbacks:false is deliberate —
 	// a silent fallback to a different tier would reintroduce exactly the
 	// confound the pin exists to remove; better to fail the request loudly.
+	const provider: Record<string, unknown> = {};
 	if (opts.quantizations !== undefined && opts.quantizations.length > 0) {
-		body.provider = { quantizations: opts.quantizations, allow_fallbacks: false };
+		provider.quantizations = opts.quantizations;
+	}
+	if (opts.providerOnly !== undefined && opts.providerOnly.length > 0) {
+		provider.only = opts.providerOnly;
+	}
+	if (Object.keys(provider).length > 0) {
+		body.provider = { ...provider, allow_fallbacks: false };
 	}
 	return body;
 }
@@ -1078,6 +1291,8 @@ export interface RunMeta {
 	 * toward the most-quantized endpoint. Null does NOT mean "unquantized".
 	 */
 	quantization_requested: string[] | null;
+	/** Providers routing was pinned to (`--provider`), or null when unpinned. */
+	provider_requested: string[] | null;
 	/**
 	 * Upstream providers that ACTUALLY served this run, in first-seen order.
 	 * More than one entry means OpenRouter re-routed mid-run. Empty on the Claude
@@ -1149,10 +1364,19 @@ function writeRun(
 		 */
 		firstPassCandidate?: v.InferOutput<typeof CandidateSchema>;
 		firstPassReport?: ScoreReport;
+		/**
+		 * The full prompt text behind each `prompt_sha`, keyed `<index>-<role>`.
+		 * meta.json carries only the hashes; this makes them resolvable from the
+		 * run directory itself instead of from git archaeology.
+		 */
+		prompts?: Record<string, { sha: string; text: string }>;
 	}
 ): void {
 	mkdirSync(runDir, { recursive: true });
 	writeFileSync(join(runDir, 'meta.json'), JSON.stringify(parts.meta, null, '\t'));
+	if (parts.prompts) {
+		writeFileSync(join(runDir, 'prompts.json'), JSON.stringify(parts.prompts, null, '\t'));
+	}
 	writeFileSync(
 		join(runDir, 'transcript.jsonl'),
 		parts.transcript.map((e) => JSON.stringify(e)).join('\n') + '\n'
@@ -1177,6 +1401,28 @@ function writeRun(
 	}
 }
 
+/**
+ * Reserve a unique run directory under `parent`, atomically. `mkdirSync`
+ * WITHOUT `recursive` throws on an existing path, which is the collision
+ * signal; on collision a `-2`, `-3`, … suffix is tried. Claiming up front —
+ * rather than at writeRun time — closes the same-millisecond race two parallel
+ * runs of one task hit in practice (both computed the same timestamp name and
+ * the loser's evidence was silently overwritten).
+ */
+export function claimRunDir(parent: string, name: string): string {
+	mkdirSync(parent, { recursive: true });
+	for (let n = 1; ; n += 1) {
+		const dir = join(parent, n === 1 ? name : `${name}-${n}`);
+		try {
+			mkdirSync(dir);
+			return dir;
+		} catch (e) {
+			const code = (e as NodeJS.ErrnoException).code;
+			if (code !== 'EEXIST') throw e;
+		}
+	}
+}
+
 // --- CLI ----------------------------------------------------------------------
 
 export interface CliArgs {
@@ -1188,10 +1434,10 @@ export interface CliArgs {
 	effort?: string;
 	/** Sampling temperature (openrouter only); undefined = provider default. */
 	temperature?: number;
-	/** Run a blacklisted model/config anyway (deliberate re-test). */
-	ignoreBlacklist?: boolean;
 	/** Pin routing to these quantization tiers (openrouter only); undefined = default routing. */
 	quantizations?: string[];
+	/** Pin routing to exactly these providers (openrouter only); undefined = any. */
+	providerOnly?: string[];
 	/** Agent setup driving the run (see harness.ts); defaults to `single-pass`. */
 	harness: string;
 	/**
@@ -1207,8 +1453,8 @@ export interface CliArgs {
 const USAGE =
 	'usage: bun run bench:run <task-dir> --model <model-id> ' +
 	'[--backend openrouter|claude] [--effort <level>] [--temperature <n>] [--max-tool-calls N] ' +
-	'[--quantization <fp8[,bf16]>] [--harness <name>] [--review-model <id>] ' +
-	'[--review-effort <level>] [--ignore-blacklist]\n' +
+	'[--quantization <fp8[,bf16]>] [--provider <name[,name]>] [--harness <name>] [--review-model <id>] ' +
+	'[--review-effort <level>]\n' +
 	`  harnesses: ${HARNESS_NAMES.join(', ')}`;
 
 /** Only the OpenRouter backend needs OPENROUTER_API_KEY; Claude uses the SDK login. */
@@ -1225,8 +1471,8 @@ export function parseCli(argv: string[]): CliArgs | { error: string } {
 	// since --backend may appear either before or after them on the command line.
 	let effortRaw: string | undefined;
 	let temperature: number | undefined;
-	let ignoreBlacklist = false;
 	let quantizations: string[] | undefined;
+	let providerOnly: string[] | undefined;
 	let harness = DEFAULT_HARNESS;
 	let reviewModel: string | undefined;
 	// Validated after the loop for the same reason as --effort: --backend may
@@ -1281,8 +1527,14 @@ export function parseCli(argv: string[]): CliArgs | { error: string } {
 				};
 			}
 			quantizations = levels;
-		} else if (arg === '--ignore-blacklist') {
-			ignoreBlacklist = true;
+		} else if (arg === '--provider') {
+			const raw = argv[++i];
+			if (raw === undefined || raw === '') return { error: '--provider requires a name' };
+			providerOnly = raw
+				.split(',')
+				.map((s) => s.trim())
+				.filter((s) => s !== '');
+			if (providerOnly.length === 0) return { error: '--provider requires a name' };
 		} else if (arg.startsWith('--')) {
 			return { error: `unknown option: ${arg}` };
 		} else if (taskDir === undefined) {
@@ -1299,6 +1551,9 @@ export function parseCli(argv: string[]): CliArgs | { error: string } {
 		return {
 			error: '--quantization is not supported with --backend claude (no provider routing)'
 		};
+	}
+	if (providerOnly !== undefined && backend === 'claude') {
+		return { error: '--provider is not supported with --backend claude (no provider routing)' };
 	}
 
 	// The Claude backend exposes no sampling control, and current Claude models
@@ -1341,6 +1596,15 @@ export function parseCli(argv: string[]): CliArgs | { error: string } {
 		};
 	}
 
+	// The Agent SDK path serves a fixed submit_menu tool; a patch pass needs
+	// submit_corrections, so running it there would measure a different setup
+	// than the harness names. Reject up front rather than after pass 1 has spent.
+	if (backend === 'claude' && (spec?.passes.some((p) => p.submission === 'patch') ?? false)) {
+		return {
+			error: `--harness ${harness} is not supported with --backend claude (patch passes need the submit_corrections tool, which the Agent SDK path does not serve)`
+		};
+	}
+
 	return {
 		taskDir,
 		model,
@@ -1348,8 +1612,8 @@ export function parseCli(argv: string[]): CliArgs | { error: string } {
 		backend,
 		effort,
 		temperature,
-		ignoreBlacklist,
 		quantizations,
+		providerOnly,
 		harness,
 		reviewModel,
 		reviewEffort
@@ -1387,6 +1651,7 @@ export function buildMeta(
 		effort_default: cli.backend === 'claude' ? 'claude-code-default' : 'provider-default',
 		temperature: cli.temperature ?? null,
 		quantization_requested: cli.quantizations ?? null,
+		provider_requested: cli.providerOnly ?? null,
 		providers,
 		// Only the providers this run actually used — not the whole endpoint table.
 		provider_quantizations: Object.fromEntries(
@@ -1456,8 +1721,15 @@ async function executePass(opts: {
 		passTranscript.length = 0;
 	};
 
+	const isPatch = pass.submission === 'patch';
 	try {
 		if (cli.backend === 'claude') {
+			// parseCli rejects patch harnesses on this backend; guard against a
+			// future harness slipping one through, because silently running the
+			// pass with submit_menu would measure a different setup than named.
+			if (isPatch) {
+				throw new Error('patch passes are not supported on the claude backend');
+			}
 			const { runClaudeAgent } = await import('./run-claude');
 			return await runClaudeAgent({
 				model,
@@ -1474,14 +1746,17 @@ async function executePass(opts: {
 			chat: openRouterChat(model, apiKey, {
 				effort,
 				temperature: cli.temperature,
-				quantizations: cli.quantizations
+				quantizations: cli.quantizations,
+				providerOnly: cli.providerOnly,
+				tools: isPatch ? PATCH_TOOLS : undefined
 			}),
 			store,
 			entryUrl,
 			maxToolCalls: cli.maxToolCalls,
 			transcript: passTranscript,
 			systemPrompt: pass.systemPrompt,
-			userMessage
+			userMessage,
+			patchPrevious: isPatch ? previous : undefined
 		});
 	} finally {
 		drain();
@@ -1796,39 +2071,6 @@ async function main(): Promise<number> {
 		return 2;
 	}
 
-	// Blacklist FIRST: a configuration already ruled out must cost nothing — no
-	// key check, no models fetch, no chat request. Exit 3 (not 2) so a sweep can
-	// tell "deliberately skipped" from "misconfigured" and keep going.
-	let blocked: BlacklistEntry | undefined;
-	try {
-		const list = loadBlacklist();
-		const spec = harnessFor(cli.harness);
-		// EVERY model the run would call, not just the primary one: a reviewer that
-		// has been ruled out would otherwise run and spend, and it would do so after
-		// pass 1 had already been paid for.
-		for (const pass of spec?.passes ?? []) {
-			blocked = findBlock(list, {
-				model: modelForPass(cli, pass),
-				effort: effortForPass(cli, pass),
-				backend: cli.backend,
-				harness: cli.harness
-			});
-			if (blocked) break;
-		}
-	} catch (e) {
-		console.error(`error: ${String(e)}`);
-		return 2;
-	}
-	if (blocked && !cli.ignoreBlacklist) {
-		console.error(formatBlocked(blocked, '--ignore-blacklist'));
-		return 3;
-	}
-	if (blocked) {
-		console.error(
-			`note: ${describeEntry(blocked)} is blacklisted — running anyway per --ignore-blacklist`
-		);
-	}
-
 	const apiKey = process.env.OPENROUTER_API_KEY;
 	if (requiresOpenRouterKey(cli.backend) && !apiKey) {
 		console.error('error: OPENROUTER_API_KEY is not set (required for the openrouter backend)');
@@ -1901,10 +2143,11 @@ async function main(): Promise<number> {
 	const store = new SnapshotStore(join(cli.taskDir, 'snapshot'));
 	const transcript: TranscriptEvent[] = [];
 	const startedAt = new Date();
-	const runDir = join(
-		'bench',
-		'runs',
-		basename(cli.taskDir),
+	// Claim the directory NOW, and uniquify on collision: two same-task runs
+	// launched in the same millisecond otherwise share a name, and the second
+	// writeRun silently overwrites the first run's evidence.
+	const runDir = claimRunDir(
+		join('bench', 'runs', basename(cli.taskDir)),
 		`${startedAt.toISOString()}-${modelSlug(cli.model)}`
 	);
 
@@ -1958,7 +2201,8 @@ async function main(): Promise<number> {
 			firstPassReport:
 				harness.passes.length > 1 && firstPassCandidate
 					? scoreCandidate(gold, firstPassCandidate)
-					: undefined
+					: undefined,
+			prompts: promptTextsFor(harness)
 		});
 		console.error(`run failed in pass ${pass.index} (${pass.role}): ${String(error)}`);
 		console.error(formatWallClock(meta));
@@ -2004,7 +2248,8 @@ async function main(): Promise<number> {
 		candidate: result.candidate,
 		report,
 		firstPassCandidate: harness.passes.length > 1 ? firstPassCandidate : undefined,
-		firstPassReport
+		firstPassReport,
+		prompts: promptTextsFor(harness)
 	});
 
 	if (report) console.error(formatSummary(report));

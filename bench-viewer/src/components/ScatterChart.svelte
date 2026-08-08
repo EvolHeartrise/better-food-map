@@ -2,12 +2,15 @@
 	/**
 	 * Quality-vs-cost (or vs latency) scatter with the Pareto frontier called out.
 	 *
-	 * One series colour, not one per model. With five-plus models a categorical
-	 * palette cannot clear the all-pairs colourblind floor that scatter demands,
-	 * and colour would be doing work the labels already do better: the frontier
-	 * points are direct-labelled, everything else is one step back, and identity
-	 * comes from the hover tooltip and the table view beneath the chart.
+	 * Marks are the model author's favicon (with the serving provider badged on
+	 * the corner when the point is pinned to one) — the same logos OpenRouter's
+	 * model pages use, resolved through the same favicon service. Logos carry
+	 * identity without a categorical palette: with five-plus models, colour
+	 * cannot clear the all-pairs colourblind floor that scatter demands. A point
+	 * with no mapped or loadable icon falls back to the original one-colour dot,
+	 * and full identity still lives in the label, tooltip and table beneath.
 	 */
+	import { SvelteSet } from 'svelte/reactivity';
 	import { UNKNOWN } from '../lib/format';
 	import type { ScatterPoint } from '../lib/types';
 
@@ -34,6 +37,27 @@
 	const PAD = { top: 16, right: 24, bottom: 44, left: 56 };
 
 	let hovered = $state<ScatterPoint | null>(null);
+
+	/**
+	 * Icon URLs that failed to load, so their points render the circle fallback.
+	 * The favicon service is external: offline, blocked, or missing icons must
+	 * degrade to the old dot, never to a broken-image glyph.
+	 */
+	const failedIcons = new SvelteSet<string>();
+
+	function iconFor(point: ScatterPoint): string | null {
+		return point.icon && !failedIcons.has(point.icon) ? point.icon : null;
+	}
+
+	function badgeFor(point: ScatterPoint): string | null {
+		return point.providerIcon && !failedIcons.has(point.providerIcon) ? point.providerIcon : null;
+	}
+
+	/** Icon marks are larger than the plain dots they replace. */
+	function markRadius(point: ScatterPoint): number {
+		if (iconFor(point)) return point.frontier ? 9 : 7;
+		return point.frontier ? 5.5 : 4.5;
+	}
 
 	// A log x-axis is what makes a cost frontier readable — runs here span three
 	// orders of magnitude — but log(0) is undefined, so a free/zero-cost point
@@ -139,7 +163,7 @@
 		const boxes = points.map((point) => {
 			const cx = scaleX(point.x);
 			const cy = scaleY(point.y);
-			const r = point.frontier ? 7.5 : 6.5; // mark radius + its 2px surface ring
+			const r = markRadius(point) + 2; // mark radius + its 2px surface ring
 			// `owner` exempts a point's own mark: a label sits beside the dot it
 			// names, so overlapping THAT one is the whole idea.
 			return { x0: cx - r, x1: cx + r, y0: cy - r, y1: cy + r, owner: point.id };
@@ -245,12 +269,53 @@
 		{/if}
 
 		{#each points as point (point.id)}
-			<!-- Hit target is deliberately larger than the mark: an 8px dot you must
-			     land on dead-centre is not a hover target. -->
+			{@const cx = scaleX(point.x)}
+			{@const cy = scaleY(point.y)}
+			{@const icon = iconFor(point)}
+			{@const badge = badgeFor(point)}
+			{@const r = markRadius(point)}
+			{#if icon}
+				{@const size = (r - 2) * 2}
+				<g class="mark" class:on-frontier={point.frontier} class:active={hovered?.id === point.id}>
+					<!-- White chip behind the logo, both themes: favicons are drawn for
+					     light backgrounds, and a dark theme would silhouette half of them. -->
+					<circle class="icon-bg" {cx} {cy} {r} />
+					<image
+						href={icon}
+						x={cx - size / 2}
+						y={cy - size / 2}
+						width={size}
+						height={size}
+						onerror={() => failedIcons.add(icon)}
+					/>
+					{#if badge}
+						<circle class="badge-bg" cx={cx + r * 0.8} cy={cy + r * 0.8} r="5" />
+						<image
+							href={badge}
+							x={cx + r * 0.8 - 3.5}
+							y={cy + r * 0.8 - 3.5}
+							width="7"
+							height="7"
+							onerror={() => failedIcons.add(badge)}
+						/>
+					{/if}
+				</g>
+			{:else}
+				<circle
+					class="dot"
+					class:on-frontier={point.frontier}
+					class:active={hovered?.id === point.id}
+					{cx}
+					{cy}
+					{r}
+				/>
+			{/if}
+			<!-- Hit target is deliberately larger than the mark, and drawn above it:
+			     an 8px dot you must land on dead-centre is not a hover target. -->
 			<circle
 				class="hit"
-				cx={scaleX(point.x)}
-				cy={scaleY(point.y)}
+				{cx}
+				{cy}
 				r="14"
 				onmouseenter={() => (hovered = point)}
 				onmouseleave={() => (hovered = null)}
@@ -263,14 +328,6 @@
 				role="button"
 				tabindex="0"
 				aria-label="{point.label}: {formatY(point.y)} at {formatX(point.x)}"
-			/>
-			<circle
-				class="dot"
-				class:on-frontier={point.frontier}
-				class:active={hovered?.id === point.id}
-				cx={scaleX(point.x)}
-				cy={scaleY(point.y)}
-				r={point.frontier ? 5.5 : 4.5}
 			/>
 		{/each}
 
@@ -289,13 +346,17 @@
 			<div class="tip-title">{hovered.label}</div>
 			<div class="tip-row">{yLabel}: <strong>{formatY(hovered.y)}</strong></div>
 			<div class="tip-row">{xLabel}: <strong>{formatX(hovered.x)}</strong></div>
-			<div class="tip-row muted">n = {hovered.n}{hovered.frontier ? ' · on frontier' : ''}</div>
-			{#if hovered.detail}<div class="tip-row muted">{hovered.detail}</div>{/if}
+			<div class="tip-row text-muted-foreground/80">
+				n = {hovered.n}{hovered.frontier ? ' · on frontier' : ''}
+			</div>
+			{#if hovered.detail}<div class="tip-row text-muted-foreground/80">{hovered.detail}</div>{/if}
 		</div>
 	{/if}
 
 	{#if points.length === 0}
-		<p class="empty muted">No runs in this slice report both {xLabel} and {yLabel}. {UNKNOWN}</p>
+		<p class="p-3 text-center text-muted-foreground">
+			No runs in this slice report both {xLabel} and {yLabel}. {UNKNOWN}
+		</p>
 	{/if}
 </div>
 
@@ -314,7 +375,7 @@
 		fill: var(--series-1);
 		fill-opacity: 0.45;
 		/* 2px surface ring keeps overlapping points legible. */
-		stroke: var(--surface-1);
+		stroke: var(--card);
 		stroke-width: 2;
 	}
 
@@ -324,7 +385,34 @@
 
 	.dot.active {
 		fill-opacity: 1;
-		stroke: var(--text-primary);
+		stroke: var(--foreground);
+	}
+
+	.mark {
+		opacity: 0.75;
+		pointer-events: none;
+	}
+
+	.mark.on-frontier,
+	.mark.active {
+		opacity: 1;
+	}
+
+	.icon-bg,
+	.badge-bg {
+		fill: #fff;
+		stroke: var(--border);
+		stroke-width: 1;
+	}
+
+	.mark.on-frontier .icon-bg {
+		stroke: var(--series-1);
+		stroke-width: 1.5;
+	}
+
+	.mark.active .icon-bg {
+		stroke: var(--foreground);
+		stroke-width: 1.5;
 	}
 
 	.hit {
@@ -347,17 +435,16 @@
 	}
 
 	.point-label {
-		fill: var(--text-secondary);
+		fill: var(--muted-foreground);
 		font-size: 10px;
-		font-family: var(--sans);
 		paint-order: stroke;
-		stroke: var(--surface-1);
+		stroke: var(--card);
 		stroke-width: 3px;
 	}
 
 	.tooltip {
 		position: absolute;
-		background: var(--surface-1);
+		background: var(--card);
 		border: 1px solid var(--border);
 		border-radius: 6px;
 		padding: 6px 9px;
@@ -374,11 +461,6 @@
 	}
 
 	.tip-row {
-		color: var(--text-secondary);
-	}
-
-	.empty {
-		text-align: center;
-		padding: 12px;
+		color: var(--muted-foreground);
 	}
 </style>
