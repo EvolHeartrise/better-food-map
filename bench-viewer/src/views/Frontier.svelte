@@ -14,7 +14,6 @@
 	import { filters, router } from '../lib/state.svelte';
 	import { frontierKeys as computeFrontier, plottableCells } from '../lib/analysis';
 	import type { CellRow, ScatterPoint } from '../lib/types';
-	import BlacklistBadge from '../components/BlacklistBadge.svelte';
 	import ScatterChart from '../components/ScatterChart.svelte';
 
 	type XAxis = 'cost' | 'cost_cached' | 'duration';
@@ -131,15 +130,14 @@
 
 	function labelFor(cell: CellRow): string {
 		const base = `${cell.model.split('/').pop()} · ${cell.effort}`;
-		const retired = cell.blacklist.state === 'none' ? '' : '⊘ ';
-		if ((baseLabelCounts[base] ?? 0) <= 1) return `${retired}${base}`;
+		if ((baseLabelCounts[base] ?? 0) <= 1) return base;
 		const extra = [
 			cell.harness && cell.harness !== 'single-pass' ? cell.harness : null,
 			cell.quantization && cell.quantization !== 'unpinned' ? cell.quantization : null,
 			// The provider, not the whole provenance string, which is too long here.
 			cell.provenance ? cell.provenance.split(' ')[0].split('@')[0] : null
 		].filter(Boolean);
-		return `${retired}${base}${extra.length ? ` · ${extra.join(' · ')}` : ''}`;
+		return `${base}${extra.length ? ` · ${extra.join(' · ')}` : ''}`;
 	}
 
 	/** Runs belonging to the expanded cell, richest-context first. */
@@ -155,14 +153,6 @@
 			.toSorted((a, b) => a.task.localeCompare(b.task) || a.started_at.localeCompare(b.started_at));
 	});
 
-	/**
-	 * The blacklist marker is folded into the point LABEL, not just the tooltip.
-	 *
-	 * This is the view where the omission would do real damage: a retired
-	 * configuration can sit on the Pareto frontier and get direct-labelled as the
-	 * thing to run — several verdicts in the corpus were written about configs
-	 * that scored well and lost on cost, which is exactly what puts them there.
-	 */
 	let points = $derived.by<ScatterPoint[]>(() =>
 		plotted.map((entry) => ({
 			id: entry.cell.key,
@@ -177,8 +167,7 @@
 				entry.cell.quantization && entry.cell.quantization !== 'unpinned'
 					? entry.cell.quantization
 					: null,
-				splitProvenance && entry.cell.provenance ? entry.cell.provenance : null,
-				entry.cell.blacklist.state === 'none' ? null : 'blacklisted — verdict on record'
+				splitProvenance && entry.cell.provenance ? entry.cell.provenance : null
 			]
 				.filter(Boolean)
 				.join(' · ')
@@ -209,20 +198,6 @@
 					Labelled points are the Pareto frontier — nothing beats them on both axes. Point identity
 					is in the tooltip and the table below, not in colour.
 				</p>
-				{#if response.hidden_blacklisted > 0}
-					<p class="muted small">
-						{response.hidden_blacklisted} run{response.hidden_blacklisted === 1 ? '' : 's'} on blacklisted
-						configurations excluded — the frontier below is over live candidates only.
-						<button class="linky" onclick={() => (filters.includeBlacklisted = true)}>
-							Include them
-						</button>
-					</p>
-				{:else if filters.includeBlacklisted}
-					<p class="muted small">
-						Blacklisted configurations are included and marked <strong>⊘</strong>. A retired config
-						can still sit on the frontier — that is usually why it was retired.
-					</p>
-				{/if}
 				{#if !splitProvenance}
 					<p class="warn small">
 						Pooled: runs served by different providers, quantizations and prompts share a point, so
@@ -294,11 +269,6 @@
 					<h3>
 						{selectedCell.model}
 						<span class="muted">· {selectedCell.effort}</span>
-						<BlacklistBadge
-							state={selectedCell.blacklist.state}
-							entries={selectedCell.blacklist.entries}
-							compact
-						/>
 					</h3>
 					<p class="muted small">
 						{selectedCell.n_runs} run{selectedCell.n_runs === 1 ? '' : 's'} over
@@ -414,11 +384,6 @@
 						>
 							<td class="left">
 								{entry.cell.model} <span class="muted">· {entry.cell.effort}</span>
-								<BlacklistBadge
-									state={entry.cell.blacklist.state}
-									entries={entry.cell.blacklist.entries}
-									compact
-								/>
 							</td>
 							<td>{pct(entry.y)}</td>
 							<td>{X_AXES[xAxis].format(entry.x)}</td>

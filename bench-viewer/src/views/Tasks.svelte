@@ -72,20 +72,6 @@
 					every configuration lands in the same place has stopped telling you anything — that is the
 					cue to record a harder venue, not to celebrate the scores.
 				</p>
-				{#if heat.hidden_blacklisted > 0}
-					<!-- The caveat belongs on THIS card, not only on the heatmap below it:
-					     Best / Worst / Range / At ceiling are all computed over the visible
-					     slice, and "at ceiling" is the number that retires a venue. -->
-					<p class="muted small">
-						Over the visible slice only — {heat.hidden_blacklisted} run{heat.hidden_blacklisted ===
-						1
-							? ''
-							: 's'} on blacklisted configurations are excluded, including from “At ceiling”.
-						<button class="linky" onclick={() => (filters.includeBlacklisted = true)}>
-							Include them
-						</button>
-					</p>
-				{/if}
 			</div>
 		</div>
 
@@ -140,20 +126,8 @@
 		<h2>Configuration × task</h2>
 		<p class="muted small">
 			{metricLabel(filters.metric)} per intersection. A plain dash means that configuration never ran
-			that task; a dash with <strong>!</strong> means it ran and produced no score. Neither is a
-			zero. Click a cell to filter the leaderboard to its task.
-			{#if heat.hidden_blacklisted > 0}
-				<!-- Named here because this view is the bench-AUTHORING signal: judging a
-				     task "exhausted" from a grid that quietly dropped a third of its
-				     configurations is how a still-useful venue gets retired. -->
-				{heat.hidden_blacklisted} run{heat.hidden_blacklisted === 1 ? '' : 's'} on blacklisted configurations
-				are excluded from this grid.
-				<button class="linky" onclick={() => (filters.includeBlacklisted = true)}>
-					Include them
-				</button>
-			{:else if filters.includeBlacklisted}
-				Rows marked <strong>⊘</strong> are blacklisted configurations.
-			{/if}
+			that task; a dash with <strong>!</strong> means it ran and produced no score. Neither is a zero.
+			Click a cell to filter the leaderboard to its task.
 		</p>
 		<div class="heat">
 			<Heatmap
@@ -202,15 +176,5 @@
 	h3 {
 		margin-bottom: 10px;
 		font-weight: 600;
-	}
-
-	.linky {
-		background: none;
-		border: none;
-		padding: 0;
-		font: inherit;
-		color: var(--series-1);
-		cursor: pointer;
-		text-decoration: underline;
 	}
 </style>

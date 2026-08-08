@@ -252,18 +252,6 @@ tr.clickable:focus-visible {
 	cursor: not-allowed;
 }
 
-/**
- * The one action in this app that writes anything (recording a blacklist
- * verdict). Weighted so it never reads as just another filter chip — but still a
- * chip, because it is a small, reversible, git-tracked edit, not a deploy.
- */
-.chip.primary {
-	border-color: var(--series-1);
-	background: color-mix(in srgb, var(--series-1) 14%, var(--surface-1));
-	color: var(--text-primary);
-	font-weight: 600;
-}
-
 select,
 textarea,
 input[type='search'],

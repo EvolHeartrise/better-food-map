@@ -35,94 +35,15 @@ import type { AverageMode, MetricKey, Stat } from '../../../scripts/bench/analyz
 // three from `lib/types` alongside the hand-written wire shapes.
 export type { AverageMode, MetricKey, Stat };
 
-// --- blacklist ----------------------------------------------------------------
-
-/**
- * One recorded verdict: a (model, effort, backend) configuration that has been
- * tested and ruled out, so a sweep never re-buys the same answer.
- *
- * A verdict retires a configuration; it does NOT invalidate the runs it covers.
- * Those runs are the evidence it was made from, they stay on disk, and their
- * scores are untouched — which is why every surface that hides them also says
- * how many it hid.
- */
-export interface BlacklistInfo {
-	model: string;
-	/** `all`, `default` (runs that passed no `--effort`), or a level name. */
-	effort: string;
-	/** Null covers both backends. */
-	backend: string | null;
-	/** Null covers every harness — the scope every pre-harness verdict carries. */
-	harness: string | null;
-	reason: string;
-	/** `YYYY-MM-DD`. An old verdict against a since-updated model reads as stale. */
-	added: string;
-	evidence: string | null;
-	/** `model [effort: none]` — the CLI's phrasing, so UI and stderr agree. */
-	label: string;
-	/**
-	 * Runs in the corpus this entry covers, or null when the server had no corpus
-	 * to count against — UNKNOWN, never 0. Zero is a different, real answer: a
-	 * live verdict that hides nothing today but still blocks a future `bench:run`.
-	 */
-	n_runs_covered: number | null;
-}
-
-/** What a proposed verdict would retire, from `/api/blacklist/scope`. */
-export interface ScopeCoverage {
-	n_runs: number;
-	/** Distinct leaderboard rows covered. More than one means the scope is wider than the row. */
-	n_configs: number;
-	configs: string[];
-	tasks: string[];
-}
-
-/** Size of the current filter slice and how much of it the blacklist hid. */
+/** Size of the current filter slice. */
 export interface SliceInfo {
 	n_matching: number;
 	n_visible: number;
-	/** Zero by construction while blacklisted runs are shown. */
-	hidden_blacklisted: number;
-	/** Blacklisted runs in this slice regardless of the toggle — use this for labels. */
-	n_blacklisted: number;
-	include_blacklisted: boolean;
-}
-
-/** `partial` is real, not a rounding of `all` — see the server module's note. */
-export type BlacklistState = 'none' | 'partial' | 'all';
-
-export interface BlacklistStatus {
-	state: BlacklistState;
-	n_blocked: number;
-	n_runs: number;
-	entries: BlacklistInfo[];
-}
-
-export interface BlacklistResponse {
-	path: string;
-	/** Non-null when the file would not parse: the UI says "unreadable", not "empty". */
-	error: string | null;
-	/** False under `--read-only`, or while the file is unreadable. */
-	writable: boolean;
-	entries: BlacklistInfo[];
-	model_states: Record<string, BlacklistState>;
-	/** Present on a write reply; the caller re-renders from these, not a guess. */
-	added?: BlacklistInfo;
-	removed?: BlacklistInfo[];
 }
 
 export interface Overview {
 	runs_dir: string;
 	tasks_dir: string;
-	blacklist: {
-		path: string;
-		error: string | null;
-		writable: boolean;
-		entries: BlacklistInfo[];
-		model_states: Record<string, BlacklistState>;
-		/** Runs the default (hiding) slice drops. Counted over the whole corpus. */
-		n_blocked_runs: number;
-	};
 	counts: { runs: number; scored: number; failed: number; tasks: number; models: number };
 	facets: {
 		tasks: string[];
@@ -138,13 +59,10 @@ export interface Overview {
 }
 
 /**
- * One row of the flattened run index (`runRow` in analyze/export.ts), plus the
- * viewer-only `blacklist` field. The CSV export stays flat scalars; this type is
- * the API's shape, not the file's.
+ * One row of the flattened run index (`runRow` in analyze/export.ts). The CSV
+ * export stays flat scalars; this type is the API's shape, not the file's.
  */
 export interface RunRow {
-	/** The verdict retiring this run's configuration, or null. */
-	blacklist: BlacklistInfo | null;
 	run_id: string;
 	task: string;
 	model: string;
@@ -230,8 +148,6 @@ export interface CellRow {
 	rerouted: number;
 	unsafe_tag_claims_total: number;
 	run_ids: string[];
-	/** Whether this configuration is retired — `partial` when the grouping spans efforts. */
-	blacklist: BlacklistStatus;
 	metrics: Record<MetricKey, Stat>;
 	stats: {
 		cost_usd: Stat;
@@ -247,16 +163,11 @@ export interface CellRow {
 export interface CellsResponse {
 	mode: AverageMode;
 	dimensions: string[];
-	/** Runs dropped from this slice because their configuration is retired. */
-	hidden_blacklisted: number;
-	include_blacklisted: boolean;
 	cells: CellRow[];
 }
 
 export interface RunsResponse {
 	runs: RunRow[];
-	hidden_blacklisted: number;
-	include_blacklisted: boolean;
 }
 
 export interface TaskDiscrimination {
@@ -386,8 +297,6 @@ export interface RunDetail {
 		/** The FIRST pass's frozen report; null on a single-pass run. */
 		report_pass1: ScoreReport | null;
 	};
-	/** The verdict covering this run's configuration, or null. */
-	blacklist: BlacklistInfo | null;
 	/**
 	 * What the review pass changed, or null when the run had one pass. Null is
 	 * "no second pass", NOT "the second pass changed nothing" — that is a run
