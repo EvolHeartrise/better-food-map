@@ -328,6 +328,24 @@ describe('validateSubmission', () => {
 		if (bad.ok) throw new Error('expected failure');
 		expect(bad.issues.length).toBeGreaterThan(0);
 	});
+
+	test('empty-string descriptions coerce to null instead of failing validation', () => {
+		const result = validateSubmission({
+			sources: ['https://x.com/menu'],
+			items: [
+				{ name: 'A', description: '', tags: [], optional_tags: [], price: 1 },
+				{ name: 'B', description: '   ', tags: [], optional_tags: [], price: null },
+				{ name: 'C', description: 'Real text', tags: [], optional_tags: [], price: null }
+			]
+		});
+		expect(result.ok).toBe(true);
+		if (!result.ok) throw new Error('expected success');
+		expect(result.candidate.items.map((item) => item.description)).toEqual([
+			null,
+			null,
+			'Real text'
+		]);
+	});
 });
 
 describe('applyCorrections', () => {
@@ -1076,4 +1094,28 @@ describe('buildMeta effort/temperature fields', () => {
 		expect(meta.temperature).toBeNull();
 		expect(meta.effort_default).toBe('claude-code-default');
 	});
+});
+
+describe('openRouterChat response guarding', () => {
+	test('a 200 body without choices is retried, then succeeds', async () => {
+		const { openRouterChat } = await import('./run');
+		const originalFetch = globalThis.fetch;
+		let calls = 0;
+		globalThis.fetch = (async () => {
+			calls += 1;
+			const body =
+				calls === 1
+					? { error: { message: 'upstream overloaded', code: 502 } }
+					: { choices: [{ message: { role: 'assistant', content: 'ok' } }] };
+			return new Response(JSON.stringify(body), { status: 200 });
+		}) as typeof fetch;
+		try {
+			const chat = openRouterChat('test/model', 'key');
+			const response = await chat([{ role: 'user', content: 'hi' }]);
+			expect(calls).toBe(2);
+			expect(response.choices[0]?.message.content).toBe('ok');
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	}, 10_000);
 });

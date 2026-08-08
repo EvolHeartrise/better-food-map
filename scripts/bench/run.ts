@@ -1223,7 +1223,23 @@ export function openRouterChat(
 				}
 				throw new Error(`OpenRouter request failed: ${lastError}`);
 			}
-			if (res.ok) return (await res.json()) as ChatResponse;
+			if (res.ok) {
+				const parsed = (await res.json()) as ChatResponse & {
+					error?: { message?: string; code?: number };
+				};
+				if (Array.isArray(parsed.choices) && parsed.choices.length > 0) return parsed;
+				// OpenRouter can deliver an upstream failure as HTTP 200 with an
+				// `error` body and no `choices` (free-tier endpoints especially).
+				// That is a transient provider error, not a malformed run: retry it,
+				// and if it persists, fail with the upstream message — an unguarded
+				// `choices[0]` here once killed a run whose pass 1 had already scored.
+				lastError = `no choices in response: ${parsed.error?.message ?? JSON.stringify(parsed).slice(0, 300)}`;
+				if (attempt < MAX_HTTP_RETRIES) {
+					await sleep(2 ** attempt * 1000);
+					continue;
+				}
+				throw new Error(`OpenRouter returned ${lastError}`);
+			}
 			const text = await res.text();
 			if ((res.status === 429 || res.status >= 500) && attempt < MAX_HTTP_RETRIES) {
 				await sleep(2 ** attempt * 1000);
