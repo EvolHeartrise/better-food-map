@@ -587,7 +587,14 @@ const CorrectionsSchema = v.strictObject({
 	add: v.optional(v.array(v.looseObject({}))),
 	remove: v.optional(v.array(v.string())),
 	update: v.optional(v.array(v.strictObject({ name: v.string(), set: v.looseObject({}) }))),
-	set_sources: v.optional(v.array(v.string()))
+	set_sources: v.optional(v.array(v.string())),
+	/**
+	 * Whole-venue dietary sweep: add these tags to EVERY item (added items
+	 * included). Exists because the venue-wide designation rule is a menu-wide
+	 * fact, and expressing it as ~180 per-item update ops measurably under-applies
+	 * — a patch reviewer swept only half a plant-based menu that way.
+	 */
+	tag_menu: v.optional(v.array(v.picklist(DIETARY_TAGS)))
 });
 
 const UPDATABLE_FIELDS = new Set([
@@ -667,6 +674,14 @@ export function applyCorrections(
 	}
 
 	if (ops.set_sources !== undefined) result.sources = ops.set_sources;
+
+	// After add/update, so a sweep covers every item that ends up on the menu.
+	for (const tag of ops.tag_menu ?? []) {
+		for (const item of result.items) {
+			const tags = Array.isArray(item.tags) ? (item.tags as unknown[]) : [];
+			if (!tags.includes(tag)) item.tags = [...tags, tag];
+		}
+	}
 
 	if (issues.length > 0) return { ok: false, issues: issues.slice(0, 20) };
 
@@ -809,6 +824,12 @@ export const PATCH_TOOLS = [
 						type: 'array',
 						items: { type: 'string' },
 						description: 'Replace the draft’s sources list entirely. Omit to keep it.'
+					},
+					tag_menu: {
+						type: 'array',
+						items: { type: 'string', enum: [...DIETARY_TAGS] },
+						description:
+							'Whole-venue dietary sweep: add these dietary tags to EVERY item on the menu (including ones you add). Use when the source designates a claim venue-wide (e.g. a plant-based venue → ["vegan"]), instead of one update per item.'
 					}
 				}
 			}
@@ -1370,6 +1391,28 @@ function writeRun(
 			join(runDir, 'report-pass1.json'),
 			JSON.stringify(parts.firstPassReport, null, '\t')
 		);
+	}
+}
+
+/**
+ * Reserve a unique run directory under `parent`, atomically. `mkdirSync`
+ * WITHOUT `recursive` throws on an existing path, which is the collision
+ * signal; on collision a `-2`, `-3`, … suffix is tried. Claiming up front —
+ * rather than at writeRun time — closes the same-millisecond race two parallel
+ * runs of one task hit in practice (both computed the same timestamp name and
+ * the loser's evidence was silently overwritten).
+ */
+export function claimRunDir(parent: string, name: string): string {
+	mkdirSync(parent, { recursive: true });
+	for (let n = 1; ; n += 1) {
+		const dir = join(parent, n === 1 ? name : `${name}-${n}`);
+		try {
+			mkdirSync(dir);
+			return dir;
+		} catch (e) {
+			const code = (e as NodeJS.ErrnoException).code;
+			if (code !== 'EEXIST') throw e;
+		}
 	}
 }
 
@@ -2115,10 +2158,11 @@ async function main(): Promise<number> {
 	const store = new SnapshotStore(join(cli.taskDir, 'snapshot'));
 	const transcript: TranscriptEvent[] = [];
 	const startedAt = new Date();
-	const runDir = join(
-		'bench',
-		'runs',
-		basename(cli.taskDir),
+	// Claim the directory NOW, and uniquify on collision: two same-task runs
+	// launched in the same millisecond otherwise share a name, and the second
+	// writeRun silently overwrites the first run's evidence.
+	const runDir = claimRunDir(
+		join('bench', 'runs', basename(cli.taskDir)),
 		`${startedAt.toISOString()}-${modelSlug(cli.model)}`
 	);
 

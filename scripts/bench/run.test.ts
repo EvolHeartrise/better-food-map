@@ -11,6 +11,7 @@ import {
 	buildMeta,
 	buildOpenRouterBody,
 	capText,
+	claimRunDir,
 	estimateCachedPrice,
 	extractHrefs,
 	fetchPage,
@@ -406,6 +407,41 @@ describe('applyCorrections', () => {
 			update: [{ name: 'Chai', set: { tags: ['not_a_tag'] } }]
 		});
 		expect(result.ok).toBe(false);
+	});
+
+	test('tag_menu sweeps every item, including added ones, without duplicating', () => {
+		const start = draft();
+		start.items[1].tags = ['vegan'];
+		const result = applyCorrections(start, {
+			add: [{ name: 'Lassi', description: null, tags: [], optional_tags: [], price: 4 }],
+			tag_menu: ['vegan']
+		});
+		expect(result.ok).toBe(true);
+		if (!result.ok) throw new Error('expected success');
+		for (const item of result.candidate.items) {
+			expect(item.tags.filter((t) => t === 'vegan')).toEqual(['vegan']);
+		}
+	});
+
+	test('tag_menu rejects a non-dietary tag', () => {
+		expect(applyCorrections(draft(), { tag_menu: ['spicy'] }).ok).toBe(false);
+	});
+});
+
+describe('claimRunDir', () => {
+	test('same name claims distinct suffixed directories', () => {
+		const parent = mkdtempSync(join(tmpdir(), 'bench-rundir-'));
+		try {
+			const a = claimRunDir(parent, '2026-08-07T23:47:41.698Z-model');
+			const b = claimRunDir(parent, '2026-08-07T23:47:41.698Z-model');
+			const c = claimRunDir(parent, '2026-08-07T23:47:41.698Z-model');
+			expect(a).not.toBe(b);
+			expect(b).not.toBe(c);
+			expect(b.endsWith('-2')).toBe(true);
+			expect(c.endsWith('-3')).toBe(true);
+		} finally {
+			rmSync(parent, { recursive: true, force: true });
+		}
 	});
 });
 
