@@ -10,11 +10,14 @@
 	 */
 	import FilterBar from './components/FilterBar.svelte';
 	import HeaderCaveats from './components/HeaderCaveats.svelte';
+	import Authoring from './views/Authoring.svelte';
 	import Compare from './views/Compare.svelte';
 	import Frontier from './views/Frontier.svelte';
+	import GoldEditor from './views/GoldEditor.svelte';
 	import Leaderboard from './views/Leaderboard.svelte';
 	import RunDetailView from './views/RunDetail.svelte';
 	import Runs from './views/Runs.svelte';
+	import Sources from './views/Sources.svelte';
 	import Tasks from './views/Tasks.svelte';
 	import { router } from './lib/state.svelte';
 
@@ -22,12 +25,25 @@
 		{ view: 'leaderboard', label: 'Leaderboard' },
 		{ view: 'frontier', label: 'Frontier' },
 		{ view: 'tasks', label: 'Tasks' },
-		{ view: 'runs', label: 'Runs' }
+		{ view: 'runs', label: 'Runs' },
+		{ view: 'authoring', label: 'Authoring' },
+		{ view: 'sources', label: 'Sources' }
 	] as const;
 
 	let view = $derived(router.current.view);
-	/** Run detail and compare are their own scope; a global filter there is noise. */
-	let showFilters = $derived(view !== 'run' && view !== 'compare');
+	/**
+	 * Run detail and compare are their own scope; a global filter there is noise.
+	 * The authoring and sources views are not run-slice views at all (the gold
+	 * editor edits one task; sources counts the ingestion stores), so the run
+	 * filter bar would imply a narrowing that does not happen.
+	 */
+	let showFilters = $derived(
+		view !== 'run' &&
+			view !== 'compare' &&
+			view !== 'authoring' &&
+			view !== 'gold' &&
+			view !== 'sources'
+	);
 </script>
 
 <header>
@@ -72,6 +88,12 @@
 			<RunDetailView />
 		{:else if view === 'compare'}
 			<Compare />
+		{:else if view === 'authoring'}
+			<Authoring />
+		{:else if view === 'gold'}
+			<GoldEditor />
+		{:else if view === 'sources'}
+			<Sources />
 		{:else}
 			<Leaderboard />
 		{/if}

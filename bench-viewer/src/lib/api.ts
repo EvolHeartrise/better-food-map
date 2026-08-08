@@ -1,19 +1,27 @@
 /**
  * Typed fetch helpers for the viewer API.
  *
- * Strictly read-only: the bench corpus is written by `bench:run` and the
- * authoring tools alone, because a dashboard that can edit its own evidence is
- * a way to lose it. This app performs no writes at all.
+ * Write policy — inputs, never evidence. The authoring calls at the bottom may
+ * write bench INPUTS (task.json, gold files, review state) through
+ * `/api/authoring/*`. Nothing here can touch `bench/runs`: a dashboard that
+ * can edit its own evidence is a way to lose it, and that invariant survives
+ * this app growing authoring tools.
  */
 import type {
+	AuthoringStatus,
+	AuthoringTask,
 	AverageMode,
 	CellsResponse,
+	CityRow,
+	GoldItem,
 	MetricKey,
 	Overview,
 	RunDetail,
 	RunsResponse,
 	SliceInfo,
-	TaskDiscrimination
+	SourcesSummary,
+	TaskDiscrimination,
+	WriteResult
 } from './types';
 
 async function detailOf(response: Response): Promise<string> {
@@ -107,4 +115,85 @@ export function fetchRunPair(
 /** How big the current slice is — the filter bar states the narrowing it performs. */
 export function fetchSlice(query: string): Promise<SliceInfo> {
 	return get<SliceInfo>(withQuery('/api/slice', query));
+}
+
+// --- authoring (writes bench INPUTS only — see the header) ----------------------
+
+/**
+ * POST that never throws on an application error: authoring failures (lint
+ * errors on promote, validation issues on save) are outcomes the UI renders,
+ * not exceptions for the boundary to swallow.
+ */
+async function post(path: string, body: unknown): Promise<WriteResult> {
+	const response = await fetch(path, {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify(body)
+	});
+	const parsed = (await response
+		.json()
+		.catch(() => ({ error: `${response.status} ${response.statusText}` }))) as Omit<
+		WriteResult,
+		'ok'
+	>;
+	return { ok: response.ok, ...parsed };
+}
+
+export function fetchAuthoringStatus(): Promise<AuthoringStatus> {
+	return get<AuthoringStatus>('/api/authoring/status');
+}
+
+export function fetchAuthoringTask(slug: string, file?: 'draft' | 'data'): Promise<AuthoringTask> {
+	const query = file ? `&file=${file}` : '';
+	return get<AuthoringTask>(`/api/authoring/task?task=${encodeURIComponent(slug)}${query}`);
+}
+
+export function fetchAuthoringPage(
+	slug: string,
+	url: string
+): Promise<{ url: string; text: string }> {
+	return get<{ url: string; text: string }>(
+		`/api/authoring/page?task=${encodeURIComponent(slug)}&url=${encodeURIComponent(url)}`
+	);
+}
+
+export function saveGold(payload: {
+	task: string;
+	file: 'draft' | 'data';
+	items: GoldItem[];
+	sources: string[];
+	reviewed: string[];
+}): Promise<WriteResult> {
+	return post('/api/authoring/save', payload);
+}
+
+export function promoteGold(task: string, policyVersion: string): Promise<WriteResult> {
+	return post('/api/authoring/promote', { task, policy_version: policyVersion });
+}
+
+export function createAuthoringTask(payload: {
+	slug: string;
+	entry_url: string;
+	stratum: string;
+}): Promise<WriteResult> {
+	return post('/api/authoring/create', payload);
+}
+
+export function claimAuthoringTask(payload: {
+	slug: string;
+	stratum: string;
+}): Promise<WriteResult> {
+	return post('/api/authoring/claim', payload);
+}
+
+// --- data-source metrics --------------------------------------------------------
+
+export function fetchSourcesSummary(): Promise<SourcesSummary> {
+	return get<SourcesSummary>('/api/sources/summary');
+}
+
+export function fetchSourceCities(region: string): Promise<{ region: string; cities: CityRow[] }> {
+	return get<{ region: string; cities: CityRow[] }>(
+		`/api/sources/cities?region=${encodeURIComponent(region)}`
+	);
 }
