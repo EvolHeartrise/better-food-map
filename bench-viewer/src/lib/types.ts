@@ -375,4 +375,8 @@ export interface ScatterPoint {
 	n: number;
 	frontier: boolean;
 	detail?: string;
+	/** Model author's favicon; null falls back to the plain circle mark. */
+	icon?: string | null;
+	/** Serving provider's favicon, badged on the mark's corner when known. */
+	providerIcon?: string | null;
 }

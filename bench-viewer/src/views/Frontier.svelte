@@ -13,6 +13,7 @@
 	import { count, duration, metricLabel, pct, usd } from '../lib/format';
 	import { filters, router } from '../lib/state.svelte';
 	import { frontierKeys as computeFrontier, plottableCells } from '../lib/analysis';
+	import { modelIcon, providerIcon } from '../lib/icons';
 	import type { CellRow, ScatterPoint } from '../lib/types';
 	import ScatterChart from '../components/ScatterChart.svelte';
 
@@ -281,6 +282,10 @@
 			y: entry.y,
 			n: entry.cell.n_runs,
 			frontier: frontier.has(entry.cell.key),
+			icon: modelIcon(entry.cell.model),
+			// Only badge the provider when provenance is a real axis of this chart:
+			// pooled cells mix endpoints, and one endpoint's logo would claim them all.
+			providerIcon: splitProvenance ? providerIcon(entry.cell.provenance) : null,
 			detail: [
 				`${entry.cell.n_runs} run(s) over ${entry.cell.n_tasks} task(s)`,
 				entry.cell.harness && entry.cell.harness !== 'single-pass' ? entry.cell.harness : null,
