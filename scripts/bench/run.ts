@@ -14,20 +14,12 @@
  *
  * Requires OPENROUTER_API_KEY in the environment. Writes a run directory under
  * bench/runs/<task-slug>/<iso-timestamp>-<model-slug>/ (bench/ is gitignored).
- * Exit 0 on a scored run, 1 on a failed run, 2 on usage/config errors, 3 when the
- * model/config is blacklisted (see blacklist.ts) and the run was skipped unspent.
+ * Exit 0 on a scored run, 1 on a failed run, 2 on usage/config errors.
  */
 import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import * as v from 'valibot';
-import {
-	describeEntry,
-	findBlock,
-	formatBlocked,
-	loadBlacklist,
-	type BlacklistEntry
-} from './blacklist';
 import {
 	DEFAULT_HARNESS,
 	HARNESS_NAMES,
@@ -1442,8 +1434,6 @@ export interface CliArgs {
 	effort?: string;
 	/** Sampling temperature (openrouter only); undefined = provider default. */
 	temperature?: number;
-	/** Run a blacklisted model/config anyway (deliberate re-test). */
-	ignoreBlacklist?: boolean;
 	/** Pin routing to these quantization tiers (openrouter only); undefined = default routing. */
 	quantizations?: string[];
 	/** Pin routing to exactly these providers (openrouter only); undefined = any. */
@@ -1464,7 +1454,7 @@ const USAGE =
 	'usage: bun run bench:run <task-dir> --model <model-id> ' +
 	'[--backend openrouter|claude] [--effort <level>] [--temperature <n>] [--max-tool-calls N] ' +
 	'[--quantization <fp8[,bf16]>] [--provider <name[,name]>] [--harness <name>] [--review-model <id>] ' +
-	'[--review-effort <level>] [--ignore-blacklist]\n' +
+	'[--review-effort <level>]\n' +
 	`  harnesses: ${HARNESS_NAMES.join(', ')}`;
 
 /** Only the OpenRouter backend needs OPENROUTER_API_KEY; Claude uses the SDK login. */
@@ -1481,7 +1471,6 @@ export function parseCli(argv: string[]): CliArgs | { error: string } {
 	// since --backend may appear either before or after them on the command line.
 	let effortRaw: string | undefined;
 	let temperature: number | undefined;
-	let ignoreBlacklist = false;
 	let quantizations: string[] | undefined;
 	let providerOnly: string[] | undefined;
 	let harness = DEFAULT_HARNESS;
@@ -1546,8 +1535,6 @@ export function parseCli(argv: string[]): CliArgs | { error: string } {
 				.map((s) => s.trim())
 				.filter((s) => s !== '');
 			if (providerOnly.length === 0) return { error: '--provider requires a name' };
-		} else if (arg === '--ignore-blacklist') {
-			ignoreBlacklist = true;
 		} else if (arg.startsWith('--')) {
 			return { error: `unknown option: ${arg}` };
 		} else if (taskDir === undefined) {
@@ -1625,7 +1612,6 @@ export function parseCli(argv: string[]): CliArgs | { error: string } {
 		backend,
 		effort,
 		temperature,
-		ignoreBlacklist,
 		quantizations,
 		providerOnly,
 		harness,
@@ -2083,39 +2069,6 @@ async function main(): Promise<number> {
 		console.error(`error: ${cli.error}`);
 		console.error(USAGE);
 		return 2;
-	}
-
-	// Blacklist FIRST: a configuration already ruled out must cost nothing — no
-	// key check, no models fetch, no chat request. Exit 3 (not 2) so a sweep can
-	// tell "deliberately skipped" from "misconfigured" and keep going.
-	let blocked: BlacklistEntry | undefined;
-	try {
-		const list = loadBlacklist();
-		const spec = harnessFor(cli.harness);
-		// EVERY model the run would call, not just the primary one: a reviewer that
-		// has been ruled out would otherwise run and spend, and it would do so after
-		// pass 1 had already been paid for.
-		for (const pass of spec?.passes ?? []) {
-			blocked = findBlock(list, {
-				model: modelForPass(cli, pass),
-				effort: effortForPass(cli, pass),
-				backend: cli.backend,
-				harness: cli.harness
-			});
-			if (blocked) break;
-		}
-	} catch (e) {
-		console.error(`error: ${String(e)}`);
-		return 2;
-	}
-	if (blocked && !cli.ignoreBlacklist) {
-		console.error(formatBlocked(blocked, '--ignore-blacklist'));
-		return 3;
-	}
-	if (blocked) {
-		console.error(
-			`note: ${describeEntry(blocked)} is blacklisted — running anyway per --ignore-blacklist`
-		);
 	}
 
 	const apiKey = process.env.OPENROUTER_API_KEY;

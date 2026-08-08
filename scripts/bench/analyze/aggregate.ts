@@ -311,8 +311,8 @@ export function dimensionValue(run: RunRecord, dimension: Dimension): string {
 		case 'backend':
 			return run.backend;
 		case 'effort':
-			// "no --effort passed" is a distinct configuration from any named level
-			// (the blacklist makes the same distinction), so it gets its own label.
+			// "no --effort passed" is a distinct configuration from any named level,
+			// so it gets its own label.
 			return run.effort ?? `default(${run.effort_default ?? 'unknown'})`;
 		case 'temperature':
 			return run.temperature === null ? 'unset' : String(run.temperature);

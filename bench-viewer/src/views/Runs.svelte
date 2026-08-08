@@ -11,7 +11,6 @@
 	import { filters, router } from '../lib/state.svelte';
 	import type { RunRow } from '../lib/types';
 	import Badge from '../components/Badge.svelte';
-	import BlacklistBadge from '../components/BlacklistBadge.svelte';
 
 	let search = $state('');
 	let compareA = $state<string | null>(null);
@@ -56,15 +55,6 @@
 						Use ⇄ on two runs of the same task to diff them item by item.
 					{/if}
 				</p>
-				{#if response.hidden_blacklisted > 0}
-					<p class="muted small">
-						{response.hidden_blacklisted} run{response.hidden_blacklisted === 1 ? '' : 's'} on blacklisted
-						configurations hidden.
-						<button class="linky" onclick={() => (filters.includeBlacklisted = true)}>
-							Include them
-						</button>
-					</p>
-				{/if}
 			</div>
 			<input type="search" placeholder="filter runs…" bind:value={search} />
 		</div>
@@ -106,14 +96,7 @@
 						>
 							<td class="left mono">{timestamp(run.started_at)}</td>
 							<td class="left">{run.task}</td>
-							<td class="left">
-								<span class="modelcell">
-									{run.model}
-									{#if run.blacklist}
-										<BlacklistBadge state="all" entries={[run.blacklist]} compact />
-									{/if}
-								</span>
-							</td>
+							<td class="left">{run.model}</td>
 							<td class="left">{run.effort ?? `default`}</td>
 							<td>{pct(run.item_recall, 0)}</td>
 							<td>{pct(run.item_precision, 0)}</td>
@@ -175,21 +158,5 @@
 
 	input[type='search'] {
 		min-width: 220px;
-	}
-
-	.modelcell {
-		display: inline-flex;
-		align-items: center;
-		gap: 6px;
-	}
-
-	.linky {
-		background: none;
-		border: none;
-		padding: 0;
-		font: inherit;
-		color: var(--series-1);
-		cursor: pointer;
-		text-decoration: underline;
 	}
 </style>
