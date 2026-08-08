@@ -845,6 +845,37 @@ describe('quantization pinning', () => {
 	});
 });
 
+describe('provider pinning', () => {
+	const messages: ChatMessage[] = [{ role: 'user', content: 'hi' }];
+
+	test('pins provider.only with fallbacks off, composing with a quantization pin', () => {
+		expect(buildOpenRouterBody('m', messages, { providerOnly: ['CoreWeave'] }).provider).toEqual({
+			only: ['CoreWeave'],
+			allow_fallbacks: false
+		});
+		expect(
+			buildOpenRouterBody('m', messages, { providerOnly: ['CoreWeave'], quantizations: ['fp8'] })
+				.provider
+		).toEqual({ quantizations: ['fp8'], only: ['CoreWeave'], allow_fallbacks: false });
+	});
+
+	test('parseCli accepts names and a comma list, and requires a value', () => {
+		const one = parseCli(['t', '--model', 'm', '--provider', 'CoreWeave']);
+		expect((one as CliArgs).providerOnly).toEqual(['CoreWeave']);
+		const many = parseCli(['t', '--model', 'm', '--provider', 'CoreWeave, BaseTen']);
+		expect((many as CliArgs).providerOnly).toEqual(['CoreWeave', 'BaseTen']);
+		expect(parseCli(['t', '--model', 'm', '--provider'])).toEqual({
+			error: '--provider requires a name'
+		});
+	});
+
+	test('rejected on the claude backend, which has no provider routing', () => {
+		expect(
+			parseCli(['t', '--model', 'm', '--backend', 'claude', '--provider', 'CoreWeave'])
+		).toEqual({ error: '--provider is not supported with --backend claude (no provider routing)' });
+	});
+});
+
 describe('provider capture + formatProvenance', () => {
 	const store = new SnapshotStore(mkdtempSync(join(tmpdir(), 'bench-prov-')));
 

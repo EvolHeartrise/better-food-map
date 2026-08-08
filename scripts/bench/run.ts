@@ -1153,6 +1153,12 @@ export interface OpenRouterRequestOpts {
 	 * cheapest-first and therefore biased toward the MOST quantized endpoint.
 	 */
 	quantizations?: string[];
+	/**
+	 * Restrict routing to exactly these providers (OpenRouter `provider.only`),
+	 * with fallbacks off — a silent fallback to another provider would
+	 * reintroduce the confound the pin removes. Omitted = any provider.
+	 */
+	providerOnly?: string[];
 	/** Tool set to offer the model; defaults to the extraction tools (`TOOLS`). */
 	tools?: unknown[];
 }
@@ -1184,8 +1190,15 @@ export function buildOpenRouterBody(
 	// Pin routing to a quantization tier. allow_fallbacks:false is deliberate —
 	// a silent fallback to a different tier would reintroduce exactly the
 	// confound the pin exists to remove; better to fail the request loudly.
+	const provider: Record<string, unknown> = {};
 	if (opts.quantizations !== undefined && opts.quantizations.length > 0) {
-		body.provider = { quantizations: opts.quantizations, allow_fallbacks: false };
+		provider.quantizations = opts.quantizations;
+	}
+	if (opts.providerOnly !== undefined && opts.providerOnly.length > 0) {
+		provider.only = opts.providerOnly;
+	}
+	if (Object.keys(provider).length > 0) {
+		body.provider = { ...provider, allow_fallbacks: false };
 	}
 	return body;
 }
@@ -1286,6 +1299,8 @@ export interface RunMeta {
 	 * toward the most-quantized endpoint. Null does NOT mean "unquantized".
 	 */
 	quantization_requested: string[] | null;
+	/** Providers routing was pinned to (`--provider`), or null when unpinned. */
+	provider_requested: string[] | null;
 	/**
 	 * Upstream providers that ACTUALLY served this run, in first-seen order.
 	 * More than one entry means OpenRouter re-routed mid-run. Empty on the Claude
@@ -1431,6 +1446,8 @@ export interface CliArgs {
 	ignoreBlacklist?: boolean;
 	/** Pin routing to these quantization tiers (openrouter only); undefined = default routing. */
 	quantizations?: string[];
+	/** Pin routing to exactly these providers (openrouter only); undefined = any. */
+	providerOnly?: string[];
 	/** Agent setup driving the run (see harness.ts); defaults to `single-pass`. */
 	harness: string;
 	/**
@@ -1446,7 +1463,7 @@ export interface CliArgs {
 const USAGE =
 	'usage: bun run bench:run <task-dir> --model <model-id> ' +
 	'[--backend openrouter|claude] [--effort <level>] [--temperature <n>] [--max-tool-calls N] ' +
-	'[--quantization <fp8[,bf16]>] [--harness <name>] [--review-model <id>] ' +
+	'[--quantization <fp8[,bf16]>] [--provider <name[,name]>] [--harness <name>] [--review-model <id>] ' +
 	'[--review-effort <level>] [--ignore-blacklist]\n' +
 	`  harnesses: ${HARNESS_NAMES.join(', ')}`;
 
@@ -1466,6 +1483,7 @@ export function parseCli(argv: string[]): CliArgs | { error: string } {
 	let temperature: number | undefined;
 	let ignoreBlacklist = false;
 	let quantizations: string[] | undefined;
+	let providerOnly: string[] | undefined;
 	let harness = DEFAULT_HARNESS;
 	let reviewModel: string | undefined;
 	// Validated after the loop for the same reason as --effort: --backend may
@@ -1520,6 +1538,14 @@ export function parseCli(argv: string[]): CliArgs | { error: string } {
 				};
 			}
 			quantizations = levels;
+		} else if (arg === '--provider') {
+			const raw = argv[++i];
+			if (raw === undefined || raw === '') return { error: '--provider requires a name' };
+			providerOnly = raw
+				.split(',')
+				.map((s) => s.trim())
+				.filter((s) => s !== '');
+			if (providerOnly.length === 0) return { error: '--provider requires a name' };
 		} else if (arg === '--ignore-blacklist') {
 			ignoreBlacklist = true;
 		} else if (arg.startsWith('--')) {
@@ -1538,6 +1564,9 @@ export function parseCli(argv: string[]): CliArgs | { error: string } {
 		return {
 			error: '--quantization is not supported with --backend claude (no provider routing)'
 		};
+	}
+	if (providerOnly !== undefined && backend === 'claude') {
+		return { error: '--provider is not supported with --backend claude (no provider routing)' };
 	}
 
 	// The Claude backend exposes no sampling control, and current Claude models
@@ -1598,6 +1627,7 @@ export function parseCli(argv: string[]): CliArgs | { error: string } {
 		temperature,
 		ignoreBlacklist,
 		quantizations,
+		providerOnly,
 		harness,
 		reviewModel,
 		reviewEffort
@@ -1635,6 +1665,7 @@ export function buildMeta(
 		effort_default: cli.backend === 'claude' ? 'claude-code-default' : 'provider-default',
 		temperature: cli.temperature ?? null,
 		quantization_requested: cli.quantizations ?? null,
+		provider_requested: cli.providerOnly ?? null,
 		providers,
 		// Only the providers this run actually used — not the whole endpoint table.
 		provider_quantizations: Object.fromEntries(
@@ -1730,6 +1761,7 @@ async function executePass(opts: {
 				effort,
 				temperature: cli.temperature,
 				quantizations: cli.quantizations,
+				providerOnly: cli.providerOnly,
 				tools: isPatch ? PATCH_TOOLS : undefined
 			}),
 			store,
