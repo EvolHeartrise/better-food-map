@@ -30,12 +30,41 @@ import { normalizeUrl } from './snapshot-store';
 // every caller already reaches for it.
 export { nameMatchKey };
 
+/**
+ * A submitted `description: ""` (or whitespace-only) means "no description" and
+ * is coerced to null BEFORE validation. Models routinely emit the empty string
+ * where the schema wants null, and rejecting on it is disproportionate: a live
+ * run built a complete 180-item extraction, was bounced over a handful of
+ * empty-string descriptions, and never managed to re-emit the whole menu.
+ * Candidate-only — gold authoring stays strict, a human writing `""` into gold
+ * should be told to write null.
+ */
+function nullifyEmptyDescriptions(raw: unknown): unknown {
+	if (typeof raw !== 'object' || raw === null) return raw;
+	const items = (raw as { items?: unknown }).items;
+	if (!Array.isArray(items)) return raw;
+	return {
+		...raw,
+		items: items.map((item) => {
+			if (typeof item !== 'object' || item === null) return item;
+			const description = (item as { description?: unknown }).description;
+			if (typeof description !== 'string' || description.trim() !== '') return item;
+			return { ...item, description: null };
+		})
+	};
+}
+
 // A candidate is shaped exactly like gold, except policy_version is optional —
-// an agent need not stamp the policy it was authored under.
-export const CandidateSchema = v.object({
-	...GoldSchema.entries,
-	policy_version: v.optional(v.string())
-});
+// an agent need not stamp the policy it was authored under — and empty-string
+// descriptions are coerced to null first (see above).
+export const CandidateSchema = v.pipe(
+	v.unknown(),
+	v.transform(nullifyEmptyDescriptions),
+	v.object({
+		...GoldSchema.entries,
+		policy_version: v.optional(v.string())
+	})
+);
 
 export type CandidateMenu = v.InferOutput<typeof CandidateSchema>;
 type MenuItem = GoldMenu['items'][number];
