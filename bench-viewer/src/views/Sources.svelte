@@ -13,7 +13,7 @@
 	import { fetchCells, fetchSourceCities, fetchSourcesSummary } from '../lib/api';
 	import { usd } from '../lib/format';
 	import { filters } from '../lib/state.svelte';
-	import type { CityRow } from '../lib/types';
+	import type { CityRow, RegionRow } from '../lib/types';
 
 	let summary = $derived(await fetchSourcesSummary());
 
@@ -52,6 +52,39 @@
 	let expandedRegion = $state<string | null>(null);
 	let cities = $state<CityRow[]>([]);
 
+	/**
+	 * Restrict every column to venues with a website on file — the directly
+	 * menu-researchable subset. One toggle switches ALL columns (including the
+	 * map subtraction) so the table never mixes filtered and unfiltered numbers.
+	 */
+	let webOnly = $state(false);
+
+	interface Counts {
+		osm: number;
+		leads: number;
+		map_open: number;
+		unique: number;
+		remaining: number;
+	}
+
+	function counts(row: RegionRow | CityRow): Counts {
+		return webOnly
+			? {
+					osm: row.osm_web,
+					leads: row.leads_web,
+					map_open: row.map_open_web,
+					unique: row.unique_web,
+					remaining: row.remaining_web
+				}
+			: {
+					osm: row.osm,
+					leads: row.leads,
+					map_open: row.map_open,
+					unique: row.unique_estimate,
+					remaining: row.remaining_estimate
+				};
+	}
+
 	async function toggleRegion(region: string): Promise<void> {
 		if (expandedRegion === region) {
 			expandedRegion = null;
@@ -87,13 +120,18 @@
 					<span class="k">OSM staging</span>
 					<span class="v">{num(s.osm.total)}</span>
 					<span class="d"
-						>{num(s.osm.named)} named · {num(s.osm.matched_overture)} Overture-matched</span
+						>{num(s.osm.named)} named · {num(s.osm.with_website)} with website · {num(
+							s.osm.matched_overture
+						)} Overture-matched</span
 					>
 				</div>
 				<div class="tile">
 					<span class="k">Overture leads</span>
 					<span class="v">{num(s.overture_leads.total)}</span>
-					<span class="d">release {s.overture_leads.release ?? '—'} · not near any OSM POI</span>
+					<span class="d"
+						>{num(s.overture_leads.with_website)} with website · release {s.overture_leads
+							.release ?? '—'} · not near any OSM POI</span
+					>
 				</div>
 				<div class="tile">
 					<span class="k">On the map</span>
@@ -143,7 +181,19 @@
 
 		{#each summary.countries ?? [] as country (country.country)}
 			<div class="card">
-				<h2>{country.country} — by province</h2>
+				<div class="spread">
+					<h2>{country.country} — by province</h2>
+					<label class="small chk toggle">
+						<input type="checkbox" bind:checked={webOnly} />
+						with website only
+					</label>
+				</div>
+				{#if webOnly}
+					<p class="muted small">
+						All columns restricted to venues with a website on file — the directly menu-researchable
+						subset. Venues without one need site discovery first.
+					</p>
+				{/if}
 				<div class="scroll">
 					<table>
 						<thead>
@@ -160,14 +210,15 @@
 						</thead>
 						<tbody>
 							{#each country.regions as region (region.region)}
+								{@const c = counts(region)}
 								<tr>
 									<td class="mono">{region.region}</td>
-									<td class="num">{num(region.osm)}</td>
-									<td class="num">{num(region.leads)}</td>
-									<td class="num">{num(region.unique_estimate)}</td>
-									<td class="num">{num(region.map_open)}</td>
-									<td class="num strong">{num(region.remaining_estimate)}</td>
-									<td class="num">{cost(region.remaining_estimate)}</td>
+									<td class="num">{num(c.osm)}</td>
+									<td class="num">{num(c.leads)}</td>
+									<td class="num">{num(c.unique)}</td>
+									<td class="num">{num(c.map_open)}</td>
+									<td class="num strong">{num(c.remaining)}</td>
+									<td class="num">{cost(c.remaining)}</td>
 									<td>
 										<button class="chip" onclick={() => toggleRegion(region.region)}>
 											{expandedRegion === region.region ? 'hide' : 'cities'}
@@ -180,14 +231,15 @@
 											<table class="inner">
 												<tbody>
 													{#each cities.slice(0, 40) as city (city.city)}
+														{@const c = counts(city)}
 														<tr>
 															<td>{city.city}</td>
-															<td class="num">{num(city.osm)}</td>
-															<td class="num">{num(city.leads)}</td>
-															<td class="num">{num(city.unique_estimate)}</td>
-															<td class="num">{num(city.map_open)}</td>
-															<td class="num strong">{num(city.remaining_estimate)}</td>
-															<td class="num">{cost(city.remaining_estimate)}</td>
+															<td class="num">{num(c.osm)}</td>
+															<td class="num">{num(c.leads)}</td>
+															<td class="num">{num(c.unique)}</td>
+															<td class="num">{num(c.map_open)}</td>
+															<td class="num strong">{num(c.remaining)}</td>
+															<td class="num">{cost(c.remaining)}</td>
 															<td></td>
 														</tr>
 													{/each}
@@ -258,6 +310,14 @@
 		display: inline-flex;
 		gap: 4px;
 		align-items: center;
+	}
+
+	.spread {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: 12px;
+		flex-wrap: wrap;
 	}
 
 	.num-in {

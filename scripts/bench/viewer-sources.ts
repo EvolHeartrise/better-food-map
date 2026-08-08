@@ -55,33 +55,58 @@ interface GeoCount {
 	region: string;
 	city: string;
 	n: number;
+	/** How many of `n` carry a non-empty website — the menu-researchable subset. */
+	web: number;
 }
 
+/**
+ * Every count comes in two variants: all venues, and only those with a
+ * website on file (`*_web`). The client's "with website" toggle switches
+ * between them — restricting to website-bearing venues restricts EVERY column
+ * (including the map subtraction), so the two readings stay internally
+ * consistent instead of mixing filtered and unfiltered numbers.
+ */
 export interface CityRow {
 	city: string;
 	osm: number;
+	osm_web: number;
 	leads: number;
+	leads_web: number;
 	map_open: number;
+	map_open_web: number;
 	unique_estimate: number;
+	unique_web: number;
 	remaining_estimate: number;
+	remaining_web: number;
 }
 
 export interface RegionRow {
 	region: string;
 	osm: number;
+	osm_web: number;
 	leads: number;
+	leads_web: number;
 	map_open: number;
+	map_open_web: number;
 	map_closed: number;
 	unique_estimate: number;
+	unique_web: number;
 	remaining_estimate: number;
+	remaining_web: number;
 }
 
 export interface SourcesSummary {
 	available: boolean;
 	reason?: string;
 	sources?: {
-		osm: { total: number; named: number; matched_overture: number; db_mtime: string };
-		overture_leads: { total: number; release: string | null };
+		osm: {
+			total: number;
+			named: number;
+			with_website: number;
+			matched_overture: number;
+			db_mtime: string;
+		};
+		overture_leads: { total: number; with_website: number; release: string | null };
 		map: { open: number; closed: number; mirror_mtime: string | null; mirror_found: boolean };
 	};
 	/** Single-country today (the Canada extract); shaped as a list on purpose. */
@@ -91,17 +116,28 @@ export interface SourcesSummary {
 
 const METHOD =
 	'unique = OSM staging + Overture leads (leads exclude OSM-covered venues by construction); ' +
-	'remaining = max(0, unique − open map locations). Region/city joins fold accents and case; ' +
-	'neighbourhood-level names may still split one city across rows, so treat city rows as estimates.';
+	'remaining = max(0, unique − open map locations). The website toggle restricts EVERY column ' +
+	'to venues with a website on file — the directly menu-researchable subset. Region/city joins ' +
+	'fold accents and case; neighbourhood-level names may still split one city across rows, so ' +
+	'treat city rows as estimates.';
+
+/** Non-empty-website predicate, shared by every per-source count. */
+const WEB = "(website IS NOT NULL AND website != '')";
 
 function geoCounts(db: Database, sql: string): GeoCount[] {
-	return (db.query(sql).all() as { region: string | null; city: string | null; n: number }[]).map(
-		(row) => ({
-			region: (row.region ?? '').trim() || '(unknown)',
-			city: (row.city ?? '').trim() || '(unknown)',
-			n: row.n
-		})
-	);
+	return (
+		db.query(sql).all() as {
+			region: string | null;
+			city: string | null;
+			n: number;
+			web: number | null;
+		}[]
+	).map((row) => ({
+		region: (row.region ?? '').trim() || '(unknown)',
+		city: (row.city ?? '').trim() || '(unknown)',
+		n: row.n,
+		web: row.web ?? 0
+	}));
 }
 
 interface Loaded {
@@ -111,8 +147,10 @@ interface Loaded {
 	mapClosedTotal: number;
 	osmTotal: number;
 	osmNamed: number;
+	osmWeb: number;
 	osmMatched: number;
 	leadsTotal: number;
+	leadsWeb: number;
 	leadsRelease: string | null;
 	mapOpenTotal: number;
 	poiMtime: number;
@@ -128,11 +166,13 @@ function load(poiDbPath: string, root: string): Loaded | { error: string } {
 	try {
 		const osm = geoCounts(
 			poi,
-			'SELECT admin_region AS region, admin_city AS city, COUNT(*) AS n FROM osm_poi GROUP BY 1, 2'
+			'SELECT admin_region AS region, admin_city AS city, COUNT(*) AS n, ' +
+				`SUM(CASE WHEN ${WEB} THEN 1 ELSE 0 END) AS web FROM osm_poi GROUP BY 1, 2`
 		);
 		const one = (sql: string): number => (poi.query(sql).get() as { n: number }).n;
 		const osmTotal = one('SELECT COUNT(*) AS n FROM osm_poi');
 		const osmNamed = one("SELECT COUNT(*) AS n FROM osm_poi WHERE name IS NOT NULL AND name != ''");
+		const osmWeb = one(`SELECT COUNT(*) AS n FROM osm_poi WHERE ${WEB}`);
 		const osmMatched = one('SELECT COUNT(*) AS n FROM osm_poi WHERE overture_id IS NOT NULL');
 
 		const hasLeads =
@@ -146,10 +186,12 @@ function load(poiDbPath: string, root: string): Loaded | { error: string } {
 		const leads = hasLeads
 			? geoCounts(
 					poi,
-					'SELECT province AS region, city, COUNT(*) AS n FROM overture_leads GROUP BY 1, 2'
+					'SELECT province AS region, city, COUNT(*) AS n, ' +
+						`SUM(CASE WHEN ${WEB} THEN 1 ELSE 0 END) AS web FROM overture_leads GROUP BY 1, 2`
 				)
 			: [];
 		const leadsTotal = hasLeads ? one('SELECT COUNT(*) AS n FROM overture_leads') : 0;
+		const leadsWeb = hasLeads ? one(`SELECT COUNT(*) AS n FROM overture_leads WHERE ${WEB}`) : 0;
 		const leadsRelease = hasLeads
 			? ((
 					poi.query('SELECT release FROM overture_leads LIMIT 1').get() as {
@@ -169,7 +211,9 @@ function load(poiDbPath: string, root: string): Loaded | { error: string } {
 			try {
 				mapOpen = geoCounts(
 					mirror,
-					'SELECT region, city, COUNT(*) AS n FROM locations WHERE closed_at IS NULL GROUP BY 1, 2'
+					'SELECT region, city, COUNT(*) AS n, ' +
+						`SUM(CASE WHEN ${WEB} THEN 1 ELSE 0 END) AS web ` +
+						'FROM locations WHERE closed_at IS NULL GROUP BY 1, 2'
 				);
 				mapOpenTotal = (
 					mirror.query('SELECT COUNT(*) AS n FROM locations WHERE closed_at IS NULL').get() as {
@@ -193,8 +237,10 @@ function load(poiDbPath: string, root: string): Loaded | { error: string } {
 			mapClosedTotal,
 			osmTotal,
 			osmNamed,
+			osmWeb,
 			osmMatched,
 			leadsTotal,
+			leadsWeb,
 			leadsRelease,
 			mapOpenTotal,
 			poiMtime: statSync(poiDbPath).mtimeMs,
@@ -206,11 +252,18 @@ function load(poiDbPath: string, root: string): Loaded | { error: string } {
 	}
 }
 
-function sumByRegion(rows: GeoCount[]): Map<string, number> {
-	const out = new Map<string, number>();
-	for (const row of rows) out.set(row.region, (out.get(row.region) ?? 0) + row.n);
+function sumByRegion(rows: GeoCount[]): Map<string, { n: number; web: number }> {
+	const out = new Map<string, { n: number; web: number }>();
+	for (const row of rows) {
+		const entry = out.get(row.region) ?? { n: 0, web: 0 };
+		entry.n += row.n;
+		entry.web += row.web;
+		out.set(row.region, entry);
+	}
 	return out;
 }
+
+const ZERO = { n: 0, web: 0 };
 
 export function buildSummary(loaded: Loaded): SourcesSummary {
 	const osmByRegion = sumByRegion(loaded.osm);
@@ -224,18 +277,24 @@ export function buildSummary(loaded: Loaded): SourcesSummary {
 
 	const regions: RegionRow[] = [...regionsSeen]
 		.map((region) => {
-			const osm = osmByRegion.get(region) ?? 0;
-			const leads = leadsByRegion.get(region) ?? 0;
-			const mapOpen = mapByRegion.get(region) ?? 0;
-			const unique = osm + leads;
+			const osm = osmByRegion.get(region) ?? ZERO;
+			const leads = leadsByRegion.get(region) ?? ZERO;
+			const mapOpen = mapByRegion.get(region) ?? ZERO;
+			const unique = osm.n + leads.n;
+			const uniqueWeb = osm.web + leads.web;
 			return {
 				region,
-				osm,
-				leads,
-				map_open: mapOpen,
+				osm: osm.n,
+				osm_web: osm.web,
+				leads: leads.n,
+				leads_web: leads.web,
+				map_open: mapOpen.n,
+				map_open_web: mapOpen.web,
 				map_closed: 0,
 				unique_estimate: unique,
-				remaining_estimate: Math.max(0, unique - mapOpen)
+				unique_web: uniqueWeb,
+				remaining_estimate: Math.max(0, unique - mapOpen.n),
+				remaining_web: Math.max(0, uniqueWeb - mapOpen.web)
 			};
 		})
 		.toSorted((a, b) => b.unique_estimate - a.unique_estimate);
@@ -246,10 +305,15 @@ export function buildSummary(loaded: Loaded): SourcesSummary {
 			osm: {
 				total: loaded.osmTotal,
 				named: loaded.osmNamed,
+				with_website: loaded.osmWeb,
 				matched_overture: loaded.osmMatched,
 				db_mtime: new Date(loaded.poiMtime).toISOString()
 			},
-			overture_leads: { total: loaded.leadsTotal, release: loaded.leadsRelease },
+			overture_leads: {
+				total: loaded.leadsTotal,
+				with_website: loaded.leadsWeb,
+				release: loaded.leadsRelease
+			},
 			map: {
 				open: loaded.mapOpenTotal,
 				closed: loaded.mapClosedTotal,
@@ -270,20 +334,47 @@ export function buildCities(loaded: Loaded, region: string): CityRow[] {
 		const key = foldCity(city);
 		let row = cities.get(key);
 		if (!row) {
-			row = { city, osm: 0, leads: 0, map_open: 0, unique_estimate: 0, remaining_estimate: 0 };
+			row = {
+				city,
+				osm: 0,
+				osm_web: 0,
+				leads: 0,
+				leads_web: 0,
+				map_open: 0,
+				map_open_web: 0,
+				unique_estimate: 0,
+				unique_web: 0,
+				remaining_estimate: 0,
+				remaining_web: 0
+			};
 			cities.set(key, row);
 		}
 		return row;
 	};
-	for (const entry of loaded.osm) if (entry.region === region) rowFor(entry.city).osm += entry.n;
-	for (const entry of loaded.leads)
-		if (entry.region === region) rowFor(entry.city).leads += entry.n;
-	for (const entry of loaded.mapOpen)
-		if (entry.region === region) rowFor(entry.city).map_open += entry.n;
+	for (const entry of loaded.osm) {
+		if (entry.region !== region) continue;
+		const row = rowFor(entry.city);
+		row.osm += entry.n;
+		row.osm_web += entry.web;
+	}
+	for (const entry of loaded.leads) {
+		if (entry.region !== region) continue;
+		const row = rowFor(entry.city);
+		row.leads += entry.n;
+		row.leads_web += entry.web;
+	}
+	for (const entry of loaded.mapOpen) {
+		if (entry.region !== region) continue;
+		const row = rowFor(entry.city);
+		row.map_open += entry.n;
+		row.map_open_web += entry.web;
+	}
 	const rows = [...cities.values()];
 	for (const row of rows) {
 		row.unique_estimate = row.osm + row.leads;
+		row.unique_web = row.osm_web + row.leads_web;
 		row.remaining_estimate = Math.max(0, row.unique_estimate - row.map_open);
+		row.remaining_web = Math.max(0, row.unique_web - row.map_open_web);
 	}
 	return rows.toSorted((a, b) => b.unique_estimate - a.unique_estimate);
 }
