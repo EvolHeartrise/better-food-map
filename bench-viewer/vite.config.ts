@@ -1,4 +1,6 @@
+import tailwindcss from '@tailwindcss/vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
+import path from 'node:path';
 import { defineConfig } from 'vite';
 
 /**
@@ -20,7 +22,15 @@ export default defineConfig({
 	// $effect that assigns state, and gives synchronized updates for free: on a
 	// refilter Svelte holds the rendered table until the new data resolves, so
 	// there is no skeleton flash between slices.
-	plugins: [svelte({ compilerOptions: { runes: true, experimental: { async: true } } })],
+	plugins: [
+		tailwindcss(),
+		svelte({ compilerOptions: { runes: true, experimental: { async: true } } })
+	],
+	resolve: {
+		// `$lib` mirrors the SvelteKit convention but is scoped to THIS app's
+		// src/lib — it is what the shadcn-svelte components import through.
+		alias: { $lib: path.resolve(import.meta.dirname, 'src/lib') }
+	},
 	// Relative asset URLs so the bundle works from any mount path the viewer serves.
 	base: './',
 	build: {

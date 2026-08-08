@@ -26,7 +26,13 @@
 		"resolveJsonModule": true,
 		"isolatedModules": true,
 		"verbatimModuleSyntax": true,
-		"forceConsistentCasingInFileNames": true
+		"forceConsistentCasingInFileNames": true,
+		// `$lib` mirrors the SvelteKit alias but resolves inside THIS app only;
+		// it is how the vendored shadcn-svelte components import each other.
+		"paths": {
+			"$lib": ["./src/lib"],
+			"$lib/*": ["./src/lib/*"]
+		}
 	},
 	"include": ["src/**/*.ts", "src/**/*.svelte", "vite.config.ts"]
 }
