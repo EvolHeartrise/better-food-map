@@ -9,6 +9,9 @@
 	 * Three distinct empty states, because collapsing them tells lies: a value,
 	 * a dash (never ran), and a dash with "!" (ran, produced no score). None of
 	 * them is a zero.
+	 *
+	 * A plain <table>, not the shadcn data table: this grid is a chart, and row
+	 * borders/hover tints would fight the fills that carry its meaning.
 	 */
 	import { UNKNOWN } from '../lib/format';
 
@@ -78,49 +81,59 @@
 	}
 </script>
 
-<div class="scroll-x">
-	<table class="heat">
+<div class="max-w-full overflow-x-auto">
+	<table class="w-full border-collapse tabular-nums">
 		<thead>
 			<tr>
-				<th class="left">Configuration</th>
+				<th
+					class="border-b border-axis px-1.5 py-1 text-left text-xs font-semibold text-muted-foreground"
+					>Configuration</th
+				>
 				{#each columns as column (column)}
-					<th>{column}</th>
+					<th
+						class="border-b border-axis px-1.5 py-1 text-right text-xs font-semibold text-muted-foreground"
+						>{column}</th
+					>
 				{/each}
 			</tr>
 		</thead>
 		<tbody>
 			{#each rows as row (row.key)}
 				<tr>
-					<td class="left rowlabel" title={row.key}>
+					<td class="max-w-[320px] truncate p-[3px] text-left text-xs" title={row.key}>
 						{row.label}
-						{#if row.note}<span class="muted"> · {row.note}</span>{/if}
+						{#if row.note}<span class="text-muted-foreground"> · {row.note}</span>{/if}
 					</td>
 					{#each columns as column (column)}
 						{@const cell = value(row.key, column)}
 						{#if cell && cell.value !== null}
-							<td class="cell">
+							<td class="p-[3px] text-center">
+								<!-- 2px surface gap between fills — the surface does the separating,
+								     not a stroke. -->
 								<button
-									class="swatch"
+									class="block w-full min-w-[78px] cursor-pointer rounded px-1.5 py-[5px] text-xs outline-2 outline-card hover:outline-foreground focus-visible:outline-foreground"
 									style="background:{fill(cell.value)};color:{ink(cell.value)}"
 									title="{row.label} · {column} · n={cell.n}"
 									onclick={() => onselect?.(row.key, column)}
 								>
 									{format(cell.value)}
-									{#if cell.n > 1}<span class="n">n{cell.n}</span>{/if}
+									{#if cell.n > 1}<span class="ml-1 text-[10px] opacity-75">n{cell.n}</span>{/if}
 								</button>
 							</td>
 						{:else if cell}
 							<!-- Ran, but produced no score. A DIFFERENT fact from "never ran",
 							     and one this grid used to label as "never run". -->
-							<td class="cell">
+							<td class="p-[3px] text-center">
 								<span
-									class="absent"
+									class="text-xs text-muted-foreground"
 									title="Ran {cell.n} time(s), {cell.failed} failed — no score produced"
-									>{UNKNOWN}<span class="ran">!</span></span
+									>{UNKNOWN}<span class="ml-0.5 font-bold text-critical">!</span></span
 								>
 							</td>
 						{:else}
-							<td class="cell"><span class="absent" title="never run">{UNKNOWN}</span></td>
+							<td class="p-[3px] text-center">
+								<span class="text-xs text-muted-foreground" title="never run">{UNKNOWN}</span>
+							</td>
 						{/if}
 					{/each}
 				</tr>
@@ -129,87 +142,11 @@
 	</table>
 </div>
 
-<div class="legend row">
-	<span class="muted">{format(observed.lo)}</span>
+<div class="mt-2.5 flex items-center gap-2 text-[11px]">
+	<span class="text-muted-foreground">{format(observed.lo)}</span>
 	{#each STEPS as step (step)}
-		<span class="key" style="background:{step}"></span>
+		<span class="inline-block h-2.5 w-[26px] rounded-sm" style="background:{step}"></span>
 	{/each}
-	<span class="muted">{format(observed.hi)}</span>
-	<span class="muted legend-note">scale spans the observed range, not 0–100%</span>
+	<span class="text-muted-foreground">{format(observed.hi)}</span>
+	<span class="ml-2 text-muted-foreground">scale spans the observed range, not 0–100%</span>
 </div>
-
-<style>
-	.heat td,
-	.heat th {
-		border-bottom: none;
-		padding: 3px;
-	}
-
-	.heat thead th {
-		padding: 4px 6px;
-		border-bottom: 1px solid var(--axis);
-	}
-
-	.rowlabel {
-		font-size: 12px;
-		max-width: 320px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-
-	.cell {
-		text-align: center;
-	}
-
-	.swatch {
-		display: block;
-		width: 100%;
-		min-width: 78px;
-		border: none;
-		/* 2px surface gap between fills — white does the separating, not a stroke. */
-		outline: 2px solid var(--surface-1);
-		border-radius: 4px;
-		padding: 5px 6px;
-		font-size: 12px;
-		font-variant-numeric: tabular-nums;
-		cursor: pointer;
-	}
-
-	.swatch:hover {
-		outline-color: var(--text-primary);
-	}
-
-	.n {
-		opacity: 0.75;
-		font-size: 10px;
-		margin-left: 4px;
-	}
-
-	.absent {
-		color: var(--text-muted);
-		font-size: 12px;
-	}
-
-	/* Marks "ran but produced no score" apart from "never ran" without colour. */
-	.ran {
-		color: var(--critical);
-		font-weight: 700;
-		margin-left: 2px;
-	}
-
-	.legend {
-		margin-top: 10px;
-		font-size: 11px;
-	}
-
-	.key {
-		width: 26px;
-		height: 10px;
-		border-radius: 2px;
-		display: inline-block;
-	}
-
-	.legend-note {
-		margin-left: 8px;
-	}
-</style>

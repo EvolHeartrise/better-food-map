@@ -1,0 +1,6 @@
+{
+	"name": "bench-viewer",
+	"private": true,
+	"type": "module",
+	"//": "No dependencies on purpose — everything resolves from the repo root package.json (the shadcn-svelte CLI re-adds entries here when adding components; move new ones to the root and clear this). This file exists so tools that anchor on a package.json in cwd (the shadcn-svelte CLI) can run inside bench-viewer/."
+}

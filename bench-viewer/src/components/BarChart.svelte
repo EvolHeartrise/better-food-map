@@ -17,11 +17,6 @@
 		max?: number;
 	} = $props();
 
-	const BAR = 18;
-	const GAP = 10;
-	const LABEL_WIDTH = 190;
-	const VALUE_WIDTH = 74;
-
 	let domainMax = $derived(
 		max ??
 			Math.max(
@@ -36,72 +31,26 @@
 	}
 </script>
 
-<div
-	class="chart"
-	style="--bar:{BAR}px;--gap:{GAP}px;--label:{LABEL_WIDTH}px;--value:{VALUE_WIDTH}px"
->
+<div class="flex flex-col gap-2.5">
 	{#each bars as bar (bar.label)}
-		<div class="row">
-			<div class="label" title={bar.label}>
+		<div class="grid grid-cols-[190px_1fr_74px] items-center gap-2.5">
+			<div class="truncate text-xs text-muted-foreground" title={bar.label}>
 				{bar.label}
-				{#if bar.note}<span class="note">{bar.note}</span>{/if}
+				{#if bar.note}<span class="ml-1.5 text-[11px] text-muted-foreground/70">{bar.note}</span
+					>{/if}
 			</div>
-			<div class="track">
+			<div class="h-[18px] overflow-hidden rounded-[3px] bg-gridline/60">
 				{#if bar.value !== null}
-					<div class="bar" style="width:{width(bar.value)}%"></div>
+					<!-- Rounded data-end, square at the baseline. -->
+					<div
+						class="h-full min-w-[2px] rounded-r bg-series-1"
+						style="width:{width(bar.value)}%"
+					></div>
 				{/if}
 			</div>
-			<div class="value num">{bar.value === null ? '—' : format(bar.value)}</div>
+			<div class="text-right text-xs tabular-nums">
+				{bar.value === null ? '—' : format(bar.value)}
+			</div>
 		</div>
 	{/each}
 </div>
-
-<style>
-	.chart {
-		display: flex;
-		flex-direction: column;
-		gap: var(--gap);
-	}
-
-	.row {
-		display: grid;
-		grid-template-columns: var(--label) 1fr var(--value);
-		align-items: center;
-		gap: 10px;
-	}
-
-	.label {
-		font-size: 12px;
-		color: var(--text-secondary);
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.note {
-		color: var(--text-muted);
-		margin-left: 6px;
-		font-size: 11px;
-	}
-
-	.track {
-		height: var(--bar);
-		background: color-mix(in srgb, var(--gridline) 60%, transparent);
-		border-radius: 3px;
-		overflow: hidden;
-	}
-
-	.bar {
-		height: 100%;
-		background: var(--series-1);
-		/* Rounded data-end, square at the baseline. */
-		border-radius: 0 4px 4px 0;
-		min-width: 2px;
-	}
-
-	.value {
-		font-size: 12px;
-		text-align: right;
-		color: var(--text-primary);
-	}
-</style>

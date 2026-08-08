@@ -8,6 +8,7 @@ import {
 	mergePassResults,
 	promptShaLabel,
 	promptShasFor,
+	promptTextsFor,
 	userMessageFor,
 	type PassSpec
 } from './harness';
@@ -195,6 +196,21 @@ describe('promptShasFor / promptShaLabel', () => {
 		expect(promptShaLabel(null)).toBe('unknown');
 		expect(promptShaLabel(undefined)).toBe('unknown');
 		expect(promptShaLabel({})).toBe('unknown');
+	});
+});
+
+describe('promptTextsFor', () => {
+	test('carries the exact prompt text under the same keys and shas as promptShasFor', () => {
+		const spec = HARNESSES['two-pass'];
+		const texts = promptTextsFor(spec);
+		const shas = promptShasFor(spec);
+		expect(Object.keys(texts).toSorted()).toEqual(Object.keys(shas).toSorted());
+		for (const [key, entry] of Object.entries(texts)) {
+			expect(entry.sha).toBe(shas[key]);
+			expect(promptSha(entry.text)).toBe(entry.sha);
+		}
+		expect(texts['1-extract'].text).toBe(SYSTEM_PROMPT);
+		expect(texts['2-review'].text).toBe(REVIEW_SYSTEM_PROMPT);
 	});
 });
 

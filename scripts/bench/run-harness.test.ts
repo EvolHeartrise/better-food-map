@@ -6,7 +6,6 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { entryCovers, type BlacklistEntry } from './blacklist';
 import { HARNESSES, promptShasFor, reviewLabel, type PassMeta } from './harness';
 import { REVIEW_SYSTEM_PROMPT, SYSTEM_PROMPT } from './prompts';
 import type { ScoreReport } from './score';
@@ -402,48 +401,6 @@ describe('formatPassDelta', () => {
 			report({ matched: 8, hallucinated_items: ['c'] })
 		);
 		expect(out).toContain('items 8 → 8 matched, 2 → 1 hallucinated');
-	});
-});
-
-describe('blacklist harness scoping', () => {
-	const base: BlacklistEntry = { model: 'm', reason: 'r', added: '2026-08-06' };
-
-	test('an entry with no harness covers every harness', () => {
-		// The existing verdicts are all of this shape, and they were written about
-		// raw model capability, so they keep applying.
-		expect(entryCovers(base, { model: 'm', backend: 'openrouter', harness: 'single-pass' })).toBe(
-			true
-		);
-		expect(entryCovers(base, { model: 'm', backend: 'openrouter', harness: 'two-pass' })).toBe(
-			true
-		);
-	});
-
-	test('a harness-scoped entry covers only that harness', () => {
-		const scoped: BlacklistEntry = { ...base, harness: 'single-pass' };
-		expect(entryCovers(scoped, { model: 'm', backend: 'openrouter', harness: 'single-pass' })).toBe(
-			true
-		);
-		expect(entryCovers(scoped, { model: 'm', backend: 'openrouter', harness: 'two-pass' })).toBe(
-			false
-		);
-	});
-
-	test('a config with no harness is treated as single-pass', () => {
-		const scoped: BlacklistEntry = { ...base, harness: 'single-pass' };
-		expect(entryCovers(scoped, { model: 'm', backend: 'openrouter' })).toBe(true);
-		expect(
-			entryCovers({ ...base, harness: 'two-pass' }, { model: 'm', backend: 'openrouter' })
-		).toBe(false);
-	});
-
-	test('harness matching is case-insensitive like the other axes', () => {
-		expect(
-			entryCovers(
-				{ ...base, harness: 'Two-Pass' },
-				{ model: 'm', backend: 'openrouter', harness: 'two-pass' }
-			)
-		).toBe(true);
 	});
 });
 

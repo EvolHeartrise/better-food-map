@@ -265,10 +265,28 @@ bun run bench:run bench/tasks/<slug> --harness two-pass \
   --review-model openai/gpt-5.6-luna --review-effort xhigh
 ```
 
-| harness       | passes                                                                                  |
-| ------------- | --------------------------------------------------------------------------------------- |
-| `single-pass` | one agent extracts and submits                                                          |
-| `two-pass`    | one agent extracts; a second **fresh** agent corrects it. Scored on pass 2's submission |
+| harness          | passes                                                                                                                     |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `single-pass`    | one agent extracts and submits                                                                                             |
+| `two-pass`       | one agent extracts; a second **fresh** agent corrects it. Scored on pass 2's submission                                    |
+| `two-pass-patch` | like `two-pass`, but the reviewer submits **corrections** (ops applied to the draft) instead of re-emitting the whole menu |
+
+**`two-pass-patch` — the reviewer patches instead of re-typing.** On a large menu
+a full-re-emission review spends most of its output tokens re-typing items it
+never doubted (a 180-item review pass burned 43k completion tokens to change
+nothing). The patch reviewer gets a `submit_corrections` tool instead of
+`submit_menu`: `add` (full items), `remove` (by name), `update` (per-field, item
+named by the scorer's own `nameMatchKey` identity so paren/case differences never
+fail a legitimate correction), `set_sources`, and `tag_menu` — a whole-menu
+dietary-tag sweep for venue-wide designations, because expressing "every item is
+vegan" as ~180 per-item updates measurably under-applies (a reviewer swept only
+half the menu that way). An empty object approves the draft unchanged. Ops are validated and applied in-process (`applyCorrections`);
+an unknown target name, unknown field, or a post-patch duplicate name comes back
+as a validation issue for the model to retry, and the patched result must still
+pass the scorer's `CandidateSchema` — one source of truth for what an item is.
+On the first 180-item comparison the patch review pass was ~40% cheaper and ~2.3×
+faster than the full re-emission at equal quality. **OpenRouter backend only**
+(`--backend claude` exits 2: the Agent SDK path does not serve the tool).
 
 **What the review pass gets.** The previous pass's submitted `sources` + `items`,
 the entry URL, and the same `fetch_page` snapshot access — nothing else. It does
@@ -284,8 +302,19 @@ from a different rule set is worse than no reviewer: it rewrites correctly-appli
 conventions (the variant parenthetical, the whole-venue dietary rule, verbatim
 naming) into plausible wrongness, and under exact name matching every such edit
 costs a miss AND a hallucination. Composing guarantees both passes are judged by
-one standard. On top of the rules it names the two failure modes run analysis
-finds most often — a missed menu page and a paraphrased item name.
+one standard. On top of the rules it runs a numbered verification CHECKLIST built
+from run analysis — page sweep, venue-wide dietary claim, name fidelity (dietary
+markers are tags not name text; variant labels verbatim), description
+completeness, price/tag check, removals-need-evidence, and evidence-based source
+edits. The checklist replaced a gentler "correct the draft" prompt after
+measurement showed that prompt was a literal no-op for some models (zero edits
+across 13 runs) while its successor produced +5.9pp item recall / +17pp
+description accuracy (woodenspoon) and a +47.6pp tag-recall sweep (meetonmain,
+whole-venue vegan) within-run. Removal-type checks stay evidence-based because
+the same measurements caught the failure modes: an earlier reviewer deleted items
+it merely hadn't seen, and an early source-trimming clause cost 12.5pp of source
+recall until it was scoped to "remove only what you have confirmed contributed
+nothing".
 
 **`--review-model` / `--review-effort` are optional and inherit.** Unset, the
 review pass runs the same model and effort as the extraction pass — the
@@ -339,6 +368,11 @@ assumed to match today's. Those runs keep their own cell for that reason. The ha
 covers the exact string sent to the model, so a whitespace-only edit produces a
 new value; the point is detecting that the prompt CHANGED, not judging whether the
 change mattered.
+
+Each run also writes **`prompts.json`** — the full prompt text behind each sha,
+keyed like `prompt_sha` (`<index>-<role>` → `{ sha, text }`) — so a sha in
+`meta.json` resolves from the run directory itself instead of from git
+archaeology over `prompts.ts`. Runs predating the file have only their shas.
 
 ### Reasoning effort & temperature
 
@@ -412,7 +446,10 @@ OpenRouter models are left byte-identical (they cache implicitly by prefix). Eve
 request also sends `usage: { include: true }`, and the Claude backend reads usage
 straight from the SDK result — so both backends report cache accounting.
 
-Each run writes `bench/runs/<task-slug>/<iso-timestamp>-<model-slug>/`:
+Each run writes `bench/runs/<task-slug>/<iso-timestamp>-<model-slug>/` (claimed
+atomically at start; two same-task runs launched in the same millisecond get
+`-2`, `-3`, … suffixes rather than silently overwriting each other — a real
+collision that cost a run's evidence before the claim existed):
 `candidate.json` (submitted extraction), `report.json` (`scoreCandidate` output),
 `transcript.jsonl` (one event per request/response and tool call/result, with
 per-request token + cache usage, each stamped with the `pass` that produced it),
@@ -533,82 +570,6 @@ also carries two USD cost fields (absent on the Claude backend, which reports
 4. Only when the snapshot browses clean, hand-author `gold/data.json`.
 5. `bun run bench:lint` until clean.
 
-## Pruning the test matrix (`bench:blacklist`)
-
-As the bench grows, the cost of a full sweep is (models × configs × tasks). The
-blacklist is how that matrix gets narrowed: a record of model/config combinations
-already TESTED and judged not worth testing again, so the same verdict is never
-re-purchased.
-
-```bash
-bun run bench:blacklist                                  # list entries
-bun run bench:blacklist --add --model <id> [--effort <level>] [--backend <b>] \
-                        --reason <text> [--evidence <text>]
-bun run bench:blacklist --remove --model <id> [--effort <level>] [--backend <b>]
-bun run bench:blacklist --check  --model <id> [--effort <level>]   # exit 0 allowed, 1 blocked
-```
-
-`bench:run` and `bench:draft` consult it **first** — before the API-key check,
-before the models fetch, before any chat request — so a blacklisted run costs
-nothing. On a multi-pass harness EVERY model the run would call is checked,
-including `--review-model`: a reviewer that has been ruled out must not run, and
-must not do so only after the extraction pass has already been paid for. The same
-holds for pre-flight `--effort`/`--temperature` validation, which now covers each
-pass's own model. They **exit 3** (not 2) and print the entry's reason, date, and
-evidence: a sweep driver can treat 3 as "deliberately skipped" and keep going,
-while 2 still means "you misconfigured this."
-
-Entries live in **`scripts/bench/blacklist.json`**, deliberately NOT under
-`bench/` — that directory is gitignored, and these verdicts are durable knowledge
-that has to survive a machine change and be reviewable in a diff. Each entry is:
-
-| field      | meaning                                                                                                   |
-| ---------- | --------------------------------------------------------------------------------------------------------- |
-| `model`    | model id as passed to `--model` (matched case-insensitively)                                              |
-| `effort`   | a level name, `default` (only runs passing no `--effort`), or `*`/omitted (every level, default included) |
-| `backend`  | `openrouter` \| `claude`; omitted covers both                                                             |
-| `harness`  | agent setup the verdict covers; omitted covers every harness (see the note below)                         |
-| `reason`   | **required** — why it was ruled out. A verdict without its why rots into superstition                     |
-| `added`    | `YYYY-MM-DD`, so an old verdict against a since-updated model is visible as stale                         |
-| `evidence` | optional pointer to the runs that justified it                                                            |
-
-Note `effort: none` and `effort: default` are **different scopes**: `none` is an
-explicit reasoning level, `default` is "no `--effort` flag passed". Blacklisting
-one does not block the other. To rule a model out entirely, omit `--effort`.
-
-**`harness` needs a deliberate choice.** Omitted covers every harness, which is
-right for a verdict about raw model capability ("it truncates long menus") and
-wrong for one a different setup might overturn — a model ruled out for missing
-pages may well pass with a review pass that re-enumerates them. Every entry
-written before harnesses existed omits it, so those verdicts currently block
-`--harness two-pass` runs too. Scope them if you want to re-test those models
-under a new setup, or use `--ignore-blacklist` for a one-off:
-
-```bash
-bun run bench:blacklist --remove --model openai/gpt-5.6-luna --effort minimal
-bun run bench:blacklist --add --model openai/gpt-5.6-luna --effort minimal \
-  --harness single-pass --reason "…" --evidence "…"
-```
-
-The scope participates in entry identity, so a `single-pass` and a `two-pass`
-verdict for one model coexist, and `--remove` takes only the scope you name.
-
-Two escape hatches, because a blacklist you cannot override is a trap — models
-get updated and old verdicts expire:
-
-- `--ignore-blacklist` on `bench:run`/`bench:draft` runs the combination anyway
-  (it prints a note that it is overriding).
-- `--remove` drops the entry for good.
-
-A malformed `blacklist.json` is a hard error rather than an empty list —
-silently ignoring a corrupt file would re-enable exactly the spending it exists
-to prevent.
-
-Entries can also be read, recorded and removed from the viewer's **Blacklist**
-tab — see [Blacklist in the viewer](#blacklist-in-the-viewer) below. It writes
-through this same module, so an entry added there is indistinguishable from one
-`--add` wrote.
-
 ## Authoring at scale
 
 Two tools speed up filling the bench without lowering the bar that gold is
@@ -715,9 +676,14 @@ bun run bench:export --rows runs > runs.json
 ```
 
 Both read through the SAME modules (`scripts/bench/analyze/`), so a number on
-screen always equals the number in a CSV. Neither ever writes to `bench/` — the
-corpus is written only by `bench:run` and the authoring tools, and an analytics
-tool that could edit its own evidence is a way to lose it.
+screen always equals the number in a CSV.
+
+**Write policy — inputs, never evidence.** The viewer's `/api/authoring/*`
+routes may write bench INPUTS: `task.json`, `gold/draft.json`,
+`gold/data.json`, `gold/review-state.json` — the same files `bench:new` and
+`bench:review` write from the CLI. Nothing anywhere in the viewer can write
+under `bench/runs`: run evidence is produced only by `bench:run`, and an
+analytics tool that could edit its own evidence is a way to lose it.
 
 ### `bench:viewer`
 
@@ -725,10 +691,10 @@ A local Vite + Svelte SPA (`bench-viewer/`) served by `Bun.serve`, bound to
 **127.0.0.1 only** — it exposes unpublished bench data and has no auth. The UI
 bundle builds on demand when it is missing or older than its sources
 (`--rebuild` forces, `--no-build` skips and serves the JSON API alone). Options:
-`--port` (8792), `--runs-dir`, `--tasks-dir`, `--blacklist`, `--read-only`.
+`--port` (8792), `--runs-dir`, `--tasks-dir`.
 
-Six views, all rendering against ONE shared filter slice (a per-view filter is
-how two cards quietly end up describing different data):
+The analytics views all render against ONE shared filter slice (a per-view
+filter is how two cards quietly end up describing different data):
 
 - **Leaderboard** — one row per configuration cell, the scorer's metric vector as
   sortable columns. Expanding a row shows its provenance, gold versions and runs.
@@ -740,65 +706,28 @@ how two cards quietly end up describing different data):
 - **Runs / Run detail** — every run, drilling into its full report, the
   name-fidelity split, page-discovery coverage and the turn timeline.
 - **Compare** — two runs on the same task, diffed item by item.
-- **Blacklist** — the verdict register (below).
 
-### Blacklist in the viewer
+Two further tabs sit OUTSIDE the filter slice (they are not run-slice views):
 
-The dashboard knows which configurations have been [ruled
-out](#pruning-the-test-matrix-benchblacklist) and acts on it in three ways.
-
-**Hidden by default.** Runs whose (model, effort, backend) is covered by an entry
-are dropped from every view. This is opt-out, the opposite polarity to failed
-runs — the default question the dashboard answers is "what should we run", and a
-configuration already ruled out is not a candidate. Toggle it with the
-`⊘ N blacklisted runs hidden` chip in the filter bar, or `Blacklisted: shown` in
-the filter panel; on the API it is `?include_blacklisted=1`.
-
-The hiding is never silent. The count sits in the header, on the toggle itself,
-and as a sentence on every view that dropped anything, and each response carries
-`hidden_blacklisted`. A leaderboard quietly missing 62 of 156 runs, with nothing
-on screen to say so, is exactly the confidently-wrong conclusion this whole
-layer exists to prevent. Two consequences worth stating:
-
-- **A run detail page always opens**, retired or not, and says so — a deep link
-  never 404s on a verdict.
-- **The Tasks view's discriminating-power table is over the visible slice**, so
-  judging a venue "exhausted" while a third of its configurations are hidden is
-  the mistake to watch for; the view names the count for that reason.
-
-**Marked when shown.** With blacklisted configs included, they carry a `⊘` badge
-on the leaderboard, in the runs list, on the Compare table, on the heatmap row
-label, and — most importantly — in the Frontier's point labels. A retired config
-can sit ON the Pareto frontier and get direct-labelled as the thing to run:
-several entries were written about configurations that scored well and lost on
-cost, which is precisely what puts them there. Expanding a leaderboard row or
-opening a run shows the verdict in full: reason, date, evidence.
-
-**Editable.** The Blacklist tab lists every entry with its reason and date and
-offers Remove; the leaderboard's expanded row and the run detail both carry a
-`⊘ Blacklist this configuration` button pre-filled with that scope. `reason` is
-required in the UI exactly as on the CLI — a one-click veto with no why would
-destroy the property that makes the file reviewable.
-
-This is the ONLY thing the viewer can write, and it is not a hole in the
-read-only rule: that rule protects the CORPUS, because an analytics tool that
-can edit its own evidence is a way to lose it. `blacklist.json` is not evidence,
-it is the git-tracked record of decisions made FROM the evidence — and the
-screen where you read the numbers is the right place to record the verdict they
-support. Nothing under `bench/` is ever written.
-
-Guards on the two mutating endpoints (`POST`/`DELETE /api/blacklist`), on top of
-the localhost bind and Host check every request already passes:
-
-- **`--read-only`** disables them outright.
-- **An `Origin`**, when present, must be a localhost origin.
-- **`content-type: application/json` is required** — which is what makes a
-  cross-origin call non-simple, so the browser preflights it and gets no CORS
-  headers back. An HTML `<form>` cannot produce that type at all.
-- **An unreadable `blacklist.json` refuses writes** rather than serializing the
-  empty in-memory fallback over verdicts that merely failed to parse. In that
-  state the UI reports the file as unreadable and hides nothing — never "no
-  configuration is retired", which would be a lie in the dangerous direction.
+- **Authoring** — `bench:new --status` live: the strata matrix (empty strata are
+  the bench's blind spots), the per-task recorded/gold/draft table, task
+  scaffolding and stratum claiming, and a path into the **gold editor** — the
+  `bench:review` two-pane UI (snapshot text left, editable items right, NO HITS
+  badges, debounced autosave, promote gated on a zero-error lint) consolidated
+  into this dashboard (`viewer-authoring.ts`). Recording a snapshot stays a CLI
+  act (it drives headless Chromium against the live web); the dashboard shows
+  the command instead of a button.
+- **Sources** — eatery counts per ingestion source, read from the LOCAL stores
+  only (`viewer-sources.ts`): the OSM staging store (`data/osm-poi.sqlite`),
+  the `overture_leads` table in the same file, and the miniflare D1 mirror of
+  the map (its `db:pull` age is displayed, not hidden). `unique` is OSM +
+  leads — the leads table already excludes venues near a name-related OSM POI,
+  so the sum is a deliberate union estimate — and `remaining` subtracts open
+  map locations, by country → province → city. The **ingestion cost forecast**
+  multiplies remaining venues by a bench-derived $/menu: pick any cell from the
+  current slice, its mean per-run cost (real or cached) times an adjustable
+  research-overhead multiplier. Chains share one menu across branches, so the
+  total is labelled an upper bound.
 
 ### What the analysis layer adds beyond `report.json`
 
@@ -891,7 +820,6 @@ scripts/bench/analyze/     pure, tested, no UI (runs under `bun test scripts`)
   record.ts     walk bench/runs -> RunRecord[]  (absent-vs-zero discipline)
   derive.ts     per-run derived metrics + the name-fidelity overlay
   aggregate.ts  cells, macro/micro averaging, spread, Pareto, task discrimination
-  blacklist.ts  which runs/cells are retired (matches via ../blacklist), safe load
   rescore.ts    re-run scoreCandidate against current gold (read-only)
   transcript.ts turn timeline + page-discovery coverage
   export.ts     the bench:export CLI

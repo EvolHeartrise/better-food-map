@@ -13,18 +13,10 @@
  *
  * Requires OPENROUTER_API_KEY (exit 2 if unset). Exit 0 once a draft is written
  * (however rough), 1 on a failed model run, 2 on usage/config errors or a
- * refusal to clobber an existing draft, 3 when the model/config is blacklisted
- * (see blacklist.ts) and the draft was skipped unspent.
+ * refusal to clobber an existing draft.
  */
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import {
-	describeEntry,
-	findBlock,
-	formatBlocked,
-	loadBlacklist,
-	type BlacklistEntry
-} from './blacklist';
 import { buildCorpus, DIETARY_TAGS, lintGold, type LintResult } from './lint';
 import { type CandidateMenu } from './score';
 import {
@@ -176,8 +168,6 @@ export interface CliArgs {
 	force: boolean;
 	/** Reasoning-effort level, validated against OpenRouter's set; undefined = provider default. */
 	effort?: string;
-	/** Draft with a blacklisted model/config anyway (deliberate re-test). */
-	ignoreBlacklist?: boolean;
 }
 
 export function parseCli(argv: string[]): CliArgs | { error: string } {
@@ -187,7 +177,6 @@ export function parseCli(argv: string[]): CliArgs | { error: string } {
 	let policyVersion = DEFAULT_POLICY_VERSION;
 	let force = false;
 	let effort: string | undefined;
-	let ignoreBlacklist = false;
 	for (let i = 0; i < argv.length; i += 1) {
 		const arg = argv[i];
 		if (arg === '--model') {
@@ -210,8 +199,6 @@ export function parseCli(argv: string[]): CliArgs | { error: string } {
 			if (!policyVersion) return { error: '--policy-version requires a value' };
 		} else if (arg === '--force') {
 			force = true;
-		} else if (arg === '--ignore-blacklist') {
-			ignoreBlacklist = true;
 		} else if (arg.startsWith('--')) {
 			return { error: `unknown option: ${arg}` };
 		} else if (taskDir === undefined) {
@@ -222,11 +209,11 @@ export function parseCli(argv: string[]): CliArgs | { error: string } {
 	}
 	if (!taskDir) return { error: 'missing <task-dir>' };
 	if (!model) return { error: 'missing --model <openrouter-model-id>' };
-	return { taskDir, model, maxToolCalls, policyVersion, force, effort, ignoreBlacklist };
+	return { taskDir, model, maxToolCalls, policyVersion, force, effort };
 }
 
 const USAGE =
-	'usage: bun run bench:draft <task-dir> --model <openrouter-model-id> [--effort <level>] [--max-tool-calls N] [--policy-version <v>] [--force] [--ignore-blacklist]';
+	'usage: bun run bench:draft <task-dir> --model <openrouter-model-id> [--effort <level>] [--max-tool-calls N] [--policy-version <v>] [--force]';
 
 async function main(): Promise<number> {
 	const cli = parseCli(process.argv.slice(2));
@@ -234,29 +221,6 @@ async function main(): Promise<number> {
 		console.error(`error: ${cli.error}`);
 		console.error(USAGE);
 		return 2;
-	}
-
-	// Blacklist FIRST — a ruled-out configuration must cost nothing. Exit 3 marks
-	// a deliberate skip, distinct from a config error (2).
-	let blocked: BlacklistEntry | undefined;
-	try {
-		blocked = findBlock(loadBlacklist(), {
-			model: cli.model,
-			effort: cli.effort,
-			backend: 'openrouter'
-		});
-	} catch (e) {
-		console.error(`error: ${String(e)}`);
-		return 2;
-	}
-	if (blocked && !cli.ignoreBlacklist) {
-		console.error(formatBlocked(blocked, '--ignore-blacklist'));
-		return 3;
-	}
-	if (blocked) {
-		console.error(
-			`note: ${describeEntry(blocked)} is blacklisted — drafting anyway per --ignore-blacklist`
-		);
 	}
 
 	const apiKey = process.env.OPENROUTER_API_KEY;
