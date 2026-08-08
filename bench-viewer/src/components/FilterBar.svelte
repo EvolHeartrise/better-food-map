@@ -10,128 +10,98 @@
 	import { fetchOverview } from '../lib/api';
 	import { filters } from '../lib/state.svelte';
 	import { metricLabel } from '../lib/format';
+	import type { MetricKey } from '../lib/types';
+	import Chip from './Chip.svelte';
+	import { Button } from '$lib/components/ui/button';
+	import * as Card from '$lib/components/ui/card';
+	import * as Select from '$lib/components/ui/select';
+	import { Separator } from '$lib/components/ui/separator';
 
 	let overview = $derived(await fetchOverview());
 	let facets = $derived(overview.facets);
 	let open = $state(false);
 </script>
 
-<div class="bar">
-	<div class="row wrap">
-		<button class="chip" aria-pressed={open} onclick={() => (open = !open)}>
+<Card.Root size="sm" class="gap-0 px-3 py-2.5">
+	<div class="flex flex-wrap items-center gap-2">
+		<Chip pressed={open} onPressedChange={(next) => (open = next)}>
 			Filters{filters.active > 0 ? ` · ${filters.active}` : ''}
-		</button>
+		</Chip>
 
-		<label class="control">
+		<label class="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
 			Metric
-			<select bind:value={filters.metric}>
-				{#each facets.metrics as metric (metric)}
-					<option value={metric}>{metricLabel(metric)}</option>
-				{/each}
-			</select>
+			<Select.Root
+				type="single"
+				value={filters.metric}
+				onValueChange={(value) => (filters.metric = value as MetricKey)}
+			>
+				<Select.Trigger size="sm" class="h-7 text-xs">
+					{metricLabel(filters.metric)}
+				</Select.Trigger>
+				<Select.Content>
+					{#each facets.metrics as metric (metric)}
+						<Select.Item value={metric} label={metricLabel(metric)} />
+					{/each}
+				</Select.Content>
+			</Select.Root>
 		</label>
 
 		{#if filters.active > 0}
-			<button class="chip" onclick={() => filters.reset()}>Clear</button>
+			<Button variant="ghost" size="xs" onclick={() => filters.reset()}>Clear</Button>
 		{/if}
 	</div>
 
 	{#if open}
-		<div class="panel">
-			<div class="group">
-				<span class="key">Task</span>
-				<div class="row wrap">
+		<Separator class="mt-2.5 mb-2.5" />
+		<div class="flex flex-col gap-2">
+			<div class="flex flex-wrap items-baseline gap-2">
+				<span class="min-w-[70px] text-xs text-muted-foreground">Task</span>
+				<div class="flex flex-wrap items-center gap-1.5">
 					{#each facets.tasks as task (task)}
-						<button
-							class="chip"
-							aria-pressed={filters.tasks.includes(task)}
-							onclick={() => filters.toggle('tasks', task)}>{task}</button
+						<Chip
+							pressed={filters.tasks.includes(task)}
+							onPressedChange={() => filters.toggle('tasks', task)}>{task}</Chip
 						>
 					{/each}
 				</div>
 			</div>
 
-			<div class="group">
-				<span class="key">Model</span>
-				<div class="row wrap">
+			<div class="flex flex-wrap items-baseline gap-2">
+				<span class="min-w-[70px] text-xs text-muted-foreground">Model</span>
+				<div class="flex flex-wrap items-center gap-1.5">
 					{#each facets.models as model (model)}
-						<button
-							class="chip"
-							aria-pressed={filters.models.includes(model)}
-							onclick={() => filters.toggle('models', model)}>{model}</button
+						<Chip
+							pressed={filters.models.includes(model)}
+							onPressedChange={() => filters.toggle('models', model)}>{model}</Chip
 						>
 					{/each}
 				</div>
 			</div>
 
-			<div class="group">
-				<span class="key">Effort</span>
-				<div class="row wrap">
+			<div class="flex flex-wrap items-baseline gap-2">
+				<span class="min-w-[70px] text-xs text-muted-foreground">Effort</span>
+				<div class="flex flex-wrap items-center gap-1.5">
 					{#each facets.efforts as effort (effort)}
-						<button
-							class="chip"
-							aria-pressed={filters.efforts.includes(effort)}
-							onclick={() => filters.toggle('efforts', effort)}>{effort}</button
+						<Chip
+							pressed={filters.efforts.includes(effort)}
+							onPressedChange={() => filters.toggle('efforts', effort)}>{effort}</Chip
 						>
 					{/each}
 				</div>
 			</div>
 
-			<div class="group">
-				<span class="key">Failed runs</span>
-				<button
-					class="chip"
-					aria-pressed={filters.includeFailed}
-					onclick={() => (filters.includeFailed = !filters.includeFailed)}
+			<div class="flex flex-wrap items-baseline gap-2">
+				<span class="min-w-[70px] text-xs text-muted-foreground">Failed runs</span>
+				<Chip
+					pressed={filters.includeFailed}
+					onPressedChange={(next) => (filters.includeFailed = next)}
 				>
 					{filters.includeFailed ? 'included' : 'excluded'}
-				</button>
-				<span class="hint">A failure rate you can't see is a lie — keep them in.</span>
+				</Chip>
+				<span class="text-[11px] text-muted-foreground">
+					A failure rate you can't see is a lie — keep them in.
+				</span>
 			</div>
 		</div>
 	{/if}
-</div>
-
-<style>
-	.bar {
-		background: var(--surface-1);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		padding: 10px 12px;
-	}
-
-	.control {
-		display: inline-flex;
-		align-items: center;
-		gap: 6px;
-		color: var(--text-secondary);
-		font-size: 12px;
-	}
-
-	.panel {
-		margin-top: 10px;
-		padding-top: 10px;
-		border-top: 1px solid var(--gridline);
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-	}
-
-	.group {
-		display: flex;
-		align-items: baseline;
-		gap: 8px;
-		flex-wrap: wrap;
-	}
-
-	.key {
-		color: var(--text-secondary);
-		font-size: 12px;
-		min-width: 70px;
-	}
-
-	.hint {
-		color: var(--text-muted);
-		font-size: 11px;
-	}
-</style>
+</Card.Root>

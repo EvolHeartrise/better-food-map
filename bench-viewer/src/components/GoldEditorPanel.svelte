@@ -15,6 +15,14 @@
 	import { promoteGold, saveGold } from '../lib/api';
 	import { router } from '../lib/state.svelte';
 	import type { AuthoringTask, GoldItem } from '../lib/types';
+	import Chip from './Chip.svelte';
+	import { Badge as UiBadge } from '$lib/components/ui/badge';
+	import { Button } from '$lib/components/ui/button';
+	import * as Card from '$lib/components/ui/card';
+	import { Checkbox } from '$lib/components/ui/checkbox';
+	import { Input } from '$lib/components/ui/input';
+	import { Label } from '$lib/components/ui/label';
+	import { Textarea } from '$lib/components/ui/textarea';
 
 	const DIETARY = [
 		'vegan',
@@ -77,38 +85,48 @@
 
 	// --- left pane rendering ------------------------------------------------------
 
-	const escapeHtml = (value: string): string =>
-		value.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c] as string);
 	const escapeRe = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-	function markInto(escaped: string, needle: string): string | null {
-		const trimmed = escapeHtml(needle).trim();
-		if (!trimmed) return null;
-		const re = new RegExp(escapeRe(trimmed).replace(/(?:\\?\s)+/g, '\\s+'), 'gi');
-		let first = true;
-		let matched = false;
-		const out = escaped.replace(re, (m) => {
-			matched = true;
-			const id = first ? ' id="firsthit"' : '';
-			first = false;
-			return `<mark${id}>${m}</mark>`;
-		});
-		return matched ? out : null;
+	/** Plain-text segments; marked ones render as real <mark> elements (no @html). */
+	interface Segment {
+		text: string;
+		mark: boolean;
+		first: boolean;
 	}
 
-	/** Escaped page text with the highlighted name marked; plain text otherwise. */
-	let pageHtml = $derived.by(() => {
-		if (data.pages.length === 0) return '';
+	function markInto(raw: string, needle: string): Segment[] | null {
+		const trimmed = needle.trim();
+		if (!trimmed) return null;
+		const re = new RegExp(escapeRe(trimmed).replace(/(?:\\?\s)+/g, '\\s+'), 'gi');
+		const segments: Segment[] = [];
+		let cursor = 0;
+		let first = true;
+		for (const match of raw.matchAll(re)) {
+			if (match.index > cursor) {
+				segments.push({ text: raw.slice(cursor, match.index), mark: false, first: false });
+			}
+			segments.push({ text: match[0], mark: true, first });
+			first = false;
+			cursor = match.index + match[0].length;
+		}
+		if (first) return null; // no matches
+		if (cursor < raw.length) segments.push({ text: raw.slice(cursor), mark: false, first: false });
+		return segments;
+	}
+
+	/** Page text with the highlighted name marked; a single plain segment otherwise. */
+	let pageSegments = $derived.by<Segment[]>(() => {
+		if (data.pages.length === 0) return [];
 		const raw = pageTexts[data.pages[activeTab]?.url] ?? '';
-		const escaped = escapeHtml(raw);
-		if (!highlightName) return escaped;
+		const plain: Segment[] = [{ text: raw, mark: false, first: false }];
+		if (!highlightName) return plain;
 		const base = stripVariant(highlightName);
-		return markInto(escaped, highlightName) ?? (base ? markInto(escaped, base) : null) ?? escaped;
+		return markInto(raw, highlightName) ?? (base ? markInto(raw, base) : null) ?? plain;
 	});
 
 	/** Scrolls the first highlight into view whenever the marked text changes. */
 	function scrollToHit(node: HTMLElement) {
-		void pageHtml;
+		void pageSegments;
 		node.querySelector('#firsthit')?.scrollIntoView({ block: 'center' });
 	}
 
@@ -193,71 +211,106 @@
 	}
 </script>
 
-<div class="card head">
-	<button class="chip" onclick={() => router.go('authoring')}>← Authoring</button>
-	<strong class="mono">{data.task}</strong>
-	<span class="muted small">gold/{data.file}.json</span>
-	<span class="stat small">
-		reviewed {reviewedCount}/{items.length} ·
-		<span class={zeroCount > 0 ? 'bad' : 'good'}>zero-hit {zeroCount}</span>
-	</span>
-	<span class="small save-{saveState}">
-		{saveState === 'failed' ? `save failed: ${saveError}` : saveState}
-	</span>
-	{#if data.can_promote}
-		<span class="promote">
-			<label class="small muted"
-				>policy_version <input class="pv" bind:value={policyVersion} /></label
-			>
-			<button class="chip primary" onclick={promote}>Promote</button>
+<Card.Root size="sm" class="gap-0 px-3.5 py-2.5">
+	<div class="flex flex-wrap items-center gap-3">
+		<Button variant="outline" size="xs" onclick={() => router.go('authoring')}>← Authoring</Button>
+		<strong class="font-mono">{data.task}</strong>
+		<span class="text-[11px] text-muted-foreground">gold/{data.file}.json</span>
+		<span class="text-[11px] tabular-nums">
+			reviewed {reviewedCount}/{items.length} ·
+			<span class={zeroCount > 0 ? 'text-critical' : 'text-good'}>zero-hit {zeroCount}</span>
 		</span>
-	{/if}
-	{#if promoteOut}
-		<span class="small {promoteOut.ok ? 'good' : 'bad'} out">{promoteOut.text}</span>
-	{/if}
-</div>
+		<span
+			class="text-[11px] {saveState === 'dirty' || saveState === 'failed'
+				? 'text-critical'
+				: saveState === 'saved'
+					? 'text-good'
+					: 'text-muted-foreground'}"
+		>
+			{saveState === 'failed' ? `save failed: ${saveError}` : saveState}
+		</span>
+		{#if data.can_promote}
+			<span class="ml-auto flex items-center gap-2">
+				<Label class="gap-1.5 text-[11px] font-normal text-muted-foreground"
+					>policy_version <Input bind:value={policyVersion} class="h-7 w-[110px] text-xs" /></Label
+				>
+				<Button size="sm" onclick={promote}>Promote</Button>
+			</span>
+		{/if}
+		{#if promoteOut}
+			<span class="max-w-[380px] text-[11px] {promoteOut.ok ? 'text-good' : 'text-critical'}"
+				>{promoteOut.text}</span
+			>
+		{/if}
+	</div>
+</Card.Root>
 
-<div class="panes">
-	<section class="left card">
-		<div class="tabs">
+<div class="mt-4 grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
+	<Card.Root
+		size="sm"
+		class="sticky top-[120px] block max-h-[calc(100vh-140px)] gap-0 overflow-auto px-3.5 py-3"
+	>
+		<div class="sticky top-0 z-[1] -mt-3 flex flex-wrap gap-1 bg-card pt-3 pb-1.5">
 			{#each data.pages as page, i (page.url)}
-				<button
-					class="chip"
-					aria-pressed={activeTab === i}
+				<Chip
+					pressed={activeTab === i}
 					title={page.url}
-					onclick={() => {
+					onPressedChange={() => {
 						activeTab = i;
 						highlightName = null;
-					}}>{page.title || page.url}</button
+					}}>{page.title || page.url}</Chip
 				>
 			{/each}
 		</div>
-		<!-- eslint-disable-next-line svelte/no-at-html-tags -- own-escaped text; only our <mark> tags survive -->
-		<pre class="pagetext" {@attach scrollToHit}>{@html pageHtml}</pre>
-	</section>
+		<pre
+			class="m-0 font-mono text-xs leading-normal break-words whitespace-pre-wrap [&_mark]:rounded-[2px] [&_mark]:bg-warning [&_mark]:px-px [&_mark]:text-black"
+			{@attach scrollToHit}>{#each pageSegments as segment, i (i)}{#if segment.mark}<mark
+						id={segment.first ? 'firsthit' : undefined}>{segment.text}</mark
+					>{:else}{segment.text}{/if}{/each}</pre>
+	</Card.Root>
 
-	<section class="right">
-		<label class="sources card">
-			<span class="muted small">sources (one per line)</span>
-			<textarea rows="2" spellcheck="false" bind:value={sourcesText} oninput={markDirty}></textarea>
-		</label>
+	<section class="flex min-w-0 flex-col gap-2">
+		<Card.Root size="sm" class="gap-1 px-3.5 py-2.5">
+			<Label for="gold-sources" class="text-[11px] font-normal text-muted-foreground"
+				>sources (one per line)</Label
+			>
+			<Textarea
+				id="gold-sources"
+				rows={2}
+				spellcheck={false}
+				bind:value={sourcesText}
+				oninput={markDirty}
+				class="min-h-0 font-mono text-xs"
+			/>
+		</Card.Root>
 
 		{#each items as item, index (index)}
 			{@const zero = pageOf(item.name) < 0}
 			{@const isReviewed = reviewed.includes(item.name)}
-			<div class="item card" class:zero class:reviewed={isReviewed}>
-				<div class="row1">
-					<input
-						class="name"
+			<Card.Root
+				size="sm"
+				class="gap-0 px-3.5 py-2.5 {zero ? 'border-critical ring-critical' : ''} {isReviewed
+					? 'opacity-70'
+					: ''}"
+			>
+				<div class="flex items-center gap-2">
+					<Input
 						bind:value={item.name}
 						onfocus={() => focusItem(item)}
 						oninput={markDirty}
+						class="h-8 flex-1 text-[13px] font-semibold"
 					/>
-					{#if zero}<span class="badge">NO HITS</span>{/if}
-					<button class="chip del" onclick={() => deleteItem(index)}>Delete</button>
+					{#if zero}<UiBadge class="border-transparent bg-critical font-bold text-white"
+							>NO HITS</UiBadge
+						>{/if}
+					<Button
+						variant="ghost"
+						size="xs"
+						class="text-critical hover:text-critical"
+						onclick={() => deleteItem(index)}>Delete</Button
+					>
 				</div>
-				<textarea
-					class="desc"
+				<Textarea
 					placeholder="description (verbatim, or leave blank for null)"
 					value={item.description ?? ''}
 					oninput={(event) => {
@@ -265,10 +318,10 @@
 						item.description = value.trim() === '' ? null : value;
 						markDirty();
 					}}
-				></textarea>
-				<div class="meta">
-					<input
-						class="price"
+					class="mt-1.5 min-h-[34px] text-[13px]"
+				/>
+				<div class="mt-1.5 flex flex-wrap items-center gap-2">
+					<Input
 						placeholder="price"
 						value={item.price ?? ''}
 						oninput={(event) => {
@@ -276,9 +329,9 @@
 							item.price = raw === '' ? null : Number(raw);
 							markDirty();
 						}}
+						class="h-7 w-20 text-xs"
 					/>
-					<input
-						class="warning"
+					<Input
 						placeholder="warning (optional)"
 						value={item.warning ?? ''}
 						oninput={(event) => {
@@ -286,262 +339,37 @@
 							item.warning = raw.trim() === '' ? null : raw;
 							markDirty();
 						}}
+						class="h-7 min-w-[140px] flex-1 text-xs"
 					/>
-					<label class="small rev">
-						<input
-							type="checkbox"
+					<Label class="gap-1.5 text-[11px] font-normal">
+						<Checkbox
 							checked={isReviewed}
-							onchange={(event) => toggleReviewed(item.name, event.currentTarget.checked)}
+							onCheckedChange={(checked) => toggleReviewed(item.name, checked === true)}
 						/>
 						reviewed
-					</label>
+					</Label>
 				</div>
-				<div class="tags small">
+				<div class="mt-1.5 flex flex-wrap gap-2 text-[11px]">
 					{#each ['tags', 'optional_tags'] as const as field (field)}
-						<fieldset>
-							<legend>{field === 'tags' ? 'tags' : 'optional'}</legend>
+						<fieldset class="m-0 flex flex-wrap gap-2 rounded-md border border-dashed px-1.5 py-1">
+							<legend class="px-1 text-[11px] text-muted-foreground"
+								>{field === 'tags' ? 'tags' : 'optional'}</legend
+							>
 							{#each DIETARY as tag (tag)}
-								<label>
-									<input
-										type="checkbox"
+								<Label class="gap-1 text-[11px] font-normal">
+									<Checkbox
+										class="size-3.5"
 										checked={item[field].includes(tag)}
-										onchange={() => toggleTag(item, field, tag)}
+										onCheckedChange={() => toggleTag(item, field, tag)}
 									/>
 									{tag.replace('_', ' ')}
-								</label>
+								</Label>
 							{/each}
 						</fieldset>
 					{/each}
 				</div>
-			</div>
+			</Card.Root>
 		{/each}
-		<button class="chip add" onclick={addItem}>+ Add item</button>
+		<Button variant="outline" size="sm" class="self-start" onclick={addItem}>+ Add item</Button>
 	</section>
 </div>
-
-<style>
-	.head {
-		display: flex;
-		gap: 12px;
-		align-items: center;
-		flex-wrap: wrap;
-	}
-
-	.stat {
-		font-variant-numeric: tabular-nums;
-	}
-
-	.save-dirty,
-	.save-failed {
-		color: var(--critical);
-	}
-
-	.save-saved {
-		color: var(--good);
-	}
-
-	.promote {
-		margin-left: auto;
-		display: flex;
-		gap: 8px;
-		align-items: center;
-	}
-
-	.pv {
-		width: 100px;
-	}
-
-	.out {
-		max-width: 380px;
-	}
-
-	.panes {
-		display: grid;
-		grid-template-columns: 1fr 1fr;
-		gap: 16px;
-		align-items: start;
-		margin-top: 16px;
-	}
-
-	.left {
-		position: sticky;
-		top: 120px;
-		max-height: calc(100vh - 140px);
-		overflow: auto;
-	}
-
-	.tabs {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 4px;
-		position: sticky;
-		top: 0;
-		background: var(--surface-1);
-		padding-bottom: 6px;
-		z-index: 1;
-	}
-
-	.pagetext {
-		white-space: pre-wrap;
-		word-break: break-word;
-		font-family: var(--mono);
-		font-size: 12px;
-		line-height: 1.5;
-		margin: 0;
-	}
-
-	.pagetext :global(mark) {
-		background: var(--warning);
-		color: inherit;
-		padding: 0 1px;
-		border-radius: 2px;
-	}
-
-	.right {
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-		min-width: 0;
-	}
-
-	.item.zero {
-		border-color: var(--critical);
-		box-shadow: 0 0 0 1px var(--critical) inset;
-	}
-
-	.item.reviewed {
-		opacity: 0.7;
-	}
-
-	.row1 {
-		display: flex;
-		gap: 8px;
-		align-items: center;
-	}
-
-	.name {
-		flex: 1;
-		font-weight: 600;
-	}
-
-	.badge {
-		font-size: 11px;
-		font-weight: 700;
-		color: #fff;
-		background: var(--critical);
-		padding: 1px 6px;
-		border-radius: 10px;
-		white-space: nowrap;
-	}
-
-	.desc {
-		width: 100%;
-		resize: vertical;
-		min-height: 34px;
-		margin-top: 6px;
-	}
-
-	.meta {
-		display: flex;
-		gap: 8px;
-		align-items: center;
-		margin-top: 6px;
-		flex-wrap: wrap;
-	}
-
-	.price {
-		width: 80px;
-	}
-
-	.warning {
-		flex: 1;
-		min-width: 140px;
-	}
-
-	.rev {
-		display: inline-flex;
-		gap: 4px;
-		align-items: center;
-	}
-
-	.tags {
-		display: flex;
-		gap: 8px;
-		flex-wrap: wrap;
-		margin-top: 6px;
-	}
-
-	fieldset {
-		border: 1px dashed var(--border);
-		border-radius: 6px;
-		padding: 4px 6px;
-		margin: 0;
-		display: flex;
-		gap: 8px;
-		flex-wrap: wrap;
-	}
-
-	legend {
-		font-size: 11px;
-		color: var(--text-secondary);
-		padding: 0 4px;
-	}
-
-	fieldset label {
-		display: inline-flex;
-		gap: 3px;
-		align-items: center;
-	}
-
-	input,
-	textarea {
-		font: inherit;
-		font-size: 13px;
-		padding: 4px 6px;
-		border: 1px solid var(--border);
-		border-radius: 6px;
-		background: var(--surface-1);
-		color: var(--text-primary);
-	}
-
-	.sources {
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-	}
-
-	.sources textarea {
-		font-family: var(--mono);
-		font-size: 12px;
-	}
-
-	.del {
-		color: var(--critical);
-	}
-
-	.add {
-		align-self: flex-start;
-	}
-
-	.primary {
-		background: var(--series-1);
-		color: #fff;
-		border-color: var(--series-1);
-	}
-
-	.mono {
-		font-family: var(--mono);
-	}
-
-	.small {
-		font-size: 11px;
-	}
-
-	.good {
-		color: var(--good);
-	}
-
-	.bad {
-		color: var(--critical);
-	}
-</style>

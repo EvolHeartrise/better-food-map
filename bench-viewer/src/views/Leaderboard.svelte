@@ -15,6 +15,10 @@
 	import { filters, router } from '../lib/state.svelte';
 	import type { CellRow, MetricKey } from '../lib/types';
 	import Badge from '../components/Badge.svelte';
+	import SortButton from '../components/SortButton.svelte';
+	import { Button } from '$lib/components/ui/button';
+	import * as Card from '$lib/components/ui/card';
+	import * as Table from '$lib/components/ui/table';
 
 	const COLUMNS: MetricKey[] = [
 		'item_recall',
@@ -101,69 +105,89 @@
 	}
 </script>
 
-<div class="stack">
-	<div class="card">
-		<div class="spread">
-			<div>
-				<h2>Configurations</h2>
-				<p class="muted small">
-					{cells.length} cell{cells.length === 1 ? '' : 's'} · task-equal average (every task weighs the
-					same) · sorted by
-					{sortKey === 'config' ? 'configuration' : metricLabel(sortKey)}
-				</p>
-			</div>
-			<p class="muted small right">
-				No composite score by design — recall and precision fail differently.
-			</p>
-		</div>
+<Card.Root size="sm">
+	<Card.Header class="gap-0">
+		<Card.Title>Configurations</Card.Title>
+		<Card.Description class="text-xs">
+			{cells.length} cell{cells.length === 1 ? '' : 's'} · task-equal average (every task weighs the same)
+			· sorted by
+			{sortKey === 'config' ? 'configuration' : metricLabel(sortKey)}
+		</Card.Description>
+		<Card.Action class="self-center text-xs text-muted-foreground">
+			No composite score by design — recall and precision fail differently.
+		</Card.Action>
+	</Card.Header>
 
-		<div class="scroll-x table-wrap">
-			<table>
-				<thead>
-					<tr>
-						<!-- Real <button>s inside the cells: a click handler on a <th> is
-						     unreachable by keyboard and announces no sort state. -->
-						<th class="left" aria-sort={ariaSort('config')}>
-							<button class="sortable" onclick={() => toggleSort('config')}>Configuration</button>
-						</th>
-						<th aria-sort={ariaSort('n')}>
-							<button
-								class="sortable"
-								onclick={() => toggleSort('n')}
-								title="scored runs (of all runs) · tasks scored">n</button
+	<Card.Content>
+		<div
+			class="max-h-[70vh] overflow-auto rounded-md border [&_[data-slot=table-container]]:static [&_[data-slot=table-container]]:overflow-visible"
+		>
+			<Table.Root class="num-table text-[13px] tabular-nums">
+				<Table.Header class="sticky top-0 z-10 bg-card">
+					<Table.Row class="hover:bg-transparent">
+						<Table.Head aria-sort={ariaSort('config')}>
+							<SortButton
+								active={sortKey === 'config'}
+								desc={sortDesc}
+								onclick={() => toggleSort('config')}>Configuration</SortButton
 							>
-						</th>
+						</Table.Head>
+						<Table.Head aria-sort={ariaSort('n')}>
+							<SortButton
+								active={sortKey === 'n'}
+								desc={sortDesc}
+								onclick={() => toggleSort('n')}
+								title="scored runs (of all runs) · tasks scored">n</SortButton
+							>
+						</Table.Head>
 						{#each COLUMNS as column (column)}
-							<th aria-sort={ariaSort(column)}>
-								<button class="sortable" onclick={() => toggleSort(column)}
-									>{metricLabel(column)}</button
+							<Table.Head aria-sort={ariaSort(column)}>
+								<SortButton
+									active={sortKey === column}
+									desc={sortDesc}
+									onclick={() => toggleSort(column)}>{metricLabel(column)}</SortButton
 								>
-							</th>
+							</Table.Head>
 						{/each}
-						<th aria-sort={ariaSort('unsafe')}>
-							<button
-								class="sortable"
+						<Table.Head aria-sort={ariaSort('unsafe')}>
+							<SortButton
+								active={sortKey === 'unsafe'}
+								desc={sortDesc}
 								onclick={() => toggleSort('unsafe')}
 								title="Dietary tags the candidate asserted that gold does not support"
-								>Unsafe tags</button
+								>Unsafe tags</SortButton
 							>
-						</th>
-						<th aria-sort={ariaSort('cost')}>
-							<button class="sortable" onclick={() => toggleSort('cost')}>Cost</button>
-						</th>
-						<th aria-sort={ariaSort('duration')}>
-							<button class="sortable" onclick={() => toggleSort('duration')}>Time</button>
-						</th>
-						<th aria-sort={ariaSort('failures')}>
-							<button class="sortable" onclick={() => toggleSort('failures')}>Fail</button>
-						</th>
-					</tr>
-				</thead>
-				<tbody>
+						</Table.Head>
+						<Table.Head aria-sort={ariaSort('cost')}>
+							<SortButton
+								active={sortKey === 'cost'}
+								desc={sortDesc}
+								onclick={() => toggleSort('cost')}>Cost</SortButton
+							>
+						</Table.Head>
+						<Table.Head aria-sort={ariaSort('duration')}>
+							<SortButton
+								active={sortKey === 'duration'}
+								desc={sortDesc}
+								onclick={() => toggleSort('duration')}>Time</SortButton
+							>
+						</Table.Head>
+						<Table.Head aria-sort={ariaSort('failures')}>
+							<SortButton
+								active={sortKey === 'failures'}
+								desc={sortDesc}
+								onclick={() => toggleSort('failures')}>Fail</SortButton
+							>
+						</Table.Head>
+					</Table.Row>
+				</Table.Header>
+				<Table.Body>
 					{#each sorted as cell (cell.key)}
-						<tr
-							class="clickable"
-							class:expanded={expanded === cell.key}
+						<Table.Row
+							class="cursor-pointer focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring {expanded ===
+							cell.key
+								? 'bg-primary/8 hover:bg-primary/10'
+								: 'hover:bg-primary/5'}"
 							onclick={() => (expanded = expanded === cell.key ? null : cell.key)}
 							onkeydown={(event) => {
 								if (event.key === 'Enter' || event.key === ' ') {
@@ -171,16 +195,16 @@
 									expanded = expanded === cell.key ? null : cell.key;
 								}
 							}}
-							tabindex="0"
+							tabindex={0}
 							role="button"
 							aria-expanded={expanded === cell.key}
 							aria-label="{cell.model} {cell.effort}: show details"
 						>
-							<td class="left">
-								<div class="config">
+							<Table.Cell>
+								<div class="flex flex-wrap items-center gap-1.5 text-[13px] font-semibold">
 									{cell.model}
 								</div>
-								<div class="muted small">
+								<div class="text-[11px] text-muted-foreground">
 									effort {cell.effort}{cell.quantization ? ` · ${cell.quantization}` : ''} ·
 									{cell.backend}
 								</div>
@@ -189,51 +213,60 @@
 								     two systems, not two samples. `single-pass` is left implicit to keep
 								     the default row quiet; anything else is called out. -->
 								{#if cell.harness && cell.harness !== 'single-pass'}
-									<div class="harness small">
+									<!-- A non-default agent setup is configuration, not decoration — it
+									     reads at the same weight as the model line rather than fading
+									     into the muted metadata. -->
+									<div class="text-[11px] font-semibold text-primary">
 										{cell.harness}{cell.review && cell.review !== 'none' && cell.review !== 'same'
 											? ` · review: ${cell.review}`
 											: ''}
 									</div>
 								{/if}
-							</td>
-							<td
+							</Table.Cell>
+							<Table.Cell
 								title="{cell.n_scored} scored of {cell.n_runs} run(s), across {cell.n_scored_tasks} task(s)"
 							>
-								<span class="num">{cell.n_scored}</span>
-								{#if cell.n_failed > 0}<span class="muted small">/{cell.n_runs}</span>{/if}
-								<span class="muted small">·{cell.n_scored_tasks}t</span>
-							</td>
+								<span>{cell.n_scored}</span>
+								{#if cell.n_failed > 0}<span class="text-[11px] text-muted-foreground"
+										>/{cell.n_runs}</span
+									>{/if}
+								<span class="text-[11px] text-muted-foreground">·{cell.n_scored_tasks}t</span>
+							</Table.Cell>
 							{#each COLUMNS as column (column)}
 								{@const stat = cell.metrics[column]}
 								<!-- stat.unpoolable can no longer occur here: it is a micro-mode
 								     state, and the viewer is pinned to macro, which is exact for
 								     every metric. -->
-								<td>
-									{pct(stat.mean, 1)}<span class="muted small">{spread(stat)}</span>
-								</td>
+								<Table.Cell>
+									{pct(stat.mean, 1)}<span class="text-[11px] text-muted-foreground"
+										>{spread(stat)}</span
+									>
+								</Table.Cell>
 							{/each}
-							<td class:danger={cell.unsafe_tag_claims_total > 0}>
+							<Table.Cell
+								class={cell.unsafe_tag_claims_total > 0 ? 'font-semibold text-critical' : ''}
+							>
 								{#if cell.stats.unsafe_tag_claims.n === 0}
 									<span
-										class="muted"
+										class="text-muted-foreground"
 										title="No run in this cell produced a report, so nothing is known about its dietary claims."
 										>—</span
 									>
 								{:else}
 									{cell.unsafe_tag_claims_total}
 								{/if}
-							</td>
-							<td>{usd(cell.stats.cost_usd.mean)}</td>
-							<td>{duration(cell.stats.duration_ms.mean)}</td>
-							<td class:danger={cell.n_failed > 0}>
+							</Table.Cell>
+							<Table.Cell>{usd(cell.stats.cost_usd.mean)}</Table.Cell>
+							<Table.Cell>{duration(cell.stats.duration_ms.mean)}</Table.Cell>
+							<Table.Cell class={cell.n_failed > 0 ? 'font-semibold text-critical' : ''}>
 								{cell.n_failed > 0 ? pct(cell.failure_rate, 0) : '0'}
-							</td>
-						</tr>
+							</Table.Cell>
+						</Table.Row>
 
 						{#if expanded === cell.key}
-							<tr class="detail">
-								<td colspan={COLUMNS.length + 5}>
-									<div class="row wrap badges">
+							<Table.Row class="bg-primary/4 hover:bg-primary/4">
+								<Table.Cell colspan={COLUMNS.length + 5} class="p-3 pb-3.5 whitespace-normal">
+									<div class="mb-2 flex flex-wrap items-center gap-2">
 										{#if cell.n_runs === 1}
 											<Badge
 												tone="warn"
@@ -274,7 +307,9 @@
 										{/if}
 									</div>
 
-									<div class="meta muted small">
+									<div
+										class="mb-2 flex flex-wrap gap-x-4.5 gap-y-1 text-[11px] text-muted-foreground"
+									>
 										<span>Provenance: {cell.provenances.join(' / ')}</span>
 										<span>Tasks: {cell.tasks}</span>
 										<span>Gold: {cell.policy_versions}</span>
@@ -297,101 +332,33 @@
 										<span>Cache read: {pct(cell.stats.cache_hit_rate.mean, 0)}</span>
 										<span
 											>Perfect-cache cost: {usd(cell.stats.price_cached.mean)}
-											<span class="muted">(counterfactual)</span></span
+											<span class="text-muted-foreground/70">(counterfactual)</span></span
 										>
 									</div>
 
-									<div class="row wrap runs">
+									<div class="flex flex-wrap items-center gap-1.5">
 										{#each cell.run_ids as runId (runId)}
-											<button
-												class="chip"
+											<Button
+												variant="outline"
+												size="xs"
+												class="h-6 rounded-full font-normal"
 												onclick={(event) => {
 													event.stopPropagation();
 													router.go('run', { id: runId });
-												}}>{runId.split('/')[0]} · {runId.split('/')[1].slice(0, 20)}</button
+												}}>{runId.split('/')[0]} · {runId.split('/')[1].slice(0, 20)}</Button
 											>
 										{/each}
 									</div>
-								</td>
-							</tr>
+								</Table.Cell>
+							</Table.Row>
 						{/if}
 					{/each}
-				</tbody>
-			</table>
+				</Table.Body>
+			</Table.Root>
 		</div>
 
 		{#if cells.length === 0}
-			<p class="muted pad">No runs match this filter.</p>
+			<p class="pt-4 pb-1 text-muted-foreground">No runs match this filter.</p>
 		{/if}
-	</div>
-</div>
-
-<style>
-	.small {
-		font-size: 11px;
-	}
-
-	.right {
-		text-align: right;
-	}
-
-	.table-wrap {
-		margin-top: 12px;
-		max-height: 70vh;
-		overflow-y: auto;
-	}
-
-	.config {
-		font-weight: 600;
-		font-size: 13px;
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		flex-wrap: wrap;
-	}
-
-	/* A non-default agent setup is configuration, not decoration — it reads at the
-	   same weight as the model line rather than fading into the muted metadata. */
-	.harness {
-		color: var(--accent, #4f7fd4);
-		font-weight: 600;
-	}
-
-	.clickable {
-		cursor: pointer;
-	}
-
-	.expanded {
-		background: color-mix(in srgb, var(--series-1) 8%, transparent);
-	}
-
-	.detail td {
-		background: color-mix(in srgb, var(--series-1) 4%, transparent);
-		white-space: normal;
-		padding: 10px 12px 14px;
-	}
-
-	.badges {
-		margin-bottom: 8px;
-	}
-
-	.meta {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 4px 18px;
-		margin-bottom: 8px;
-	}
-
-	.runs {
-		gap: 6px;
-	}
-
-	.danger {
-		color: var(--critical);
-		font-weight: 600;
-	}
-
-	.pad {
-		padding: 16px 0 4px;
-	}
-</style>
+	</Card.Content>
+</Card.Root>

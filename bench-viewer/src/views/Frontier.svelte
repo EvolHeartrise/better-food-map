@@ -15,7 +15,17 @@
 	import { frontierKeys as computeFrontier, plottableCells } from '../lib/analysis';
 	import { modelIcon, providerIcon } from '../lib/icons';
 	import type { CellRow, ScatterPoint } from '../lib/types';
+	import Chip from '../components/Chip.svelte';
 	import ScatterChart from '../components/ScatterChart.svelte';
+	import { Button } from '$lib/components/ui/button';
+	import * as Card from '$lib/components/ui/card';
+	import { Checkbox } from '$lib/components/ui/checkbox';
+	import { Input } from '$lib/components/ui/input';
+	import { Label } from '$lib/components/ui/label';
+	import * as Select from '$lib/components/ui/select';
+	import { Separator } from '$lib/components/ui/separator';
+	import * as Table from '$lib/components/ui/table';
+	import * as ToggleGroup from '$lib/components/ui/toggle-group';
 
 	type XAxis = 'cost' | 'cost_cached' | 'duration';
 
@@ -314,281 +324,325 @@
 	}
 </script>
 
-<div class="stack">
-	<div class="card">
-		<div class="spread">
-			<div>
-				<h2>{metricLabel(filters.metric)} against {X_AXES[xAxis].label.toLowerCase()}</h2>
-				<p class="muted small">
-					Labelled points are the Pareto frontier — nothing beats them on both axes. Point identity
-					is in the tooltip and the table below, not in colour.
-				</p>
-				{#if !splitProvenance}
-					<p class="warn small">
-						Pooled: runs served by different providers, quantizations and prompts share a point, so
-						each one describes no single actual endpoint. Good for ranking models, not for
-						attributing a score. (Harness stays split — a two-pass run is a different system, not
-						another sample.)
+<div class="flex flex-col gap-4">
+	<Card.Root size="sm">
+		<Card.Content>
+			<div class="flex flex-wrap items-start justify-between gap-3">
+				<div>
+					<h2 class="text-[15px]">
+						{metricLabel(filters.metric)} against {X_AXES[xAxis].label.toLowerCase()}
+					</h2>
+					<p class="text-[11px] text-muted-foreground">
+						Labelled points are the Pareto frontier — nothing beats them on both axes. Point
+						identity is in the tooltip and the table below, not in colour.
 					</p>
-				{/if}
-				{#if filters.dimensions.length > 0}
-					<p class="muted small">
-						Grouping is pinned by the filter panel, so the split toggle does not apply.
-					</p>
-				{/if}
+					{#if !splitProvenance}
+						<p class="max-w-[80ch] text-[11px] text-serious">
+							Pooled: runs served by different providers, quantizations and prompts share a point,
+							so each one describes no single actual endpoint. Good for ranking models, not for
+							attributing a score. (Harness stays split — a two-pass run is a different system, not
+							another sample.)
+						</p>
+					{/if}
+					{#if filters.dimensions.length > 0}
+						<p class="text-[11px] text-muted-foreground">
+							Grouping is pinned by the filter panel, so the split toggle does not apply.
+						</p>
+					{/if}
+				</div>
+				<div class="flex flex-wrap items-center gap-2">
+					<ToggleGroup.Root
+						type="single"
+						value={xAxis}
+						onValueChange={(value) => {
+							if (value) xAxis = value as XAxis;
+						}}
+						variant="outline"
+						size="sm"
+					>
+						<ToggleGroup.Item value="cost" class="h-7 px-2.5 text-xs">Real cost</ToggleGroup.Item>
+						<ToggleGroup.Item value="cost_cached" class="h-7 px-2.5 text-xs"
+							>Cached cost</ToggleGroup.Item
+						>
+						<ToggleGroup.Item value="duration" class="h-7 px-2.5 text-xs">Latency</ToggleGroup.Item>
+					</ToggleGroup.Root>
+					<Label
+						class="gap-1.5 text-[11px] font-normal whitespace-nowrap text-muted-foreground"
+						title="A score measures model x provider x quantization x prompt. Pooling those axes gives one number that describes no single endpoint — useful for comparing models, wrong for attributing a result."
+					>
+						<Checkbox bind:checked={splitProvenance} />
+						split by provenance &amp; prompt
+					</Label>
+					<Chip
+						pressed={advancedOpen}
+						title="Filter which cells are plotted: harness, backend, quantization, provider, prompt, minimum runs, quality floor, cost ceiling."
+						onPressedChange={(next) => (advancedOpen = next)}
+					>
+						Advanced{advancedActive ? ' ·' : ''}
+					</Chip>
+				</div>
 			</div>
-			<div class="row wrap controls">
-				{#each Object.keys(X_AXES) as key (key)}
-					<button class="chip" aria-pressed={xAxis === key} onclick={() => (xAxis = key as XAxis)}>
-						{key === 'cost' ? 'Real cost' : key === 'cost_cached' ? 'Cached cost' : 'Latency'}
-					</button>
-				{/each}
-				<label
-					class="split"
-					title="A score measures model x provider x quantization x prompt. Pooling those axes gives one number that describes no single endpoint — useful for comparing models, wrong for attributing a result."
-				>
-					<input type="checkbox" bind:checked={splitProvenance} />
-					split by provenance &amp; prompt
-				</label>
-				<button
-					class="chip"
-					aria-pressed={advancedOpen}
-					title="Filter which cells are plotted: harness, backend, quantization, provider, prompt, minimum runs, quality floor, cost ceiling."
-					onclick={() => (advancedOpen = !advancedOpen)}
-				>
-					Advanced{advancedActive ? ' ·' : ''}
-				</button>
-			</div>
-		</div>
 
-		{#if advancedOpen}
-			<div class="advanced">
-				{#each FACETS as facet (facet.key)}
-					{#if facetOptions[facet.key].length > 1}
-						<div class="group">
-							<span class="key">{facet.label}</span>
-							<div class="row wrap">
-								{#each facetOptions[facet.key] as option (option.value)}
-									<button
-										class="chip"
-										class:mono={facet.key === 'prompt_sha'}
-										aria-pressed={facetSelections[facet.key].includes(option.value)}
-										onclick={() => toggleFacet(facet.key, option.value)}
-									>
-										{option.value} <span class="muted">{option.n}</span>
-									</button>
-								{/each}
+			{#if advancedOpen}
+				<Separator class="mt-2.5" />
+				<div class="mt-2.5 flex flex-col gap-2">
+					{#each FACETS as facet (facet.key)}
+						{#if facetOptions[facet.key].length > 1}
+							<div class="flex flex-wrap items-baseline gap-2">
+								<span class="min-w-[100px] text-xs text-muted-foreground">{facet.label}</span>
+								<div class="flex flex-wrap items-center gap-1.5">
+									{#each facetOptions[facet.key] as option (option.value)}
+										<Chip
+											pressed={facetSelections[facet.key].includes(option.value)}
+											onPressedChange={() => toggleFacet(facet.key, option.value)}
+										>
+											<span class={facet.key === 'prompt_sha' ? 'font-mono text-[11px]' : ''}
+												>{option.value}</span
+											>
+											<span class="text-muted-foreground">{option.n}</span>
+										</Chip>
+									{/each}
+								</div>
 							</div>
-						</div>
-					{/if}
-				{/each}
+						{/if}
+					{/each}
 
-				<div class="group">
-					<span class="key">Min runs/cell</span>
-					<select bind:value={minRuns}>
-						{#each [1, 2, 3, 5] as n (n)}
-							<option value={n}>{n === 1 ? 'any' : `≥ ${n}`}</option>
-						{/each}
-					</select>
-					<span class="hint">An n=1 cell is a single sample, not a mean.</span>
+					<div class="flex flex-wrap items-center gap-2">
+						<span class="min-w-[100px] text-xs text-muted-foreground">Min runs/cell</span>
+						<Select.Root
+							type="single"
+							value={String(minRuns)}
+							onValueChange={(value) => (minRuns = Number(value))}
+						>
+							<Select.Trigger size="sm" class="h-7 text-xs">
+								{minRuns === 1 ? 'any' : `≥ ${minRuns}`}
+							</Select.Trigger>
+							<Select.Content>
+								{#each [1, 2, 3, 5] as n (n)}
+									<Select.Item value={String(n)} label={n === 1 ? 'any' : `≥ ${n}`} />
+								{/each}
+							</Select.Content>
+						</Select.Root>
+						<span class="text-[11px] text-muted-foreground"
+							>An n=1 cell is a single sample, not a mean.</span
+						>
+					</div>
+
+					<div class="flex flex-wrap items-center gap-2">
+						<span class="min-w-[100px] text-xs text-muted-foreground">Quality floor</span>
+						<Input
+							type="number"
+							min="0"
+							max="100"
+							step="5"
+							bind:value={qualityFloor}
+							class="h-7 w-20 text-xs"
+						/>
+						<span class="text-[11px] text-muted-foreground"
+							>% {metricLabel(filters.metric).toLowerCase()} — points below are hidden.</span
+						>
+					</div>
+
+					<div class="flex flex-wrap items-center gap-2">
+						<span class="min-w-[100px] text-xs text-muted-foreground"
+							>{xAxis === 'duration' ? 'Latency ceiling' : 'Cost ceiling'}</span
+						>
+						<Input
+							type="text"
+							inputmode="decimal"
+							placeholder={xAxis === 'duration' ? 'seconds' : 'USD'}
+							bind:value={xCeilingRaw}
+							class="h-7 w-20 text-xs"
+						/>
+						<span class="text-[11px] text-muted-foreground">
+							{xAxis === 'duration' ? 'seconds per run' : 'USD per run'} — points above are hidden.
+						</span>
+					</div>
+
+					<div class="flex flex-wrap items-center gap-2">
+						<span class="min-w-[100px] text-xs text-muted-foreground">Frontier</span>
+						<Chip pressed={frontierOnly} onPressedChange={(next) => (frontierOnly = next)}>
+							{frontierOnly ? 'frontier points only' : 'all points'}
+						</Chip>
+						{#if advancedActive}
+							<Button variant="ghost" size="xs" onclick={resetAdvanced}>Reset advanced</Button>
+						{/if}
+					</div>
 				</div>
+			{/if}
 
-				<div class="group">
-					<span class="key">Quality floor</span>
-					<input class="num" type="number" min="0" max="100" step="5" bind:value={qualityFloor} />
-					<span class="hint"
-						>% {metricLabel(filters.metric).toLowerCase()} — points below are hidden.</span
-					>
-				</div>
+			<ScatterChart
+				{points}
+				xLabel={X_AXES[xAxis].label}
+				yLabel={metricLabel(filters.metric)}
+				formatX={X_AXES[xAxis].format}
+				formatY={(value) => pct(value, 0)}
+				logX={xAxis !== 'duration'}
+				onselect={selectCell}
+			/>
 
-				<div class="group">
-					<span class="key">{xAxis === 'duration' ? 'Latency ceiling' : 'Cost ceiling'}</span>
-					<input
-						class="num"
-						type="text"
-						inputmode="decimal"
-						placeholder={xAxis === 'duration' ? 'seconds' : 'USD'}
-						bind:value={xCeilingRaw}
-					/>
-					<span class="hint">
-						{xAxis === 'duration' ? 'seconds per run' : 'USD per run'} — points above are hidden.
-					</span>
-				</div>
-
-				<div class="group">
-					<span class="key">Frontier</span>
+			{#if advancedActive}
+				<!-- The advanced filters' narrowing, stated as its own sentence: these are
+				     the user's deliberate hides, not data problems, so they are counted
+				     apart from the omitted-by-cause note below. -->
+				<p class="mt-2 text-[11px] text-muted-foreground">
+					Advanced filters hide {hiddenByFacets} cell{hiddenByFacets === 1
+						? ''
+						: 's'}{hiddenByThresholds > 0
+						? ` and ${hiddenByThresholds} plotted point${hiddenByThresholds === 1 ? '' : 's'}`
+						: ''}{frontierOnly
+						? `; showing only the ${visible.length} frontier point${visible.length === 1 ? '' : 's'}`
+						: ''}.
 					<button
-						class="chip"
-						aria-pressed={frontierOnly}
-						onclick={() => (frontierOnly = !frontierOnly)}
+						class="cursor-pointer text-primary underline focus-visible:rounded-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+						onclick={resetAdvanced}>Reset</button
 					>
-						{frontierOnly ? 'frontier points only' : 'all points'}
-					</button>
-					{#if advancedActive}
-						<button class="chip" onclick={resetAdvanced}>Reset advanced</button>
+				</p>
+			{/if}
+
+			{#if excluded > 0}
+				{@const causes = [
+					excludedNoAxis > 0
+						? `${excludedNoAxis} with no ${xAxis === 'duration' ? 'duration' : 'cost'} reported`
+						: null,
+					excludedNoScore > 0
+						? `${excludedNoScore} with no ${metricLabel(filters.metric).toLowerCase()} to plot`
+						: null,
+					excludedPartial > 0
+						? `${excludedPartial} scored on only some of the ${sliceTaskCount} task(s) in this slice`
+						: null
+				].filter(Boolean)}
+				<p class="mt-2 text-[11px] text-muted-foreground">
+					{excluded} cell{excluded === 1 ? '' : 's'} omitted{causes.length
+						? `: ${causes.join(', ')}`
+						: ''}. Omitted, never plotted at zero — unreported is unknown, not free and not worst.
+					{#if excludedPartial > 0}
+						A configuration measured on fewer venues is a smaller sample of an easier question, not
+						a cheaper configuration; it cannot be compared on this chart.
 					{/if}
-				</div>
-			</div>
-		{/if}
-
-		<ScatterChart
-			{points}
-			xLabel={X_AXES[xAxis].label}
-			yLabel={metricLabel(filters.metric)}
-			formatX={X_AXES[xAxis].format}
-			formatY={(value) => pct(value, 0)}
-			logX={xAxis !== 'duration'}
-			onselect={selectCell}
-		/>
-
-		{#if advancedActive}
-			<!-- The advanced filters' narrowing, stated as its own sentence: these are
-			     the user's deliberate hides, not data problems, so they are counted
-			     apart from the omitted-by-cause note below. -->
-			<p class="muted small note">
-				Advanced filters hide {hiddenByFacets} cell{hiddenByFacets === 1
-					? ''
-					: 's'}{hiddenByThresholds > 0
-					? ` and ${hiddenByThresholds} plotted point${hiddenByThresholds === 1 ? '' : 's'}`
-					: ''}{frontierOnly
-					? `; showing only the ${visible.length} frontier point${visible.length === 1 ? '' : 's'}`
-					: ''}.
-				<button class="linky" onclick={resetAdvanced}>Reset</button>
-			</p>
-		{/if}
-
-		{#if excluded > 0}
-			{@const causes = [
-				excludedNoAxis > 0
-					? `${excludedNoAxis} with no ${xAxis === 'duration' ? 'duration' : 'cost'} reported`
-					: null,
-				excludedNoScore > 0
-					? `${excludedNoScore} with no ${metricLabel(filters.metric).toLowerCase()} to plot`
-					: null,
-				excludedPartial > 0
-					? `${excludedPartial} scored on only some of the ${sliceTaskCount} task(s) in this slice`
-					: null
-			].filter(Boolean)}
-			<p class="muted small note">
-				{excluded} cell{excluded === 1 ? '' : 's'} omitted{causes.length
-					? `: ${causes.join(', ')}`
-					: ''}. Omitted, never plotted at zero — unreported is unknown, not free and not worst.
-				{#if excludedPartial > 0}
-					A configuration measured on fewer venues is a smaller sample of an easier question, not a
-					cheaper configuration; it cannot be compared on this chart.
-				{/if}
-			</p>
-		{/if}
-	</div>
+				</p>
+			{/if}
+		</Card.Content>
+	</Card.Root>
 
 	{#if selectedCell}
-		<div class="card">
-			<div class="spread">
-				<div>
-					<h3>
-						{selectedCell.model}
-						<span class="muted">· {selectedCell.effort}</span>
-					</h3>
-					<p class="muted small">
-						{selectedCell.n_runs} run{selectedCell.n_runs === 1 ? '' : 's'} over
-						{selectedCell.n_tasks} task{selectedCell.n_tasks === 1 ? '' : 's'} ·
-						{selectedCell.harness}{selectedCell.review && selectedCell.review !== 'none'
-							? ` · review: ${selectedCell.review}`
-							: ''}{selectedCell.quantization && selectedCell.quantization !== 'unpinned'
-							? ` · ${selectedCell.quantization}`
-							: ''}{splitProvenance && selectedCell.provenance
-							? ` · ${selectedCell.provenance}`
-							: ''}
-					</p>
-					<!-- The plotted point is a MEAN over these rows. Saying so beside them is
-					     what stops a reader treating the point as a single result. -->
-					<p class="muted small">
-						The plotted point is the task-equal (macro) average of these runs:
-						<strong>{pct(selectedCell.metrics[filters.metric].mean)}</strong>
-						{metricLabel(filters.metric).toLowerCase()} at
-						<strong>{X_AXES[xAxis].format(xValue(selectedCell) ?? 0)}</strong>.
-					</p>
+		<Card.Root size="sm">
+			<Card.Content>
+				<div class="flex flex-wrap items-start justify-between gap-3">
+					<div>
+						<h3 class="text-[13px]">
+							{selectedCell.model}
+							<span class="text-muted-foreground">· {selectedCell.effort}</span>
+						</h3>
+						<p class="text-[11px] text-muted-foreground">
+							{selectedCell.n_runs} run{selectedCell.n_runs === 1 ? '' : 's'} over
+							{selectedCell.n_tasks} task{selectedCell.n_tasks === 1 ? '' : 's'} ·
+							{selectedCell.harness}{selectedCell.review && selectedCell.review !== 'none'
+								? ` · review: ${selectedCell.review}`
+								: ''}{selectedCell.quantization && selectedCell.quantization !== 'unpinned'
+								? ` · ${selectedCell.quantization}`
+								: ''}{splitProvenance && selectedCell.provenance
+								? ` · ${selectedCell.provenance}`
+								: ''}
+						</p>
+						<!-- The plotted point is a MEAN over these rows. Saying so beside them is
+						     what stops a reader treating the point as a single result. -->
+						<p class="text-[11px] text-muted-foreground">
+							The plotted point is the task-equal (macro) average of these runs:
+							<strong>{pct(selectedCell.metrics[filters.metric].mean)}</strong>
+							{metricLabel(filters.metric).toLowerCase()} at
+							<strong>{X_AXES[xAxis].format(xValue(selectedCell) ?? 0)}</strong>.
+						</p>
+					</div>
+					<Button variant="outline" size="xs" onclick={() => (selectedKey = null)}>Close</Button>
 				</div>
-				<button class="chip" onclick={() => (selectedKey = null)}>Close</button>
-			</div>
 
-			<div class="scroll-x">
-				<table>
-					<thead>
-						<tr>
-							<th class="left">Task</th>
-							<th>Item R</th>
-							<th>Item P</th>
-							<th>Tag R</th>
-							<th>Tag P</th>
-							<th>Cost</th>
-							<th>Time</th>
-							<th>Tokens</th>
-							<th class="left">Started</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody>
+				<Table.Root class="num-table mt-2 text-[13px] tabular-nums">
+					<Table.Header>
+						<Table.Row class="hover:bg-transparent">
+							<Table.Head class="text-xs">Task</Table.Head>
+							<Table.Head class="text-xs">Item R</Table.Head>
+							<Table.Head class="text-xs">Item P</Table.Head>
+							<Table.Head class="text-xs">Tag R</Table.Head>
+							<Table.Head class="text-xs">Tag P</Table.Head>
+							<Table.Head class="text-xs">Cost</Table.Head>
+							<Table.Head class="text-xs">Time</Table.Head>
+							<Table.Head class="text-xs">Tokens</Table.Head>
+							<Table.Head class="text-left text-xs">Started</Table.Head>
+							<Table.Head></Table.Head>
+						</Table.Row>
+					</Table.Header>
+					<Table.Body>
 						{#each selectedRuns as run (run.run_id)}
-							<tr class:failed={run.status === 'failed'}>
-								<td class="left">{run.task}</td>
+							<Table.Row class={run.status === 'failed' ? 'opacity-75' : ''}>
+								<Table.Cell>{run.task}</Table.Cell>
 								{#if run.status === 'failed'}
 									<!-- A failed run has no report and is never counted as 0% — it is not
 									     in the mean above either. -->
-									<td colspan="5" class="left muted">
+									<Table.Cell colspan={5} class="text-left text-muted-foreground">
 										failed{run.failure_reason ? `: ${run.failure_reason.slice(0, 70)}` : ''}
-									</td>
+									</Table.Cell>
 								{:else}
-									<td>{pct(run.item_recall)}</td>
-									<td>{pct(run.item_precision)}</td>
-									<td>{pct(run.tag_recall)}</td>
-									<td>{pct(run.tag_precision)}</td>
-									<td>{usd(run.cost_usd)}</td>
+									<Table.Cell>{pct(run.item_recall)}</Table.Cell>
+									<Table.Cell>{pct(run.item_precision)}</Table.Cell>
+									<Table.Cell>{pct(run.tag_recall)}</Table.Cell>
+									<Table.Cell>{pct(run.tag_precision)}</Table.Cell>
+									<Table.Cell>{usd(run.cost_usd)}</Table.Cell>
 								{/if}
-								<td>{duration(run.duration_ms)}</td>
-								<td>{count(run.total_tokens)}</td>
-								<td class="left muted small">{run.started_at.slice(0, 16).replace('T', ' ')}</td>
-								<td>
-									<button class="linky" onclick={() => router.go('run', { id: run.run_id })}>
+								<Table.Cell>{duration(run.duration_ms)}</Table.Cell>
+								<Table.Cell>{count(run.total_tokens)}</Table.Cell>
+								<Table.Cell class="text-left text-[11px] text-muted-foreground"
+									>{run.started_at.slice(0, 16).replace('T', ' ')}</Table.Cell
+								>
+								<Table.Cell>
+									<button
+										class="cursor-pointer text-xs text-primary underline focus-visible:rounded-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+										onclick={() => router.go('run', { id: run.run_id })}
+									>
 										open →
 									</button>
-								</td>
-							</tr>
+								</Table.Cell>
+							</Table.Row>
 						{/each}
-					</tbody>
-				</table>
-			</div>
+					</Table.Body>
+				</Table.Root>
 
-			{#if selectedRuns.length !== selectedCell.n_runs}
-				<p class="muted small note">
-					Showing {selectedRuns.length} of {selectedCell.n_runs} runs — the rest are outside the current
-					filter slice.
-				</p>
-			{/if}
-		</div>
+				{#if selectedRuns.length !== selectedCell.n_runs}
+					<p class="mt-2 text-[11px] text-muted-foreground">
+						Showing {selectedRuns.length} of {selectedCell.n_runs} runs — the rest are outside the current
+						filter slice.
+					</p>
+				{/if}
+			</Card.Content>
+		</Card.Root>
 	{/if}
 
-	<div class="card">
-		<h3>Table view</h3>
-		<div class="scroll-x">
-			<table>
-				<thead>
-					<tr>
-						<th class="left">Configuration</th>
-						<th>{metricLabel(filters.metric)}</th>
-						<th>{X_AXES[xAxis].label}</th>
-						<th>n</th>
-						<th>Tasks</th>
-						<th class="left">Frontier</th>
-					</tr>
-				</thead>
-				<tbody>
+	<Card.Root size="sm">
+		<Card.Header class="gap-0">
+			<Card.Title class="text-[13px]">Table view</Card.Title>
+		</Card.Header>
+		<Card.Content>
+			<Table.Root class="num-table text-[13px] tabular-nums">
+				<Table.Header>
+					<Table.Row class="hover:bg-transparent">
+						<Table.Head class="text-xs">Configuration</Table.Head>
+						<Table.Head class="text-xs">{metricLabel(filters.metric)}</Table.Head>
+						<Table.Head class="text-xs">{X_AXES[xAxis].label}</Table.Head>
+						<Table.Head class="text-xs">n</Table.Head>
+						<Table.Head class="text-xs">Tasks</Table.Head>
+						<Table.Head class="text-left text-xs">Frontier</Table.Head>
+					</Table.Row>
+				</Table.Header>
+				<Table.Body>
 					{#each tableRows as entry (entry.cell.key)}
 						<!-- Clickable so the table and the chart select the same way; keyboard
 						     reachable because a row is the only handle on a point whose label
 						     the chart may have had to abbreviate. -->
-						<tr
-							class:selected={entry.cell.key === selectedKey}
+						<Table.Row
+							class="cursor-pointer focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring {entry
+								.cell.key === selectedKey
+								? 'bg-primary/12 hover:bg-primary/12'
+								: 'hover:bg-primary/5'}"
 							onclick={() => selectCell(entry.cell.key)}
 							onkeydown={(event) => {
 								if (event.key === 'Enter' || event.key === ' ') {
@@ -596,119 +650,27 @@
 									selectCell(entry.cell.key);
 								}
 							}}
-							tabindex="0"
+							tabindex={0}
 							role="button"
 							aria-pressed={entry.cell.key === selectedKey}
 							aria-label="{entry.cell.model} {entry.cell.effort}: show runs"
 						>
-							<td class="left">
-								{entry.cell.model} <span class="muted">· {entry.cell.effort}</span>
-							</td>
-							<td>{pct(entry.y)}</td>
-							<td>{X_AXES[xAxis].format(entry.x)}</td>
-							<td>{entry.cell.n_runs}</td>
-							<td>{entry.cell.n_tasks}</td>
-							<td class="left">
-								{#if frontier.has(entry.cell.key)}<span class="on">on frontier</span>{/if}
-							</td>
-						</tr>
+							<Table.Cell>
+								{entry.cell.model} <span class="text-muted-foreground">· {entry.cell.effort}</span>
+							</Table.Cell>
+							<Table.Cell>{pct(entry.y)}</Table.Cell>
+							<Table.Cell>{X_AXES[xAxis].format(entry.x)}</Table.Cell>
+							<Table.Cell>{entry.cell.n_runs}</Table.Cell>
+							<Table.Cell>{entry.cell.n_tasks}</Table.Cell>
+							<Table.Cell class="text-left">
+								{#if frontier.has(entry.cell.key)}<span class="text-xs font-semibold text-good"
+										>on frontier</span
+									>{/if}
+							</Table.Cell>
+						</Table.Row>
 					{/each}
-				</tbody>
-			</table>
-		</div>
-	</div>
+				</Table.Body>
+			</Table.Root>
+		</Card.Content>
+	</Card.Root>
 </div>
-
-<style>
-	.small {
-		font-size: 11px;
-	}
-
-	.note {
-		margin: 8px 0 0;
-	}
-
-	.on {
-		color: var(--good);
-		font-weight: 600;
-		font-size: 12px;
-	}
-
-	h3 {
-		margin-bottom: 8px;
-	}
-
-	.controls {
-		gap: 8px;
-		align-items: center;
-	}
-
-	.split {
-		display: flex;
-		align-items: center;
-		gap: 5px;
-		font-size: 11px;
-		color: var(--text-secondary);
-		white-space: nowrap;
-		cursor: pointer;
-	}
-
-	.warn {
-		color: var(--warning);
-		max-width: 80ch;
-	}
-
-	.advanced {
-		margin-top: 10px;
-		padding-top: 10px;
-		border-top: 1px solid var(--gridline);
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-	}
-
-	.group {
-		display: flex;
-		align-items: baseline;
-		gap: 8px;
-		flex-wrap: wrap;
-	}
-
-	.key {
-		color: var(--text-secondary);
-		font-size: 12px;
-		min-width: 100px;
-	}
-
-	.hint {
-		color: var(--text-muted);
-		font-size: 11px;
-	}
-
-	.mono {
-		font-family: var(--font-mono, monospace);
-		font-size: 11px;
-	}
-
-	.num {
-		width: 80px;
-	}
-
-	tbody tr.selected {
-		background: color-mix(in srgb, var(--series-1) 12%, transparent);
-	}
-
-	tbody tr.failed td {
-		opacity: 0.75;
-	}
-
-	.linky {
-		background: none;
-		border: none;
-		padding: 0;
-		font: inherit;
-		color: var(--series-1);
-		cursor: pointer;
-		text-decoration: underline;
-	}
-</style>

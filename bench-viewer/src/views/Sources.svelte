@@ -14,6 +14,14 @@
 	import { usd } from '../lib/format';
 	import { filters } from '../lib/state.svelte';
 	import type { CityRow, RegionRow } from '../lib/types';
+	import { Button } from '$lib/components/ui/button';
+	import * as Card from '$lib/components/ui/card';
+	import { Checkbox } from '$lib/components/ui/checkbox';
+	import { Input } from '$lib/components/ui/input';
+	import { Label } from '$lib/components/ui/label';
+	import * as Select from '$lib/components/ui/select';
+	import { Switch } from '$lib/components/ui/switch';
+	import * as Table from '$lib/components/ui/table';
 
 	let summary = $derived(await fetchSourcesSummary());
 
@@ -106,274 +114,197 @@
 </script>
 
 {#if !summary.available}
-	<div class="card">
-		<h2>Data sources</h2>
-		<p class="bad">{summary.reason}</p>
-	</div>
+	<Card.Root size="sm">
+		<Card.Header class="gap-0">
+			<Card.Title>Data sources</Card.Title>
+		</Card.Header>
+		<Card.Content class="text-critical">{summary.reason}</Card.Content>
+	</Card.Root>
 {:else if summary.sources}
 	{@const s = summary.sources}
-	<div class="stack">
-		<div class="card">
-			<h2>Eateries by source</h2>
-			<div class="row wrap tiles">
-				<div class="tile">
-					<span class="k">OSM staging</span>
-					<span class="v">{num(s.osm.total)}</span>
-					<span class="d"
-						>{num(s.osm.named)} named · {num(s.osm.with_website)} with website · {num(
-							s.osm.matched_overture
-						)} Overture-matched</span
-					>
+	<div class="flex flex-col gap-4">
+		<Card.Root size="sm">
+			<Card.Header class="gap-0">
+				<Card.Title>Eateries by source</Card.Title>
+			</Card.Header>
+			<Card.Content>
+				<div class="flex flex-wrap items-stretch gap-3">
+					<div class="flex min-w-[180px] flex-col gap-0.5 rounded-lg border px-3.5 py-2">
+						<span class="text-[11px] text-muted-foreground">OSM staging</span>
+						<span class="text-[22px] font-semibold tabular-nums">{num(s.osm.total)}</span>
+						<span class="text-[11px] text-muted-foreground"
+							>{num(s.osm.named)} named · {num(s.osm.with_website)} with website · {num(
+								s.osm.matched_overture
+							)} Overture-matched</span
+						>
+					</div>
+					<div class="flex min-w-[180px] flex-col gap-0.5 rounded-lg border px-3.5 py-2">
+						<span class="text-[11px] text-muted-foreground">Overture leads</span>
+						<span class="text-[22px] font-semibold tabular-nums">{num(s.overture_leads.total)}</span
+						>
+						<span class="text-[11px] text-muted-foreground"
+							>{num(s.overture_leads.with_website)} with website · release {s.overture_leads
+								.release ?? '—'} · not near any OSM POI</span
+						>
+					</div>
+					<div class="flex min-w-[180px] flex-col gap-0.5 rounded-lg border px-3.5 py-2">
+						<span class="text-[11px] text-muted-foreground">On the map</span>
+						<span class="text-[22px] font-semibold tabular-nums">{num(s.map.open)}</span>
+						<span class="text-[11px] text-muted-foreground">
+							{s.map.closed} closed ·
+							{#if s.map.mirror_found}
+								mirror {staleDays(s.map.mirror_mtime)}d old
+							{:else}
+								no local mirror — run <code class="rounded bg-muted px-1 font-mono text-[11px]"
+									>bun run db:pull</code
+								>
+							{/if}
+						</span>
+					</div>
 				</div>
-				<div class="tile">
-					<span class="k">Overture leads</span>
-					<span class="v">{num(s.overture_leads.total)}</span>
-					<span class="d"
-						>{num(s.overture_leads.with_website)} with website · release {s.overture_leads
-							.release ?? '—'} · not near any OSM POI</span
-					>
-				</div>
-				<div class="tile">
-					<span class="k">On the map</span>
-					<span class="v">{num(s.map.open)}</span>
-					<span class="d">
-						{s.map.closed} closed ·
-						{#if s.map.mirror_found}
-							mirror {staleDays(s.map.mirror_mtime)}d old
-						{:else}
-							no local mirror — run <code>bun run db:pull</code>
-						{/if}
+				<p class="mt-2 text-[11px] text-muted-foreground">{summary.method}</p>
+			</Card.Content>
+		</Card.Root>
+
+		<Card.Root size="sm">
+			<Card.Header class="gap-0">
+				<Card.Title>Ingestion cost basis</Card.Title>
+			</Card.Header>
+			<Card.Content>
+				<div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+					<Label class="gap-1.5 text-[11px] text-muted-foreground">
+						configuration
+						<Select.Root
+							type="single"
+							value={basis?.key}
+							onValueChange={(value) => (basisKey = value)}
+						>
+							<Select.Trigger size="sm" class="h-7 max-w-[340px] text-xs">
+								{#if basis}
+									{basis.label} (n={basis.n}, {usd(basis.real ?? 0)}/run)
+								{:else}
+									no scored cells in slice
+								{/if}
+							</Select.Trigger>
+							<Select.Content>
+								{#each costBases as base (base.key)}
+									<Select.Item
+										value={base.key}
+										label="{base.label} (n={base.n}, {usd(base.real ?? 0)}/run)"
+									/>
+								{/each}
+							</Select.Content>
+						</Select.Root>
+					</Label>
+					<Label class="gap-1.5 text-[11px] text-muted-foreground">
+						<Checkbox bind:checked={useCached} disabled={basis?.cached === null} />
+						cached-prefix cost
+					</Label>
+					<Label class="gap-1.5 text-[11px] text-muted-foreground">
+						overhead ×
+						<Input
+							type="number"
+							min="1"
+							step="0.5"
+							bind:value={overhead}
+							class="h-7 w-[64px] text-xs"
+						/>
+					</Label>
+					<span class="text-[11px] font-semibold">
+						= {perMenu === null ? '—' : usd(perMenu)}/menu
 					</span>
 				</div>
-			</div>
-			<p class="muted small">{summary.method}</p>
-		</div>
-
-		<div class="card">
-			<h2>Ingestion cost basis</h2>
-			<div class="row wrap basis">
-				<label class="small">
-					configuration
-					<select bind:value={basisKey}>
-						{#each costBases as base (base.key)}
-							<option value={base.key}>{base.label} (n={base.n}, {usd(base.real ?? 0)}/run)</option>
-						{/each}
-					</select>
-				</label>
-				<label class="small chk">
-					<input type="checkbox" bind:checked={useCached} disabled={basis?.cached === null} />
-					cached-prefix cost
-				</label>
-				<label class="small">
-					overhead ×
-					<input class="num-in" type="number" min="1" step="0.5" bind:value={overhead} />
-				</label>
-				<span class="small stat">
-					= {perMenu === null ? '—' : usd(perMenu)}/menu
-				</span>
-			</div>
-			<p class="muted small">
-				Mean bench run cost for the picked configuration × overhead (discovery, verification,
-				retries). Chains share one menu across branches, so per-venue cost over-counts chain-heavy
-				areas — treat totals as an upper bound.
-			</p>
-		</div>
+				<p class="mt-2 text-[11px] text-muted-foreground">
+					Mean bench run cost for the picked configuration × overhead (discovery, verification,
+					retries). Chains share one menu across branches, so per-venue cost over-counts chain-heavy
+					areas — treat totals as an upper bound.
+				</p>
+			</Card.Content>
+		</Card.Root>
 
 		{#each summary.countries ?? [] as country (country.country)}
-			<div class="card">
-				<div class="spread">
-					<h2>{country.country} — by province</h2>
-					<label class="small chk toggle">
-						<input type="checkbox" bind:checked={webOnly} />
-						with website only
-					</label>
-				</div>
-				{#if webOnly}
-					<p class="muted small">
-						All columns restricted to venues with a website on file — the directly menu-researchable
-						subset. Venues without one need site discovery first.
-					</p>
-				{/if}
-				<div class="scroll">
-					<table>
-						<thead>
-							<tr>
-								<th>region</th>
-								<th class="num">OSM</th>
-								<th class="num">leads</th>
-								<th class="num">unique (est.)</th>
-								<th class="num">on map</th>
-								<th class="num">remaining</th>
-								<th class="num">cost (est.)</th>
-								<th></th>
-							</tr>
-						</thead>
-						<tbody>
+			<Card.Root size="sm">
+				<Card.Header class="gap-0">
+					<Card.Title>{country.country} — by province</Card.Title>
+					<Card.Action class="self-center">
+						<Label class="gap-1.5 text-[11px] text-muted-foreground">
+							<Switch bind:checked={webOnly} />
+							with website only
+						</Label>
+					</Card.Action>
+				</Card.Header>
+				<Card.Content>
+					{#if webOnly}
+						<p class="mb-2 text-[11px] text-muted-foreground">
+							All columns restricted to venues with a website on file — the directly
+							menu-researchable subset. Venues without one need site discovery first.
+						</p>
+					{/if}
+					<Table.Root class="num-table text-[13px] tabular-nums">
+						<Table.Header>
+							<Table.Row class="hover:bg-transparent">
+								<Table.Head class="text-xs">region</Table.Head>
+								<Table.Head class="text-xs">OSM</Table.Head>
+								<Table.Head class="text-xs">leads</Table.Head>
+								<Table.Head class="text-xs">unique (est.)</Table.Head>
+								<Table.Head class="text-xs">on map</Table.Head>
+								<Table.Head class="text-xs">remaining</Table.Head>
+								<Table.Head class="text-xs">cost (est.)</Table.Head>
+								<Table.Head></Table.Head>
+							</Table.Row>
+						</Table.Header>
+						<Table.Body>
 							{#each country.regions as region (region.region)}
 								{@const c = counts(region)}
-								<tr>
-									<td class="mono">{region.region}</td>
-									<td class="num">{num(c.osm)}</td>
-									<td class="num">{num(c.leads)}</td>
-									<td class="num">{num(c.unique)}</td>
-									<td class="num">{num(c.map_open)}</td>
-									<td class="num strong">{num(c.remaining)}</td>
-									<td class="num">{cost(c.remaining)}</td>
-									<td>
-										<button class="chip" onclick={() => toggleRegion(region.region)}>
+								<Table.Row class="hover:bg-primary/5">
+									<Table.Cell class="font-mono text-xs">{region.region}</Table.Cell>
+									<Table.Cell>{num(c.osm)}</Table.Cell>
+									<Table.Cell>{num(c.leads)}</Table.Cell>
+									<Table.Cell>{num(c.unique)}</Table.Cell>
+									<Table.Cell>{num(c.map_open)}</Table.Cell>
+									<Table.Cell class="font-semibold">{num(c.remaining)}</Table.Cell>
+									<Table.Cell>{cost(c.remaining)}</Table.Cell>
+									<Table.Cell class="py-1">
+										<Button
+											variant="outline"
+											size="xs"
+											class="h-6 rounded-full font-normal"
+											aria-expanded={expandedRegion === region.region}
+											onclick={() => toggleRegion(region.region)}
+										>
 											{expandedRegion === region.region ? 'hide' : 'cities'}
-										</button>
-									</td>
-								</tr>
+										</Button>
+									</Table.Cell>
+								</Table.Row>
 								{#if expandedRegion === region.region}
-									<tr>
-										<td colspan="8" class="citycell">
-											<table class="inner">
-												<tbody>
-													{#each cities.slice(0, 40) as city (city.city)}
-														{@const c = counts(city)}
-														<tr>
-															<td>{city.city}</td>
-															<td class="num">{num(c.osm)}</td>
-															<td class="num">{num(c.leads)}</td>
-															<td class="num">{num(c.unique)}</td>
-															<td class="num">{num(c.map_open)}</td>
-															<td class="num strong">{num(c.remaining)}</td>
-															<td class="num">{cost(c.remaining)}</td>
-															<td></td>
-														</tr>
-													{/each}
-													{#if cities.length > 40}
-														<tr>
-															<td colspan="8" class="muted small">
-																…and {cities.length - 40} smaller localities
-															</td>
-														</tr>
-													{/if}
-												</tbody>
-											</table>
-										</td>
-									</tr>
+									<!-- City rows live in the SAME table, indented — a nested table
+									     never lines its columns up with the parent's. -->
+									{#each cities.slice(0, 40) as city (city.city)}
+										{@const cc = counts(city)}
+										<Table.Row class="bg-primary/4 text-xs hover:bg-primary/6">
+											<Table.Cell class="py-1 pl-6">{city.city}</Table.Cell>
+											<Table.Cell class="py-1">{num(cc.osm)}</Table.Cell>
+											<Table.Cell class="py-1">{num(cc.leads)}</Table.Cell>
+											<Table.Cell class="py-1">{num(cc.unique)}</Table.Cell>
+											<Table.Cell class="py-1">{num(cc.map_open)}</Table.Cell>
+											<Table.Cell class="py-1 font-semibold">{num(cc.remaining)}</Table.Cell>
+											<Table.Cell class="py-1">{cost(cc.remaining)}</Table.Cell>
+											<Table.Cell class="py-1"></Table.Cell>
+										</Table.Row>
+									{/each}
+									{#if cities.length > 40}
+										<Table.Row class="bg-primary/4 hover:bg-primary/4">
+											<Table.Cell colspan={8} class="py-1 pl-6 text-[11px] text-muted-foreground">
+												…and {cities.length - 40} smaller localities
+											</Table.Cell>
+										</Table.Row>
+									{/if}
 								{/if}
 							{/each}
-						</tbody>
-					</table>
-				</div>
-			</div>
+						</Table.Body>
+					</Table.Root>
+				</Card.Content>
+			</Card.Root>
 		{/each}
 	</div>
 {/if}
-
-<style>
-	.stack {
-		display: flex;
-		flex-direction: column;
-		gap: 16px;
-	}
-
-	.tiles {
-		gap: 12px;
-	}
-
-	.tile {
-		border: 1px solid var(--border);
-		border-radius: 8px;
-		padding: 8px 14px;
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-		min-width: 180px;
-	}
-
-	.k {
-		font-size: 11px;
-		color: var(--text-secondary);
-	}
-
-	.v {
-		font-size: 22px;
-		font-weight: 650;
-		font-variant-numeric: tabular-nums;
-	}
-
-	.d {
-		font-size: 11px;
-		color: var(--text-secondary);
-	}
-
-	.basis {
-		gap: 14px;
-		align-items: center;
-	}
-
-	.chk {
-		display: inline-flex;
-		gap: 4px;
-		align-items: center;
-	}
-
-	.spread {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		gap: 12px;
-		flex-wrap: wrap;
-	}
-
-	.num-in {
-		width: 60px;
-	}
-
-	.stat {
-		font-weight: 600;
-	}
-
-	select,
-	input {
-		font: inherit;
-		font-size: 12px;
-		padding: 3px 6px;
-		border: 1px solid var(--border);
-		border-radius: 6px;
-		background: var(--surface-1);
-		color: var(--text-primary);
-	}
-
-	.scroll {
-		overflow-x: auto;
-	}
-
-	.num {
-		text-align: right;
-		font-variant-numeric: tabular-nums;
-	}
-
-	.strong {
-		font-weight: 600;
-	}
-
-	.mono {
-		font-family: var(--mono);
-	}
-
-	.citycell {
-		padding: 0 0 8px 24px;
-	}
-
-	.inner {
-		font-size: 12px;
-	}
-
-	.small {
-		font-size: 11px;
-	}
-
-	.bad {
-		color: var(--critical);
-	}
-
-	code {
-		font-family: var(--mono);
-		font-size: 11px;
-	}
-</style>
