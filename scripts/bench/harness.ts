@@ -235,6 +235,12 @@ export interface PassMeta {
 	duration_ms: number;
 	tool_calls: number;
 	submit_attempts: number;
+	/**
+	 * Reasoning-only responses (no content, no tool calls) discarded and
+	 * resampled during this pass. Non-zero means the serving endpoint dropped
+	 * turns; the discarded tokens are still counted in this pass's totals.
+	 */
+	emission_retries: number;
 	prompt_tokens: number;
 	completion_tokens: number;
 	total_tokens: number;
@@ -295,6 +301,7 @@ export function mergePassResults(results: readonly RunResult[]): RunResult {
 		candidate: last.status === 'scored' ? lastWithCandidate?.candidate : undefined,
 		toolCalls: sum(results, (r) => r.toolCalls),
 		submitAttempts: sum(results, (r) => r.submitAttempts),
+		emissionRetries: sum(results, (r) => r.emissionRetries ?? 0),
 		promptTokens: sum(results, (r) => r.promptTokens),
 		completionTokens: sum(results, (r) => r.completionTokens),
 		totalTokens: sum(results, (r) => r.totalTokens),
