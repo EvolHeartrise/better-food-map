@@ -14,8 +14,10 @@
  * (`--rebuild` forces, `--no-build` skips). That keeps the tool a single
  * command with no separate dev server to remember.
  *
- * Strictly read-only: nothing under `bench/` (or anywhere else) is ever
- * written by this server.
+ * Write policy — inputs, never evidence. The `/api/authoring/*` routes
+ * (viewer-authoring.ts) may write bench INPUTS: task.json, gold files and
+ * review state. Nothing anywhere may write under `bench/runs` — run evidence
+ * stays immutable, the invariant that makes the analytics trustworthy.
  *
  * Binds 127.0.0.1 only. This reads unpublished bench data and has no auth, so
  * it must never be reachable off the machine. All human output is on stderr;
@@ -56,6 +58,8 @@ import {
 } from './analyze/rescore';
 import { buildTimeline, fetchedUrls, pageCoverage, transcriptPasses } from './analyze/transcript';
 import { loadManifest } from './snapshot-store';
+import { handleAuthoring, TaskContextCache } from './viewer-authoring';
+import { handleSources, SourcesCache } from './viewer-sources';
 
 const VIEWER_ROOT = 'bench-viewer';
 const DIST_DIR = join(VIEWER_ROOT, 'dist');
@@ -494,6 +498,8 @@ export function isAllowedHost(hostHeader: string | null): boolean {
 
 export function createHandler(args: ViewerArgs, hasUi: boolean) {
 	const cache = new IndexCache(args.runsDir);
+	const authoringCache = new TaskContextCache(args.tasksDir);
+	const sourcesCache = new SourcesCache();
 
 	/**
 	 * Every request goes through this, so an unexpected throw becomes a small JSON
@@ -512,6 +518,12 @@ export function createHandler(args: ViewerArgs, hasUi: boolean) {
 				headers: { 'content-type': 'text/plain; charset=utf-8' }
 			});
 		}
+
+		const authoring = await handleAuthoring(request, url, args.tasksDir, authoringCache);
+		if (authoring) return authoring;
+
+		const sources = handleSources(url, sourcesCache);
+		if (sources) return sources;
 
 		if (pathname.startsWith('/api/')) {
 			const index = cache.get();

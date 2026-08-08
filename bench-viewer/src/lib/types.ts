@@ -380,3 +380,50 @@ export interface ScatterPoint {
 	/** Serving provider's favicon, badged on the mark's corner when known. */
 	providerIcon?: string | null;
 }
+
+// --- authoring & data sources ---------------------------------------------------
+
+/**
+ * IMPORTED server types again, per the header: these are plain data owned by
+ * the bench scripts, and a hand mirror is how the navigation tab broke.
+ */
+import type { GoldMenu, LintResult } from '../../../scripts/bench/lint';
+import type { Stratum, TaskStatusRow } from '../../../scripts/bench/new';
+import type { ItemHit } from '../../../scripts/bench/review';
+import type { CityRow, RegionRow, SourcesSummary } from '../../../scripts/bench/viewer-sources';
+
+export type { CityRow, ItemHit, LintResult, RegionRow, SourcesSummary, Stratum, TaskStatusRow };
+
+/** One gold menu item, exactly as the gold schema owns it. */
+export type GoldItem = GoldMenu['items'][number];
+
+export interface AuthoringStatus {
+	strata: readonly string[];
+	by_stratum: { stratum: string; slugs: string[] }[];
+	tasks: (TaskStatusRow & { entry_url: string })[];
+}
+
+/** Full review state for one task — the gold editor's load payload. */
+export interface AuthoringTask {
+	task: string;
+	file: 'draft' | 'data';
+	can_promote: boolean;
+	policy_version: string;
+	sources: string[];
+	items: GoldItem[];
+	reviewed: string[];
+	pages: { url: string; title: string }[];
+	per_item: ItemHit[];
+	lint: LintResult | null;
+}
+
+/** Outcome of an authoring write; `ok:false` carries whatever detail came back. */
+export interface WriteResult {
+	ok: boolean;
+	error?: string;
+	issues?: string[];
+	errors?: string[];
+	warnings?: string[];
+	per_item?: ItemHit[];
+	task_dir?: string;
+}

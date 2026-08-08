@@ -7,7 +7,16 @@
 import type { AverageMode, MetricKey } from './types';
 
 /** A route is `#/view` or `#/view?arg=…`; kept trivially small on purpose. */
-export type ViewName = 'leaderboard' | 'frontier' | 'tasks' | 'runs' | 'run' | 'compare';
+export type ViewName =
+	| 'leaderboard'
+	| 'frontier'
+	| 'tasks'
+	| 'runs'
+	| 'run'
+	| 'compare'
+	| 'authoring'
+	| 'gold'
+	| 'sources';
 
 function readHash(): { view: ViewName; params: URLSearchParams } {
 	const raw = location.hash.replace(/^#\/?/, '');

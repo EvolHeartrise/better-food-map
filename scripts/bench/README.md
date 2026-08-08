@@ -676,9 +676,14 @@ bun run bench:export --rows runs > runs.json
 ```
 
 Both read through the SAME modules (`scripts/bench/analyze/`), so a number on
-screen always equals the number in a CSV. Neither ever writes to `bench/` — the
-corpus is written only by `bench:run` and the authoring tools, and an analytics
-tool that could edit its own evidence is a way to lose it.
+screen always equals the number in a CSV.
+
+**Write policy — inputs, never evidence.** The viewer's `/api/authoring/*`
+routes may write bench INPUTS: `task.json`, `gold/draft.json`,
+`gold/data.json`, `gold/review-state.json` — the same files `bench:new` and
+`bench:review` write from the CLI. Nothing anywhere in the viewer can write
+under `bench/runs`: run evidence is produced only by `bench:run`, and an
+analytics tool that could edit its own evidence is a way to lose it.
 
 ### `bench:viewer`
 
@@ -688,8 +693,8 @@ bundle builds on demand when it is missing or older than its sources
 (`--rebuild` forces, `--no-build` skips and serves the JSON API alone). Options:
 `--port` (8792), `--runs-dir`, `--tasks-dir`.
 
-Six views, all rendering against ONE shared filter slice (a per-view filter is
-how two cards quietly end up describing different data):
+The analytics views all render against ONE shared filter slice (a per-view
+filter is how two cards quietly end up describing different data):
 
 - **Leaderboard** — one row per configuration cell, the scorer's metric vector as
   sortable columns. Expanding a row shows its provenance, gold versions and runs.
@@ -701,6 +706,28 @@ how two cards quietly end up describing different data):
 - **Runs / Run detail** — every run, drilling into its full report, the
   name-fidelity split, page-discovery coverage and the turn timeline.
 - **Compare** — two runs on the same task, diffed item by item.
+
+Two further tabs sit OUTSIDE the filter slice (they are not run-slice views):
+
+- **Authoring** — `bench:new --status` live: the strata matrix (empty strata are
+  the bench's blind spots), the per-task recorded/gold/draft table, task
+  scaffolding and stratum claiming, and a path into the **gold editor** — the
+  `bench:review` two-pane UI (snapshot text left, editable items right, NO HITS
+  badges, debounced autosave, promote gated on a zero-error lint) consolidated
+  into this dashboard (`viewer-authoring.ts`). Recording a snapshot stays a CLI
+  act (it drives headless Chromium against the live web); the dashboard shows
+  the command instead of a button.
+- **Sources** — eatery counts per ingestion source, read from the LOCAL stores
+  only (`viewer-sources.ts`): the OSM staging store (`data/osm-poi.sqlite`),
+  the `overture_leads` table in the same file, and the miniflare D1 mirror of
+  the map (its `db:pull` age is displayed, not hidden). `unique` is OSM +
+  leads — the leads table already excludes venues near a name-related OSM POI,
+  so the sum is a deliberate union estimate — and `remaining` subtracts open
+  map locations, by country → province → city. The **ingestion cost forecast**
+  multiplies remaining venues by a bench-derived $/menu: pick any cell from the
+  current slice, its mean per-run cost (real or cached) times an adjustable
+  research-overhead multiplier. Chains share one menu across branches, so the
+  total is labelled an upper bound.
 
 ### What the analysis layer adds beyond `report.json`
 
