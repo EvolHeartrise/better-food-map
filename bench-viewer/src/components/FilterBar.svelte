@@ -3,9 +3,9 @@
 	 * The single filter row. Every view renders against this one slice — per-view
 	 * filters are how two cards quietly end up describing different data.
 	 *
-	 * The averaging mode sits here rather than inside a chart for the same reason:
-	 * macro (task-equal-weight) and micro (item-pooled) give different numbers, and
-	 * which one is in force has to be visible while reading any of them.
+	 * There is no averaging-mode control: every number is the task-equal (macro)
+	 * average, which is exact for every metric. The item-pooled (micro) mode was
+	 * removed from the UI deliberately — see `filters.mode`.
 	 */
 	import { fetchOverview, fetchSlice } from '../lib/api';
 	import { filters, router } from '../lib/state.svelte';
@@ -60,14 +60,6 @@
 				{filters.includeBlacklisted ? 'shown' : 'hidden'}
 			</button>
 		{/if}
-
-		<label class="control">
-			Average
-			<select bind:value={filters.mode}>
-				<option value="macro">macro (task-equal)</option>
-				<option value="micro">micro (item-pooled)</option>
-			</select>
-		</label>
 
 		<label class="control">
 			Metric

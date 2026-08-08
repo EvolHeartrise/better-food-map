@@ -144,10 +144,8 @@
 			<div>
 				<h2>Configurations</h2>
 				<p class="muted small">
-					{cells.length} cell{cells.length === 1 ? '' : 's'} · {filters.mode === 'macro'
-						? 'macro-averaged (every task weighs the same)'
-						: 'micro-averaged (pooled over items, so big menus dominate; the tag and source columns read n/a — they carry no denominator to pool)'}
-					· sorted by
+					{cells.length} cell{cells.length === 1 ? '' : 's'} · task-equal average (every task weighs the
+					same) · sorted by
 					{sortKey === 'config' ? 'configuration' : metricLabel(sortKey)}
 				</p>
 				{#if response.hidden_blacklisted > 0}
@@ -261,24 +259,11 @@
 							</td>
 							{#each COLUMNS as column (column)}
 								{@const stat = cell.metrics[column]}
+								<!-- stat.unpoolable can no longer occur here: it is a micro-mode
+								     state, and the viewer is pinned to macro, which is exact for
+								     every metric. -->
 								<td>
-									{#if stat.unpoolable}
-										<!-- A DISTINCT empty state from "—", deliberately. An em dash here
-										     means UNKNOWN (no run, no report). This means the question has no
-										     answer in this MODE: the report publishes these ratios without
-										     their denominators, so micro has nothing to pool, while macro is
-										     exact. Rendering both as "—" conflated "we don't know" with "not
-										     askable this way", and pointed nobody at the mode that answers. -->
-										<span
-											class="muted"
-											title="{metricLabel(
-												column
-											)} has no micro value: the report publishes it as a ratio without its denominator, so there is nothing to pool. Switch to macro, which is exact for every metric."
-											>n/a</span
-										>
-									{:else}
-										{pct(stat.mean, 1)}<span class="muted small">{spread(stat)}</span>
-									{/if}
+									{pct(stat.mean, 1)}<span class="muted small">{spread(stat)}</span>
 								</td>
 							{/each}
 							<td class:danger={cell.unsafe_tag_claims_total > 0}>

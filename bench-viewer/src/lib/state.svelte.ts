@@ -59,7 +59,13 @@ class Filters {
 	 * anything reports the count, so the slice never narrows silently.
 	 */
 	includeBlacklisted = $state(false);
-	mode = $state<AverageMode>('macro');
+	/**
+	 * Averaging is pinned task-equal (macro). The micro (item-pooled) option was
+	 * removed from the UI: it let a 180-item menu outweigh a 26-item one, and it
+	 * has no value at all for the tag/source metrics (no denominator to pool).
+	 * `bench:export --mode micro` still exists for the rare pooled question.
+	 */
+	readonly mode: AverageMode = 'macro';
 	metric = $state<MetricKey>('item_recall');
 	/** Grouping dimensions for cells; empty means the server default. */
 	dimensions = $state<string[]>([]);

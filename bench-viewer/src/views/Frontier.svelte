@@ -314,7 +314,7 @@
 					<!-- The plotted point is a MEAN over these rows. Saying so beside them is
 					     what stops a reader treating the point as a single result. -->
 					<p class="muted small">
-						The plotted point is the {filters.mode} average of these runs:
+						The plotted point is the task-equal (macro) average of these runs:
 						<strong>{pct(selectedCell.metrics[filters.metric].mean)}</strong>
 						{metricLabel(filters.metric).toLowerCase()} at
 						<strong>{X_AXES[xAxis].format(xValue(selectedCell) ?? 0)}</strong>.
