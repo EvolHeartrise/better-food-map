@@ -62,11 +62,17 @@ export const SYSTEM_PROMPT = [
 const REVIEW_HEADER =
 	'You are the SECOND pass of a two-stage menu extraction. Another agent has already extracted this restaurant’s menu from the same website snapshot you can see, and its submission is given to you below.';
 
-/** The verification checklist both review variants share, verbatim. */
-const REVIEW_CHECKS = [
+/**
+ * The verification checklist both review variants share. Check 2 takes a
+ * mode-specific tail: the patch variant must name its `tag_menu` operation
+ * there, because a reviewer that agrees a venue-wide claim exists still
+ * defaults to per-item updates (measured: 22 update ops, sweep not invoked,
+ * tag recall unmoved) unless the check itself points at the sweep op.
+ */
+const reviewChecks = (check2Tail: string): string[] => [
 	'You have the same fetch_page tool and the same snapshot the first pass had. Run every check, in order:',
 	'1. PAGE SWEEP. Enumerate the site’s menu-shaped links yourself (food, drinks, dessert, brunch, happy hour, lunch/dinner, kids, specials — separate pages and tabs) and open every one; do NOT assume the draft’s coverage was complete. A draft with no drinks or no desserts for a sit-down venue has almost certainly missed a page. Add every item the draft missed. Named, individually-priced entries in a Sides / Extras section ARE items and drafts routinely skip the whole section — the add-on ban in the rules below covers only options attached to ANOTHER item’s line ("Add Noodles +$2", "make it vegan"), never a section’s own priced listings.',
-	'2. VENUE-WIDE DIETARY CLAIM. Check the source’s identity pages (home, about/story, menu headings) for a whole-venue dietary claim — a venue presenting itself as plant-based or vegan, or a "100% Pure Vegetarian" style heading. Per the rules below, such a claim designates the tag for EVERY item it covers, drinks included. Drafts routinely miss this: when the claim exists, confirm every single item carries the tag, and add it where missing. When no such claim exists, this check adds nothing.',
+	`2. VENUE-WIDE DIETARY CLAIM. Check the source’s identity pages (home, about/story, menu headings) for a whole-venue dietary claim — a venue presenting itself as plant-based or vegan, or a "100% Pure Vegetarian" style heading. Per the rules below, such a claim designates the tag for EVERY item it covers, drinks included. Drafts routinely miss this: when the claim exists, confirm every single item carries the tag, and add it where missing. Apply the DESIGNATED tag itself — a plant-based/vegan claim means the \`vegan\` tag on every item, never merely an implication of it like \`dairy_free\`. When no such claim exists, this check adds nothing.${check2Tail}`,
 	'3. NAME FIDELITY. Each item’s name must be copied exactly as the source displays it on the item’s own line — paraphrased, abbreviated, or reworded names, and names with a word added or dropped, are the most common draft error. Two specific cases to fix: (a) a dietary marker the source prints beside the name — "(VG)", "(V)", "(GF)", an asterisk or allergen symbol — is a dietary designation, NOT part of the name: remove it from the name and make sure the item’s tags reflect what it designates; (b) a size/serving variant label must use the source’s own full wording — "(5 oz glass)" when the source itemizes "5 oz glass", not "(5 oz)"; keep format words like glass/bottle/can — and an item the source sells at a single price gets NO size parenthetical: remove any the draft invented. Dropped and shortened labels cluster on LIST-HEAVY pages (drinks, wine, beer, cider): on those pages compare the draft item by item against the source’s own lines rather than spot-checking.',
 	'4. DESCRIPTIONS. An item’s description is the venue’s COMPLETE menu text for that item, verbatim — including trailing sentences drafts often cut off (allergen notes, availability notes, serving notes). Restore anything truncated; add descriptions the draft skipped; null only when the source shows none. Verbatim includes the source’s exact spacing and punctuation — do not normalize spaces around symbols or inside parentheticals. A section heading or price-context label the item merely sits under ("Daily Drink Specials – Thursday", "Happy Hour") is NOT a description: when the source shows no prose of the item’s own, the description is null — remove any the draft invented from headings.',
 	'5. PRICES AND TAGS. Check the draft’s prices and dietary tags item by item against what the source actually shows. Dietary designations often live OFF the menu pages — on a FAQ, nutrition, or allergen page: find and open any such page, apply exactly what it explicitly designates to the matching items (an explicit "our fries are vegan and gluten free" designates those tags for that item; never apply more than it says), and include that page in sources when it contributed designations.',
@@ -86,7 +92,7 @@ export const REVIEW_SYSTEM_PROMPT = [
 	'',
 	'Your job is to VERIFY and CORRECT that submission. Treat it as a draft written by a fallible colleague, never as an answer key. Do not skim and resubmit: work through the checklist below against the source itself, then submit the complete corrected menu. Change only what a check fails — the draft’s correctly-applied conventions must survive review.',
 	'',
-	...REVIEW_CHECKS,
+	...reviewChecks(''),
 	'',
 	'Call submit_menu exactly once, with the COMPLETE corrected menu: every item, not only the ones you changed. If every check passes, resubmit the draft unchanged.',
 	'',
@@ -104,9 +110,11 @@ export const REVIEW_PATCH_SYSTEM_PROMPT = [
 	'',
 	'Your job is to VERIFY and CORRECT that submission. Treat it as a draft written by a fallible colleague, never as an answer key. Do not skim and approve: work through the checklist below against the source itself, then submit your corrections as operations on the draft. Change only what a check fails — the draft’s correctly-applied conventions must survive review.',
 	'',
-	...REVIEW_CHECKS,
+	...reviewChecks(
+		' When this check finds items missing the tag, express the fix as the `tag_menu` operation — one operation tags the whole menu; never sweep with per-item updates.'
+	),
 	'',
-	'Call submit_corrections exactly once, with every correction the checklist produced: `add` items the draft missed, `remove` items the source does not itemize, `update` items whose name, description, tags, price or warning a check failed (name the draft item, set only the fields you are changing), and `set_sources` when the source list itself needs correcting. Items you do not name are kept exactly as drafted. If every check passes, call submit_corrections with an empty object — that approves the draft unchanged.',
+	'Call submit_corrections exactly once, with every correction the checklist produced: `add` items the draft missed, `remove` items the source does not itemize, `update` items whose name, description, tags, price or warning a check failed (name the draft item, set only the fields you are changing), `tag_menu` to apply a venue-wide dietary designation to EVERY item in one operation (check 2 — never sweep item by item), and `set_sources` when the source list itself needs correcting. Items you do not name are kept exactly as drafted. If every check passes, call submit_corrections with an empty object — that approves the draft unchanged.',
 	'',
 	...REVIEW_RULES_FOOTER
 ].join('\n');

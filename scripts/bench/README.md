@@ -277,8 +277,10 @@ never doubted (a 180-item review pass burned 43k completion tokens to change
 nothing). The patch reviewer gets a `submit_corrections` tool instead of
 `submit_menu`: `add` (full items), `remove` (by name), `update` (per-field, item
 named by the scorer's own `nameMatchKey` identity so paren/case differences never
-fail a legitimate correction), and `set_sources`. An empty object approves the
-draft unchanged. Ops are validated and applied in-process (`applyCorrections`);
+fail a legitimate correction), `set_sources`, and `tag_menu` — a whole-menu
+dietary-tag sweep for venue-wide designations, because expressing "every item is
+vegan" as ~180 per-item updates measurably under-applies (a reviewer swept only
+half the menu that way). An empty object approves the draft unchanged. Ops are validated and applied in-process (`applyCorrections`);
 an unknown target name, unknown field, or a post-patch duplicate name comes back
 as a validation issue for the model to retry, and the patched result must still
 pass the scorer's `CandidateSchema` — one source of truth for what an item is.
@@ -444,7 +446,10 @@ OpenRouter models are left byte-identical (they cache implicitly by prefix). Eve
 request also sends `usage: { include: true }`, and the Claude backend reads usage
 straight from the SDK result — so both backends report cache accounting.
 
-Each run writes `bench/runs/<task-slug>/<iso-timestamp>-<model-slug>/`:
+Each run writes `bench/runs/<task-slug>/<iso-timestamp>-<model-slug>/` (claimed
+atomically at start; two same-task runs launched in the same millisecond get
+`-2`, `-3`, … suffixes rather than silently overwriting each other — a real
+collision that cost a run's evidence before the claim existed):
 `candidate.json` (submitted extraction), `report.json` (`scoreCandidate` output),
 `transcript.jsonl` (one event per request/response and tool call/result, with
 per-request token + cache usage, each stamped with the `pass` that produced it),
