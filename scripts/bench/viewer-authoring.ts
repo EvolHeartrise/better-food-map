@@ -17,7 +17,7 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import * as v from 'valibot';
-import type { GoldSchema} from './lint';
+import type { GoldSchema } from './lint';
 import { buildCorpus, lintGold, type LintResult } from './lint';
 import { buildStatus, claimTask, createTask, isValidSlug, STRATA } from './new';
 import {
