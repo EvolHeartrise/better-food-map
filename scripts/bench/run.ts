@@ -56,6 +56,16 @@ const TEXT_CAP = 60_000;
 const DEFAULT_MAX_TOOL_CALLS = 40;
 const MAX_SUBMIT_ATTEMPTS = 3;
 const MAX_HTTP_RETRIES = 3;
+/**
+ * Retries for a DEGENERATE response: no tool calls and no content — every
+ * completion token went to the reasoning channel and the turn just ended.
+ * Observed on nemotron@Nvidia-free when about to emit a very large tool call
+ * (it plans the submit inside reasoning, then never crosses into emitting it).
+ * Such a response is never a meaningful turn — a genuine refusal carries
+ * content — so it is discarded WITHOUT being appended to the conversation and
+ * the identical request is resampled, like the HTTP layer retries a 502.
+ */
+const MAX_EMISSION_RETRIES = 3;
 
 /**
  * Reasoning-effort levels accepted per backend. OpenRouter's unified reasoning
@@ -869,6 +879,13 @@ export interface RunResult {
 	 * More than one entry means the run was re-routed mid-flight.
 	 */
 	providers?: string[];
+	/**
+	 * Reasoning-only responses (no content, no tool calls) that were discarded
+	 * and resampled — see MAX_EMISSION_RETRIES. Their token usage is still in
+	 * the counters above: the spend was real, and a run must never report
+	 * itself cheaper because some of its responses were thrown away.
+	 */
+	emissionRetries?: number;
 }
 
 /**
@@ -966,6 +983,7 @@ export async function runAgent(opts: {
 	let cachedPromptTokens = 0;
 	let cacheWriteTokens = 0;
 	let nudged = false;
+	let emissionRetries = 0;
 	const usages: ChatUsage[] = [];
 	/** Distinct upstream providers seen, in first-seen order. */
 	const providers: string[] = [];
@@ -982,6 +1000,7 @@ export async function runAgent(opts: {
 			| 'cacheWriteTokens'
 			| 'usages'
 			| 'providers'
+			| 'emissionRetries'
 		>
 	): RunResult => ({
 		...r,
@@ -993,7 +1012,8 @@ export async function runAgent(opts: {
 		cachedPromptTokens,
 		cacheWriteTokens,
 		usages,
-		providers
+		providers,
+		emissionRetries
 	});
 
 	for (;;) {
@@ -1029,9 +1049,28 @@ export async function runAgent(opts: {
 		if (!message) {
 			return done({ status: 'failed', failureReason: 'model returned no message' });
 		}
-		messages.push(normalizeAssistantMessage(message));
 
 		const toolCallList = message.tool_calls ?? [];
+		// A response with NO tool calls and NO content is a failed emission, not a
+		// turn: every completion token went to the reasoning channel and the model
+		// stopped before saying or calling anything (a genuine refusal carries
+		// content). Discard it WITHOUT appending to the conversation and resample
+		// the byte-identical request. Its usage was already counted above — the
+		// discarded tokens were billed, so the run's cost must include them.
+		const hasContent = Array.isArray(message.content)
+			? message.content.length > 0
+			: typeof message.content === 'string' && message.content.trim().length > 0;
+		if (toolCallList.length === 0 && !hasContent && emissionRetries < MAX_EMISSION_RETRIES) {
+			emissionRetries += 1;
+			transcript.push({
+				type: 'note',
+				ts: new Date().toISOString(),
+				note: `discarded reasoning-only response (no content, no tool calls) — emission retry ${emissionRetries}/${MAX_EMISSION_RETRIES}`
+			});
+			continue;
+		}
+		messages.push(normalizeAssistantMessage(message));
+
 		if (toolCallList.length === 0) {
 			if (!nudged) {
 				nudged = true;
@@ -1223,7 +1262,23 @@ export function openRouterChat(
 				}
 				throw new Error(`OpenRouter request failed: ${lastError}`);
 			}
-			if (res.ok) return (await res.json()) as ChatResponse;
+			if (res.ok) {
+				const parsed = (await res.json()) as ChatResponse & {
+					error?: { message?: string; code?: number };
+				};
+				if (Array.isArray(parsed.choices) && parsed.choices.length > 0) return parsed;
+				// OpenRouter can deliver an upstream failure as HTTP 200 with an
+				// `error` body and no `choices` (free-tier endpoints especially).
+				// That is a transient provider error, not a malformed run: retry it,
+				// and if it persists, fail with the upstream message — an unguarded
+				// `choices[0]` here once killed a run whose pass 1 had already scored.
+				lastError = `no choices in response: ${parsed.error?.message ?? JSON.stringify(parsed).slice(0, 300)}`;
+				if (attempt < MAX_HTTP_RETRIES) {
+					await sleep(2 ** attempt * 1000);
+					continue;
+				}
+				throw new Error(`OpenRouter returned ${lastError}`);
+			}
 			const text = await res.text();
 			if ((res.status === 429 || res.status >= 500) && attempt < MAX_HTTP_RETRIES) {
 				await sleep(2 ** attempt * 1000);
@@ -1323,6 +1378,8 @@ export interface RunMeta {
 	invoked_at: string;
 	tool_calls: number;
 	submit_attempts: number;
+	/** Discarded-and-resampled reasoning-only responses (tokens still counted). */
+	emission_retries: number;
 	prompt_tokens: number;
 	completion_tokens: number;
 	total_tokens: number;
@@ -1664,6 +1721,7 @@ export function buildMeta(
 		invoked_at: invokedAt.toISOString(),
 		tool_calls: result.toolCalls,
 		submit_attempts: result.submitAttempts,
+		emission_retries: result.emissionRetries ?? 0,
 		prompt_tokens: result.promptTokens,
 		completion_tokens: result.completionTokens,
 		total_tokens: result.totalTokens,
@@ -1908,6 +1966,7 @@ function toPassMeta(
 		duration_ms: durationMs,
 		tool_calls: result.toolCalls,
 		submit_attempts: result.submitAttempts,
+		emission_retries: result.emissionRetries ?? 0,
 		prompt_tokens: result.promptTokens,
 		completion_tokens: result.completionTokens,
 		total_tokens: result.totalTokens,

@@ -328,6 +328,24 @@ describe('validateSubmission', () => {
 		if (bad.ok) throw new Error('expected failure');
 		expect(bad.issues.length).toBeGreaterThan(0);
 	});
+
+	test('empty-string descriptions coerce to null instead of failing validation', () => {
+		const result = validateSubmission({
+			sources: ['https://x.com/menu'],
+			items: [
+				{ name: 'A', description: '', tags: [], optional_tags: [], price: 1 },
+				{ name: 'B', description: '   ', tags: [], optional_tags: [], price: null },
+				{ name: 'C', description: 'Real text', tags: [], optional_tags: [], price: null }
+			]
+		});
+		expect(result.ok).toBe(true);
+		if (!result.ok) throw new Error('expected success');
+		expect(result.candidate.items.map((item) => item.description)).toEqual([
+			null,
+			null,
+			'Real text'
+		]);
+	});
 });
 
 describe('applyCorrections', () => {
@@ -488,6 +506,71 @@ describe('runAgent', () => {
 			expect(result.status).toBe('scored');
 			expect(result.submitAttempts).toBe(2);
 			expect(result.candidate?.items).toHaveLength(1);
+		});
+	});
+
+	test('a reasoning-only response is discarded and resampled, usage still counted', async () => {
+		await withStoreAsync(async (store) => {
+			const transcript: TranscriptEvent[] = [];
+			const degenerate: ChatResponse = {
+				choices: [{ message: { role: 'assistant', content: '' } }],
+				usage: { prompt_tokens: 100, completion_tokens: 5000, total_tokens: 5100 }
+			};
+			let messagesOnRetry = -1;
+			const chat = scriptedChat([
+				degenerate,
+				(messages) => {
+					// The degenerate turn must NOT be in the conversation: the retry
+					// replays the byte-identical request.
+					messagesOnRetry = messages.length;
+					expect(messages.some((m) => m.role === 'assistant')).toBe(false);
+					return toolCallResponse('submit_menu', {
+						sources: ['https://x.com/menu'],
+						items: [{ name: 'Samosa', description: null, tags: [], optional_tags: [], price: 3.99 }]
+					});
+				}
+			]);
+			const result = await runAgent({
+				chat,
+				store,
+				entryUrl: 'https://x.com/',
+				maxToolCalls: 40,
+				transcript
+			});
+			expect(result.status).toBe('scored');
+			expect(result.emissionRetries).toBe(1);
+			expect(messagesOnRetry).toBeGreaterThan(0);
+			// The discarded response's tokens stay in the totals — a run must never
+			// report itself cheaper because a response was thrown away.
+			expect(result.completionTokens).toBeGreaterThanOrEqual(5000);
+			const note = transcript.find(
+				(e) => e.type === 'note' && String(e.note).includes('emission retry')
+			);
+			expect(note).toBeDefined();
+		});
+	});
+
+	test('emission retries are capped, then the nudge-and-fail path takes over', async () => {
+		await withStoreAsync(async (store) => {
+			const transcript: TranscriptEvent[] = [];
+			const degenerate: ChatResponse = {
+				choices: [{ message: { role: 'assistant', content: '' } }],
+				usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 }
+			};
+			// 3 retried + 1 that exhausts the cap (nudged) + 1 post-nudge = failed.
+			const chat = scriptedChat([degenerate, degenerate, degenerate, degenerate, degenerate]);
+			const result = await runAgent({
+				chat,
+				store,
+				entryUrl: 'https://x.com/',
+				maxToolCalls: 40,
+				transcript
+			});
+			expect(result.status).toBe('failed');
+			expect(result.failureReason).toBe('model stopped calling tools without submitting');
+			expect(result.emissionRetries).toBe(3);
+			// All five responses' usage is counted, discarded or not.
+			expect(result.completionTokens).toBe(50);
 		});
 	});
 
@@ -1076,4 +1159,28 @@ describe('buildMeta effort/temperature fields', () => {
 		expect(meta.temperature).toBeNull();
 		expect(meta.effort_default).toBe('claude-code-default');
 	});
+});
+
+describe('openRouterChat response guarding', () => {
+	test('a 200 body without choices is retried, then succeeds', async () => {
+		const { openRouterChat } = await import('./run');
+		const originalFetch = globalThis.fetch;
+		let calls = 0;
+		globalThis.fetch = (async () => {
+			calls += 1;
+			const body =
+				calls === 1
+					? { error: { message: 'upstream overloaded', code: 502 } }
+					: { choices: [{ message: { role: 'assistant', content: 'ok' } }] };
+			return new Response(JSON.stringify(body), { status: 200 });
+		}) as typeof fetch;
+		try {
+			const chat = openRouterChat('test/model', 'key');
+			const response = await chat([{ role: 'user', content: 'hi' }]);
+			expect(calls).toBe(2);
+			expect(response.choices[0]?.message.content).toBe('ok');
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	}, 10_000);
 });
