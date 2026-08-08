@@ -10,6 +10,8 @@
 	import GoldEditorPanel from '../components/GoldEditorPanel.svelte';
 	import { fetchAuthoringPage, fetchAuthoringTask } from '../lib/api';
 	import { router } from '../lib/state.svelte';
+	import { Button } from '$lib/components/ui/button';
+	import * as Card from '$lib/components/ui/card';
 
 	let slug = $derived(router.param('task') ?? '');
 	let fileParam = $derived(router.param('file') === 'draft' ? ('draft' as const) : undefined);
@@ -31,11 +33,15 @@
 </script>
 
 {#if !payload}
-	<div class="card">
-		<h2>Gold editor</h2>
-		<p class="muted">No task selected — open one from the Authoring tab.</p>
-		<button class="chip" onclick={() => router.go('authoring')}>Authoring</button>
-	</div>
+	<Card.Root size="sm">
+		<Card.Header class="gap-0">
+			<Card.Title>Gold editor</Card.Title>
+		</Card.Header>
+		<Card.Content class="flex flex-col items-start gap-3">
+			<p class="text-muted-foreground">No task selected — open one from the Authoring tab.</p>
+			<Button variant="outline" size="sm" onclick={() => router.go('authoring')}>Authoring</Button>
+		</Card.Content>
+	</Card.Root>
 {:else}
 	{#key `${payload.data.task}:${payload.data.file}`}
 		<GoldEditorPanel data={payload.data} pageTexts={payload.texts} />

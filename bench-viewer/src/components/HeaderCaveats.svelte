@@ -14,10 +14,10 @@
 	let data = $derived(await fetchOverview());
 </script>
 
-<div class="row wrap caveats">
+<div class="mt-2 flex flex-wrap items-center gap-2">
 	<!-- Every number in this bar describes the CORPUS on disk, not the filtered
 	     slice below it. Labelled so, because they routinely differ. -->
-	<span class="muted small">
+	<span class="text-[11px] text-muted-foreground">
 		corpus: {data.counts.runs} runs · {data.counts.tasks} tasks · {data.counts.models} models
 	</span>
 
@@ -54,16 +54,5 @@
 		/>
 	{/if}
 
-	<span class="muted small">reading {data.runs_dir}</span>
+	<span class="text-[11px] text-muted-foreground">reading {data.runs_dir}</span>
 </div>
-
-<style>
-	.caveats {
-		margin-top: 8px;
-		gap: 8px;
-	}
-
-	.small {
-		font-size: 11px;
-	}
-</style>

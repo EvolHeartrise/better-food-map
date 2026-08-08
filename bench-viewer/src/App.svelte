@@ -19,7 +19,11 @@
 	import Runs from './views/Runs.svelte';
 	import Sources from './views/Sources.svelte';
 	import Tasks from './views/Tasks.svelte';
-	import { router } from './lib/state.svelte';
+	import { router, type ViewName } from './lib/state.svelte';
+	import { Button } from '$lib/components/ui/button';
+	import * as Card from '$lib/components/ui/card';
+	import { Skeleton } from '$lib/components/ui/skeleton';
+	import * as Tabs from '$lib/components/ui/tabs';
 
 	const NAV = [
 		{ view: 'leaderboard', label: 'Leaderboard' },
@@ -31,6 +35,13 @@
 	] as const;
 
 	let view = $derived(router.current.view);
+	/** Detail views hang off a list view; highlight the parent tab so the nav never goes blank. */
+	const NAV_HOME: Partial<Record<ViewName, ViewName>> = {
+		run: 'runs',
+		compare: 'runs',
+		gold: 'authoring'
+	};
+	let navValue = $derived(NAV_HOME[view] ?? view);
 	/**
 	 * Run detail and compare are their own scope; a global filter there is noise.
 	 * The authoring and sources views are not run-slice views at all (the gold
@@ -46,33 +57,33 @@
 	);
 </script>
 
-<header>
-	<div class="bar">
-		<h1>Bench analytics</h1>
-		<nav class="row">
-			{#each NAV as item (item.view)}
-				<button class="chip" aria-pressed={view === item.view} onclick={() => router.go(item.view)}
-					>{item.label}</button
-				>
-			{/each}
-		</nav>
+<header class="sticky top-0 z-10 border-b bg-background px-5 py-2.5">
+	<div class="flex flex-wrap items-center justify-between gap-4">
+		<h1 class="text-lg">Bench analytics</h1>
+		<Tabs.Root value={navValue} onValueChange={(next) => router.go(next as ViewName)}>
+			<Tabs.List class="h-8">
+				{#each NAV as item (item.view)}
+					<Tabs.Trigger value={item.view} class="px-2.5 text-xs">{item.label}</Tabs.Trigger>
+				{/each}
+			</Tabs.List>
+		</Tabs.Root>
 	</div>
 
 	<svelte:boundary>
 		<HeaderCaveats />
 		{#snippet pending()}
-			<p class="muted small pending">Reading bench runs…</p>
+			<p class="mt-2 text-[11px] text-muted-foreground">Reading bench runs…</p>
 		{/snippet}
 		{#snippet failed(error)}
-			<p class="error">
+			<p class="mt-2 text-[13px] text-critical">
 				Cannot reach the viewer API ({error instanceof Error ? error.message : String(error)}). Is
-				<code>bun run bench:viewer</code> running?
+				<code class="rounded bg-muted px-1 py-px font-mono text-xs">bun run bench:viewer</code> running?
 			</p>
 		{/snippet}
 	</svelte:boundary>
 </header>
 
-<main>
+<main class="flex max-w-[1600px] flex-col gap-4 px-5 pt-4 pb-12">
 	<svelte:boundary>
 		{#if showFilters}
 			<FilterBar />
@@ -99,68 +110,27 @@
 		{/if}
 
 		{#snippet pending()}
-			<div class="card"><p class="muted">Loading…</p></div>
+			<Card.Root size="sm" class="gap-2">
+				<Card.Content class="flex flex-col gap-2">
+					<Skeleton class="h-4 w-48" />
+					<Skeleton class="h-4 w-80" />
+					<Skeleton class="h-4 w-64" />
+				</Card.Content>
+			</Card.Root>
 		{/snippet}
 
 		{#snippet failed(error, reset)}
-			<div class="card">
-				<h2>Something broke</h2>
-				<p class="error">{error instanceof Error ? error.message : String(error)}</p>
-				<button class="chip" onclick={reset}>Try again</button>
-			</div>
+			<Card.Root size="sm">
+				<Card.Header>
+					<Card.Title>Something broke</Card.Title>
+				</Card.Header>
+				<Card.Content class="flex flex-col items-start gap-3">
+					<p class="text-[13px] text-critical">
+						{error instanceof Error ? error.message : String(error)}
+					</p>
+					<Button variant="outline" size="sm" onclick={reset}>Try again</Button>
+				</Card.Content>
+			</Card.Root>
 		{/snippet}
 	</svelte:boundary>
 </main>
-
-<style>
-	header {
-		position: sticky;
-		top: 0;
-		z-index: 10;
-		background: var(--page);
-		border-bottom: 1px solid var(--border);
-		padding: 10px 20px;
-	}
-
-	.bar {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 16px;
-		flex-wrap: wrap;
-	}
-
-	nav {
-		gap: 6px;
-	}
-
-	.small {
-		font-size: 11px;
-	}
-
-	.pending {
-		margin: 8px 0 0;
-	}
-
-	main {
-		padding: 16px 20px 48px;
-		display: flex;
-		flex-direction: column;
-		gap: 16px;
-		max-width: 1600px;
-	}
-
-	.error {
-		color: var(--critical);
-		margin: 8px 0 0;
-		font-size: 13px;
-	}
-
-	code {
-		font-family: var(--mono);
-		font-size: 12px;
-		background: color-mix(in srgb, var(--gridline) 50%, transparent);
-		padding: 1px 5px;
-		border-radius: 4px;
-	}
-</style>

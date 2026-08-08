@@ -346,13 +346,17 @@
 			<div class="tip-title">{hovered.label}</div>
 			<div class="tip-row">{yLabel}: <strong>{formatY(hovered.y)}</strong></div>
 			<div class="tip-row">{xLabel}: <strong>{formatX(hovered.x)}</strong></div>
-			<div class="tip-row muted">n = {hovered.n}{hovered.frontier ? ' · on frontier' : ''}</div>
-			{#if hovered.detail}<div class="tip-row muted">{hovered.detail}</div>{/if}
+			<div class="tip-row text-muted-foreground/80">
+				n = {hovered.n}{hovered.frontier ? ' · on frontier' : ''}
+			</div>
+			{#if hovered.detail}<div class="tip-row text-muted-foreground/80">{hovered.detail}</div>{/if}
 		</div>
 	{/if}
 
 	{#if points.length === 0}
-		<p class="empty muted">No runs in this slice report both {xLabel} and {yLabel}. {UNKNOWN}</p>
+		<p class="p-3 text-center text-muted-foreground">
+			No runs in this slice report both {xLabel} and {yLabel}. {UNKNOWN}
+		</p>
 	{/if}
 </div>
 
@@ -371,7 +375,7 @@
 		fill: var(--series-1);
 		fill-opacity: 0.45;
 		/* 2px surface ring keeps overlapping points legible. */
-		stroke: var(--surface-1);
+		stroke: var(--card);
 		stroke-width: 2;
 	}
 
@@ -381,7 +385,7 @@
 
 	.dot.active {
 		fill-opacity: 1;
-		stroke: var(--text-primary);
+		stroke: var(--foreground);
 	}
 
 	.mark {
@@ -407,7 +411,7 @@
 	}
 
 	.mark.active .icon-bg {
-		stroke: var(--text-primary);
+		stroke: var(--foreground);
 		stroke-width: 1.5;
 	}
 
@@ -431,17 +435,16 @@
 	}
 
 	.point-label {
-		fill: var(--text-secondary);
+		fill: var(--muted-foreground);
 		font-size: 10px;
-		font-family: var(--sans);
 		paint-order: stroke;
-		stroke: var(--surface-1);
+		stroke: var(--card);
 		stroke-width: 3px;
 	}
 
 	.tooltip {
 		position: absolute;
-		background: var(--surface-1);
+		background: var(--card);
 		border: 1px solid var(--border);
 		border-radius: 6px;
 		padding: 6px 9px;
@@ -458,11 +461,6 @@
 	}
 
 	.tip-row {
-		color: var(--text-secondary);
-	}
-
-	.empty {
-		text-align: center;
-		padding: 12px;
+		color: var(--muted-foreground);
 	}
 </style>
