@@ -76,15 +76,116 @@
 		return cell.stats.duration_ms.mean;
 	}
 
+	// --- advanced filters (this chart only) --------------------------------------
+	/**
+	 * These narrow which CELLS are plotted, not which runs are in the slice: the
+	 * shared FilterBar owns the slice every view renders against, and these
+	 * compose on top of it for frontier questions ("pinned runs only", "hide n=1
+	 * cells", "only two-pass"). Nothing narrows silently — every cell or point
+	 * they hide is counted in the note under the chart, next to a Reset.
+	 */
+	const FACETS = [
+		{ key: 'harness', label: 'Harness' },
+		{ key: 'backend', label: 'Backend' },
+		{ key: 'quantization', label: 'Quantization' },
+		{ key: 'provenance', label: 'Provider' },
+		{ key: 'prompt_sha', label: 'Prompt' }
+	] as const;
+	type FacetKey = (typeof FACETS)[number]['key'];
+
+	const emptySelections = (): Record<FacetKey, string[]> => ({
+		harness: [],
+		backend: [],
+		quantization: [],
+		provenance: [],
+		prompt_sha: []
+	});
+
+	let advancedOpen = $state(false);
+	let facetSelections = $state<Record<FacetKey, string[]>>(emptySelections());
+	/** Cells with fewer runs than this are hidden — an n=1 cell is one sample, not a mean. */
+	let minRuns = $state(1);
+	/** Floor on the selected metric, in percent; 0 = off. */
+	let qualityFloor = $state(0);
+	/** Ceiling on the x axis (USD; seconds when the axis is latency), as typed. */
+	let xCeilingRaw = $state('');
+	let frontierOnly = $state(false);
+
+	/** A cell not split on a facet has no value there — a real bucket, not a blank. */
+	const facetValue = (cell: CellRow, key: FacetKey): string => cell[key] ?? '(not split)';
+
+	let facetOptions = $derived.by(() => {
+		const out = {} as Record<FacetKey, { value: string; n: number }[]>;
+		for (const facet of FACETS) {
+			const counts: Record<string, number> = {};
+			for (const cell of cells) {
+				const value = facetValue(cell, facet.key);
+				counts[value] = (counts[value] ?? 0) + 1;
+			}
+			out[facet.key] = Object.entries(counts)
+				.map(([value, n]) => ({ value, n }))
+				.toSorted((a, b) => a.value.localeCompare(b.value));
+		}
+		return out;
+	});
+
+	function toggleFacet(key: FacetKey, value: string): void {
+		const current = facetSelections[key];
+		facetSelections[key] = current.includes(value)
+			? current.filter((entry) => entry !== value)
+			: [...current, value];
+	}
+
+	let xCeiling = $derived.by(() => {
+		const parsed = Number(xCeilingRaw);
+		return xCeilingRaw.trim() === '' || !Number.isFinite(parsed) || parsed <= 0 ? null : parsed;
+	});
+	/** The input is USD, or SECONDS on the latency axis — x values there are ms. */
+	let xCeilingValue = $derived(
+		xCeiling === null ? null : xAxis === 'duration' ? xCeiling * 1000 : xCeiling
+	);
+
+	let advancedActive = $derived(
+		FACETS.some((facet) => facetSelections[facet.key].length > 0) ||
+			minRuns > 1 ||
+			qualityFloor > 0 ||
+			xCeiling !== null ||
+			frontierOnly
+	);
+
+	function resetAdvanced(): void {
+		facetSelections = emptySelections();
+		minRuns = 1;
+		qualityFloor = 0;
+		xCeilingRaw = '';
+		frontierOnly = false;
+	}
+
+	let facetFiltered = $derived(
+		cells.filter(
+			(cell) =>
+				cell.n_runs >= minRuns &&
+				FACETS.every(
+					(facet) =>
+						facetSelections[facet.key].length === 0 ||
+						facetSelections[facet.key].includes(facetValue(cell, facet.key))
+				)
+		)
+	);
+	let hiddenByFacets = $derived(cells.length - facetFiltered.length);
+
 	const taskList = (value: string): string[] => (value ? value.split('+') : []);
 
 	/**
 	 * How many distinct tasks any cell in this slice actually produced a score on.
-	 * This is the coverage bar a cell has to clear to be comparable.
+	 * This is the coverage bar a cell has to clear to be comparable — computed
+	 * over the UNFILTERED slice on purpose: picking a harness in the advanced
+	 * panel narrows what is shown, it must never lower the bar a shown cell has
+	 * to clear.
 	 */
 	let sliceTaskCount = $derived(new Set(cells.flatMap((cell) => taskList(cell.scored_tasks))).size);
 
-	let plottedAll = $derived(plottableCells(cells, xValue, filters.metric));
+	let plottedAll = $derived(plottableCells(facetFiltered, xValue, filters.metric));
 
 	/**
 	 * Only cells scored on EVERY task in the slice are plotted.
@@ -101,15 +202,34 @@
 
 	// Exclusions are counted BY CAUSE and always surfaced. Silently dropping a
 	// third of the corpus is how a chart says "we compared everything" about a
-	// slice.
+	// slice. Counted over the facet-filtered set; what the ADVANCED filters hid
+	// is its own count, stated separately with a Reset beside it.
 	let excludedNoScore = $derived(
-		cells.filter((cell) => cell.metrics[filters.metric].mean === null).length
+		facetFiltered.filter((cell) => cell.metrics[filters.metric].mean === null).length
 	);
-	let excludedNoAxis = $derived(cells.length - plottedAll.length - excludedNoScore);
+	let excludedNoAxis = $derived(facetFiltered.length - plottedAll.length - excludedNoScore);
 	let excludedPartial = $derived(plottedAll.length - plotted.length);
-	let excluded = $derived(cells.length - plotted.length);
+	let excluded = $derived(facetFiltered.length - plotted.length);
 
-	let frontier = $derived(computeFrontier(plotted));
+	/** Quality floor and x ceiling apply to plotted points, after coverage. */
+	let thresholded = $derived(
+		plotted.filter(
+			(entry) =>
+				entry.y >= qualityFloor / 100 && (xCeilingValue === null || entry.x <= xCeilingValue)
+		)
+	);
+	let hiddenByThresholds = $derived(plotted.length - thresholded.length);
+
+	/**
+	 * The frontier is computed over the VISIBLE point set: with a floor or
+	 * ceiling active, the chart's claim is "nothing shown beats these", and a
+	 * frontier anchored to hidden points would label the wrong ones.
+	 */
+	let frontier = $derived(computeFrontier(thresholded));
+
+	let visible = $derived(
+		frontierOnly ? thresholded.filter((entry) => frontier.has(entry.cell.key)) : thresholded
+	);
 
 	/**
 	 * Point labels only carry the axes that actually distinguish them.
@@ -121,7 +241,7 @@
 	 */
 	let baseLabelCounts = $derived.by(() => {
 		const counts: Record<string, number> = {};
-		for (const entry of plotted) {
+		for (const entry of visible) {
 			const base = `${entry.cell.model.split('/').pop()} · ${entry.cell.effort}`;
 			counts[base] = (counts[base] ?? 0) + 1;
 		}
@@ -154,7 +274,7 @@
 	});
 
 	let points = $derived.by<ScatterPoint[]>(() =>
-		plotted.map((entry) => ({
+		visible.map((entry) => ({
 			id: entry.cell.key,
 			label: labelFor(entry.cell),
 			x: entry.x,
@@ -174,7 +294,7 @@
 		}))
 	);
 
-	let tableRows = $derived(plotted.toSorted((a, b) => b.y - a.y || a.x - b.x));
+	let tableRows = $derived(visible.toSorted((a, b) => b.y - a.y || a.x - b.x));
 
 	/**
 	 * Selecting a point EXPANDS it rather than navigating.
@@ -225,8 +345,86 @@
 					<input type="checkbox" bind:checked={splitProvenance} />
 					split by provenance &amp; prompt
 				</label>
+				<button
+					class="chip"
+					aria-pressed={advancedOpen}
+					title="Filter which cells are plotted: harness, backend, quantization, provider, prompt, minimum runs, quality floor, cost ceiling."
+					onclick={() => (advancedOpen = !advancedOpen)}
+				>
+					Advanced{advancedActive ? ' ·' : ''}
+				</button>
 			</div>
 		</div>
+
+		{#if advancedOpen}
+			<div class="advanced">
+				{#each FACETS as facet (facet.key)}
+					{#if facetOptions[facet.key].length > 1}
+						<div class="group">
+							<span class="key">{facet.label}</span>
+							<div class="row wrap">
+								{#each facetOptions[facet.key] as option (option.value)}
+									<button
+										class="chip"
+										class:mono={facet.key === 'prompt_sha'}
+										aria-pressed={facetSelections[facet.key].includes(option.value)}
+										onclick={() => toggleFacet(facet.key, option.value)}
+									>
+										{option.value} <span class="muted">{option.n}</span>
+									</button>
+								{/each}
+							</div>
+						</div>
+					{/if}
+				{/each}
+
+				<div class="group">
+					<span class="key">Min runs/cell</span>
+					<select bind:value={minRuns}>
+						{#each [1, 2, 3, 5] as n (n)}
+							<option value={n}>{n === 1 ? 'any' : `≥ ${n}`}</option>
+						{/each}
+					</select>
+					<span class="hint">An n=1 cell is a single sample, not a mean.</span>
+				</div>
+
+				<div class="group">
+					<span class="key">Quality floor</span>
+					<input class="num" type="number" min="0" max="100" step="5" bind:value={qualityFloor} />
+					<span class="hint"
+						>% {metricLabel(filters.metric).toLowerCase()} — points below are hidden.</span
+					>
+				</div>
+
+				<div class="group">
+					<span class="key">{xAxis === 'duration' ? 'Latency ceiling' : 'Cost ceiling'}</span>
+					<input
+						class="num"
+						type="text"
+						inputmode="decimal"
+						placeholder={xAxis === 'duration' ? 'seconds' : 'USD'}
+						bind:value={xCeilingRaw}
+					/>
+					<span class="hint">
+						{xAxis === 'duration' ? 'seconds per run' : 'USD per run'} — points above are hidden.
+					</span>
+				</div>
+
+				<div class="group">
+					<span class="key">Frontier</span>
+					<button
+						class="chip"
+						aria-pressed={frontierOnly}
+						onclick={() => (frontierOnly = !frontierOnly)}
+					>
+						{frontierOnly ? 'frontier points only' : 'all points'}
+					</button>
+					{#if advancedActive}
+						<button class="chip" onclick={resetAdvanced}>Reset advanced</button>
+					{/if}
+				</div>
+			</div>
+		{/if}
 
 		<ScatterChart
 			{points}
@@ -237,6 +435,22 @@
 			logX={xAxis !== 'duration'}
 			onselect={selectCell}
 		/>
+
+		{#if advancedActive}
+			<!-- The advanced filters' narrowing, stated as its own sentence: these are
+			     the user's deliberate hides, not data problems, so they are counted
+			     apart from the omitted-by-cause note below. -->
+			<p class="muted small note">
+				Advanced filters hide {hiddenByFacets} cell{hiddenByFacets === 1
+					? ''
+					: 's'}{hiddenByThresholds > 0
+					? ` and ${hiddenByThresholds} plotted point${hiddenByThresholds === 1 ? '' : 's'}`
+					: ''}{frontierOnly
+					? `; showing only the ${visible.length} frontier point${visible.length === 1 ? '' : 's'}`
+					: ''}.
+				<button class="linky" onclick={resetAdvanced}>Reset</button>
+			</p>
+		{/if}
 
 		{#if excluded > 0}
 			{@const causes = [
@@ -437,6 +651,42 @@
 	.warn {
 		color: var(--warning);
 		max-width: 80ch;
+	}
+
+	.advanced {
+		margin-top: 10px;
+		padding-top: 10px;
+		border-top: 1px solid var(--gridline);
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.group {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+
+	.key {
+		color: var(--text-secondary);
+		font-size: 12px;
+		min-width: 100px;
+	}
+
+	.hint {
+		color: var(--text-muted);
+		font-size: 11px;
+	}
+
+	.mono {
+		font-family: var(--font-mono, monospace);
+		font-size: 11px;
+	}
+
+	.num {
+		width: 80px;
 	}
 
 	tbody tr.selected {
