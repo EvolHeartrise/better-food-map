@@ -15,6 +15,7 @@
 	import AccountMenu from '$lib/components/AccountMenu.svelte';
 	import VenueDetail from '$lib/components/VenueDetail.svelte';
 	import VenueHead from '$lib/components/VenueHead.svelte';
+	import BetaNotice from '$lib/components/BetaNotice.svelte';
 	import Search from '@lucide/svelte/icons/search';
 	import { matchedItems, searchResults } from '$lib/search-match';
 	import { idFromPath, locationPath } from '$lib/location-path';
@@ -757,6 +758,14 @@
 	     returns if the visitor zooms back out. -->
 	{#if landing}
 		<MapStatsOverlay onstart={startUsing} />
+	{/if}
+
+	<!-- The beta notice (development status, Canada-only coverage), shown once on
+	     arrival at the front page. It self-gates on its localStorage opt-out; mounted
+	     only when the page landed on `/` — a shared `/locations/<id>` deep link opens
+	     straight onto the venue, and a modal over it would bury what the link shared. -->
+	{#if initialLandingId === null}
+		<BetaNotice />
 	{/if}
 
 	<!-- The search controls don't live in a panel: each is its own pill floating
