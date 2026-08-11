@@ -40,9 +40,14 @@
 
 	// A click outside the dialog box (on the backdrop) closes it. The dialog element
 	// fills only the box, so a pointer landing beyond its bounds is a backdrop click.
+	// Only clicks targeting the <dialog> itself qualify (a backdrop click dispatches
+	// to it; anything inside the box targets a panel descendant): keyboard/AT
+	// activation of a control inside the box synthesizes a click at (0,0), which the
+	// coordinate test alone would misread as backdrop and close the dialog — e.g.
+	// Space on BetaNotice's opt-out checkbox.
 	function onDialogClick(event: MouseEvent) {
 		const el = dialog;
-		if (!el) return;
+		if (!el || event.target !== el) return;
 		const rect = el.getBoundingClientRect();
 		const outside =
 			event.clientX < rect.left ||
