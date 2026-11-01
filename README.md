@@ -1,12 +1,12 @@
 # BetterFoodMaps
 
-An interactive map of food venues — [betterfoodmaps.com](https://betterfoodmaps.com).
+An interactive map of food venues - [betterfoodmaps.com](https://betterfoodmaps.com).
 Browse restaurants, cafés and bakeries on a world map, search venues and menu
 items together, and filter every menu by diet (vegan, vegetarian, gluten-free,
 dairy-free, nut-free, halal). Built with SvelteKit (Svelte 5) on Cloudflare
 Workers, with the data in Cloudflare D1 and the map rendered by MapLibre GL.
 
-The map is public at the root `/` — the zoomed-out globe shows a landing overlay
+The map is public at the root `/` - the zoomed-out globe shows a landing overlay
 with coverage stats (`src/lib/components/MapStatsOverlay.svelte`) until you zoom
 in or hit "start". Signing in (Google) is optional and adds likes and a saved
 diet.
@@ -28,7 +28,7 @@ bun run dev
 bun run dev -- --open
 ```
 
-The dev server runs on port **5050** (set in `vite.config.ts` — the Google OAuth
+The dev server runs on port **5050** (set in `vite.config.ts` - the Google OAuth
 callback URI is derived from it, so don't change it casually).
 
 ## Building
@@ -53,14 +53,14 @@ addresses into structured parts, `0011` adds per-menu currency, `0012` requires
 (and drop ingredient tags + search history), `0015` adds soft-delete for
 permanently closed venues, `0016` adds FTS5 trigram search mirrors for venue and
 item names, and `0017` indexes session expiry for the purge sweep. The data-access layer in `src/lib/server/db.ts` is
-runtime-agnostic — every function is async and takes a D1 handle, so the same
+runtime-agnostic - every function is async and takes a D1 handle, so the same
 code runs against either the Worker's `platform.env.DB` binding (the deployed
 app) or the HTTP-backed client in `src/lib/server/d1-http.ts` (local tooling).
 
 The deployed site reads D1 through its binding via the remote functions in
 `src/lib/data.remote.ts`.
 
-Read and write data through the **MCP server** (`scripts/db-mcp-server.ts`) — a
+Read and write data through the **MCP server** (`scripts/db-mcp-server.ts`) - a
 stdio Model Context Protocol server registered in `.mcp.json` as `food-db`. It
 exposes CRUD tools over locations, brands, menus and items (`list_locations`,
 `create_locations`, `update_items`, `close_location`, …) plus the OSM tools
@@ -76,7 +76,7 @@ Schema advertised to clients is generated from those same schemas.
 To add venues at scale we pull candidates from **OpenStreetMap** instead of
 hitting rate-limited public Overpass mirrors. A one-time extract builds a small,
 local **food-POI staging store** (SQLite under `data/`, gitignored and
-disposable — only curated rows ever reach D1), and the MCP server's `search_poi`
+disposable - only curated rows ever reach D1), and the MCP server's `search_poi`
 tool reads it offline.
 
 One-time tool install (the extract shells out to `osmium`):
@@ -92,7 +92,7 @@ Build / refresh the store for a region (download extracts from
 [Geofabrik](https://download.geofabrik.de/)):
 
 ```sh
-# e.g. Canada — re-running --region canada replaces just that region's rows
+# e.g. Canada - re-running --region canada replaces just that region's rows
 bun run osm:extract --region canada --input canada-latest.osm.pbf
 ```
 
@@ -101,7 +101,7 @@ bar,pub,…` and `shop=bakery,…`), so the store stays small (single-digit MB f
 province, low-GB even continent-wide) regardless of the source extract's size.
 It also fills in missing addresses from the addressed OSM building each POI sits
 in; `bun run overture:enrich` can fill remaining gaps from an Overture Maps
-places cache (addresses only — coordinates always stay OSM). Override the DB
+places cache (addresses only - coordinates always stay OSM). Override the DB
 path with `--db` or the `OSM_POI_DB` env var.
 
 Then, in an MCP client, discover venues still missing from the map:
@@ -111,10 +111,10 @@ Then, in an MCP client, discover venues still missing from the map:
   name), so you only see what's missing.
 - Each candidate carries an `osm_id` and `osm_url`, a `suggested_category`,
   structured `address_parts`, and OSM contact/cuisine/opening-hours fields. Add
-  them in batches with `create_locations`, passing each candidate's `osm_id` —
+  them in batches with `create_locations`, passing each candidate's `osm_id` -
   the coordinates and address then import verbatim from OSM and the `osm_url` is
   cited automatically.
-- `diet_markers` are venue-level OSM `diet:*` markers — informational only;
+- `diet_markers` are venue-level OSM `diet:*` markers - informational only;
   per-item dietary tags stay source-asserted (see the data policy in CLAUDE.md).
 - `audit_locations` checks existing rows against the staging store (coordinate
   drift, missing addresses) and returns a work-list to fix with
@@ -125,7 +125,7 @@ extract; Geofabrik updates daily.
 
 ## Accounts & sign-in (Google OAuth)
 
-**The map is public — sign-in is optional.** The map lives at the root `/`
+**The map is public - sign-in is optional.** The map lives at the root `/`
 (`src/routes/+page.svelte`); there is no navigation gate (see the hook chain in
 `src/hooks.server.ts`: just a canonical-host redirect and session resolution).
 Selecting a venue updates the address bar to `/locations/<id>` via shallow
@@ -134,7 +134,7 @@ routing; there is no real route at that path, so the `reroute` hook in
 reads the id from the URL and opens the detail panel.
 
 Signing in adds the user-owned features: **liking** locations and menu items
-(`src/lib/user.remote.ts`) and a **saved diet** — the dietary selector's choice
+(`src/lib/user.remote.ts`) and a **saved diet** - the dietary selector's choice
 persists as a single dietary tag in `user_dietary_profile.diet` and is
 pre-applied as the map's filter on the next visit (`src/lib/profile.remote.ts`).
 These remote functions guard themselves with `requireUser()`; the map data reads
@@ -151,18 +151,18 @@ passwords), implemented directly with [Arctic](https://arcticjs.dev):
   resolves it into `locals.user` on every request.
 - User-owned data lives in the tables added by
   `migrations/0007_users_likes_searches.sql` (`users`, `oauth_accounts`,
-  `sessions`, `liked_locations`, `liked_items` — the `search_history` table it
+  `sessions`, `liked_locations`, `liked_items` - the `search_history` table it
   also created was dropped by migration 0014) plus `user_dietary_profile`
   (migrations 0013/0014).
 
-It needs two secrets — `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` — from a
+It needs two secrets - `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` - from a
 Google Cloud **OAuth 2.0 Client** of type "Web application". Register these
 authorized redirect URIs on it:
 
 - `https://betterfoodmaps.com/auth/callback/google` (production)
 - `http://localhost:5050/auth/callback/google` (local `vite dev`)
 
-**Local dev:** copy `.dev.vars.example` to `.dev.vars` and fill the two values —
+**Local dev:** copy `.dev.vars.example` to `.dev.vars` and fill the two values -
 the Cloudflare adapter loads them into `platform.env` during `vite dev`.
 
 **Production:** set them as Worker secrets:
@@ -180,7 +180,7 @@ The app deploys to **Cloudflare Workers** (Static Assets) via
 One-time setup:
 
 ```sh
-# 1. Authenticate wrangler (interactive — run yourself):
+# 1. Authenticate wrangler (interactive - run yourself):
 #    bunx wrangler login
 
 # 2. Create the D1 database, then paste the printed database_id into
@@ -206,7 +206,7 @@ Deploy:
 - **Git-connected CI (the canonical path):** the repo is connected in the
   Cloudflare dashboard (Workers → Builds); every push to `main` builds with
   `bun run build` and deploys via `wrangler deploy` (reads `wrangler.jsonc`).
-  Note: Workers Builds does **not** apply D1 migrations — run
+  Note: Workers Builds does **not** apply D1 migrations - run
   `bun run d1:migrate` yourself when you add a migration.
 - **Manual:** `bun run deploy` (builds, then `wrangler deploy`). Requires a
   valid local `wrangler login`; prefer the CI path.
