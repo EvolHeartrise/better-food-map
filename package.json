@@ -32,6 +32,8 @@
 		"bench:serve": "bun run scripts/bench/serve.ts",
 		"bench:viewer": "bun run scripts/bench/viewer.ts",
 		"db:mcp": "bun run scripts/db-mcp-server.ts",
+		"menu:check": "bun run scripts/menu-fingerprint/check.ts",
+		"menu:baseline": "bun run scripts/menu-fingerprint/baseline.ts",
 		"db:pull": "bun run scripts/db-pull.ts",
 		"osm:extract": "bun run scripts/osm-extract.ts",
 		"overture:enrich": "bun run scripts/overture-enrich.ts",

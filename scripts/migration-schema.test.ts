@@ -88,3 +88,55 @@ test('0028: locations.osm_id column and its partial index exist', async () => {
 		.first<{ name: string }>();
 	expect(idx?.name).toBe('idx_locations_osm_id');
 });
+
+test('0029: menu_watch_urls table + menus.last_checked exist; CHECKs reject bad enums', async () => {
+	const db = freshDb();
+	await db
+		.prepare(`INSERT INTO menus (id, name, last_verified) VALUES (?, ?, ?)`)
+		.bind('m-fp', 'Fingerprinted', '2026-07-18')
+		.run();
+	const insert =
+		`INSERT INTO menu_watch_urls (menu_id, url, kind, checked_at, fetch_status) ` +
+		`VALUES (?, ?, ?, ?, ?)`;
+	// valid row passes
+	await db
+		.prepare(insert)
+		.bind('m-fp', 'https://cafe.example/menu', 'html', '2026-07-18', 'ok')
+		.run();
+	// unknown kind / fetch_status are rejected by the CHECK constraints
+	expect(
+		String(
+			await insertError(db, insert, ['m-fp', 'https://x.example/a', 'rss', '2026-07-18', 'ok'])
+		)
+	).toContain('CHECK');
+	expect(
+		String(
+			await insertError(db, insert, ['m-fp', 'https://x.example/b', 'html', '2026-07-18', 'meh'])
+		)
+	).toContain('CHECK');
+	// menus.last_checked column exists and updates without tripping 0012's triggers
+	await db
+		.prepare(`UPDATE menus SET last_checked = ? WHERE id = ?`)
+		.bind('2026-07-18', 'm-fp')
+		.run();
+});
+
+test('0029: watch rows cascade with their menu', async () => {
+	const db = freshDb();
+	await db
+		.prepare(`INSERT INTO menus (id, name, last_verified) VALUES (?, ?, ?)`)
+		.bind('m-gone', 'Doomed', '2026-07-18')
+		.run();
+	await db
+		.prepare(
+			`INSERT INTO menu_watch_urls (menu_id, url, kind, checked_at, fetch_status) VALUES (?, ?, ?, ?, ?)`
+		)
+		.bind('m-gone', 'https://cafe.example/menu', 'feed', '2026-07-18', 'ok')
+		.run();
+	await db.prepare(`DELETE FROM menus WHERE id = ?`).bind('m-gone').run();
+	const left = await db
+		.prepare(`SELECT COUNT(*) AS n FROM menu_watch_urls WHERE menu_id = ?`)
+		.bind('m-gone')
+		.first<{ n: number }>();
+	expect(left?.n).toBe(0);
+});
